@@ -130,19 +130,26 @@ func Run() error {
 }
 
 func handlePrompt(token string, chatID int64, prompt string) {
-	// use streaming agent with thinking updates
 	thinkingID := sendThinking(token, chatID, "", false)
+	toolID := 0
+	var toolLines []string
 	var reasoning string
 	lastEdit := time.Now()
-	// run via agent streaming with callback
 	done := make(chan string, 1)
 	go func() {
-		// hook into llm streaming by wrapping agent.RunStream
 		err := runWithThinking(prompt, func(r string) {
 			reasoning = r
 			if time.Since(lastEdit) > 1200*time.Millisecond {
 				editThinking(token, chatID, thinkingID, reasoning, false)
 				lastEdit = time.Now()
+			}
+		}, func(t string) {
+			toolLines = append(toolLines, t)
+			text := strings.Join(toolLines, "\n")
+			if toolID == 0 {
+				toolID = send(token, chatID, "```\n"+text+"\n```")
+			} else {
+				editTool(token, chatID, toolID, text)
 			}
 		}, func(answer string) {
 			done <- answer
@@ -162,8 +169,14 @@ func handlePrompt(token string, chatID int64, prompt string) {
 	}
 }
 
-// runWithThinking streams LLM and collects reasoning, then executes tool loop
-func runWithThinking(prompt string, onReasoning func(string), onAnswer func(string)) error {
-	// delegate to agent package
-	return runAgent(prompt, onReasoning, onAnswer)
+func editTool(token string, chatID int64, msgID int, text string) {
+	if len(text) > 3500 {
+		text = text[len(text)-3500:]
+	}
+	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": "```\n" + text + "\n```", "parse_mode": "Markdown"})
+	http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
+}
+
+func runWithThinking(prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgent(prompt, onReasoning, onTool, onAnswer)
 }
