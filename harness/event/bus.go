@@ -1,0 +1,102 @@
+package event
+
+import (
+	"sync"
+	"time"
+)
+
+// Type of event, maps to soraacode summaryAggregator setOn* types
+type Type string
+
+const (
+	TypeThinking   Type = "thinking"
+	TypePermission Type = "permission"
+	TypeQuestion   Type = "question"
+	TypeCost       Type = "cost"
+	TypeTokens     Type = "tokens"
+	TypeToolStart  Type = "tool_start"
+	TypeToolEnd    Type = "tool_end"
+	TypeComplete   Type = "complete"
+	TypeError      Type = "error"
+	TypeCompact    Type = "compact"
+)
+
+// Event is a harness event streamed to bridge, mirrors soraacode event-subscription-service
+type Event struct {
+	Type      Type            `json:"type"`
+	SessionID string          `json:"session_id"`
+	Data      map[string]any  `json:"data"`
+	Time      time.Time       `json:"time"`
+}
+
+// Bus is an SSE-like in-memory event bus with reconnect support
+// Maps to soraacode soraacode/events.js subscribeToEvents + globalEvents
+type Bus struct {
+	mu   sync.RWMutex
+	subs map[string][]chan Event
+}
+
+// New creates a bus
+func New() *Bus {
+	return &Bus{subs: make(map[string][]chan Event)}
+}
+
+var Default = New()
+
+// Publish sends event to all subscribers of sessionID, non-blocking
+func (b *Bus) Publish(e Event) {
+	b.mu.RLock()
+	chans := b.subs[e.SessionID]
+	// copy to avoid holding lock while sending
+	cp := make([]chan Event, len(chans))
+	copy(cp, chans)
+	b.mu.RUnlock()
+	e.Time = time.Now()
+	for _, ch := range cp {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
+}
+
+// Subscribe returns a channel for sessionID events, like soraacode subscribeToEvents
+// Caller must handle idle timeout and reconnect (30s idle, 1s->15s backoff)
+func (b *Bus) Subscribe(sessionID string, buf int) <-chan Event {
+	if buf <= 0 {
+		buf = 64
+	}
+	ch := make(chan Event, buf)
+	b.mu.Lock()
+	b.subs[sessionID] = append(b.subs[sessionID], ch)
+	b.mu.Unlock()
+	return ch
+}
+
+// Unsubscribe removes channel
+func (b *Bus) Unsubscribe(sessionID string, ch <-chan Event) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	subs := b.subs[sessionID]
+	for i, c := range subs {
+		if c == ch {
+			close(c)
+			b.subs[sessionID] = append(subs[:i], subs[i+1:]...)
+			break
+		}
+	}
+	if len(b.subs[sessionID]) == 0 {
+		delete(b.subs, sessionID)
+	}
+}
+
+// SubscribeWithRetry keeps resubscribing with exponential backoff like soraacode events.js
+// Calls handler for each event until ctx done
+func SubscribeWithRetry(bus *Bus, sessionID string, handler func(Event)) {
+	// Simple wrapper: caller loops, we just provide single subscription
+	// Reconnect logic is in bridge's event loop
+	ch := bus.Subscribe(sessionID, 64)
+	for e := range ch {
+		handler(e)
+	}
+}

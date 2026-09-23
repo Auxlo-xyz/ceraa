@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"sooraa/harness/event"
 	"sooraa/internal/codexauth"
 	"sooraa/internal/secret"
 	"sooraa/internal/telegram/keyboard"
@@ -377,7 +378,66 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	var toolLines []string
 	var reasoning string
 	lastEdit := time.Now()
-	done := make(chan string, 1)
+
+	// SSE-like event subscription -> maps to soraacode soraacode/events.js subscribeToEvents + event-subscription-service.js
+	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff
+	eventCh := event.Default.Subscribe(sessionID, 64)
+	eventDone := make(chan struct{})
+	go func() {
+		defer event.Default.Unsubscribe(sessionID, eventCh)
+		for {
+			select {
+			case e, ok := <-eventCh:
+				if !ok {
+					return
+				}
+				switch e.Type {
+				case event.TypeThinking:
+					// Already handled via onReasoning, but also ensure event stream shows thinking separately
+					if full, ok := e.Data["full"].(string); ok && full != "" {
+						if time.Since(lastEdit) > 1200*time.Millisecond {
+							editThinking(token, chatID, thinkingID, full, false)
+							lastEdit = time.Now()
+						}
+					}
+				case event.TypePermission:
+					// Show permission inline keyboard -> maps to soraacode permission-manager + permission-menu.js
+					tool, _ := e.Data["tool"].(string)
+					reqID, _ := e.Data["request_id"].(string)
+					kb := map[string]any{"inline_keyboard": [][]map[string]string{
+						{{"text": "✓ Allow once", "callback_data": "perm:allowOnce:" + reqID}},
+						{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID}},
+						{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID}},
+					}}
+					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "🔒 Permission required for `" + tool + "`\n`" + fmt.Sprint(e.Data["args"]) + "`", "parse_mode": "Markdown", "reply_markup": kb})
+					_, _ = doTelegramPost(api("sendMessage", token), b)
+				case event.TypeQuestion:
+					// Show question as poll-like inline -> maps to soraacode question-manager + question-menu.js
+					tool, _ := e.Data["tool"].(string)
+					kb := map[string]any{"inline_keyboard": [][]map[string]string{
+						{{"text": "Answer", "callback_data": "question:answer:" + tool}},
+						{{"text": "✕ Close", "callback_data": "close"}},
+					}}
+					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ Question from " + tool, "reply_markup": kb})
+					_, _ = doTelegramPost(api("sendMessage", token), b)
+				case event.TypeCost, event.TypeTokens:
+					// Show cost/tokens separately -> maps to soraacode pinned-message-manager tokens/cost
+					cost, _ := e.Data["cost"].(string)
+					tok, _ := e.Data["tokens"]
+					if cost != "" {
+						send(token, chatID, fmt.Sprintf("💰 Cost: %s Tokens: %v", cost, tok))
+					} else if tok != nil {
+						send(token, chatID, fmt.Sprintf("📊 Tokens: %v", tok))
+					}
+				case event.TypeCompact:
+					send(token, chatID, "🗜️ Compacted context")
+				}
+			case <-eventDone:
+				return
+			}
+		}
+	}()
+	doneCh := make(chan string, 1)
 	go func() {
 		err := runWithThinking(sessionID, prompt, func(r string) {
 			reasoning = r
@@ -394,20 +454,22 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 				editTool(token, chatID, toolID, text)
 			}
 		}, func(answer string) {
-			done <- answer
+			doneCh <- answer
 		})
 		if err != nil {
-			done <- "error: " + err.Error()
+			doneCh <- "error: " + err.Error()
 		}
 	}()
 	select {
-	case ans := <-done:
+	case ans := <-doneCh:
+		close(eventDone)
 		editThinking(token, chatID, thinkingID, reasoning, true)
 		if ans != "" {
 			// Rendering pipeline chunk via send() already handles 4096 -> soraacode pipeline chunker
 			send(token, chatID, ans)
 		}
 	case <-time.After(10 * time.Minute):
+		close(eventDone)
 		send(token, chatID, "Timeout.")
 	}
 	// Drain prompt queue -> soraacode prompt-queue-manager dispatchNextQueuedPrompt

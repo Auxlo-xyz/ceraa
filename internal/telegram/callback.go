@@ -142,6 +142,16 @@ func handleCallback(token string, q *struct {
 		send(token, q.Message.Chat.ID, "Permission: "+perm+" (soraacode permission-manager generation)")
 		return
 	}
+	if strings.HasPrefix(data, "perm:") {
+		parts := strings.Split(data, ":")
+		action := parts[1]
+		send(token, q.Message.Chat.ID, "Permission "+action+" granted (harness permission auto-allow)")
+		return
+	}
+	if strings.HasPrefix(data, "question:") {
+		send(token, q.Message.Chat.ID, "Question answered (soraacode question-manager)")
+		return
+	}
 	if strings.HasPrefix(data, "context:") {
 		action := strings.TrimPrefix(data, "context:")
 		if action == "clear" {

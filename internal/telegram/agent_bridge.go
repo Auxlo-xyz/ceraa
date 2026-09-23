@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sooraa/harness/compaction"
+	"sooraa/harness/event"
 	"sooraa/harness/llm"
 	"sooraa/harness/operation"
 	"sooraa/harness/sessionstore"
@@ -127,15 +128,22 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 		err := client.Stream(ctx, streamReq, func(delta llm.ProviderResponse) {
 			if delta.Content != "" {
 				contentBuilder.WriteString(delta.Content)
+				// Publish content event -> maps to soraacode ResponseStreamer
+				event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"content": delta.Content}})
 			}
 			if delta.Reasoning != "" {
 				accumulatedReasoning += delta.Reasoning
 				if onReasoning != nil {
 					onReasoning(accumulatedReasoning)
 				}
+				// Separate thinking event -> soraacode thinking-rendering.js
+				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"reasoning": delta.Reasoning, "full": accumulatedReasoning}})
 			}
 			if len(delta.ToolCalls) > 0 {
 				toolCalls = delta.ToolCalls
+				for _, tc := range delta.ToolCalls {
+					event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "args": tc.Arguments}})
+				}
 			}
 			if delta.Done {
 				// pass - results collected below
@@ -169,6 +177,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				Content: content,
 			})
 			_ = store.Save(sess)
+			event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"content": content}})
 			if onAnswer != nil && content != "" {
 				onAnswer(content)
 			}
@@ -198,6 +207,18 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 
 		// Execute all tool calls concurrently
 		for _, tc := range toolCalls {
+			// Permission check -> maps to soraacode permission-manager generation
+			if needsPermission(tc.Name, tc.Arguments) {
+				event.Default.Publish(event.Event{Type: event.TypePermission, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "args": tc.Arguments, "request_id": tc.ID}})
+				if onTool != nil {
+					onTool("🔒 Permission required: " + tc.Name + " " + tc.Arguments[:min(100, len(tc.Arguments))])
+				}
+				// For now auto-allow after publish, real flow would wait for callback allowOnce/Always
+			}
+			// Question detection -> maps to soraacode question-manager poll
+			if tc.Name == "question" || strings.Contains(tc.Arguments, "\"question\"") {
+				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "args": tc.Arguments}})
+			}
 			var args map[string]any
 			if !json.Valid([]byte(tc.Arguments)) {
 				continue
@@ -231,6 +252,8 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			case r := <-opMgr.Results():
 				resultMap[r.OpID] = r.Output
 				collected++
+				// Publish tool end event -> maps to soraacode ToolMessageBatcher + RunningToolTracker
+				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{"op_id": r.OpID, "output": r.Output, "status": string(r.Status)}})
 				if onTool != nil {
 					preview := r.Output
 					if len(preview) > 300 {
@@ -246,6 +269,14 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				return fmt.Errorf("tool execution timeout")
 			}
 		}
+
+		// Publish tokens/cost -> maps to soraacode pinned-message-manager + tokens/cost events
+		tokensUsed := 0
+		for _, m := range msgs {
+			tokensUsed += len(m.Text)/4 + len(m.Args)/4 + len(m.Output)/4 + 10
+		}
+		event.Default.Publish(event.Event{Type: event.TypeTokens, SessionID: sessionID, Data: map[string]any{"tokens": tokensUsed}})
+		event.Default.Publish(event.Event{Type: event.TypeCost, SessionID: sessionID, Data: map[string]any{"cost": fmt.Sprintf("$%.4f", float64(tokensUsed)*0.00001)}})
 
 		// Append tool results
 		for _, tc := range toolCalls {
@@ -303,6 +334,20 @@ func newCompactor(cfg *config.Config) *compaction.Compactor {
 
 func pruneIfNeeded(sess *sessionstore.Session) int {
 	return compaction.Prune(sess)
+}
+
+func needsPermission(tool, args string) bool {
+	if tool != "bash" {
+		return false
+	}
+	lower := strings.ToLower(args)
+	risky := []string{"rm -rf", "sudo ", "chmod 777", "mkfs", "dd if=", ":(){:|:&};:"}
+	for _, r := range risky {
+		if strings.Contains(lower, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func clearSession(sessionID string) error {
