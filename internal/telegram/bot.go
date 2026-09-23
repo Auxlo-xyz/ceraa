@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/emperormk01/soraa-agent/internal/agent"
 )
 
 type update struct {
@@ -25,12 +23,65 @@ type update struct {
 
 func api(method, token string) string { return "https://api.telegram.org/bot" + token + "/" + method }
 
-func send(token string, chatID int64, text string) {
+func send(token string, chatID int64, text string) int {
 	if len(text) > 4000 {
 		text = text[:4000]
 	}
 	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "parse_mode": "Markdown"})
-	http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+	resp, _ := http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+	if resp == nil {
+		return 0
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var out struct {
+		Result struct{ MessageID int `json:"message_id"` } `json:"result"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out.Result.MessageID
+}
+
+func sendThinking(token string, chatID int64, reasoning string, collapsed bool) int {
+	header := "💭 Thinking..."
+	text := header + "\n" + strings.TrimSpace(reasoning)
+	if len(text) > 4000 {
+		text = text[:4000]
+	}
+	typ := "blockquote"
+	if collapsed {
+		typ = "expandable_blockquote"
+	}
+	entities := []map[string]any{{"type": typ, "offset": len(header) + 1, "length": len(text) - len(header) - 1}}
+	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "entities": entities})
+	resp, _ := http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+	if resp == nil {
+		return 0
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var out struct {
+		Result struct{ MessageID int `json:"message_id"` } `json:"result"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out.Result.MessageID
+}
+
+func editThinking(token string, chatID int64, msgID int, reasoning string, collapsed bool) {
+	header := "💭 Thinking..."
+	text := header + "\n" + strings.TrimSpace(reasoning)
+	if strings.TrimSpace(reasoning) == "" {
+		text = header
+	}
+	if len(text) > 4000 {
+		text = text[:4000]
+	}
+	typ := "blockquote"
+	if collapsed {
+		typ = "expandable_blockquote"
+	}
+	entities := []map[string]any{{"type": typ, "offset": len(header) + 1, "length": len(text) - len(header) - 1}}
+	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": text, "entities": entities})
+	http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
 }
 
 func Run() error {
@@ -73,29 +124,46 @@ func Run() error {
 				continue
 			}
 			chatID := u.Message.Chat.ID
-			go func(prompt string) {
-				send(token, chatID, "_Working..._")
-				// capture agent output by redirecting? agent.Run prints; run and send result
-				// simple: call agent and on finish send done; agent.Run handles LLM+tools
-				// For now run via channel: agent returns via stdout, we send completion note
-				// Re-run with direct capture: use custom runner that returns text
-				done := make(chan string, 1)
-				go func() {
-					// hijack stdout capture not needed - just run and notify
-					err := agent.Run(prompt)
-					if err != nil {
-						done <- "error: " + err.Error()
-					} else {
-						done <- "Done."
-					}
-				}()
-				select {
-				case msg := <-done:
-					send(token, chatID, msg)
-				case <-time.After(10 * time.Minute):
-					send(token, chatID, "Timeout.")
-				}
-			}(txt)
+			go handlePrompt(token, chatID, txt)
 		}
 	}
+}
+
+func handlePrompt(token string, chatID int64, prompt string) {
+	// use streaming agent with thinking updates
+	thinkingID := sendThinking(token, chatID, "", false)
+	var reasoning string
+	lastEdit := time.Now()
+	// run via agent streaming with callback
+	done := make(chan string, 1)
+	go func() {
+		// hook into llm streaming by wrapping agent.RunStream
+		err := runWithThinking(prompt, func(r string) {
+			reasoning = r
+			if time.Since(lastEdit) > 1200*time.Millisecond {
+				editThinking(token, chatID, thinkingID, reasoning, false)
+				lastEdit = time.Now()
+			}
+		}, func(answer string) {
+			done <- answer
+		})
+		if err != nil {
+			done <- "error: " + err.Error()
+		}
+	}()
+	select {
+	case ans := <-done:
+		editThinking(token, chatID, thinkingID, reasoning, true)
+		if ans != "" {
+			send(token, chatID, ans)
+		}
+	case <-time.After(10 * time.Minute):
+		send(token, chatID, "Timeout.")
+	}
+}
+
+// runWithThinking streams LLM and collects reasoning, then executes tool loop
+func runWithThinking(prompt string, onReasoning func(string), onAnswer func(string)) error {
+	// delegate to agent package
+	return runAgent(prompt, onReasoning, onAnswer)
 }
