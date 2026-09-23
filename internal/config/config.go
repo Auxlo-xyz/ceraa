@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Config holds all sooraa settings.
@@ -18,9 +19,11 @@ type Config struct {
 
 // LLMProvider holds LLM API settings.
 type LLMProvider struct {
-	URL    string `json:"url"`
-	Model  string `json:"model"`
-	APIKey string `json:"api_key,omitempty"`
+	URL             string `json:"url"`
+	Model           string `json:"model"`
+	APIKey          string `json:"api_key,omitempty"`
+	ContextLimit    int    `json:"context_limit,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 }
 
 // Subscriptions holds provider subscription settings.
@@ -46,8 +49,10 @@ type TelegramConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		LLM: LLMProvider{
-			URL:   "https://inference.poolside.ai/v1",
-			Model: "poolside/laguna-xs-2.1",
+			URL:             "https://inference.poolside.ai/v1",
+			Model:           "poolside/laguna-xs-2.1",
+			ContextLimit:    236000,
+			MaxOutputTokens: 8192,
 		},
 		MaxSteps:    10,
 		SessionFile: "sessions",
@@ -72,6 +77,16 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("SOORAA_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
+	}
+	if v := os.Getenv("SOORAA_CONTEXT_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.LLM.ContextLimit = n
+		}
+	}
+	if v := os.Getenv("SOORAA_MAX_OUTPUT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.LLM.MaxOutputTokens = n
+		}
 	}
 
 	// Poolside provider env override

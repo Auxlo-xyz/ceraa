@@ -88,9 +88,10 @@ type UsageInfo struct {
 }
 
 type StreamRequest struct {
-	Messages []Item
-	Tools    []ToolDef
-	Reason   ReasonLevel
+	Messages  []Item
+	Tools     []ToolDef
+	Reason    ReasonLevel
+	MaxTokens int
 }
 
 type StreamingClient struct {
@@ -160,6 +161,9 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 	if req.Reason != "" {
 		body["reasoning_effort"] = string(req.Reason)
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
 	}
 	if req.Tools != nil && len(req.Tools) > 0 {
 		toolMaps := make([]map[string]any, len(req.Tools))

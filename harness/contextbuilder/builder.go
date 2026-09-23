@@ -44,6 +44,10 @@ func (b *Builder) Pinned(items ...llm.Item) {
 
 // Build returns the final Request with a system message prepended.
 func (b *Builder) Build() Request {
+	return b.BuildWithLimit(maxTotalTokens)
+}
+
+func (b *Builder) BuildWithLimit(limit int) Request {
 	var req Request
 	req.Messages = make([]llm.Item, 0, len(b.sess.Messages)+2)
 
@@ -107,8 +111,58 @@ func (b *Builder) Build() Request {
 		req.Messages = append(req.Messages, item)
 	}
 
-	req.Usage = PruneResult{TokensRemaining: maxTotalTokens}
+	if limit > 0 && EstimateMessages(req.Messages) > limit {
+		req.Messages = trimCompleteTurns(req.Messages, limit)
+	}
+	req.Usage = PruneResult{TokensRemaining: max(0, limit-EstimateMessages(req.Messages))}
 	return req
+}
+
+func trimCompleteTurns(items []llm.Item, limit int) []llm.Item {
+	if limit <= 0 || EstimateMessages(items) <= limit {
+		return items
+	}
+	firstUser := len(items)
+	for i, item := range items {
+		if item.Kind == "text" && item.Role == llm.RoleUser {
+			firstUser = i
+			break
+		}
+	}
+	if firstUser == len(items) {
+		return items[:0]
+	}
+	prefix := append([]llm.Item(nil), items[:firstUser]...)
+	var groups [][]llm.Item
+	var current []llm.Item
+	for _, item := range items[firstUser:] {
+		if item.Kind == "text" && item.Role == llm.RoleUser && len(current) > 0 {
+			groups = append(groups, current)
+			current = nil
+		}
+		current = append(current, item)
+	}
+	if len(current) > 0 {
+		groups = append(groups, current)
+	}
+	total := EstimateMessages(prefix)
+	keepFrom := len(groups)
+	for i := len(groups) - 1; i >= 0; i-- {
+		groupTokens := EstimateMessages(groups[i])
+		if total+groupTokens > limit {
+			if keepFrom == len(groups) {
+				return prefix
+			}
+			break
+		}
+		total += groupTokens
+		keepFrom = i
+	}
+	result := append([]llm.Item(nil), prefix...)
+	for i := keepFrom; i < len(groups); i++ {
+		result = append(result, groups[i]...)
+	}
+	return result
 }
 
 // Truncate cuts a string to maxChars, preserving complete lines if possible.

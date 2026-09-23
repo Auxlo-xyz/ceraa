@@ -40,15 +40,27 @@ func toLLMItem(m sessionstore.Message) llm.Item {
 	}
 	if calls := m.AllToolCalls(); len(calls) > 0 {
 		if len(calls) == 1 {
-			return llm.Item{Kind: "tool_call", CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, Text: m.Content}
+			return llm.Item{Kind: "tool_call", Role: llm.RoleAssistant, CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, Text: m.Content}
 		}
 		items := make([]llm.ToolCall, 0, len(calls))
 		for _, call := range calls {
 			items = append(items, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
 		}
-		return llm.Item{Kind: "tool_calls", ToolCalls: items, Text: m.Content}
+		return llm.Item{Kind: "tool_calls", Role: llm.RoleAssistant, ToolCalls: items, Text: m.Content}
 	}
 	return llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Output: m.ToolResult}
+}
+
+func buildRequestMessages(sess *sessionstore.Session, cfg *config.Config) []llm.Item {
+	history := *sess
+	if len(history.Messages) > 0 && history.Messages[0].Role == llm.RoleSystem && history.Messages[0].Compaction == nil {
+		history.Messages = history.Messages[1:]
+	}
+	limit := cfg.LLM.ContextLimit - cfg.LLM.MaxOutputTokens
+	if limit <= 0 {
+		limit = 216000
+	}
+	return contextbuilder.New(&history, prompt.System).BuildWithLimit(limit).Messages
 }
 
 // Run executes the agent for a single user message via the harness.
@@ -119,10 +131,12 @@ func RunWithConfig(user string, cfg *config.Config) error {
 	defer ib.Stop()
 
 	for i := 0; i < cfg.MaxSteps; i++ {
+		msgs = buildRequestMessages(sess, cfg)
 		client := llm.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
 		streamReq := llm.StreamRequest{
-			Messages: msgs,
-			Tools:    tdefs,
+			Messages:  msgs,
+			Tools:     tdefs,
+			MaxTokens: cfg.LLM.MaxOutputTokens,
 		}
 
 		var contentBuilder strings.Builder

@@ -231,13 +231,29 @@ func buildPrompt(previousSummary string, head string, recent string) string {
 
 // Compactor performs LLM-based summarization.
 type Compactor struct {
-	LLM      llm.ProviderConfig
-	Settings Settings
+	LLM             llm.ProviderConfig
+	Settings        Settings
+	ContextLimit    int
+	MaxOutputTokens int
 }
 
 // New creates a compactor with default settings.
 func New(cfg llm.ProviderConfig) *Compactor {
-	return &Compactor{LLM: cfg, Settings: DefaultSettings()}
+	return &Compactor{LLM: cfg, Settings: DefaultSettings(), ContextLimit: MaxTotalTokens, MaxOutputTokens: 20000}
+}
+
+func (c *Compactor) contextLimit() int {
+	if c.ContextLimit > 0 {
+		return c.ContextLimit
+	}
+	return MaxTotalTokens
+}
+
+func (c *Compactor) outputReserve() int {
+	if c.MaxOutputTokens > 0 {
+		return c.MaxOutputTokens
+	}
+	return 20000
 }
 
 // NeedsCompaction checks pre-flight like soraacode compactIfNeeded
@@ -247,7 +263,7 @@ func (c *Compactor) NeedsCompaction(sess *sessionstore.Session) bool {
 	}
 	used := estimateSession(sess)
 	// Estimate request size including system prompt overhead
-	contextLimit := MaxTotalTokens
+	contextLimit := c.contextLimit()
 	buffer := c.Settings.Buffer
 	if buffer == 0 {
 		buffer = DefaultBuffer
@@ -262,7 +278,7 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 		return false
 	}
 	used := estimateSession(sess)
-	usable := MaxTotalTokens - 20000 // reserved output
+	usable := c.contextLimit() - c.outputReserve()
 	return used >= usable
 }
 
@@ -296,13 +312,18 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		return false, nil
 	}
 	prompt := buildPrompt(previousSummary, head, recent)
-	if EstimateTokens(prompt) > MaxTotalTokens-SummaryOutputTokens {
+	summaryOutput := SummaryOutputTokens
+	if c.MaxOutputTokens > 0 && c.MaxOutputTokens < summaryOutput {
+		summaryOutput = c.MaxOutputTokens
+	}
+	if EstimateTokens(prompt) > c.contextLimit()-summaryOutput {
 		return false, fmt.Errorf("prompt too large for compaction")
 	}
 	client := llm.New(c.LLM)
 	req := llm.StreamRequest{
-		Messages: []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: prompt}},
-		Tools:    nil,
+		Messages:  []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: prompt}},
+		Tools:     nil,
+		MaxTokens: summaryOutput,
 	}
 	var summary strings.Builder
 	err := client.Stream(ctx, req, func(delta llm.ProviderResponse) {

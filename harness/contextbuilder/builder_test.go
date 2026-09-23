@@ -93,6 +93,33 @@ func TestBuildHandlesToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildWithLimitKeepsCompleteToolTurn(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleUser, Content: strings.Repeat("old ", 100)},
+		{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "old_call", Name: "read", Args: `{"path":"old"}`}}},
+		{Role: llm.RoleTool, ToolCallID: "old_call", ToolResult: "old result"},
+		{Role: llm.RoleUser, Content: "latest"},
+		{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "new_call", Name: "read", Args: `{"path":"new"}`}}},
+		{Role: llm.RoleTool, ToolCallID: "new_call", ToolResult: "new result"},
+	}}
+	req := New(sess, "system").BuildWithLimit(80)
+	if EstimateMessages(req.Messages) > 80 {
+		t.Fatalf("request exceeds limit: %d", EstimateMessages(req.Messages))
+	}
+	foundCall := false
+	for _, item := range req.Messages {
+		if item.Kind == "tool_call" && item.CallID == "new_call" {
+			foundCall = true
+		}
+		if item.Kind == "tool_call" && item.CallID == "old_call" {
+			t.Fatal("old incomplete turn was retained")
+		}
+	}
+	if !foundCall {
+		t.Fatal("latest tool call was dropped")
+	}
+}
+
 func TestTruncatePreservesHeadAndTail(t *testing.T) {
 	long := strings.Repeat("A", 200)
 	result := Truncate(long, 30)
