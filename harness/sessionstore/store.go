@@ -84,8 +84,9 @@ func (s *Session) Clear() error {
 }
 
 type Store struct {
-	mu  sync.Mutex
-	dir string
+	mu       sync.Mutex
+	dir      string
+	fileLock *flock.Lock
 }
 
 func New(dir string) (*Store, error) {
@@ -102,11 +103,14 @@ func (s *Store) path(id string) string {
 func (s *Store) Load(id string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Flock for cross-process safety -> maps to soraacode util/effect-flock.ts
-	lockPath := filepath.Join(s.dir, ".lock")
-	if l, err := flock.Acquire(lockPath); err == nil {
-		defer l.Release()
+	if err := s.lock(); err != nil {
+		return nil, err
 	}
+	defer s.unlock()
+	return s.loadUnlocked(id)
+}
+
+func (s *Store) loadUnlocked(id string) (*Session, error) {
 	path := s.path(id)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -128,10 +132,14 @@ func (s *Store) Load(id string) (*Session, error) {
 func (s *Store) Save(sess *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	lockPath := filepath.Join(s.dir, ".lock")
-	if l, err := flock.Acquire(lockPath); err == nil {
-		defer l.Release()
+	if err := s.lock(); err != nil {
+		return err
 	}
+	defer s.unlock()
+	return s.saveUnlocked(sess)
+}
+
+func (s *Store) saveUnlocked(sess *Session) error {
 	if sess.Version == 0 {
 		sess.Version = schemaVersion
 	}
@@ -139,8 +147,88 @@ func (s *Store) Save(sess *Session) error {
 	if err != nil {
 		return fmt.Errorf("encode session %s: %w", sess.ID, err)
 	}
-	path := s.path(sess.ID)
-	return os.WriteFile(path, b, 0o644)
+	return atomicWriteFile(s.path(sess.ID), b, 0o644)
+}
+
+func (s *Store) lock() error {
+	lockPath := filepath.Join(s.dir, ".lock")
+	lock, err := flock.Acquire(lockPath)
+	if err != nil {
+		return fmt.Errorf("lock session store: %w", err)
+	}
+	s.fileLock = lock
+	return nil
+}
+
+func (s *Store) unlock() {
+	if s.fileLock != nil {
+		_ = s.fileLock.Release()
+		s.fileLock = nil
+	}
+}
+
+func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp session: %w", err)
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp session: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp session: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp session: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp session: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace session: %w", err)
+	}
+	removeTemp = false
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
+}
+
+func (s *Store) Update(id string, update func(*Session) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.lock(); err != nil {
+		return err
+	}
+	defer s.unlock()
+	sess, err := s.loadUnlocked(id)
+	if err != nil {
+		return err
+	}
+	if err := update(sess); err != nil {
+		return err
+	}
+	return s.saveUnlocked(sess)
+}
+
+func (s *Store) Clear(id string) error {
+	return s.Update(id, func(sess *Session) error {
+		sess.Messages = []Message{}
+		sess.Operations = []Operation{}
+		return nil
+	})
 }
 
 func (s *Store) List() ([]string, error) {
