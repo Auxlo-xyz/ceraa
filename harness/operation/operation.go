@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"soraa-agent/harness/primitives"
+	"soraa-agent/harness/redact"
 )
 
 // Spec describes work to be done.
@@ -191,6 +192,10 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			result.Status = StatusFailed
 		}
 	}
+
+	// Scrub secrets from results before persistence
+	result.Output = redact.SecretsInText(result.Output)
+	result.Error = redact.SecretsInText(result.Error)
 
 	m.mu.Lock()
 	delete(m.cancels, op.ID)
