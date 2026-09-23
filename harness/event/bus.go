@@ -19,6 +19,8 @@ const (
 	TypeComplete   Type = "complete"
 	TypeError      Type = "error"
 	TypeCompact    Type = "compact"
+	TypeSubagent   Type = "subagent"
+	TypeCompactProgress Type = "compact_progress"
 )
 
 // Event is a harness event streamed to bridge, mirrors soraacode event-subscription-service

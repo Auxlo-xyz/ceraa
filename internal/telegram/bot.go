@@ -15,6 +15,7 @@ import (
 
 	"sooraa/harness/event"
 	"sooraa/internal/codexauth"
+	"sooraa/internal/logger"
 	"sooraa/internal/secret"
 	"sooraa/internal/telegram/keyboard"
 	"sooraa/internal/telegram/menus"
@@ -181,6 +182,14 @@ func Run() error {
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN required")
+	}
+
+	// Initialize logger -> maps to soraacode observability/logging.ts initializeLogger
+	if _, err := logger.Initialize(""); err != nil {
+		fmt.Printf("logger init failed: %v\n", err)
+	} else {
+		logger.Info("Sooraa bridge starting")
+		defer logger.Get().Flush()
 	}
 
 	// Initialize encrypted secret store
@@ -380,49 +389,61 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	lastEdit := time.Now()
 
 	// SSE-like event subscription -> maps to soraacode soraacode/events.js subscribeToEvents + event-subscription-service.js
-	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff
-	eventCh := event.Default.Subscribe(sessionID, 64)
+	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff, 30s idle
 	eventDone := make(chan struct{})
 	go func() {
-		defer event.Default.Unsubscribe(sessionID, eventCh)
+		backoff := time.Second
+		consecutiveTimeouts := 0
 		for {
-			select {
-			case e, ok := <-eventCh:
-				if !ok {
-					return
-				}
-				switch e.Type {
-				case event.TypeThinking:
-					// Already handled via onReasoning, but also ensure event stream shows thinking separately
-					if full, ok := e.Data["full"].(string); ok && full != "" {
-						if time.Since(lastEdit) > 1200*time.Millisecond {
-							editThinking(token, chatID, thinkingID, full, false)
-							lastEdit = time.Now()
+			eventCh := event.Default.Subscribe(sessionID, 64)
+			idleTimer := time.NewTimer(30 * time.Second)
+			innerDone := false
+			for !innerDone {
+				select {
+				case e, ok := <-eventCh:
+					if !ok {
+						innerDone = true
+						break
+					}
+					// Reset idle on event
+					if !idleTimer.Stop() {
+						select {
+						case <-idleTimer.C:
+						default:
 						}
 					}
-				case event.TypePermission:
-					// Show permission inline keyboard -> maps to soraacode permission-manager + permission-menu.js
-					tool, _ := e.Data["tool"].(string)
-					reqID, _ := e.Data["request_id"].(string)
-					kb := map[string]any{"inline_keyboard": [][]map[string]string{
-						{{"text": "✓ Allow once", "callback_data": "perm:allowOnce:" + reqID}},
-						{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID}},
-						{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID}},
-					}}
-					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "🔒 Permission required for `" + tool + "`\n`" + fmt.Sprint(e.Data["args"]) + "`", "parse_mode": "Markdown", "reply_markup": kb})
-					_, _ = doTelegramPost(api("sendMessage", token), b)
-				case event.TypeQuestion:
-					// Show question as buttons -> maps to soraacode question-manager + question-menu.js showCurrentQuestion
-					ques, _ := e.Data["question"].(string)
-					if ques == "" {
-						ques, _ = e.Data["args"].(string)
+					idleTimer.Reset(30 * time.Second)
+					consecutiveTimeouts = 0
+					backoff = time.Second
+					switch e.Type {
+					case event.TypeThinking:
+						if full, ok := e.Data["full"].(string); ok && full != "" {
+							if time.Since(lastEdit) > 1200*time.Millisecond {
+								editThinking(token, chatID, thinkingID, full, false)
+								lastEdit = time.Now()
+							}
+						}
+					case event.TypePermission:
+						tool, _ := e.Data["tool"].(string)
+						reqID, _ := e.Data["request_id"].(string)
+						kb := map[string]any{"inline_keyboard": [][]map[string]string{
+							{{"text": "✓ Allow once", "callback_data": "perm:allowOnce:" + reqID}},
+							{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID}},
+							{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID}},
+						}}
+						b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "🔒 Permission required for `" + tool + "`\n`" + fmt.Sprint(e.Data["args"]) + "`", "parse_mode": "Markdown", "reply_markup": kb})
+						_, _ = doTelegramPost(api("sendMessage", token), b)
+					case event.TypeQuestion:
+						ques, _ := e.Data["question"].(string)
 						if ques == "" {
-							ques = "Question from " + fmt.Sprint(e.Data["tool"])
+							ques, _ = e.Data["args"].(string)
+							if ques == "" {
+								ques = "Question from " + fmt.Sprint(e.Data["tool"])
+							}
 						}
-					}
-					reqID, _ := e.Data["request_id"].(string)
-					var opts []string
-					if v, ok := e.Data["options"]; ok {
+						reqID, _ := e.Data["request_id"].(string)
+						var opts []string
+						if v, ok := e.Data["options"]; ok {
 						switch arr := v.(type) {
 						case []string:
 							opts = arr
@@ -454,11 +475,68 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 					} else if tok != nil {
 						send(token, chatID, fmt.Sprintf("📊 Tokens: %v", tok))
 					}
+					// Pinned update -> maps to soraacode pinned-message-manager
+					// For now also update pinned via separate message (real pinned would edit pinned message)
 				case event.TypeCompact:
 					send(token, chatID, "🗜️ Compacted context")
+				case event.TypeCompactProgress:
+					if prog, ok := e.Data["progress"].(string); ok {
+						send(token, chatID, "🗜️ Compact "+prog)
+					}
+				case event.TypeSubagent:
+					if tool, ok := e.Data["tool"].(string); ok {
+						send(token, chatID, "🤖 Subagent: "+tool+" running")
+					}
+				case event.TypeToolStart:
+					if tool, ok := e.Data["tool"].(string); ok {
+						if elapsed, ok := e.Data["elapsed"].(string); ok {
+							send(token, chatID, elapsed)
+						} else {
+							send(token, chatID, "🔧 Tool start: "+tool)
+						}
+					}
+				case event.TypeToolEnd:
+					if out, ok := e.Data["output"].(string); ok {
+						if len(out) > 200 {
+							out = out[:200] + "..."
+						}
+						send(token, chatID, "✓ Tool done: "+out)
+					}
 				}
+				case <-idleTimer.C:
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= 5 {
+						logger.Warn(fmt.Sprintf("5 consecutive idle timeouts for session %s", sessionID))
+					}
+					idleTimer.Reset(30 * time.Second)
+				case <-eventDone:
+					if !idleTimer.Stop() {
+						select {
+						case <-idleTimer.C:
+						default:
+						}
+					}
+					event.Default.Unsubscribe(sessionID, eventCh)
+					return
+				}
+			}
+			// Reconnect with backoff like soraacode events.js
+			event.Default.Unsubscribe(sessionID, eventCh)
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			select {
 			case <-eventDone:
 				return
+			default:
+			}
+			time.Sleep(backoff)
+			backoff *= 2
+			if backoff > 15*time.Second {
+				backoff = 15 * time.Second
 			}
 		}
 	}()

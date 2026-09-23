@@ -251,6 +251,7 @@ func DefaultRegistry() *Registry {
 	r.Register(&SkillsCatalogTool{})
 	r.Register(&CommandCatalogTool{})
 	r.Register(&MCPCatalogTool{})
+	r.Register(&TodoWriteTool{})
 
 	// WebSearch with config from env
 	provider := os.Getenv("SOORAA_WEBSEARCH_PROVIDER")

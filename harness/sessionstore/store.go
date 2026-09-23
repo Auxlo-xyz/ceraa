@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"sooraa/harness/flock"
 	"sooraa/harness/llm"
 )
 
@@ -90,6 +91,11 @@ func (s *Store) path(id string) string {
 func (s *Store) Load(id string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Flock for cross-process safety -> maps to soraacode util/effect-flock.ts
+	lockPath := filepath.Join(s.dir, ".lock")
+	if l, err := flock.Acquire(lockPath); err == nil {
+		defer l.Release()
+	}
 	path := s.path(id)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -111,6 +117,10 @@ func (s *Store) Load(id string) (*Session, error) {
 func (s *Store) Save(sess *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lockPath := filepath.Join(s.dir, ".lock")
+	if l, err := flock.Acquire(lockPath); err == nil {
+		defer l.Release()
+	}
 	if sess.Version == 0 {
 		sess.Version = schemaVersion
 	}

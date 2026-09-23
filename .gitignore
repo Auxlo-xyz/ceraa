@@ -1,3 +1,4 @@
 dist/
 sessions/
 bin/
+.lock

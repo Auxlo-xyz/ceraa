@@ -2,6 +2,7 @@ package operation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,8 @@ import (
 	"sooraa/harness/question"
 	"sooraa/harness/redact"
 	"sooraa/harness/search"
+	"sooraa/harness/snapshot"
+	"sooraa/harness/todo"
 )
 
 // Spec describes work to be done.
@@ -155,6 +158,10 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			if d := filepath.Dir(p); d != "" {
 				_ = os.MkdirAll(d, 0o755)
 			}
+			// Snapshot before write -> maps to soraacode snapshot.ts + revert.ts
+			if snapStore, err := newSnapshotStore(); err == nil {
+				_, _ = snapStore.Capture(p)
+			}
 			if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
 				result.Error = err.Error()
 				result.Status = StatusFailed
@@ -162,6 +169,30 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				result.Status = StatusCompleted
 				result.Output = "written"
 			}
+		case "todowrite":
+			// Maps to soraacode session/todo.ts TodoWrite
+			todosRaw, _ := op.Spec.Args["todos"]
+			sessionID, _ := op.Spec.Args["session_id"].(string)
+			if sessionID == "" {
+				sessionID = "default"
+			}
+			// Save via todo store
+			if dir, err := todoStoreDir(); err == nil {
+				if store, err := newTodoStore(dir); err == nil {
+					// Marshal and save
+					if data, err := json.Marshal(todosRaw); err == nil {
+						var todos []todo.Todo
+						if err := json.Unmarshal(data, &todos); err == nil {
+							_ = store.Save(sessionID, todos)
+							result.Output = fmt.Sprintf("Todos updated: %d items", len(todos))
+							result.Status = StatusCompleted
+							break
+						}
+					}
+				}
+			}
+			result.Error = "todowrite failed"
+			result.Status = StatusFailed
 		case "glob":
 			p, _ := op.Spec.Args["pattern"].(string)
 			r, _ := primitives.GlobFiles(p)
@@ -435,5 +466,17 @@ func runCatalog(kind string, args map[string]any) (string, error) {
 		return "No MCP servers configured. Add to config.json mcp section. (soraacode has mcp-websearch, etc.)", nil
 	}
 	return "", fmt.Errorf("unknown catalog: %s", kind)
+}
+
+func newSnapshotStore() (*snapshot.Store, error) {
+	return snapshot.New("sessions/.snapshots")
+}
+
+func todoStoreDir() (string, error) {
+	return "sessions", nil
+}
+
+func newTodoStore(dir string) (*todo.Store, error) {
+	return todo.New(dir)
 }
 

@@ -13,6 +13,7 @@ import (
 	"sooraa/harness/operation"
 	"sooraa/harness/sessionstore"
 	"sooraa/harness/tool"
+	"sooraa/harness/tracker"
 	"sooraa/internal/config"
 	"sooraa/internal/prompt"
 )
@@ -93,6 +94,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 
 	// Compaction setup -> maps to soraacode agent/core/src/session/compaction.ts compactIfNeeded + overflow.ts
 	compactor := newCompactor(cfg)
+	trk := tracker.New()
 
 	for i := 0; i < cfg.MaxSteps; i++ {
 		// Pre-flight compaction check like soraacode runner/llm.ts compactIfNeeded
@@ -100,6 +102,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			if onTool != nil {
 				onTool("⚡ Compacting context...")
 			}
+			event.Default.Publish(event.Event{Type: event.TypeCompactProgress, SessionID: sessionID, Data: map[string]any{"progress": "start"}})
 			if ok, err := compactor.Compact(ctx, sess); err == nil && ok {
 				_ = store.Save(sess)
 				// Rebuild msgs from compacted session
@@ -110,6 +113,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				if onTool != nil {
 					onTool("✓ Compaction done, recent preserved")
 				}
+				event.Default.Publish(event.Event{Type: event.TypeCompact, SessionID: sessionID, Data: map[string]any{"done": true}})
 			}
 		}
 		// Tool output pruning like soraacode compaction.prune (40k protected, 20k minimum)
@@ -242,6 +246,17 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				Status: operation.StatusRunning,
 			}
 			opMgr.Add(op)
+			// Running tool tracker -> maps to soraacode bot/streaming/running-tool-tracker.js tick 10s max 2h
+			trk.Start(tc.ID, tc.Name, func(msg string) {
+				if onTool != nil {
+					onTool(msg)
+				}
+				event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "elapsed": msg}})
+			})
+			// Subagent event if tool is subagent-like (long running) -> maps to soraacode subagent-formatter
+			if tc.Name == "bash" || tc.Name == "fts_search" {
+				event.Default.Publish(event.Event{Type: event.TypeSubagent, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "id": tc.ID}})
+			}
 		}
 
 		// Collect results - timeout 3m to allow question tool 2m wait -> maps to soraacode running-tool-tracker 2h
@@ -254,6 +269,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			case r := <-opMgr.Results():
 				resultMap[r.OpID] = r.Output
 				collected++
+				trk.Stop(r.OpID)
 				// Publish tool end event -> maps to soraacode ToolMessageBatcher + RunningToolTracker
 				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{"op_id": r.OpID, "output": r.Output, "status": string(r.Status)}})
 				if onTool != nil {
