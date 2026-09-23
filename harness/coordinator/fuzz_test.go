@@ -146,7 +146,7 @@ func TestCoordinatorMalformedInputs(t *testing.T) {
 	defer ib.Stop()
 
 	reg := tool.DefaultRegistry()
-	opMgr := operation.New()
+	opMgr := operation.New(nil)
 
 	cfg := Config{
 		SessionID:    "test-malformed",
@@ -190,7 +190,7 @@ func TestReasonLevelValidation(t *testing.T) {
 
 // Test that operation manager handles concurrent add/cancel.
 func TestOperationConcurrentAccess(t *testing.T) {
-	mgr := operation.New()
+	mgr := operation.New(nil)
 	for i := 0; i < 100; i++ {
 		mgr.Add(operation.Operation{
 			ID:     fmt.Sprintf("op-%d", i),

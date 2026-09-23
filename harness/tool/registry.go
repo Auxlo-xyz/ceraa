@@ -19,6 +19,11 @@ type Tool interface {
 	TranslateResult(op operation.Operation) string
 }
 
+// Runner is an optional interface tools can implement for direct execution.
+type Runner interface {
+	Run(spec operation.Spec) (string, error)
+}
+
 // Registry holds available tools.
 type Registry struct {
 	tools map[string]Tool

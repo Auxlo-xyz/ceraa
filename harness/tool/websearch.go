@@ -75,7 +75,8 @@ func (w *WebSearchTool) TranslateResult(op operation.Operation) string {
 }
 
 // Run executes the search.
-func (w *WebSearchTool) Run(ctx context.Context, spec operation.Spec) (string, error) {
+func (w *WebSearchTool) Run(spec operation.Spec) (string, error) {
+	ctx := context.Background()
 	query, _ := spec.Args["query"].(string)
 	numResults := 8
 	if n, ok := spec.Args["numResults"].(float64); ok {

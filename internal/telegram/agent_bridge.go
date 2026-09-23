@@ -14,6 +14,23 @@ import (
 	"soraa-agent/internal/prompt"
 )
 
+// toolRunner bridges tool.Tool Run methods to operation.ToolRunner.
+type toolRunner struct {
+	reg *tool.Registry
+}
+
+func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, error) {
+	t, ok := r.reg.Get(spec.Type)
+	if !ok {
+		return "", fmt.Errorf("unknown tool type: %s", spec.Type)
+	}
+	runner, ok := t.(tool.Runner)
+	if !ok {
+		return "", fmt.Errorf("tool %s does not support Run", spec.Type)
+	}
+	return runner.Run(spec)
+}
+
 // runAgent runs the agent loop within a Telegram session.
 // onReasoning streams thinking blocks, onTool reports tool execution progress,
 // and onAnswer sends the final response.
@@ -43,7 +60,7 @@ func runAgent(sessionID string, user string, onReasoning func(string), onTool fu
 	})
 
 	reg := tool.DefaultRegistry()
-	opMgr := operation.New()
+	opMgr := operation.New(&toolRunner{reg: reg})
 
 	// Build initial messages
 	msgs := []llm.Item{}

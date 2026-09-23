@@ -6,7 +6,7 @@ import (
 )
 
 func TestShellOperation(t *testing.T) {
-	mgr := New()
+	mgr := New(nil)
 	mgr.Add(Operation{
 		ID:     "test-1",
 		Spec:   Spec{Type: "shell", Args: map[string]any{"command": "echo hello"}},
@@ -26,7 +26,7 @@ func TestShellOperation(t *testing.T) {
 }
 
 func TestReadOperation(t *testing.T) {
-	mgr := New()
+	mgr := New(nil)
 	mgr.Add(Operation{
 		ID:     "test-read",
 		Spec:   Spec{Type: "read", Args: map[string]any{"path": "/workspace/sora-agent-local/go.mod"}},
@@ -49,7 +49,7 @@ func TestReadOperation(t *testing.T) {
 }
 
 func TestGlobOperation(t *testing.T) {
-	mgr := New()
+	mgr := New(nil)
 	mgr.Add(Operation{
 		ID:     "test-glob",
 		Spec:   Spec{Type: "glob", Args: map[string]any{"pattern": "go.mod"}},
@@ -66,7 +66,7 @@ func TestGlobOperation(t *testing.T) {
 }
 
 func TestCancelOperationRemovesFromManager(t *testing.T) {
-	mgr := New()
+	mgr := New(nil)
 	mgr.Add(Operation{
 		ID:     "test-cancel",
 		Spec:   Spec{Type: "shell", Args: map[string]any{"command": "echo done"}},
@@ -86,7 +86,7 @@ func TestCancelOperationRemovesFromManager(t *testing.T) {
 }
 
 func TestUnknownOperationType(t *testing.T) {
-	mgr := New()
+	mgr := New(nil)
 	mgr.Add(Operation{
 		ID:     "test-unknown",
 		Spec:   Spec{Type: "nonexistent", Args: map[string]any{}},

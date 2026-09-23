@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"soraa-agent/harness/primitives"
-	"soraa-agent/harness/tool"
 )
 
 // Spec describes work to be done.
@@ -52,17 +51,25 @@ type ResultEvent struct {
 	Status Status
 }
 
+// ToolRunner allows tools to be executed by the operation manager.
+type ToolRunner interface {
+	RunTool(ctx context.Context, spec Spec) (string, error)
+}
+
 // LocalManager runs operations in goroutines within the current process.
 type LocalManager struct {
 	mu      sync.Mutex
 	results chan ResultEvent
 	cancels map[string]context.CancelCauseFunc
+	runner  ToolRunner
 }
 
-func New() *LocalManager {
+// New creates a LocalManager. If runner is nil, only built-in types (shell, read, write, glob) are supported.
+func New(runner ToolRunner) *LocalManager {
 	return &LocalManager{
 		results: make(chan ResultEvent, 64),
 		cancels: make(map[string]context.CancelCauseFunc),
+		runner:  runner,
 	}
 }
 
@@ -156,6 +163,20 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 		case "view_image":
 			result.Output = "image-view: (stub) - view via Telegram"
 			result.Status = StatusCompleted
+		case "webfetch", "websearch":
+			if m.runner != nil {
+				out, err := m.runner.RunTool(ctx, op.Spec)
+				result.Output = out
+				if err != nil {
+					result.Error = err.Error()
+					result.Status = StatusFailed
+				} else {
+					result.Status = StatusCompleted
+				}
+			} else {
+				result.Error = "tool runner not configured for: " + op.Spec.Type
+				result.Status = StatusFailed
+			}
 		default:
 			result.Error = "unknown operation type: " + op.Spec.Type
 			result.Status = StatusFailed

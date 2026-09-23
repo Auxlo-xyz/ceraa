@@ -86,7 +86,7 @@ func TestCoordinatorRuns(t *testing.T) {
 	defer ib.Stop()
 
 	reg := tool.DefaultRegistry()
-	opMgr := operation.New()
+	opMgr := operation.New(nil)
 
 	cfg := Config{
 		SessionID:    "test-sess",
