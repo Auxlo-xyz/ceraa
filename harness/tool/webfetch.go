@@ -19,8 +19,10 @@ const (
 // WebFetchTool fetches content from HTTP/HTTPS URLs and returns text or markdown.
 type WebFetchTool struct{}
 
-func (w *WebFetchTool) Name() string        { return "webfetch" }
-func (w *WebFetchTool) Description() string { return "Fetch content from an HTTP or HTTPS URL and return it as text or markdown. Markdown is the default." }
+func (w *WebFetchTool) Name() string { return "webfetch" }
+func (w *WebFetchTool) Description() string {
+	return "Fetch content from an HTTP or HTTPS URL and return it as text or markdown. Markdown is the default."
+}
 
 func (w *WebFetchTool) Schema() map[string]any {
 	return map[string]any{

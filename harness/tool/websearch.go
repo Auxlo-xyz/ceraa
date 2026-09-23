@@ -24,21 +24,23 @@ const (
 
 // WebSearchTool searches the web via Exa or Parallel backends.
 type WebSearchTool struct {
-	apiKey    string
-	provider  string // "exa" or "parallel", empty = auto
+	apiKey   string
+	provider string // "exa" or "parallel", empty = auto
 }
 
-func (w *WebSearchTool) Name() string        { return "websearch" }
-func (w *WebSearchTool) Description() string { return "Search the web using Exa or Parallel. Use this for current information beyond knowledge cutoff." }
+func (w *WebSearchTool) Name() string { return "websearch" }
+func (w *WebSearchTool) Description() string {
+	return "Search the web using Exa or Parallel. Use this for current information beyond knowledge cutoff."
+}
 
 func (w *WebSearchTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"query":              map[string]any{"type": "string", "description": "Web search query"},
-			"numResults":         map[string]any{"type": "integer", "description": fmt.Sprintf("Number of results (default: 8, max: %d)", maxNumResults)},
-			"livecrawl":          map[string]any{"type": "string", "description": "Live crawl mode: 'fallback' or 'preferred'"},
-			"type":               map[string]any{"type": "string", "description": "Search type: 'auto', 'fast', or 'deep'"},
+			"query":                map[string]any{"type": "string", "description": "Web search query"},
+			"numResults":           map[string]any{"type": "integer", "description": fmt.Sprintf("Number of results (default: 8, max: %d)", maxNumResults)},
+			"livecrawl":            map[string]any{"type": "string", "description": "Live crawl mode: 'fallback' or 'preferred'"},
+			"type":                 map[string]any{"type": "string", "description": "Search type: 'auto', 'fast', or 'deep'"},
 			"contextMaxCharacters": map[string]any{"type": "integer", "description": fmt.Sprintf("Max context chars (default: 10000, max: %d)", maxContextChars)},
 		},
 		"required": []string{"query"},
@@ -62,10 +64,10 @@ func (w *WebSearchTool) Translate(args map[string]any) (operation.Spec, error) {
 	}
 
 	return operation.Spec{Type: "websearch", Args: map[string]any{
-		"query":              query,
-		"numResults":         numResults,
-		"livecrawl":          args["livecrawl"],
-		"type":               args["type"],
+		"query":                query,
+		"numResults":           numResults,
+		"livecrawl":            args["livecrawl"],
+		"type":                 args["type"],
 		"contextMaxCharacters": args["contextMaxCharacters"],
 	}}, nil
 }
@@ -94,18 +96,18 @@ func (w *WebSearchTool) Run(spec operation.Spec) (string, error) {
 }
 
 type exaArgs struct {
-	Query              string `json:"query"`
-	Type               string `json:"type"`
-	NumResults         int    `json:"numResults"`
-	Livecrawl          string `json:"livecrawl"`
-	ContextMaxChars    *int   `json:"contextMaxCharacters,omitempty"`
+	Query           string `json:"query"`
+	Type            string `json:"type"`
+	NumResults      int    `json:"numResults"`
+	Livecrawl       string `json:"livecrawl"`
+	ContextMaxChars *int   `json:"contextMaxCharacters,omitempty"`
 }
 
 type mcpRequest struct {
-	JSONRPC string                 `json:"jsonrpc"`
-	ID      int                    `json:"id"`
-	Method  string                 `json:"method"`
-	Params  map[string]any         `json:"params"`
+	JSONRPC string         `json:"jsonrpc"`
+	ID      int            `json:"id"`
+	Method  string         `json:"method"`
+	Params  map[string]any `json:"params"`
 }
 
 type mcpResult struct {
@@ -145,9 +147,9 @@ func (w *WebSearchTool) searchExa(ctx context.Context, query string, numResults 
 
 func (w *WebSearchTool) searchParallel(ctx context.Context, query string, numResults int) (string, error) {
 	args := map[string]any{
-		"objective":     query,
+		"objective":      query,
 		"search_queries": []string{query},
-		"session_id":    ctx.Value(sessionIDKey{}).(string),
+		"session_id":     ctx.Value(sessionIDKey{}).(string),
 	}
 
 	payload := mcpRequest{

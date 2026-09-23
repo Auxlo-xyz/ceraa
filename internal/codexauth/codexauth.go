@@ -31,22 +31,22 @@ var (
 
 // AuthState tracks an in-progress device login.
 type AuthState struct {
-	mu         sync.Mutex
-	flowID     string
-	UserCode   string
-	AuthURL    string
-	Status     string // "waiting", "checking", "succeeded", "failed"
-	Message    string
-	ExpiresAt  time.Time
-	cmd        *exec.Cmd
-	done       chan struct{}
+	mu        sync.Mutex
+	flowID    string
+	UserCode  string
+	AuthURL   string
+	Status    string // "waiting", "checking", "succeeded", "failed"
+	Message   string
+	ExpiresAt time.Time
+	cmd       *exec.Cmd
+	done      chan struct{}
 }
 
 // Manager coordinates auth flows with Telegram callbacks.
 type Manager struct {
-	mu      sync.Mutex
-	flows   map[string]*AuthState
-	cancel  map[string]context.CancelFunc
+	mu     sync.Mutex
+	flows  map[string]*AuthState
+	cancel map[string]context.CancelFunc
 }
 
 // NewManager creates a new auth manager.
@@ -250,11 +250,11 @@ func (s *AuthState) InlineKeyboardJSON() ([]byte, error) {
 			},
 			{
 				{
-					"text": "✓ Check Login Status",
+					"text":          "✓ Check Login Status",
 					"callback_data": "codex:check:" + s.flowID,
 				},
 				{
-					"text": "✗ Cancel",
+					"text":          "✗ Cancel",
 					"callback_data": "codex:cancel:" + s.flowID,
 				},
 			},

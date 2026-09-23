@@ -47,8 +47,8 @@ func handleCallback(token string, q *struct {
 			return
 		}
 		b, _ := json.Marshal(map[string]any{
-			"chat_id": q.Message.Chat.ID,
-			"text":    state.ResultMessage(),
+			"chat_id":      q.Message.Chat.ID,
+			"text":         state.ResultMessage(),
 			"reply_markup": json.RawMessage(`{"inline_keyboard":[]}`),
 		})
 		http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
@@ -58,8 +58,8 @@ func handleCallback(token string, q *struct {
 		flowID := strings.TrimPrefix(data, "codex:cancel:")
 		authMgr.Cancel(flowID)
 		b, _ := json.Marshal(map[string]any{
-			"chat_id": q.Message.Chat.ID,
-			"text":    "Login cancelled.",
+			"chat_id":      q.Message.Chat.ID,
+			"text":         "Login cancelled.",
 			"reply_markup": json.RawMessage(`{"inline_keyboard":[]}`),
 		})
 		http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))

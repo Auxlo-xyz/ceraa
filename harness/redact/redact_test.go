@@ -91,9 +91,9 @@ func TestIsSecretName(t *testing.T) {
 
 func TestSecretsMap(t *testing.T) {
 	input := map[string]string{
-		"API_KEY":  "sk-12345678901234567890",
-		"name":     "not-a-secret",
-		"DB_PASS":  "postgres://user:p4ssw0rd@localhost",
+		"API_KEY": "sk-12345678901234567890",
+		"name":    "not-a-secret",
+		"DB_PASS": "postgres://user:p4ssw0rd@localhost",
 	}
 	result := Secrets(input).(map[string]string)
 

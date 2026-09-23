@@ -24,9 +24,9 @@ type Entry struct {
 
 // store is the on-disk secret store.
 type store struct {
-	path     string
-	key      []byte // 32-byte AES key
-	entries  map[string]Entry
+	path    string
+	key     []byte // 32-byte AES key
+	entries map[string]Entry
 }
 
 var defaultStore *store

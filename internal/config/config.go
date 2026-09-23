@@ -9,11 +9,11 @@ import (
 
 // Config holds all soraa-agent settings.
 type Config struct {
-	LLM          LLMProvider  `json:"llm"`
-	Subscriptions Subscriptions `json:"subscriptions,omitempty"`
-	Telegram     TelegramConfig `json:"telegram,omitempty"`
-	MaxSteps     int            `json:"max_steps,omitempty"`
-	SessionFile  string         `json:"session_file,omitempty"`
+	LLM           LLMProvider    `json:"llm"`
+	Subscriptions Subscriptions  `json:"subscriptions,omitempty"`
+	Telegram      TelegramConfig `json:"telegram,omitempty"`
+	MaxSteps      int            `json:"max_steps,omitempty"`
+	SessionFile   string         `json:"session_file,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
