@@ -174,7 +174,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		if err != nil {
 			lastErr = fmt.Errorf("request: %w", err)
 			if attempt < c.cfg.MaxRetries {
-				time.Sleep(time.Duration(attempt+1) * time.Second)
+				time.Sleep(backoff(attempt))
 				continue
 			}
 			break
@@ -182,9 +182,10 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		if resp.StatusCode >= 300 {
 			raw, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = fmt.Errorf("provider error %d: %s", resp.StatusCode, string(raw))
-			if resp.StatusCode >= 500 && attempt < c.cfg.MaxRetries {
-				time.Sleep(time.Duration(attempt+1) * time.Second)
+			errMsg := fmt.Sprintf("provider error %d: %s", resp.StatusCode, string(raw))
+			lastErr = fmt.Errorf("%s", errMsg)
+			if isTransient(resp.StatusCode) && attempt < c.cfg.MaxRetries {
+				time.Sleep(backoff(attempt))
 				continue
 			}
 			break
@@ -279,4 +280,23 @@ func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)
 		onDelta(delta)
 	}
 	return scanner.Err()
+}
+
+// isTransient returns true for status codes that should be retried.
+func isTransient(status int) bool {
+	switch status {
+	case 408, 429, 500, 502, 503, 504:
+		return true
+	}
+	return false
+}
+
+// backoff returns exponential backoff duration for the given attempt (0-based).
+func backoff(attempt int) time.Duration {
+	// 1s, 3s, 8s schedule
+	durations := []time.Duration{1 * time.Second, 3 * time.Second, 8 * time.Second}
+	if attempt < len(durations) {
+		return durations[attempt]
+	}
+	return 8 * time.Second
 }
