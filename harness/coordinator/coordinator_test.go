@@ -63,8 +63,8 @@ func TestHandleInboxStopHard(t *testing.T) {
 	cb := Callbacks{}
 
 	sub := inbox.Submission{
-		ID:    "stop-1",
-		Kind:  inbox.KindControl,
+		ID:      "stop-1",
+		Kind:    inbox.KindControl,
 		Payload: []byte(`{"mode":"hard","reason":"user requested stop"}`),
 	}
 	err = handleInboxEvent(sub, &map[string]bool{}, nil, &cfg, cb)

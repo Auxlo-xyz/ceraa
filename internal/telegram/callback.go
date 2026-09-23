@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"soraa-agent/internal/telegram/menus"
+	"strings"
 )
 
 func handleCallback(token string, q *struct {
 	ID   string `json:"id"`
-	From struct{ ID int64 `json:"id"` } `json:"from"`
-	Data string `json:"data"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
+	Data    string `json:"data"`
 	Message *struct {
-		Chat struct{ ID int64 `json:"id"` } `json:"chat"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
 		MessageID int `json:"message_id"`
 	} `json:"message"`
 }) {

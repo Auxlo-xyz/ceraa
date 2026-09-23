@@ -62,8 +62,10 @@ func toToolDef(t Tool) map[string]any {
 // BashTool - executes shell commands.
 type BashTool struct{}
 
-func (b *BashTool) Name() string        { return "bash" }
-func (b *BashTool) Description() string { return "Execute a bash command and return the combined stdout/stderr output." }
+func (b *BashTool) Name() string { return "bash" }
+func (b *BashTool) Description() string {
+	return "Execute a bash command and return the combined stdout/stderr output."
+}
 func (b *BashTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -126,8 +128,10 @@ func (r *ReadTool) TranslateResult(op operation.Operation) string {
 // WriteTool - writes/overwrites files.
 type WriteTool struct{}
 
-func (w *WriteTool) Name() string        { return "write" }
-func (w *WriteTool) Description() string { return "Create or overwrite a single file at the given path." }
+func (w *WriteTool) Name() string { return "write" }
+func (w *WriteTool) Description() string {
+	return "Create or overwrite a single file at the given path."
+}
 func (w *WriteTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",

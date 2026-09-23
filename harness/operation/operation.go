@@ -53,9 +53,9 @@ type ResultEvent struct {
 
 // LocalManager runs operations in goroutines within the current process.
 type LocalManager struct {
-	mu       sync.Mutex
-	results  chan ResultEvent
-	cancels  map[string]context.CancelCauseFunc
+	mu      sync.Mutex
+	results chan ResultEvent
+	cancels map[string]context.CancelCauseFunc
 }
 
 func New() *LocalManager {

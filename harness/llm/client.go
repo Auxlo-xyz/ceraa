@@ -52,9 +52,9 @@ type ToolDef struct {
 }
 
 type StreamedToolCall struct {
-	Index    int
-	ID       string
-	Name     string
+	Index     int
+	ID        string
+	Name      string
 	Arguments string
 }
 
@@ -121,9 +121,9 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 
 	body := map[string]any{
-		"model":    c.cfg.Model,
-		"messages": msgs,
-		"stream":   true,
+		"model":          c.cfg.Model,
+		"messages":       msgs,
+		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
 	if req.Reason != "" {

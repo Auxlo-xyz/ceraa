@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"soraa-agent/internal/agent"
 	"github.com/spf13/cobra"
+	"soraa-agent/internal/agent"
 )
 
 var root = &cobra.Command{

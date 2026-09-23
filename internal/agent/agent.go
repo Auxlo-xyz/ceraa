@@ -173,10 +173,10 @@ func Run(user string) error {
 				ToolResult: out,
 			})
 			msgs = append(msgs, llm.Item{
-				Kind:    "text",
-				Role:    llm.RoleTool,
-				CallID:  tc.ID,
-				Output:  out,
+				Kind:   "text",
+				Role:   llm.RoleTool,
+				CallID: tc.ID,
+				Output: out,
 			})
 		}
 		_ = store.Save(sess)

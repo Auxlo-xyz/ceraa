@@ -61,11 +61,11 @@ type Inbox struct {
 	enqueue chan Submission
 	out     chan Submission
 
-	seen     map[RequestID]struct{}
-	mu       sync.RWMutex
-	recent   []RequestID
-	cap      int32
-	seenIDs  func() []RequestID
+	seen    map[RequestID]struct{}
+	mu      sync.RWMutex
+	recent  []RequestID
+	cap     int32
+	seenIDs func() []RequestID
 }
 
 // New returns an Inbox. seenIDs seeds the dedup set (from session recovery).
@@ -83,12 +83,12 @@ func New(ctx context.Context, seenIDs []RequestID, capacity int32) (*Inbox, erro
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	in := &Inbox{
-		ctx:      ctx,
-		cancel:   cancel,
-		enqueue:  make(chan Submission),
-		out:      make(chan Submission),
-		seen:     make(map[RequestID]struct{}, len(seenIDs)),
-		cap:      capacity,
+		ctx:     ctx,
+		cancel:  cancel,
+		enqueue: make(chan Submission),
+		out:     make(chan Submission),
+		seen:    make(map[RequestID]struct{}, len(seenIDs)),
+		cap:     capacity,
 	}
 	for _, id := range seenIDs {
 		in.seen[id] = struct{}{}
@@ -132,8 +132,8 @@ func (in *Inbox) validate(sub Submission) error {
 	}
 	if sub.Kind == KindControl {
 		var env struct {
-			Mode       ControlMode   `json:"mode"`
-			Reason     string        `json:"reason"`
+			Mode       ControlMode     `json:"mode"`
+			Reason     string          `json:"reason"`
 			Parameters json.RawMessage `json:"parameters,omitempty"`
 		}
 		if err := json.Unmarshal(sub.Payload, &env); err != nil {

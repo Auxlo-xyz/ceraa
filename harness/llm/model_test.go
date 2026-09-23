@@ -4,8 +4,8 @@ import "testing"
 
 func TestReasonLevelValid(t *testing.T) {
 	tests := []struct {
-		level  ReasonLevel
-		valid  bool
+		level ReasonLevel
+		valid bool
 	}{
 		{ReasonLow, true},
 		{ReasonMedium, true},

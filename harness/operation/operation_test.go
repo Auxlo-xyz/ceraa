@@ -8,8 +8,8 @@ import (
 func TestShellOperation(t *testing.T) {
 	mgr := New()
 	mgr.Add(Operation{
-		ID:   "test-1",
-		Spec: Spec{Type: "shell", Args: map[string]any{"command": "echo hello"}},
+		ID:     "test-1",
+		Spec:   Spec{Type: "shell", Args: map[string]any{"command": "echo hello"}},
 		Status: StatusPending,
 	})
 	select {
@@ -28,8 +28,8 @@ func TestShellOperation(t *testing.T) {
 func TestReadOperation(t *testing.T) {
 	mgr := New()
 	mgr.Add(Operation{
-		ID:   "test-read",
-		Spec: Spec{Type: "read", Args: map[string]any{"path": "/workspace/sora-agent-local/go.mod"}},
+		ID:     "test-read",
+		Spec:   Spec{Type: "read", Args: map[string]any{"path": "/workspace/sora-agent-local/go.mod"}},
 		Status: StatusPending,
 	})
 	select {
@@ -51,8 +51,8 @@ func TestReadOperation(t *testing.T) {
 func TestGlobOperation(t *testing.T) {
 	mgr := New()
 	mgr.Add(Operation{
-		ID:   "test-glob",
-		Spec: Spec{Type: "glob", Args: map[string]any{"pattern": "go.mod"}},
+		ID:     "test-glob",
+		Spec:   Spec{Type: "glob", Args: map[string]any{"pattern": "go.mod"}},
 		Status: StatusPending,
 	})
 	select {
@@ -88,8 +88,8 @@ func TestCancelOperationRemovesFromManager(t *testing.T) {
 func TestUnknownOperationType(t *testing.T) {
 	mgr := New()
 	mgr.Add(Operation{
-		ID:    "test-unknown",
-		Spec:  Spec{Type: "nonexistent", Args: map[string]any{}},
+		ID:     "test-unknown",
+		Spec:   Spec{Type: "nonexistent", Args: map[string]any{}},
 		Status: StatusPending,
 	})
 	select {

@@ -26,36 +26,36 @@ const (
 )
 
 type Operation struct {
-	ID       string            `json:"id"`
-	Tool     string            `json:"tool"`
-	Args     map[string]any    `json:"args,omitempty"`
-	Status   OperationStatus   `json:"status"`
-	Output   string            `json:"output,omitempty"`
-	Error    string            `json:"error,omitempty"`
-	ThreadID string            `json:"thread_id,omitempty"`
+	ID       string          `json:"id"`
+	Tool     string          `json:"tool"`
+	Args     map[string]any  `json:"args,omitempty"`
+	Status   OperationStatus `json:"status"`
+	Output   string          `json:"output,omitempty"`
+	Error    string          `json:"error,omitempty"`
+	ThreadID string          `json:"thread_id,omitempty"`
 }
 
 type Message struct {
-	Role       llm.Role      `json:"role"`
-	Content    string        `json:"content,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
-	ToolResult string        `json:"tool_result,omitempty"`
-	ToolCall   *ToolCallRef  `json:"tool_call,omitempty"`
-	Reasoning  string        `json:"reasoning,omitempty"`
+	Role       llm.Role     `json:"role"`
+	Content    string       `json:"content,omitempty"`
+	ToolCallID string       `json:"tool_call_id,omitempty"`
+	ToolResult string       `json:"tool_result,omitempty"`
+	ToolCall   *ToolCallRef `json:"tool_call,omitempty"`
+	Reasoning  string       `json:"reasoning,omitempty"`
 }
 
 type ToolCallRef struct {
-	ID      string         `json:"id"`
-	Name    string         `json:"name"`
-	Args    string         `json:"arguments"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Args string `json:"arguments"`
 }
 
 type Session struct {
-	ID          string      `json:"id"`
-	Messages    []Message   `json:"messages"`
-	Operations  []Operation `json:"operations"`
-	Version     int         `json:"version"`
-	ParentID    string      `json:"parent_id,omitempty"`
+	ID         string      `json:"id"`
+	Messages   []Message   `json:"messages"`
+	Operations []Operation `json:"operations"`
+	Version    int         `json:"version"`
+	ParentID   string      `json:"parent_id,omitempty"`
 }
 
 func (s *Session) Clear() error {
@@ -65,8 +65,8 @@ func (s *Session) Clear() error {
 }
 
 type Store struct {
-	mu   sync.Mutex
-	dir  string
+	mu  sync.Mutex
+	dir string
 }
 
 func New(dir string) (*Store, error) {

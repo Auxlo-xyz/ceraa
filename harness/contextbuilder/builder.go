@@ -12,10 +12,10 @@ const maxTotalTokens = 236000 // 256k - safety margin
 
 // PruneResult reports what was cut when building context.
 type PruneResult struct {
-	OmittedMessages []int    // indices dropped from the front
-	TruncatedText   bool     // whether the current message was truncated
-	TokensUsed      int      // estimated tokens used
-	TokensRemaining int      // tokens left for the model
+	OmittedMessages []int // indices dropped from the front
+	TruncatedText   bool  // whether the current message was truncated
+	TokensUsed      int   // estimated tokens used
+	TokensRemaining int   // tokens left for the model
 }
 
 // Request is the prepared payload for the LLM provider.
@@ -26,9 +26,9 @@ type Request struct {
 
 // Builder incrementally assembles messages from a session.
 type Builder struct {
-	sess    *sessionstore.Session
-	prompt  string // system prompt
-	pinned  []llm.Item
+	sess   *sessionstore.Session
+	prompt string // system prompt
+	pinned []llm.Item
 }
 
 func New(sess *sessionstore.Session, systemPrompt string) *Builder {
@@ -64,9 +64,9 @@ func (b *Builder) Build() Request {
 			role = llm.RoleUser
 		}
 		item := llm.Item{
-			Kind:  "text",
-			Role:  role,
-			Text:  m.Content,
+			Kind: "text",
+			Role: role,
+			Text: m.Content,
 		}
 		if m.ToolCall != nil {
 			item.Kind = "tool_call"

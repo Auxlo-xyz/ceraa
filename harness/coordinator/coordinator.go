@@ -21,19 +21,19 @@ const (
 )
 
 type Config struct {
-	SessionID      string
-	SystemPrompt   string
-	MaxSteps       int
-	Reasoning      llm.ReasonLevel
+	SessionID    string
+	SystemPrompt string
+	MaxSteps     int
+	Reasoning    llm.ReasonLevel
 }
 
 // Callbacks let the caller observe async events.
 type Callbacks struct {
-	OnContent   func(string)   // streamed text chunk
-	OnReasoning func(string)   // accumulated reasoning
+	OnContent   func(string)                    // streamed text chunk
+	OnReasoning func(string)                    // accumulated reasoning
 	OnToolStart func(tool.Tool, map[string]any) // tool about to run
-	OnToolDone  func(operation.ResultEvent)    // tool completed
-	OnDone      func(string)   // final answer
+	OnToolDone  func(operation.ResultEvent)     // tool completed
+	OnDone      func(string)                    // final answer
 	OnError     func(error)
 }
 
@@ -202,9 +202,9 @@ func buildLLMMessages(msgs []sessionstore.Message) []llm.Item {
 			})
 		} else {
 			item := llm.Item{
-				Kind:  "text",
-				Role:  m.Role,
-				Text:  m.Content,
+				Kind: "text",
+				Role: m.Role,
+				Text: m.Content,
 			}
 			if m.Role == llm.RoleTool {
 				item.CallID = m.ToolCallID
@@ -222,7 +222,7 @@ func handleInboxEvent(sub inbox.Submission, pendingToolIDs *map[string]bool, mod
 		var env struct {
 			Mode       string          `json:"mode"`
 			Reason     string          `json:"reason"`
-			Parameters json.RawMessage  `json:"parameters"`
+			Parameters json.RawMessage `json:"parameters"`
 		}
 		if sub.Kind == inbox.KindControl {
 			_ = json.Unmarshal(sub.Payload, &env)

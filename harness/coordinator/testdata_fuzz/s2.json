@@ -1,0 +1,11 @@
+{
+  "id": "s2",
+  "messages": [
+    {
+      "role": "system",
+      "content": "x"
+    }
+  ],
+  "operations": null,
+  "version": 2
+}

@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"soraa-agent/internal/telegram"
 	"github.com/spf13/cobra"
+	"soraa-agent/internal/telegram"
 )
 
 var tgCmd = &cobra.Command{

@@ -215,9 +215,9 @@ func toLLMItem(m sessionstore.Message) llm.Item {
 		}
 	}
 	return llm.Item{
-		Kind:  "text",
-		Role:  m.Role,
-		Text:  m.Content,
+		Kind:   "text",
+		Role:   m.Role,
+		Text:   m.Content,
 		CallID: m.ToolCallID,
 		Output: m.ToolResult,
 	}

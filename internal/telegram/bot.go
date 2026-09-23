@@ -16,11 +16,15 @@ import (
 )
 
 type update struct {
-	UpdateID      int `json:"update_id"`
-	Message       *struct {
-		Chat struct{ ID int64 `json:"id"` } `json:"chat"`
-		From struct{ ID int64 `json:"id"` } `json:"from"`
-		Text string `json:"text"`
+	UpdateID int `json:"update_id"`
+	Message  *struct {
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+		From struct {
+			ID int64 `json:"id"`
+		} `json:"from"`
+		Text  string `json:"text"`
 		Photo []struct {
 			FileID string `json:"file_id"`
 		} `json:"photo"`
@@ -34,10 +38,14 @@ type update struct {
 	} `json:"message"`
 	CallbackQuery *struct {
 		ID   string `json:"id"`
-		From struct{ ID int64 `json:"id"` } `json:"from"`
-		Data string `json:"data"`
+		From struct {
+			ID int64 `json:"id"`
+		} `json:"from"`
+		Data    string `json:"data"`
 		Message *struct {
-			Chat struct{ ID int64 `json:"id"` } `json:"chat"`
+			Chat struct {
+				ID int64 `json:"id"`
+			} `json:"chat"`
 			MessageID int `json:"message_id"`
 		} `json:"message"`
 	} `json:"callback_query"`
@@ -64,7 +72,9 @@ func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	var out struct {
-		Result struct{ MessageID int `json:"message_id"` } `json:"result"`
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
 	}
 	_ = json.Unmarshal(raw, &out)
 	return out.Result.MessageID
@@ -89,7 +99,9 @@ func sendThinking(token string, chatID int64, reasoning string, collapsed bool) 
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	var out struct {
-		Result struct{ MessageID int `json:"message_id"` } `json:"result"`
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
 	}
 	_ = json.Unmarshal(raw, &out)
 	return out.Result.MessageID
