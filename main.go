@@ -1,5 +1,5 @@
 package main
 
-import "soraa-agent/cmd"
+import "sooraa/cmd"
 
 func main() { cmd.Execute() }

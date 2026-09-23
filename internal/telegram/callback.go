@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"soraa-agent/internal/telegram/menus"
+	"sooraa/internal/telegram/menus"
 	"strings"
 )
 

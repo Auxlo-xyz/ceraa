@@ -7,13 +7,13 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"soraa-agent/internal/agent"
-	"soraa-agent/internal/config"
+	"sooraa/internal/agent"
+	"sooraa/internal/config"
 )
 
 var root = &cobra.Command{
-	Use:   "soraa-agent [prompt]",
-	Short: "Soraa Agent - coding harness",
+	Use:   "sooraa [prompt]",
+	Short: "Sooraa - coding harness",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()
@@ -22,7 +22,7 @@ var root = &cobra.Command{
 	},
 }
 
-var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("soraa-agent 0.1.0") }}
+var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("sooraa 0.1.0") }}
 
 var configCmd = &cobra.Command{
 	Use:   "config",
@@ -45,7 +45,7 @@ var configCmd = &cobra.Command{
 
 var configInitCmd = &cobra.Command{
 	Use:   "config-init",
-	Short: "Write a sample config file to ~/.config/soraa-agent/config.json",
+	Short: "Write a sample config file to ~/.config/sooraa/config.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sample := `{
   "llm": {
@@ -72,7 +72,7 @@ var configInitCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		dir := filepath.Join(home, ".config", "soraa-agent")
+		dir := filepath.Join(home, ".config", "sooraa")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

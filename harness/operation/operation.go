@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"soraa-agent/harness/primitives"
-	"soraa-agent/harness/redact"
+	"sooraa/harness/primitives"
+	"sooraa/harness/redact"
 )
 
 // Spec describes work to be done.

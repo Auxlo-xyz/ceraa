@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"soraa-agent/harness/llm"
-	"soraa-agent/harness/operation"
-	"soraa-agent/harness/sessionstore"
-	"soraa-agent/harness/tool"
-	"soraa-agent/internal/config"
-	"soraa-agent/internal/prompt"
+	"sooraa/harness/llm"
+	"sooraa/harness/operation"
+	"sooraa/harness/sessionstore"
+	"sooraa/harness/tool"
+	"sooraa/internal/config"
+	"sooraa/internal/prompt"
 )
 
 // toolRunner bridges tool.Tool Run methods to operation.ToolRunner.

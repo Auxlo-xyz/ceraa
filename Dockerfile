@@ -10,11 +10,11 @@ RUN go mod download
 COPY . .
 
 # Build static binary
-RUN CGO_ENABLED=0 go build -trimpath -o /bin/soraa-agent .
+RUN CGO_ENABLED=0 go build -trimpath -o /bin/sooraa .
 
 # ---- Runtime stage ----
 FROM scratch
 
-COPY --from=builder /bin/soraa-agent /soraa-agent
+COPY --from=builder /bin/sooraa /sooraa
 
-ENTRYPOINT ["/soraa-agent"]
+ENTRYPOINT ["/sooraa"]

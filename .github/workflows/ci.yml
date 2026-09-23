@@ -58,5 +58,5 @@ jobs:
 
       - name: Build and test Docker image
         run: |
-          docker build -t soraa-agent-ci .
-          docker run --rm soraa-agent-ci version
+          docker build -t sooraa-ci .
+          docker run --rm sooraa-ci version

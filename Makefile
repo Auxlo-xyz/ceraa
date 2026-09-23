@@ -1,5 +1,5 @@
 build:
-	go build -trimpath -o bin/soraa-agent .
+	go build -trimpath -o bin/sooraa .
 
 test:
 	go test -race ./...

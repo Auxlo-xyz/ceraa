@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"soraa-agent/harness/inbox"
-	"soraa-agent/harness/llm"
-	"soraa-agent/harness/operation"
-	"soraa-agent/harness/sessionstore"
-	"soraa-agent/harness/tool"
+	"sooraa/harness/inbox"
+	"sooraa/harness/llm"
+	"sooraa/harness/operation"
+	"sooraa/harness/sessionstore"
+	"sooraa/harness/tool"
 )
 
 func TestBuildLLMMessages(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"soraa-agent/harness/operation"
+	"sooraa/harness/operation"
 )
 
 // Tool is a capability with a schema and translator.
@@ -248,7 +248,7 @@ func DefaultRegistry() *Registry {
 	r.Register(&WebFetchTool{})
 
 	// WebSearch with config from env
-	provider := os.Getenv("SORAA_WEBSEARCH_PROVIDER")
+	provider := os.Getenv("Sooraa_WEBSEARCH_PROVIDER")
 	apiKey := os.Getenv("EXA_API_KEY")
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")

@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"soraa-agent/internal/telegram"
+	"sooraa/internal/telegram"
 )
 
 var tgCmd = &cobra.Command{
 	Use:   "telegram",
-	Short: "Start Telegram bridge (polling) + Soraa Agent harness",
+	Short: "Start Telegram bridge (polling) + Sooraa harness",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return telegram.Run()
 	},

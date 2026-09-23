@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"soraa-agent/harness/operation"
+	"sooraa/harness/operation"
 )
 
 const (
@@ -96,9 +96,9 @@ func (w *WebFetchTool) Run(spec operation.Spec) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	// Cloudflare challenge fallback: retry with soraa-agent user agent
+	// Cloudflare challenge fallback: retry with sooraa user agent
 	if resp.StatusCode == 403 && resp.Header.Get("cf-mitigated") == "challenge" {
-		req.Header.Set("User-Agent", "soraa-agent/0.1.0 (+go)")
+		req.Header.Set("User-Agent", "sooraa/0.1.0 (+go)")
 		resp, err = client.Do(req)
 		if err != nil {
 			return "", fmt.Errorf("fallback request failed: %w", err)

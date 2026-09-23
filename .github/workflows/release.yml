@@ -27,20 +27,20 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/soraa-agent-linux-amd64 .
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/soraa-agent-linux-arm64 .
-          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/soraa-agent-darwin-amd64 .
-          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/soraa-agent-darwin-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/sooraa-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/sooraa-linux-arm64 .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/sooraa-darwin-amd64 .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/sooraa-darwin-arm64 .
 
       - name: Create checksums
         run: |
           cd dist
-          sha256sum soraa-agent-* > ../SHA256SUMS
+          sha256sum sooraa-* > ../SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/soraa-agent-*-amd64
-            dist/soraa-agent-*-arm64
-            dist/soraa-agent-darwin-*
+            dist/sooraa-*-amd64
+            dist/sooraa-*-arm64
+            dist/sooraa-darwin-*
             SHA256SUMS

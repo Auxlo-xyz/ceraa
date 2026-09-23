@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"soraa-agent/internal/codexauth"
-	"soraa-agent/internal/secret"
-	"soraa-agent/internal/telegram/keyboard"
-	"soraa-agent/internal/telegram/menus"
+	"sooraa/internal/codexauth"
+	"sooraa/internal/secret"
+	"sooraa/internal/telegram/keyboard"
+	"sooraa/internal/telegram/menus"
 )
 
 type update struct {
@@ -136,8 +136,8 @@ func Run() error {
 
 	// Initialize encrypted secret store
 	home, _ := os.UserHomeDir()
-	keyFile := filepath.Join(home, ".config", "soraa-agent", "secret.key")
-	secretFile := filepath.Join(home, ".config", "soraa-agent", "secrets.json")
+	keyFile := filepath.Join(home, ".config", "sooraa", "secret.key")
+	secretFile := filepath.Join(home, ".config", "sooraa", "secrets.json")
 	if err := secret.Init(keyFile, secretFile); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
@@ -224,7 +224,7 @@ func Run() error {
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendWithKeyboard(token, u.Message.Chat.ID, "Soraa Agent ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
+				sendWithKeyboard(token, u.Message.Chat.ID, "Sooraa ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
 			case "/codex-login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexLogin(token, u.Message.Chat.ID)

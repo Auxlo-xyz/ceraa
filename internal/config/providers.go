@@ -7,7 +7,7 @@ import (
 )
 
 // ResolveProvider resolves a provider's settings with env var overrides.
-// Env format: SORAA_<KEY>_API_KEY, SORAA_<KEY>_CLI
+// Env format: SOORAA_<KEY>_API_KEY, SOORAA_<KEY>_CLI
 // Supported keys: "opencode", "hermes", "codex"
 func ResolveProvider(key string) (SubProvider, bool) {
 	switch key {
@@ -22,8 +22,8 @@ func ResolveProvider(key string) (SubProvider, bool) {
 		p = SubProvider{Kind: key}
 	}
 
-	// Env prefix: SORAA_OPENCODE_, SORAA_HERMES_, SORAA_CODEX_
-	envPrefix := "SORAA_" + upper(key) + "_"
+	// Env prefix: Sooraa_OPENCODE_, Sooraa_HERMES_, Sooraa_CODEX_
+	envPrefix := "Sooraa_" + upper(key) + "_"
 
 	if k := os.Getenv(envPrefix + "API_KEY"); k != "" {
 		p.APIKey = k

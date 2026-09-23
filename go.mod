@@ -1,4 +1,4 @@
-module soraa-agent
+module sooraa
 
 go 1.27.0
 

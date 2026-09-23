@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"soraa-agent/internal/secret"
+	"sooraa/internal/secret"
 )
 
 const (

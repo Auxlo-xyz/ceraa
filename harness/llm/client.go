@@ -29,15 +29,15 @@ func DefaultConfig() ProviderConfig {
 
 // FromEnv reads provider config from environment.
 func FromEnv() ProviderConfig {
-	api := os.Getenv("SORAA_API_URL")
+	api := os.Getenv("SOORAA_API_URL")
 	if api == "" {
 		api = "https://api.atria-asi.ai/v1"
 	}
-	key := os.Getenv("SORAA_API_KEY")
+	key := os.Getenv("SOORAA_API_KEY")
 	if key == "" {
 		key = os.Getenv("OPENAI_API_KEY")
 	}
-	model := os.Getenv("SORAA_MODEL")
+	model := os.Getenv("Sooraa_MODEL")
 	if model == "" {
 		model = "atria-dawn-preview"
 	}

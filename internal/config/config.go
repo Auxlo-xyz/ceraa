@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-// Config holds all soraa-agent settings.
+// Config holds all sooraa settings.
 type Config struct {
 	LLM           LLMProvider    `json:"llm"`
 	Subscriptions Subscriptions  `json:"subscriptions,omitempty"`
@@ -64,13 +64,13 @@ func Load() (*Config, error) {
 	}
 
 	// Env overrides
-	if v := os.Getenv("SORAA_API_URL"); v != "" {
+	if v := os.Getenv("SOORAA_API_URL"); v != "" {
 		cfg.LLM.URL = v
 	}
-	if v := os.Getenv("SORAA_MODEL"); v != "" {
+	if v := os.Getenv("Sooraa_MODEL"); v != "" {
 		cfg.LLM.Model = v
 	}
-	if v := os.Getenv("SORAA_API_KEY"); v != "" {
+	if v := os.Getenv("SOORAA_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
 
@@ -98,8 +98,8 @@ func loadFile(cfg *Config) error {
 func candidatePaths() []string {
 	home, _ := os.UserHomeDir()
 	return []string{
-		filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "soraa-agent", "config.json"),
-		filepath.Join(home, ".config", "soraa-agent", "config.json"),
-		"./soraa-agent.json",
+		filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "sooraa", "config.json"),
+		filepath.Join(home, ".config", "sooraa", "config.json"),
+		"./sooraa.json",
 	}
 }
