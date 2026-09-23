@@ -246,6 +246,7 @@ func DefaultRegistry() *Registry {
 	r.Register(&GrepTool{})
 	r.Register(&ViewImageTool{})
 	r.Register(&WebFetchTool{})
+	r.Register(&FTSSearchTool{})
 
 	// WebSearch with config from env
 	provider := os.Getenv("SOORAA_WEBSEARCH_PROVIDER")
