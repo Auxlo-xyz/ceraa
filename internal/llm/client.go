@@ -115,7 +115,7 @@ func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, 
 func Config() (api, key, model string) {
 	api = os.Getenv("SORAA_API_URL")
 	if api == "" {
-		api = "https://api.atria-asi.ai/v1"
+		api = "https://inference.poolside.ai/v1"
 	}
 	key = os.Getenv("SORAA_API_KEY")
 	if key == "" {
@@ -123,7 +123,7 @@ func Config() (api, key, model string) {
 	}
 	model = os.Getenv("SORAA_MODEL")
 	if model == "" {
-		model = "atria-dawn-preview"
+		model = "poolside/laguna-s-2.1"
 	}
 	return
 }
