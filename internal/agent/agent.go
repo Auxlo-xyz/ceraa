@@ -130,7 +130,7 @@ func RunWithConfig(user string, cfg *config.Config) error {
 
 		// Append assistant message with tool calls
 		tc := toolCalls[0]
-		sess.Messages = append(sess.Messages, sessionstore.Message{
+		assistantMessage := sessionstore.Message{
 			Role:    llm.RoleAssistant,
 			Content: content,
 			ToolCall: &sessionstore.ToolCallRef{
@@ -138,6 +138,13 @@ func RunWithConfig(user string, cfg *config.Config) error {
 				Name: tc.Name,
 				Args: tc.Arguments,
 			},
+		}
+		sess.Messages = append(sess.Messages, assistantMessage)
+		msgs = append(msgs, llm.Item{
+			Kind:   "tool_call",
+			CallID: assistantMessage.ToolCall.ID,
+			Name:   assistantMessage.ToolCall.Name,
+			Args:   assistantMessage.ToolCall.Args,
 		})
 
 		// Display start

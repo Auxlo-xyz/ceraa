@@ -190,7 +190,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 
 		// Append assistant message
 		tc := toolCalls[0]
-		sess.Messages = append(sess.Messages, sessionstore.Message{
+		assistantMessage := sessionstore.Message{
 			Role:    llm.RoleAssistant,
 			Content: content,
 			ToolCall: &sessionstore.ToolCallRef{
@@ -198,7 +198,9 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				Name: tc.Name,
 				Args: tc.Arguments,
 			},
-		})
+		}
+		sess.Messages = append(sess.Messages, assistantMessage)
+		msgs = append(msgs, toLLMItem(assistantMessage))
 		_ = store.Save(sess)
 
 		if onTool != nil {
