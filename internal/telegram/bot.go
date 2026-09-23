@@ -152,7 +152,15 @@ func Run() error {
 		}
 		for _, u := range out.Result {
 			offset = u.UpdateID + 1
+
+			// Check local inbox cache to prevent processing duplicate updates
+			if u.UpdateID > 0 && GetDefaultInbox().IsDuplicate(u.UpdateID) {
+				fmt.Printf("inbox: duplicate update_id %d skipped\n", u.UpdateID)
+				continue
+			}
+
 			if u.CallbackQuery != nil {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCallback(token, u.CallbackQuery)
 				continue
 			}
@@ -161,14 +169,17 @@ func Run() error {
 			}
 			// media handlers
 			if len(u.Message.Photo) > 0 {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "📷 Photo received: "+u.Message.Photo[0].FileID[:16]+"...")
 				continue
 			}
 			if u.Message.Document != nil {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "📄 Document: "+u.Message.Document.FileName)
 				continue
 			}
 			if u.Message.Voice != nil {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "🎤 Voice received")
 				continue
 			}
@@ -176,29 +187,39 @@ func Run() error {
 				continue
 			}
 			if allowID != 0 && u.Message.From.ID != allowID && u.Message.Chat.ID != allowID {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "Unauthorized.")
 				continue
 			}
 			txt := strings.TrimSpace(u.Message.Text)
 			switch txt {
 			case "/start":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				sendWithKeyboard(token, u.Message.Chat.ID, "Soraa Agent ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
 			case "/help":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "Commands: /new /menu /model /agent /project /session /settings")
 			case "/menu":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "📋 Hub - 18 menus", "reply_markup": menus.Hub()})
 				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
 			case "/new":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				clearSession(strconv.FormatInt(u.Message.Chat.ID, 10))
 				send(token, u.Message.Chat.ID, "🆕 New session started")
 			case "/model", "🧠 Model":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Select model", "reply_markup": menus.Inline("model", 0)})
 				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
 			case "/agent", "🤖 Agent":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Select agent", "reply_markup": menus.Inline("agent", 0)})
 				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
 			case "📊 Context":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "Context: 12k/200k 6%")
 			case "💭 Variant":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Variant", "reply_markup": menus.Inline("variant", 0)})
 				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
 			default:
@@ -206,23 +227,31 @@ func Run() error {
 					name := strings.TrimPrefix(strings.Fields(txt)[0], "/")
 					for _, m := range menus.All {
 						if m == name {
+							GetDefaultInbox().CheckAndRecord(u.UpdateID)
 							b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": m, "reply_markup": menus.Inline(m, 0)})
 							http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
 							goto next
 						}
 					}
+					GetDefaultInbox().CheckAndRecord(u.UpdateID)
 					send(token, u.Message.Chat.ID, "Unknown command. Try /menu")
 					continue
 				next:
 				} else {
-					go handlePrompt(token, u.Message.Chat.ID, txt)
+					// Deduplicate user prompt request before triggering agent execution
+					if !GetDefaultInbox().CheckAndRecord(u.UpdateID) {
+						fmt.Printf("inbox: duplicate update_id %d skipped before agent execution\n", u.UpdateID)
+						continue
+					}
+					go handlePrompt(token, u.Message.Chat.ID, txt, u.UpdateID)
 				}
 			}
 		}
 	}
 }
 
-func handlePrompt(token string, chatID int64, prompt string) {
+func handlePrompt(token string, chatID int64, prompt string, updateID int) {
+	sessionID := strconv.FormatInt(chatID, 10)
 	thinkingID := sendThinking(token, chatID, "", false)
 	toolID := 0
 	var toolLines []string
@@ -230,7 +259,7 @@ func handlePrompt(token string, chatID int64, prompt string) {
 	lastEdit := time.Now()
 	done := make(chan string, 1)
 	go func() {
-		err := runWithThinking(prompt, func(r string) {
+		err := runWithThinking(sessionID, prompt, func(r string) {
 			reasoning = r
 			if time.Since(lastEdit) > 1200*time.Millisecond {
 				editThinking(token, chatID, thinkingID, reasoning, false)
@@ -287,6 +316,6 @@ func getInitialOffset(token string) int {
 	return out.Result[len(out.Result)-1].UpdateID + 1
 }
 
-func runWithThinking(prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
-	return runAgent(prompt, onReasoning, onTool, onAnswer)
+func runWithThinking(sessionID string, prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgent(sessionID, prompt, onReasoning, onTool, onAnswer)
 }
