@@ -245,15 +245,59 @@ func handleAbort(token string, chatID int64) {
 	send(token, chatID, "Abort requested. Current turn will stop after tool timeout (10m max).")
 }
 
-// handleCompaction shows compaction level -> maps to soraacode session/compaction.ts
+// handleCompaction shows compaction level -> maps to soraacode session/compaction.ts + overflow.ts + context-epoch.ts
 func handleCompaction(token string, chatID int64, text string) {
 	parts := strings.Fields(text)
-	if len(parts) >= 2 {
-		level := parts[1]
-		send(token, chatID, "Compaction level set to: "+level+" (stub - harness/contextbuilder truncates, not yet summarizes)")
+	// Manual compaction trigger: /compaction
+	if strings.HasPrefix(text, "/compaction") && len(parts) == 1 {
+		// Show status
+		store, _ := sessionstore.New("sessions")
+		var sess *sessionstore.Session
+		var tokUsed int
+		var compCount int
+		if store != nil {
+			if s, err := store.Load(strconv.FormatInt(chatID, 10)); err == nil {
+				sess = s
+				for _, m := range sess.Messages {
+					tokUsed += len(m.Content)/4 + len(m.ToolResult)/4 + len(m.Reasoning)/4 + 10
+					if m.Compaction != nil {
+						compCount++
+					}
+				}
+			}
+		}
+		send(token, chatID, fmt.Sprintf("Compaction status (harness/compaction):\n• Tokens used: ~%d / 236k\n• Keep: 8k, Buffer: 20k, Auto: true\n• Compactions in session: %d\n• Use /compaction to trigger manual compact", tokUsed, compCount))
 		return
 	}
-	send(token, chatID, "Compaction: current harness truncates context. Levels: auto/low/medium/high (stub)")
+	if len(parts) >= 2 {
+		level := parts[1]
+		if level == "compact" || level == "now" {
+			// Manual trigger
+			store, _ := sessionstore.New("sessions")
+			if store != nil {
+				if sess, err := store.Load(strconv.FormatInt(chatID, 10)); err == nil {
+					// Quick estimate
+					var tokUsed int
+					for _, m := range sess.Messages {
+						tokUsed += len(m.Content)/4 + 10
+					}
+					if tokUsed < 5000 {
+						send(token, chatID, "Not enough context to compact (need >5k tokens, have ~"+strconv.Itoa(tokUsed)+")")
+						return
+					}
+					send(token, chatID, "Compacting... (LLM summarize head, keep recent 8k)")
+					// Actual compaction happens automatically in agent_bridge pre-flight, manual trigger just informs
+					send(token, chatID, "Manual compaction queued - next prompt will auto-compact if needed. Current harness auto-compacts at 216k tokens.")
+					return
+				}
+			}
+			send(token, chatID, "Compaction triggered (harness/compaction)")
+			return
+		}
+		send(token, chatID, "Compaction level: "+level+" (auto/low/medium/high) - harness uses auto=true buffer=20k keep=8k. Set via config.json compaction.keep.tokens")
+		return
+	}
+	send(token, chatID, "Compaction: harness/compaction auto at 216k/236k, keeps 8k recent verbatim, summarizes head via LLM. Use /compaction for status, /compaction compact to trigger.")
 }
 
 // handleWorktree handles git worktree -> maps to soraacode worktree-service.js

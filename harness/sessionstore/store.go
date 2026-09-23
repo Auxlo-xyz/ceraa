@@ -36,12 +36,19 @@ type Operation struct {
 }
 
 type Message struct {
-	Role       llm.Role     `json:"role"`
-	Content    string       `json:"content,omitempty"`
-	ToolCallID string       `json:"tool_call_id,omitempty"`
-	ToolResult string       `json:"tool_result,omitempty"`
-	ToolCall   *ToolCallRef `json:"tool_call,omitempty"`
-	Reasoning  string       `json:"reasoning,omitempty"`
+	Role        llm.Role      `json:"role"`
+	Content     string        `json:"content,omitempty"`
+	ToolCallID  string        `json:"tool_call_id,omitempty"`
+	ToolResult  string        `json:"tool_result,omitempty"`
+	ToolCall    *ToolCallRef  `json:"tool_call,omitempty"`
+	Reasoning   string        `json:"reasoning,omitempty"`
+	Compaction  *CompactionInfo `json:"compaction,omitempty"`
+}
+
+type CompactionInfo struct {
+	Summary string `json:"summary"`
+	Recent  string `json:"recent,omitempty"`
+	Seq     int    `json:"seq"`
 }
 
 type ToolCallRef struct {

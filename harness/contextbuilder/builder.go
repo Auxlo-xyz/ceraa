@@ -57,8 +57,18 @@ func (b *Builder) Build() Request {
 	// pinned additions (e.g. skills XML, references)
 	req.Messages = append(req.Messages, b.pinned...)
 
-	// conversation history
+	// conversation history - handle compaction messages as synthetic checkpoints
+	// Mirrors soraacode agent/core/src/session/runner/to-llm-message.ts
 	for _, m := range b.sess.Messages {
+		if m.Compaction != nil {
+			// Render compaction as synthetic checkpoint -> maps to soraacode to-llm-message.ts compaction case
+			req.Messages = append(req.Messages, llm.Item{
+				Kind: "text",
+				Role: llm.RoleUser,
+				Text: fmt.Sprintf("<conversation-checkpoint>\n<summary>%s</summary>\n<recent-context>%s</recent-context>\n</conversation-checkpoint>", m.Compaction.Summary, m.Compaction.Recent),
+			})
+			continue
+		}
 		role := m.Role
 		if role == "" {
 			role = llm.RoleUser

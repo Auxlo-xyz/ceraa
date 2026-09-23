@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"sooraa/harness/compaction"
 	"sooraa/harness/llm"
 	"sooraa/harness/operation"
 	"sooraa/harness/sessionstore"
@@ -89,7 +90,31 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 	var lastContent string
 	var accumulatedReasoning string
 
+	// Compaction setup -> maps to soraacode agent/core/src/session/compaction.ts compactIfNeeded + overflow.ts
+	compactor := newCompactor(cfg)
+
 	for i := 0; i < cfg.MaxSteps; i++ {
+		// Pre-flight compaction check like soraacode runner/llm.ts compactIfNeeded
+		if compactor.NeedsCompaction(sess) {
+			if onTool != nil {
+				onTool("⚡ Compacting context...")
+			}
+			if ok, err := compactor.Compact(ctx, sess); err == nil && ok {
+				_ = store.Save(sess)
+				// Rebuild msgs from compacted session
+				msgs = []llm.Item{}
+				for _, m := range sess.Messages {
+					msgs = append(msgs, toLLMItem(m))
+				}
+				if onTool != nil {
+					onTool("✓ Compaction done, recent preserved")
+				}
+			}
+		}
+		// Tool output pruning like soraacode compaction.prune (40k protected, 20k minimum)
+		if pruned := pruneIfNeeded(sess); pruned > 0 {
+			_ = store.Save(sess)
+		}
 		client := llm.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
 		streamReq := llm.StreamRequest{
 			Messages: msgs,
@@ -117,6 +142,20 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			}
 		})
 		if err != nil {
+			// Overflow recovery like soraacode processor halt -> needsCompaction -> prompt loop prune+retry
+			if compactor.IsOverflow(sess) || strings.Contains(strings.ToLower(err.Error()), "context") || strings.Contains(err.Error(), "token") {
+				if onTool != nil {
+					onTool("⚡ Context overflow, compacting...")
+				}
+				if ok, cerr := compactor.Compact(ctx, sess); cerr == nil && ok {
+					_ = store.Save(sess)
+					msgs = []llm.Item{}
+					for _, m := range sess.Messages {
+						msgs = append(msgs, toLLMItem(m))
+					}
+					continue // retry with compacted context
+				}
+			}
 			return err
 		}
 
@@ -232,6 +271,14 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 }
 
 func toLLMItem(m sessionstore.Message) llm.Item {
+	if m.Compaction != nil {
+		// Maps to soraacode agent/core/src/session/runner/to-llm-message.ts compaction case
+		return llm.Item{
+			Kind: "text",
+			Role: llm.RoleUser,
+			Text: fmt.Sprintf("<conversation-checkpoint>\n<summary>%s</summary>\n<recent-context>%s</recent-context>\n</conversation-checkpoint>", m.Compaction.Summary, m.Compaction.Recent),
+		}
+	}
 	if m.ToolCall != nil {
 		return llm.Item{
 			Kind:   "tool_call",
@@ -247,6 +294,15 @@ func toLLMItem(m sessionstore.Message) llm.Item {
 		CallID: m.ToolCallID,
 		Output: m.ToolResult,
 	}
+}
+
+func newCompactor(cfg *config.Config) *compaction.Compactor {
+	pcfg := llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model)
+	return compaction.New(pcfg)
+}
+
+func pruneIfNeeded(sess *sessionstore.Session) int {
+	return compaction.Prune(sess)
 }
 
 func clearSession(sessionID string) error {
