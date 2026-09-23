@@ -36,49 +36,51 @@ type StreamDelta struct {
 }
 
 func Chat(api, key, model string, msgs []Message, tools []map[string]any) (Message, error) {
-	// Non-stream for tool reliability: streaming splits tool args into invalid partial JSON
-	body := map[string]any{"model": model, "messages": msgs, "temperature": 0.2}
-	if len(tools) > 0 {
-		body["tools"] = tools
-		body["tool_choice"] = "auto"
-	}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("POST", api+"/chat/completions", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := http.DefaultClient.Do(req)
+	var final Message
+	var acc = map[int]*ToolCall{}
+	err := ChatStream(api, key, model, msgs, tools, func(d StreamDelta) {
+		final.Content += d.Content
+		final.Reasoning += d.Reasoning
+		for _, tc := range d.ToolCalls {
+			// find by ID or index
+			found := -1
+			for idx, existing := range acc {
+				if existing.ID == tc.ID && tc.ID != "" {
+					found = idx
+					break
+				}
+			}
+			if found == -1 {
+				// use next index
+				found = len(acc)
+				acc[found] = &ToolCall{}
+			}
+			c := acc[found]
+			if tc.ID != "" {
+				c.ID = tc.ID
+			}
+			if tc.Type != "" {
+				c.Type = tc.Type
+			}
+			if tc.Function.Name != "" {
+				c.Function.Name = tc.Function.Name
+			}
+			// ChatStream already accumulates, so take latest snapshot
+			c.Function.Arguments = tc.Function.Arguments
+			if c.Type == "" {
+				c.Type = "function"
+			}
+		}
+	})
 	if err != nil {
 		return Message{}, err
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return Message{}, fmt.Errorf("%d %s", resp.StatusCode, string(raw))
+	for i := 0; i < len(acc); i++ {
+		if c, ok := acc[i]; ok {
+			final.ToolCalls = append(final.ToolCalls, *c)
+		}
 	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content          string     `json:"content"`
-				ReasoningContent string     `json:"reasoning_content"`
-				Reasoning        string     `json:"reasoning"`
-				ToolCalls        []ToolCall `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return Message{}, err
-	}
-	if len(out.Choices) == 0 {
-		return Message{}, fmt.Errorf("no choices")
-	}
-	m := out.Choices[0].Message
-	reasoning := m.ReasoningContent
-	if reasoning == "" {
-		reasoning = m.Reasoning
-	}
-	return Message{Role: "assistant", Content: m.Content, Reasoning: reasoning, ToolCalls: m.ToolCalls}, nil
+	return final, nil
 }
 
 func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, onDelta func(StreamDelta)) error {
