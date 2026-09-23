@@ -2,6 +2,11 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,8 +79,26 @@ func TestHandleInboxStopHard(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRuns(t *testing.T) {
-	store, err := sessionstore.New("testdata")
+func TestCoordinatorDispatchesTools(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var payload map[string]any
+		if requests.Add(1) == 1 {
+			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call1", "function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`}}}}}}}
+		} else {
+			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "done"}}}}
+		}
+		encoded, _ := json.Marshal(payload)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	t.Setenv("SOORAA_API_URL", server.URL)
+	t.Setenv("SOORAA_API_KEY", "test")
+	t.Setenv("SOORAA_MODEL", "test")
+
+	store, err := sessionstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,28 +107,22 @@ func TestCoordinatorRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ib.Stop()
-
-	reg := tool.DefaultRegistry()
-	opMgr := operation.New(nil)
-
-	cfg := Config{
-		SessionID:    "test-sess",
-		SystemPrompt: "You are a test agent",
-		MaxSteps:     1,
-	}
-	cb := Callbacks{
-		OnContent: func(s string) {},
-		OnDone:    func(s string) {},
-	}
-
+	done := make(chan string, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_ = reg
-	_ = opMgr
-	_ = ib
-	_ = store
-	_ = cfg
-	_ = cb
-	_ = ctx
+	err = RunAsync(ctx, Config{SessionID: "test-sess", SystemPrompt: "test", MaxSteps: 3}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{OnDone: func(answer string) { done <- answer }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case answer := <-done:
+		if answer != "done" {
+			t.Fatalf("unexpected answer: %q", answer)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("coordinator did not finish")
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("expected two model requests, got %d", requests.Load())
+	}
 }

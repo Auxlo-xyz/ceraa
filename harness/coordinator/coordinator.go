@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"sooraa/harness/inbox"
@@ -25,6 +24,7 @@ type Config struct {
 	SystemPrompt string
 	MaxSteps     int
 	Reasoning    llm.ReasonLevel
+	StopWhenIdle bool
 }
 
 // Callbacks let the caller observe async events.
@@ -44,149 +44,146 @@ func RunAsync(ctx context.Context, cfg Config, store *sessionstore.Store, reg *t
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
 	}
-
-	// init system message
-	if len(sess.Messages) == 0 {
-		sess.Messages = append(sess.Messages, sessionstore.Message{
-			Role:    llm.RoleSystem,
-			Content: cfg.SystemPrompt,
-		})
-		_ = store.Save(sess)
+	if sessionstore.Recover(sess) {
+		if err := store.Save(sess); err != nil {
+			return fmt.Errorf("recover session: %w", err)
+		}
 	}
-
-	var (
-		mu             sync.Mutex
-		content        strings.Builder
-		toolCalls      []llm.StreamedToolCall
-		pendingToolIDs = make(map[string]bool)
-		modelCtx       context.Context
-		modelCancel    context.CancelCauseFunc
-	)
+	if len(sess.Messages) == 0 {
+		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: cfg.SystemPrompt})
+		if err := store.Save(sess); err != nil {
+			return err
+		}
+	}
 
 	client := llm.New(llm.DefaultConfig())
-
-	// Build tool definitions
 	tdefs := make([]llm.ToolDef, 0, len(reg.All()))
 	for _, t := range reg.All() {
-		tdefs = append(tdefs, llm.ToolDef{
-			Name:        t.Name(),
-			Description: t.Description(),
-			Parameters:  t.Schema(),
-		})
+		tdefs = append(tdefs, llm.ToolDef{Name: t.Name(), Description: t.Description(), Parameters: t.Schema()})
 	}
 
-	// Main event loop: select over inbox, operation results, and model stream
-	for step := 0; step < cfg.MaxSteps || cfg.MaxSteps == 0; step++ {
-		// No pending work -> request model response
-		if len(pendingToolIDs) == 0 && len(toolCalls) == 0 {
-			// Build message list from session
-			msgs := buildLLMMessages(sess.Messages)
-
-			// Start model request in a goroutine
-			modelCtx, modelCancel = context.WithCancelCause(ctx)
-			toolCalls = nil
-			content.Reset()
-
-			streamReq := llm.StreamRequest{
-				Messages: msgs,
-				Tools:    tdefs,
-				Reason:   cfg.Reasoning,
-			}
-
-			go func() {
-				err := client.Stream(modelCtx, streamReq, func(delta llm.ProviderResponse) {
-					if delta.Content != "" {
-						content.WriteString(delta.Content)
-						if cb.OnContent != nil {
-							cb.OnContent(delta.Content)
-						}
-					}
-					if delta.Reasoning != "" && cb.OnReasoning != nil {
-						cb.OnReasoning(delta.Reasoning)
-					}
-					if len(delta.ToolCalls) > 0 {
-						mu.Lock()
-						toolCalls = delta.ToolCalls
-						for _, tc := range toolCalls {
-							pendingToolIDs[tc.ID] = true
-						}
-						mu.Unlock()
-					}
-					if delta.Done {
-						// Check if we got tool calls or final content
-						mu.Lock()
-						hadTools := len(toolCalls) > 0
-						txt := content.String()
-						mu.Unlock()
-
-						if !hadTools {
-							// Final answer
-							if cb.OnDone != nil {
-								cb.OnDone(txt)
-							}
-							// Save and finish
-							sess.Messages = append(sess.Messages, sessionstore.Message{
-								Role:    llm.RoleAssistant,
-								Content: txt,
-							})
-							_ = store.Save(sess)
-						}
-					}
-				})
-				if err != nil && modelCancel != nil {
-					modelCancel(err)
-				}
-			}()
-		}
-
-		// Select on: inbox events, operation results, heartbeat, context done
+	for step := 0; cfg.MaxSteps == 0 || step < cfg.MaxSteps; step++ {
 		select {
-		case <-ctx.Done():
-			if modelCancel != nil {
-				modelCancel(ctx.Err())
-			}
-			return ctx.Err()
-
 		case sub := <-ib.Output():
-			if err := handleInboxEvent(sub, &pendingToolIDs, modelCancel, &cfg, cb); err != nil {
+			if err := handleInboxEvent(sub, nil, nil, &cfg, cb); err != nil {
 				return err
 			}
-
-		case opResult := <-opMgr.Results():
-			// Tool completed - add result to messages
-			mu.Lock()
-			delete(pendingToolIDs, opResult.OpID)
-			remaining := len(pendingToolIDs)
-			mu.Unlock()
-
-			if cb.OnToolDone != nil {
-				cb.OnToolDone(opResult)
+			if cfg.StopWhenIdle {
+				return nil
 			}
+			continue
+		default:
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-			// Append tool result to session
-			sess.Messages = append(sess.Messages, sessionstore.Message{
-				Role:       llm.RoleTool,
-				ToolCallID: opResult.OpID,
-				ToolResult: opResult.Output,
-			})
-			_ = store.Save(sess)
-
-			// If all tool calls done, request next model turn
-			if remaining == 0 && len(toolCalls) > 0 {
-				// Reset for next turn
-				mu.Lock()
-				toolCalls = nil
-				mu.Unlock()
-				// Loop will auto-request model since pendingToolIDs is now 0
+		var contentBuilder strings.Builder
+		var toolCalls []llm.StreamedToolCall
+		err := client.Stream(ctx, llm.StreamRequest{Messages: buildLLMMessages(sess.Messages), Tools: tdefs, Reason: cfg.Reasoning}, func(delta llm.ProviderResponse) {
+			if delta.Content != "" {
+				contentBuilder.WriteString(delta.Content)
+				if cb.OnContent != nil {
+					cb.OnContent(delta.Content)
+				}
 			}
+			if delta.Reasoning != "" && cb.OnReasoning != nil {
+				cb.OnReasoning(delta.Reasoning)
+			}
+			if len(delta.ToolCalls) > 0 {
+				toolCalls = llm.MergeStreamedToolCalls(toolCalls, delta.ToolCalls)
+			}
+		})
+		if err != nil {
+			if cb.OnError != nil {
+				cb.OnError(err)
+			}
+			return err
+		}
 
-		case <-time.After(ToolHeartbeatInterval):
-			if len(pendingToolIDs) > 0 && cb.OnError != nil {
-				cb.OnError(fmt.Errorf("heartbeat: %d tools still running", len(pendingToolIDs)))
+		content := contentBuilder.String()
+		toolCalls = llm.EnsureToolCallIDs(toolCalls, fmt.Sprintf("call_%d", step))
+		if len(toolCalls) == 0 {
+			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: content})
+			if err := store.Save(sess); err != nil {
+				return err
+			}
+			if cb.OnDone != nil {
+				cb.OnDone(content)
+			}
+			return nil
+		}
+
+		assistant := sessionstore.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: make([]sessionstore.ToolCallRef, 0, len(toolCalls))}
+		for _, call := range toolCalls {
+			assistant.ToolCalls = append(assistant.ToolCalls, sessionstore.ToolCallRef{ID: call.ID, Name: call.Name, Args: call.Arguments})
+		}
+		sess.Messages = append(sess.Messages, assistant)
+		if err := store.Save(sess); err != nil {
+			return err
+		}
+
+		results := make(map[string]string)
+		pending := make(map[string]struct{})
+		for _, call := range toolCalls {
+			var args map[string]any
+			if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+				results[call.ID] = "Error: invalid arguments: " + err.Error()
+				continue
+			}
+			t, ok := reg.Get(call.Name)
+			if !ok {
+				results[call.ID] = "Error: unknown tool " + call.Name
+				continue
+			}
+			spec, err := t.Translate(args)
+			if err != nil {
+				results[call.ID] = "Error: " + err.Error()
+				continue
+			}
+			if cb.OnToolStart != nil {
+				cb.OnToolStart(t, args)
+			}
+			opMgr.Add(operation.Operation{ID: call.ID, Spec: spec, Status: operation.StatusRunning})
+			pending[call.ID] = struct{}{}
+		}
+		if err := store.Save(sess); err != nil {
+			return err
+		}
+		timeout := time.NewTimer(60 * time.Second)
+		for len(pending) > 0 {
+			select {
+			case result := <-opMgr.Results():
+				delete(pending, result.OpID)
+				if result.Error != "" {
+					results[result.OpID] = "Error: " + result.Error
+				} else {
+					results[result.OpID] = result.Output
+				}
+				if cb.OnToolDone != nil {
+					cb.OnToolDone(result)
+				}
+			case <-ctx.Done():
+				opMgr.CancelAll()
+				if !timeout.Stop() {
+					<-timeout.C
+				}
+				return ctx.Err()
+			case <-timeout.C:
+				opMgr.CancelAll()
+				return fmt.Errorf("tool execution timeout")
 			}
 		}
+		if !timeout.Stop() {
+			<-timeout.C
+		}
+		for _, call := range toolCalls {
+			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleTool, ToolCallID: call.ID, ToolResult: results[call.ID]})
+		}
+		if err := store.Save(sess); err != nil {
+			return err
+		}
 	}
-
 	return nil
 }
 
@@ -237,7 +234,7 @@ func handleInboxEvent(sub inbox.Submission, pendingToolIDs *map[string]bool, mod
 			}
 			return fmt.Errorf("hard stop requested: %s", env.Reason)
 		case inbox.ModeStopWhenIdle:
-			cfg.MaxSteps = 0 // signal to stop after current turn
+			cfg.StopWhenIdle = true
 		case inbox.ModeUpdateSettings:
 			var s struct {
 				ReasoningEffort string `json:"reasoning,omitempty"`
