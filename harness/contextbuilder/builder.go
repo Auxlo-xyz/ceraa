@@ -65,7 +65,7 @@ func (b *Builder) Build() Request {
 			req.Messages = append(req.Messages, llm.Item{
 				Kind: "text",
 				Role: llm.RoleUser,
-				Text: fmt.Sprintf("<conversation-checkpoint>\n<summary>%s</summary>\n<recent-context>%s</recent-context>\n</conversation-checkpoint>", m.Compaction.Summary, m.Compaction.Recent),
+				Text: fmt.Sprintf("<conversation-checkpoint>\n<summary>%s</summary>\n</conversation-checkpoint>", m.Compaction.Summary),
 			})
 			continue
 		}

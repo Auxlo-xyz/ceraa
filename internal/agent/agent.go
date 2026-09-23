@@ -36,7 +36,7 @@ func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, 
 
 func toLLMItem(m sessionstore.Message) llm.Item {
 	if m.Compaction != nil {
-		return llm.Item{Kind: "text", Role: llm.RoleUser, Text: "<conversation-checkpoint>\n<summary>" + m.Compaction.Summary + "</summary>\n<recent-context>" + m.Compaction.Recent + "</recent-context>\n</conversation-checkpoint>"}
+		return llm.Item{Kind: "text", Role: llm.RoleUser, Text: "<conversation-checkpoint>\n<summary>" + m.Compaction.Summary + "</summary>\n</conversation-checkpoint>"}
 	}
 	if calls := m.AllToolCalls(); len(calls) > 0 {
 		if len(calls) == 1 {

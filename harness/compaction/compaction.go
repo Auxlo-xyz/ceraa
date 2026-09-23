@@ -64,6 +64,66 @@ func estimateSession(sess *sessionstore.Session) int {
 	return total
 }
 
+type messageUnit struct {
+	messages []sessionstore.Message
+	tokens   int
+}
+
+func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head []sessionstore.Message, recent []sessionstore.Message) {
+	var units []messageUnit
+	var current []sessionstore.Message
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		tokens := 0
+		for _, message := range current {
+			tokens += estimateMessage(message)
+		}
+		units = append(units, messageUnit{messages: current, tokens: tokens})
+		current = nil
+	}
+	for _, message := range messages {
+		if message.Compaction != nil || message.Role == llm.RoleSystem {
+			flush()
+			continue
+		}
+		if message.Role == llm.RoleUser && len(current) > 0 {
+			flush()
+		}
+		current = append(current, message)
+	}
+	flush()
+
+	split := len(units)
+	total := 0
+	for i := len(units) - 1; i >= 0; i-- {
+		if total+units[i].tokens > keepTokens {
+			if split == len(units) {
+				return flattenMessages(units), nil
+			}
+			break
+		}
+		total += units[i].tokens
+		split = i
+	}
+	for i := 0; i < split; i++ {
+		head = append(head, units[i].messages...)
+	}
+	for i := split; i < len(units); i++ {
+		recent = append(recent, units[i].messages...)
+	}
+	return head, recent
+}
+
+func flattenMessages(units []messageUnit) []sessionstore.Message {
+	var messages []sessionstore.Message
+	for _, unit := range units {
+		messages = append(messages, unit.messages...)
+	}
+	return messages
+}
+
 // Summary template from soraacode
 const summaryTemplate = `## Objective
 Summarize the main goal and current task.
@@ -120,6 +180,16 @@ func serializeMessage(m sessionstore.Message) string {
 	}
 }
 
+func serializeMessages(messages []sessionstore.Message) string {
+	parts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if serialized := serializeMessage(message); serialized != "" {
+			parts = append(parts, serialized)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -130,29 +200,8 @@ func truncate(s string, n int) string {
 // Select splits messages into head (to summarize) and recent (to keep verbatim)
 // Mirrors soraacode select() with keepTokens budget from the tail.
 func Select(sess *sessionstore.Session, keepTokens int) (head string, recent string) {
-	// Filter out compaction messages for selection
-	var conv []string
-	for _, m := range sess.Messages {
-		if s := serializeMessage(m); s != "" {
-			conv = append(conv, s)
-		}
-	}
-	if len(conv) == 0 {
-		return "", ""
-	}
-	total := 0
-	split := len(conv)
-	for i := len(conv) - 1; i >= 0; i-- {
-		next := total + EstimateTokens(conv[i])
-		if next > keepTokens {
-			break
-		}
-		total = next
-		split = i
-	}
-	head = strings.Join(conv[:split], "\n\n")
-	recent = strings.Join(conv[split:], "\n\n")
-	return head, recent
+	headMessages, recentMessages := selectMessageUnits(sess.Messages, keepTokens)
+	return serializeMessages(headMessages), serializeMessages(recentMessages)
 }
 
 func buildPrompt(previousSummary string, head string, recent string) string {
@@ -223,19 +272,30 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	if keepTokens == 0 {
 		keepTokens = DefaultKeepTokens
 	}
-	// Find previous compaction summary
 	var previousSummary string
-	for _, m := range sess.Messages {
-		if m.Compaction != nil && m.Compaction.Summary != "" {
-			previousSummary = m.Compaction.Summary
+	latestCompaction := -1
+	var systemMessage *sessionstore.Message
+	for i, message := range sess.Messages {
+		if message.Compaction != nil {
+			previousSummary = message.Compaction.Summary
+			latestCompaction = i
+		}
+		if systemMessage == nil && message.Compaction == nil && message.Role == llm.RoleSystem {
+			copy := message
+			systemMessage = &copy
 		}
 	}
-	head, recent := Select(sess, keepTokens)
+	candidate := sess.Messages
+	if latestCompaction >= 0 {
+		candidate = sess.Messages[latestCompaction+1:]
+	}
+	headMessages, recentMessages := selectMessageUnits(candidate, keepTokens)
+	head := serializeMessages(headMessages)
+	recent := serializeMessages(recentMessages)
 	if head == "" && previousSummary == "" {
 		return false, nil
 	}
 	prompt := buildPrompt(previousSummary, head, recent)
-	// Guard: prompt itself must fit in context - summaryOutput
 	if EstimateTokens(prompt) > MaxTotalTokens-SummaryOutputTokens {
 		return false, fmt.Errorf("prompt too large for compaction")
 	}
@@ -257,51 +317,20 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	if text == "" {
 		return false, fmt.Errorf("empty summary from LLM")
 	}
-	// Rewrite session: keep only recent messages + new compaction message
-	// Find split point: messages that contributed to recent
-	recentParts := strings.Split(recent, "\n\n")
-	// Simple: keep last N messages that fit keepTokens (re-derive)
-	var keepCount int
-	total := 0
-	for i := len(sess.Messages) - 1; i >= 0; i-- {
-		if sess.Messages[i].Compaction != nil {
-			continue
-		}
-		s := serializeMessage(sess.Messages[i])
-		if s == "" {
-			continue
-		}
-		tok := EstimateTokens(s)
-		if total+tok > keepTokens && keepCount > 0 {
-			break
-		}
-		total += tok
-		keepCount++
+	newMessages := make([]sessionstore.Message, 0, len(recentMessages)+2)
+	if systemMessage != nil {
+		newMessages = append(newMessages, *systemMessage)
 	}
-	// Build new messages: [compaction] + last keepCount
-	newMessages := make([]sessionstore.Message, 0, keepCount+1)
-	compMsg := sessionstore.Message{
+	newMessages = append(newMessages, sessionstore.Message{
 		Role:    llm.RoleSystem,
-		Content: fmt.Sprintf("<conversation-checkpoint>\n<summary>%s</summary>\n<recent-context>%s</recent-context>\n</conversation-checkpoint>", text, recent),
+		Content: "<conversation-checkpoint>",
 		Compaction: &sessionstore.CompactionInfo{
 			Summary: text,
 			Recent:  recent,
 			Seq:     len(sess.Messages),
 		},
-	}
-	// Use recentParts count to slice - fallback to keepCount
-	_ = recentParts
-	start := len(sess.Messages) - keepCount
-	if start < 0 {
-		start = 0
-	}
-	newMessages = append(newMessages, compMsg)
-	for _, m := range sess.Messages[start:] {
-		if m.Compaction != nil {
-			continue
-		}
-		newMessages = append(newMessages, m)
-	}
+	})
+	newMessages = append(newMessages, recentMessages...)
 	sess.Messages = newMessages
 	return true, nil
 }
