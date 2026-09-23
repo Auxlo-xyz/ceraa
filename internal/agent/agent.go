@@ -145,6 +145,7 @@ func RunWithConfig(user string, cfg *config.Config) error {
 			return nil
 		}
 
+		toolCalls = llm.EnsureToolCallIDs(toolCalls, fmt.Sprintf("call_%d", i))
 		assistantMessage := sessionstore.Message{
 			Role:      llm.RoleAssistant,
 			Content:   content,
@@ -160,20 +161,26 @@ func RunWithConfig(user string, cfg *config.Config) error {
 			fmt.Printf("\n» %s\n", tc.Name)
 		}
 
+		resultMap := make(map[string]string)
+		pendingToolIDs := make(map[string]struct{})
+
 		// Execute all tool calls concurrently
 		for _, tc := range toolCalls {
 			var args map[string]any
 			if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+				resultMap[tc.ID] = "Error: invalid arguments for " + tc.Name + ": " + err.Error()
 				fmt.Printf("✗ invalid args: %s\n", err)
 				continue
 			}
 			t, ok := reg.Get(tc.Name)
 			if !ok {
+				resultMap[tc.ID] = "Error: unknown tool " + tc.Name
 				fmt.Printf("✗ tool %s not found\n", tc.Name)
 				continue
 			}
 			spec, err := t.Translate(args)
 			if err != nil {
+				resultMap[tc.ID] = "Error: " + err.Error()
 				fmt.Printf("✗ translate error: %s\n", err)
 				continue
 			}
@@ -183,25 +190,27 @@ func RunWithConfig(user string, cfg *config.Config) error {
 				Status: operation.StatusRunning,
 			}
 			opMgr.Add(op)
+			pendingToolIDs[tc.ID] = struct{}{}
 		}
 
 		// Collect results
 		timeout := time.After(60 * time.Second)
-		collected := 0
-		resultMap := make(map[string]string)
-
-		for collected < len(toolCalls) {
+		for len(pendingToolIDs) > 0 {
 			select {
 			case r := <-opMgr.Results():
-				resultMap[r.OpID] = r.Output
-				collected++
+				delete(pendingToolIDs, r.OpID)
+				if r.Error != "" {
+					resultMap[r.OpID] = "Error: " + r.Error
+				} else {
+					resultMap[r.OpID] = r.Output
+				}
 				status := "✓"
 				if r.Status == operation.StatusFailed {
 					status = "✗"
 				}
-				fmt.Printf("%s %s → %d chars\n", status, r.OpID, len(r.Output))
+				fmt.Printf("%s %s → %d chars\n", status, r.OpID, len(resultMap[r.OpID]))
 			case <-timeout:
-				return fmt.Errorf("tool execution timeout after %d calls", collected)
+				return fmt.Errorf("tool execution timeout after %d calls", len(pendingToolIDs))
 			}
 		}
 

@@ -34,6 +34,13 @@ func TestItemString(t *testing.T) {
 	}
 }
 
+func TestEnsureToolCallIDs(t *testing.T) {
+	calls := EnsureToolCallIDs([]StreamedToolCall{{}, {ID: "same"}, {ID: "same"}}, "call_1")
+	if calls[0].ID != "call_1_0" || calls[1].ID != "same" || calls[2].ID != "call_1_2" {
+		t.Fatalf("unexpected IDs: %+v", calls)
+	}
+}
+
 func TestMergeStreamedToolCalls(t *testing.T) {
 	calls := MergeStreamedToolCalls(nil, []StreamedToolCall{
 		{Index: 0, ID: "a", Name: "read", Arguments: `{"path":`},

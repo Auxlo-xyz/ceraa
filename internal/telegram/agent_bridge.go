@@ -188,6 +188,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			return nil
 		}
 
+		toolCalls = llm.EnsureToolCallIDs(toolCalls, fmt.Sprintf("call_%d", i))
 		assistantMessage := sessionstore.Message{
 			Role:      llm.RoleAssistant,
 			Content:   content,
@@ -210,6 +211,9 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			}
 		}
 
+		resultMap := make(map[string]string)
+		pendingToolIDs := make(map[string]struct{})
+
 		// Execute all tool calls concurrently
 		for _, tc := range toolCalls {
 			// Permission check -> maps to soraacode permission-manager generation
@@ -222,17 +226,21 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			}
 			var args map[string]any
 			if !json.Valid([]byte(tc.Arguments)) {
+				resultMap[tc.ID] = "Error: invalid JSON arguments for " + tc.Name
 				continue
 			}
 			if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+				resultMap[tc.ID] = "Error: invalid arguments for " + tc.Name + ": " + err.Error()
 				continue
 			}
 			t, ok := reg.Get(tc.Name)
 			if !ok {
+				resultMap[tc.ID] = "Error: unknown tool " + tc.Name
 				continue
 			}
 			spec, err := t.Translate(args)
 			if err != nil {
+				resultMap[tc.ID] = "Error: " + err.Error()
 				continue
 			}
 			// Pass session context for question tool -> needed for question manager
@@ -247,6 +255,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				Status: operation.StatusRunning,
 			}
 			opMgr.Add(op)
+			pendingToolIDs[tc.ID] = struct{}{}
 			// Running tool tracker -> maps to soraacode bot/streaming/running-tool-tracker.js tick 10s max 2h
 			trk.Start(tc.ID, tc.Name, func(msg string) {
 				if onTool != nil {
@@ -262,19 +271,20 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 
 		// Collect results - timeout 3m to allow question tool 2m wait -> maps to soraacode running-tool-tracker 2h
 		timeout := time.After(180 * time.Second)
-		collected := 0
-		resultMap := make(map[string]string)
-
-		for collected < len(toolCalls) {
+		for len(pendingToolIDs) > 0 {
 			select {
 			case r := <-opMgr.Results():
-				resultMap[r.OpID] = r.Output
-				collected++
+				delete(pendingToolIDs, r.OpID)
+				if r.Error != "" {
+					resultMap[r.OpID] = "Error: " + r.Error
+				} else {
+					resultMap[r.OpID] = r.Output
+				}
 				trk.Stop(r.OpID)
 				// Publish tool end event -> maps to soraacode ToolMessageBatcher + RunningToolTracker
-				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{"op_id": r.OpID, "output": r.Output, "status": string(r.Status)}})
+				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{"op_id": r.OpID, "output": resultMap[r.OpID], "status": string(r.Status)}})
 				if onTool != nil {
-					preview := r.Output
+					preview := resultMap[r.OpID]
 					if len(preview) > 300 {
 						preview = preview[:300] + "..."
 					}

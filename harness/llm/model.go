@@ -67,6 +67,22 @@ func (i Item) String() string {
 	return ""
 }
 
+func EnsureToolCallIDs(calls []StreamedToolCall, prefix string) []StreamedToolCall {
+	used := make(map[string]struct{}, len(calls))
+	for i := range calls {
+		id := calls[i].ID
+		if id == "" {
+			id = fmt.Sprintf("%s_%d", prefix, i)
+		}
+		if _, exists := used[id]; exists {
+			id = fmt.Sprintf("%s_%d", prefix, i)
+		}
+		calls[i].ID = id
+		used[id] = struct{}{}
+	}
+	return calls
+}
+
 func MergeStreamedToolCalls(dst, incoming []StreamedToolCall) []StreamedToolCall {
 	positions := make(map[int]int, len(dst)+len(incoming))
 	for i, call := range dst {
