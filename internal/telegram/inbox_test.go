@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"

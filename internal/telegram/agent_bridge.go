@@ -1,112 +1,233 @@
 package telegram
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
-	"soraa-agent/internal/llm"
-	"soraa-agent/internal/ops"
+	"soraa-agent/harness/llm"
+	"soraa-agent/harness/operation"
+	"soraa-agent/harness/sessionstore"
+	"soraa-agent/harness/tool"
 	"soraa-agent/internal/prompt"
-	"soraa-agent/internal/store"
-	"soraa-agent/internal/tools"
 )
 
+// runAgent runs the agent loop within a Telegram session.
+// onReasoning streams thinking blocks, onTool reports tool execution progress,
+// and onAnswer sends the final response.
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store, err := sessionstore.New("sessions")
+	if err != nil {
+		return err
+	}
+
 	sess, err := store.Load(sessionID)
 	if err != nil {
 		return err
 	}
 
 	if len(sess.Messages) == 0 {
-		sess.Messages = append(sess.Messages, llm.Message{Role: "system", Content: prompt.System})
+		sess.Messages = append(sess.Messages, sessionstore.Message{
+			Role:    llm.RoleSystem,
+			Content: prompt.System,
+		})
 	}
-	sess.Messages = append(sess.Messages, llm.Message{Role: "user", Content: user})
+	sess.Messages = append(sess.Messages, sessionstore.Message{
+		Role:    llm.RoleUser,
+		Content: user,
+	})
 
-	api, key, model := llm.Config()
-	tl := tools.All()
-	tdefs := make([]map[string]any, len(tl))
-	for i, t := range tl {
-		tdefs[i] = map[string]any{"type": "function", "function": map[string]any{"name": t.Name, "description": t.Description, "parameters": t.Schema}}
+	reg := tool.DefaultRegistry()
+	opMgr := operation.New()
+
+	// Build initial messages
+	msgs := []llm.Item{}
+	for _, m := range sess.Messages {
+		msgs = append(msgs, toLLMItem(m))
 	}
+
+	tdefs := []llm.ToolDef{}
+	for _, t := range reg.All() {
+		tdefs = append(tdefs, llm.ToolDef{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Schema(),
+		})
+	}
+
+	var lastContent string
+	var accumulatedReasoning string
 
 	for i := 0; i < 10; i++ {
-		var content, reasoning string
-		var toolCalls []llm.ToolCall
-		err := llm.ChatStream(api, key, model, sess.Messages, tdefs, func(d llm.StreamDelta) {
-			content += d.Content
-			reasoning += d.Reasoning
-			if len(d.ToolCalls) > 0 {
-				toolCalls = d.ToolCalls
+		client := llm.New(llm.DefaultConfig())
+		streamReq := llm.StreamRequest{
+			Messages: msgs,
+			Tools:    tdefs,
+		}
+
+		var contentBuilder strings.Builder
+		toolCalls := []llm.StreamedToolCall{}
+
+		err := client.Stream(ctx, streamReq, func(delta llm.ProviderResponse) {
+			if delta.Content != "" {
+				contentBuilder.WriteString(delta.Content)
 			}
-			if d.Reasoning != "" {
-				onReasoning(reasoning)
+			if delta.Reasoning != "" {
+				accumulatedReasoning += delta.Reasoning
+				if onReasoning != nil {
+					onReasoning(accumulatedReasoning)
+				}
+			}
+			if len(delta.ToolCalls) > 0 {
+				toolCalls = delta.ToolCalls
+			}
+			if delta.Done {
+				// pass - results collected below
 			}
 		})
 		if err != nil {
 			return err
 		}
 
+		content := contentBuilder.String()
+		lastContent = content
+
 		if len(toolCalls) == 0 {
-			sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: content})
-			sess.Save()
-			onAnswer(content)
+			// Final answer
+			sess.Messages = append(sess.Messages, sessionstore.Message{
+				Role:    llm.RoleAssistant,
+				Content: content,
+			})
+			_ = store.Save(sess)
+			if onAnswer != nil && content != "" {
+				onAnswer(content)
+			}
 			return nil
 		}
 
-		sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: content, ToolCalls: toolCalls})
+		// Append assistant message
+		tc := toolCalls[0]
+		sess.Messages = append(sess.Messages, sessionstore.Message{
+			Role:    llm.RoleAssistant,
+			Content: content,
+			ToolCall: &sessionstore.ToolCallRef{
+				ID:   tc.ID,
+				Name: tc.Name,
+				Args: tc.Arguments,
+			},
+		})
+		_ = store.Save(sess)
+
+		if onTool != nil {
+			argPreview := tc.Arguments
+			if len(argPreview) > 200 {
+				argPreview = argPreview[:200] + "..."
+			}
+			onTool("🔧 " + tc.Name + " " + argPreview)
+		}
+
+		// Execute all tool calls concurrently
 		for _, tc := range toolCalls {
-			if !json.Valid([]byte(tc.Function.Arguments)) {
+			var args map[string]any
+			if !json.Valid([]byte(tc.Arguments)) {
 				continue
 			}
-
-			var args map[string]any
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-
-			// Create Operation
-			op := store.Operation{
-				ID:     tc.ID,
-				Tool:   tc.Function.Name,
-				Args:   args,
-				Status: "pending",
+			if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+				continue
 			}
-			sess.Operations = append(sess.Operations, op)
-			sess.Save()
-
-			if onTool != nil {
-				argPreview := tc.Function.Arguments
-				if len(argPreview) > 200 {
-					argPreview = argPreview[:200] + "..."
-				}
-				onTool("🔧 " + tc.Function.Name + " " + argPreview)
+			t, ok := reg.Get(tc.Name)
+			if !ok {
+				continue
 			}
-
-			// Run Operation via Runner
-			out, err := ops.Run(sess, op.ID)
+			spec, err := t.Translate(args)
 			if err != nil {
-				out = "error: " + err.Error()
+				continue
 			}
-			out = strings.TrimSpace(out)
-
-			if onTool != nil {
-				preview := out
-				if len(preview) > 300 {
-					preview = preview[:300] + "..."
-				}
-				onTool("✓ " + tc.Function.Name + " → " + preview)
+			op := operation.Operation{
+				ID:     tc.ID,
+				Spec:   spec,
+				Status: operation.StatusRunning,
 			}
-			if len(out) > 4000 {
-				out = out[:4000]
-			}
-			sess.Messages = append(sess.Messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Content: out})
+			opMgr.Add(op)
 		}
-		// Save progress after each tool execution block
-		sess.Save()
+
+		// Collect results
+		timeout := time.After(60 * time.Second)
+		collected := 0
+		resultMap := make(map[string]string)
+
+		for collected < len(toolCalls) {
+			select {
+			case r := <-opMgr.Results():
+				resultMap[r.OpID] = r.Output
+				collected++
+				if onTool != nil {
+					preview := r.Output
+					if len(preview) > 300 {
+						preview = preview[:300] + "..."
+					}
+					status := "✓"
+					if r.Status == operation.StatusFailed {
+						status = "✗"
+					}
+					onTool(fmt.Sprintf("%s %s → %s", status, r.OpID, preview))
+				}
+			case <-timeout:
+				return fmt.Errorf("tool execution timeout")
+			}
+		}
+
+		// Append tool results
+		for _, tc := range toolCalls {
+			out := resultMap[tc.ID]
+			if len(out) > 4000 {
+				out = out[:4000] + "...[truncated]"
+			}
+			sess.Messages = append(sess.Messages, sessionstore.Message{
+				Role:       llm.RoleTool,
+				ToolCallID: tc.ID,
+				ToolResult: out,
+			})
+			msgs = append(msgs, toLLMItem(sessionstore.Message{
+				Role:       llm.RoleTool,
+				ToolCallID: tc.ID,
+				ToolResult: out,
+			}))
+		}
+		_ = store.Save(sess)
+		_ = lastContent
 	}
 	return nil
 }
 
+func toLLMItem(m sessionstore.Message) llm.Item {
+	if m.ToolCall != nil {
+		return llm.Item{
+			Kind:   "tool_call",
+			CallID: m.ToolCall.ID,
+			Name:   m.ToolCall.Name,
+			Args:   m.ToolCall.Args,
+		}
+	}
+	return llm.Item{
+		Kind:  "text",
+		Role:  m.Role,
+		Text:  m.Content,
+		CallID: m.ToolCallID,
+		Output: m.ToolResult,
+	}
+}
+
 func clearSession(sessionID string) error {
+	store, err := sessionstore.New("sessions")
+	if err != nil {
+		return err
+	}
 	sess, err := store.Load(sessionID)
 	if err != nil {
 		return err
