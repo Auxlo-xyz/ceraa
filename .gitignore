@@ -1,3 +1,11 @@
+# Secrets — never commit
+.env
+.env.*
+*.env
+!sooraa.env.example
+*.local
+
+# Build/local artifacts
 dist/
 sessions/
 bin/
