@@ -37,6 +37,39 @@ func TestSaveIsAtomicAndReloadable(t *testing.T) {
 	}
 }
 
+func TestRecoverAddsMissingToolResults(t *testing.T) {
+	sess := &Session{Messages: []Message{
+		{
+			Role:      llm.RoleUser,
+			Content:   "run it",
+			ToolCalls: nil,
+		}, {
+			Role:      llm.RoleAssistant,
+			Content:   "calling",
+			ToolCalls: []ToolCallRef{{ID: "call_1", Name: "bash", Args: `{"command":"echo hi"}`}},
+		}, {
+			Role:       llm.RoleTool,
+			ToolCallID: "call_1",
+			ToolResult: "done",
+		}, {
+			Role:      llm.RoleAssistant,
+			ToolCalls: []ToolCallRef{{ID: "call_2", Name: "bash", Args: `{"command":"echo bye"}`}},
+		}}}
+	if !Recover(sess) {
+		t.Fatal("expected recovery changes")
+	}
+	last := sess.Messages[len(sess.Messages)-1]
+	if last.Role != llm.RoleTool || last.ToolCallID != "call_2" {
+		t.Fatalf("unexpected recovery message: %+v", last)
+	}
+	if len(sess.Messages) < 2 || sess.Messages[len(sess.Messages)-2].Role != llm.RoleAssistant {
+		t.Fatalf("recovery result was not placed after its call: %+v", sess.Messages)
+	}
+	if len(sess.Operations) != 0 {
+		t.Fatalf("unexpected operations: %+v", sess.Operations)
+	}
+}
+
 func TestUpdatePersistsClear(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {

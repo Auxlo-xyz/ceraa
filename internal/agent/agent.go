@@ -73,6 +73,11 @@ func RunWithConfig(user string, cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
 	}
+	if sessionstore.Recover(sess) {
+		if err := store.Save(sess); err != nil {
+			return fmt.Errorf("recover session: %w", err)
+		}
+	}
 	if len(sess.Messages) == 0 {
 		sess.Messages = append(sess.Messages, sessionstore.Message{
 			Role:    llm.RoleSystem,
@@ -84,6 +89,9 @@ func RunWithConfig(user string, cfg *config.Config) error {
 		Role:    llm.RoleUser,
 		Content: user,
 	})
+	if err := store.Save(sess); err != nil {
+		return fmt.Errorf("save user turn: %w", err)
+	}
 
 	reg := tool.DefaultRegistry()
 	opMgr := operation.New(&toolRunner{reg: reg})
@@ -189,8 +197,13 @@ func RunWithConfig(user string, cfg *config.Config) error {
 				Spec:   spec,
 				Status: operation.StatusRunning,
 			}
+			sess.Operations = append(sess.Operations, sessionstore.Operation{ID: tc.ID, Tool: tc.Name, Args: args, Status: sessionstore.StatusRunning})
 			opMgr.Add(op)
 			pendingToolIDs[tc.ID] = struct{}{}
+		}
+
+		if err := store.Save(sess); err != nil {
+			return fmt.Errorf("save tool operations: %w", err)
 		}
 
 		// Collect results
@@ -203,6 +216,18 @@ func RunWithConfig(user string, cfg *config.Config) error {
 					resultMap[r.OpID] = "Error: " + r.Error
 				} else {
 					resultMap[r.OpID] = r.Output
+				}
+				for i := range sess.Operations {
+					if sess.Operations[i].ID == r.OpID {
+						if r.Status == operation.StatusFailed {
+							sess.Operations[i].Status = sessionstore.StatusFailed
+						} else {
+							sess.Operations[i].Status = sessionstore.StatusCompleted
+						}
+						sess.Operations[i].Output = resultMap[r.OpID]
+						sess.Operations[i].Error = r.Error
+						break
+					}
 				}
 				status := "✓"
 				if r.Status == operation.StatusFailed {

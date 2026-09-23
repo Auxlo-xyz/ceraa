@@ -59,6 +59,11 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 	if err != nil {
 		return err
 	}
+	if sessionstore.Recover(sess) {
+		if err := store.Save(sess); err != nil {
+			return fmt.Errorf("recover session: %w", err)
+		}
+	}
 
 	if len(sess.Messages) == 0 {
 		sess.Messages = append(sess.Messages, sessionstore.Message{
@@ -70,6 +75,9 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 		Role:    llm.RoleUser,
 		Content: user,
 	})
+	if err := store.Save(sess); err != nil {
+		return fmt.Errorf("save user turn: %w", err)
+	}
 
 	reg := tool.DefaultRegistry()
 	opMgr := operation.New(&toolRunner{reg: reg})
@@ -254,6 +262,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				Spec:   spec,
 				Status: operation.StatusRunning,
 			}
+			sess.Operations = append(sess.Operations, sessionstore.Operation{ID: tc.ID, Tool: tc.Name, Args: args, Status: sessionstore.StatusRunning})
 			opMgr.Add(op)
 			pendingToolIDs[tc.ID] = struct{}{}
 			// Running tool tracker -> maps to soraacode bot/streaming/running-tool-tracker.js tick 10s max 2h
@@ -269,6 +278,10 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			}
 		}
 
+		if err := store.Save(sess); err != nil {
+			return fmt.Errorf("save tool operations: %w", err)
+		}
+
 		// Collect results - timeout 3m to allow question tool 2m wait -> maps to soraacode running-tool-tracker 2h
 		timeout := time.After(180 * time.Second)
 		for len(pendingToolIDs) > 0 {
@@ -279,6 +292,18 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 					resultMap[r.OpID] = "Error: " + r.Error
 				} else {
 					resultMap[r.OpID] = r.Output
+				}
+				for i := range sess.Operations {
+					if sess.Operations[i].ID == r.OpID {
+						if r.Status == operation.StatusFailed {
+							sess.Operations[i].Status = sessionstore.StatusFailed
+						} else {
+							sess.Operations[i].Status = sessionstore.StatusCompleted
+						}
+						sess.Operations[i].Output = resultMap[r.OpID]
+						sess.Operations[i].Error = r.Error
+						break
+					}
 				}
 				trk.Stop(r.OpID)
 				// Publish tool end event -> maps to soraacode ToolMessageBatcher + RunningToolTracker
@@ -386,9 +411,5 @@ func clearSession(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	sess, err := store.Load(sessionID)
-	if err != nil {
-		return err
-	}
-	return sess.Clear()
+	return store.Clear(sessionID)
 }

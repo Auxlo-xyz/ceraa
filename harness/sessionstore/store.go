@@ -231,6 +231,41 @@ func (s *Store) Clear(id string) error {
 	})
 }
 
+func Recover(sess *Session) bool {
+	changed := false
+	results := make(map[string]bool)
+	for _, message := range sess.Messages {
+		if message.Role == llm.RoleTool && message.ToolCallID != "" {
+			results[message.ToolCallID] = true
+		}
+	}
+	recovered := make([]Message, 0, len(sess.Messages))
+	for _, message := range sess.Messages {
+		recovered = append(recovered, message)
+		for _, call := range message.AllToolCalls() {
+			if results[call.ID] {
+				continue
+			}
+			recovered = append(recovered, Message{
+				Role:       llm.RoleTool,
+				ToolCallID: call.ID,
+				ToolResult: "Error: execution interrupted before completion",
+			})
+			results[call.ID] = true
+			changed = true
+		}
+	}
+	sess.Messages = recovered
+	for i := range sess.Operations {
+		if sess.Operations[i].Status == StatusPending || sess.Operations[i].Status == StatusRunning {
+			sess.Operations[i].Status = StatusFailed
+			sess.Operations[i].Error = "execution interrupted before completion"
+			changed = true
+		}
+	}
+	return changed
+}
+
 func (s *Store) List() ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(s.dir, "*.json"))
 	if err != nil {
