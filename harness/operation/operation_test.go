@@ -3,6 +3,9 @@ package operation
 import (
 	"testing"
 	"time"
+
+	"sooraa/harness/event"
+	"sooraa/harness/question"
 )
 
 func TestShellOperation(t *testing.T) {
@@ -77,6 +80,48 @@ func TestCancelOperationRemovesFromManager(t *testing.T) {
 	}
 	// Wait and verify no panic occurred
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestQuestionAnswer(t *testing.T) {
+	const sessionID = "test-question-session"
+	const requestID = "question-1"
+	events := event.Default.Subscribe(sessionID, 4)
+	defer event.Default.Unsubscribe(sessionID, events)
+
+	mgr := New(nil)
+	mgr.Add(Operation{
+		ID: requestID,
+		Spec: Spec{Type: "question", Args: map[string]any{
+			"question":   "Proceed?",
+			"options":    []string{"Yes", "No"},
+			"session_id": sessionID,
+		}},
+		Status: StatusPending,
+	})
+
+	select {
+	case e := <-events:
+		if e.Type != event.TypeQuestion {
+			t.Fatalf("expected question event, got %s", e.Type)
+		}
+		if !question.Default.Answer(sessionID, requestID, "Yes") {
+			t.Fatal("expected pending question answer to be accepted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("question event timeout")
+	}
+
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("expected completed, got %s: %s", r.Status, r.Error)
+		}
+		if r.Output != "Yes" {
+			t.Fatalf("expected Yes, got %q", r.Output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("question result timeout")
+	}
 }
 
 func TestUnknownOperationType(t *testing.T) {

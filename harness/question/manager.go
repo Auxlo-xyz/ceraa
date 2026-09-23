@@ -22,11 +22,22 @@ func key(sessionID, requestID string) string { return sessionID + ":" + requestI
 
 // Create creates a pending question and waits for answer, like soraacode question poll
 func (m *Manager) Create(sessionID, requestID, question string, options []string, timeout time.Duration) (string, error) {
+	return m.create(sessionID, requestID, timeout, nil)
+}
+
+func (m *Manager) CreateWithReady(sessionID, requestID string, timeout time.Duration, ready func()) (string, error) {
+	return m.create(sessionID, requestID, timeout, ready)
+}
+
+func (m *Manager) create(sessionID, requestID string, timeout time.Duration, ready func()) (string, error) {
 	ch := make(chan string, 1)
 	k := key(sessionID, requestID)
 	m.mu.Lock()
 	m.pending[k] = ch
 	m.mu.Unlock()
+	if ready != nil {
+		ready()
+	}
 	defer func() {
 		m.mu.Lock()
 		delete(m.pending, k)

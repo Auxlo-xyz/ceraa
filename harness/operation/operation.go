@@ -277,10 +277,9 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				sessionID = "default"
 			}
 			requestID := op.ID
-			// Publish question event for bridge to show buttons -> maps to soraacode question-menu.js
-			event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"question": ques, "options": opts, "request_id": requestID}})
-			// Wait for answer via question manager (2m timeout, respects context)
-			answer, err := question.Default.Create(sessionID, requestID, ques, opts, 2*time.Minute)
+			answer, err := question.Default.CreateWithReady(sessionID, requestID, 2*time.Minute, func() {
+				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"question": ques, "options": opts, "request_id": requestID}})
+			})
 			if err != nil {
 				// Check if context cancelled
 				select {
@@ -479,4 +478,3 @@ func todoStoreDir() (string, error) {
 func newTodoStore(dir string) (*todo.Store, error) {
 	return todo.New(dir)
 }
-
