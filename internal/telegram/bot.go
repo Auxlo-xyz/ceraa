@@ -10,24 +10,53 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"soraa-agent/internal/telegram/keyboard"
+	"soraa-agent/internal/telegram/menus"
 )
 
 type update struct {
-	UpdateID int `json:"update_id"`
-	Message  *struct {
+	UpdateID      int `json:"update_id"`
+	Message       *struct {
 		Chat struct{ ID int64 `json:"id"` } `json:"chat"`
 		From struct{ ID int64 `json:"id"` } `json:"from"`
 		Text string `json:"text"`
+		Photo []struct {
+			FileID string `json:"file_id"`
+		} `json:"photo"`
+		Document *struct {
+			FileID   string `json:"file_id"`
+			FileName string `json:"file_name"`
+		} `json:"document"`
+		Voice *struct {
+			FileID string `json:"file_id"`
+		} `json:"voice"`
 	} `json:"message"`
+	CallbackQuery *struct {
+		ID   string `json:"id"`
+		From struct{ ID int64 `json:"id"` } `json:"from"`
+		Data string `json:"data"`
+		Message *struct {
+			Chat struct{ ID int64 `json:"id"` } `json:"chat"`
+			MessageID int `json:"message_id"`
+		} `json:"message"`
+	} `json:"callback_query"`
 }
 
 func api(method, token string) string { return "https://api.telegram.org/bot" + token + "/" + method }
 
 func send(token string, chatID int64, text string) int {
+	return sendWithKeyboard(token, chatID, text, keyboard.Main())
+}
+func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any) int {
 	if len(text) > 4000 {
 		text = text[:4000]
 	}
-	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "parse_mode": "Markdown"})
+	payload := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "Markdown"}
+	if kb != nil {
+		payload["reply_markup"] = kb
+	}
+	b, _ := json.Marshal(payload)
 	resp, _ := http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
 	if resp == nil {
 		return 0
@@ -111,7 +140,27 @@ func Run() error {
 		_ = json.Unmarshal(raw, &out)
 		for _, u := range out.Result {
 			offset = u.UpdateID + 1
-			if u.Message == nil || u.Message.Text == "" {
+			if u.CallbackQuery != nil {
+				handleCallback(token, u.CallbackQuery)
+				continue
+			}
+			if u.Message == nil {
+				continue
+			}
+			// media handlers
+			if len(u.Message.Photo) > 0 {
+				send(token, u.Message.Chat.ID, "📷 Photo received: "+u.Message.Photo[0].FileID[:16]+"...")
+				continue
+			}
+			if u.Message.Document != nil {
+				send(token, u.Message.Chat.ID, "📄 Document: "+u.Message.Document.FileName)
+				continue
+			}
+			if u.Message.Voice != nil {
+				send(token, u.Message.Chat.ID, "🎤 Voice received")
+				continue
+			}
+			if u.Message.Text == "" {
 				continue
 			}
 			if allowID != 0 && u.Message.From.ID != allowID && u.Message.Chat.ID != allowID {
@@ -119,12 +168,44 @@ func Run() error {
 				continue
 			}
 			txt := strings.TrimSpace(u.Message.Text)
-			if txt == "/start" || txt == "/help" {
-				send(token, u.Message.Chat.ID, "Soraa Agent ready. Send a task.")
-				continue
+			switch txt {
+			case "/start":
+				sendWithKeyboard(token, u.Message.Chat.ID, "Soraa Agent ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
+			case "/help":
+				send(token, u.Message.Chat.ID, "Commands: /new /menu /model /agent /project /session /settings")
+			case "/menu":
+				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "📋 Hub - 18 menus", "reply_markup": menus.Hub()})
+				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+			case "/new":
+				send(token, u.Message.Chat.ID, "🆕 New session started")
+			case "/model", "🧠 Model":
+				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Select model", "reply_markup": menus.Inline("model", 0)})
+				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+			case "/agent", "🤖 Agent":
+				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Select agent", "reply_markup": menus.Inline("agent", 0)})
+				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+			case "📊 Context":
+				send(token, u.Message.Chat.ID, "Context: 12k/200k 6%")
+			case "💭 Variant":
+				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Variant", "reply_markup": menus.Inline("variant", 0)})
+				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+			default:
+				if strings.HasPrefix(txt, "/") {
+					name := strings.TrimPrefix(strings.Fields(txt)[0], "/")
+					for _, m := range menus.All {
+						if m == name {
+							b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": m, "reply_markup": menus.Inline(m, 0)})
+							http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+							goto next
+						}
+					}
+					send(token, u.Message.Chat.ID, "Unknown command. Try /menu")
+					continue
+				next:
+				} else {
+					go handlePrompt(token, u.Message.Chat.ID, txt)
+				}
 			}
-			chatID := u.Message.Chat.ID
-			go handlePrompt(token, chatID, txt)
 		}
 	}
 }
