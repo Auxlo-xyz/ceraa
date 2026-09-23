@@ -24,6 +24,11 @@ type ProviderConfig struct {
 }
 
 func DefaultConfig() ProviderConfig {
+	return FromEnv()
+}
+
+// FromEnv reads provider config from environment.
+func FromEnv() ProviderConfig {
 	api := os.Getenv("SORAA_API_URL")
 	if api == "" {
 		api = "https://api.atria-asi.ai/v1"
@@ -39,6 +44,17 @@ func DefaultConfig() ProviderConfig {
 	return ProviderConfig{
 		BaseURL:    api,
 		APIKey:     key,
+		Model:      model,
+		MaxRetries: 3,
+		Timeout:    120 * time.Second,
+	}
+}
+
+// FromProvider builds ProviderConfig from individual settings.
+func FromProvider(baseURL, apiKey, model string) ProviderConfig {
+	return ProviderConfig{
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
 		Model:      model,
 		MaxRetries: 3,
 		Timeout:    120 * time.Second,

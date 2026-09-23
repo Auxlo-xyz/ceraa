@@ -11,6 +11,7 @@ import (
 	"soraa-agent/harness/operation"
 	"soraa-agent/harness/sessionstore"
 	"soraa-agent/harness/tool"
+	"soraa-agent/internal/config"
 	"soraa-agent/internal/prompt"
 )
 
@@ -35,10 +36,18 @@ func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, 
 // onReasoning streams thinking blocks, onTool reports tool execution progress,
 // and onAnswer sends the final response.
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	return runAgentWithConfig(sessionID, user, cfg, onReasoning, onTool, onAnswer)
+}
+
+func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	store, err := sessionstore.New("sessions")
+	store, err := sessionstore.New(cfg.SessionFile)
 	if err != nil {
 		return err
 	}
@@ -80,8 +89,8 @@ func runAgent(sessionID string, user string, onReasoning func(string), onTool fu
 	var lastContent string
 	var accumulatedReasoning string
 
-	for i := 0; i < 10; i++ {
-		client := llm.New(llm.DefaultConfig())
+	for i := 0; i < cfg.MaxSteps; i++ {
+		client := llm.New(llm.FromProvider(cfg.Provider.URL, cfg.Provider.APIKey, cfg.Provider.Model))
 		streamReq := llm.StreamRequest{
 			Messages: msgs,
 			Tools:    tdefs,
