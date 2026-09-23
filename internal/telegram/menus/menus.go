@@ -212,6 +212,26 @@ func compactionMenu() map[string]any {
 }
 
 func catalogMenu(name string) map[string]any {
+	switch name {
+	case "skills_catalog":
+		skills := []string{"read", "write", "bash", "grep", "fts_search", "question", "webfetch", "websearch"}
+		var rows [][]map[string]string
+		for _, s := range skills {
+			rows = append(rows, []map[string]string{{"text": s, "callback_data": "catalog:skill:" + s}})
+		}
+		rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+		return map[string]any{"inline_keyboard": rows}
+	case "command_catalog":
+		cmds := []string{"/new", "/sessions", "/ls", "/status", "/compaction"}
+		var rows [][]map[string]string
+		for _, c := range cmds {
+			rows = append(rows, []map[string]string{{"text": c, "callback_data": "catalog:cmd:" + c}})
+		}
+		rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+		return map[string]any{"inline_keyboard": rows}
+	case "mcp_catalog":
+		return simpleMenu(name, "No MCP servers configured. Add to config.json mcp section.")
+	}
 	return simpleMenu(name, "Catalog "+name+" not yet wired - see harness/tool/registry.go")
 }
 

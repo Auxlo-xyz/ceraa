@@ -215,10 +215,6 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				}
 				// For now auto-allow after publish, real flow would wait for callback allowOnce/Always
 			}
-			// Question detection -> maps to soraacode question-manager poll
-			if tc.Name == "question" || strings.Contains(tc.Arguments, "\"question\"") {
-				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "args": tc.Arguments}})
-			}
 			var args map[string]any
 			if !json.Valid([]byte(tc.Arguments)) {
 				continue
@@ -234,6 +230,12 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			if err != nil {
 				continue
 			}
+			// Pass session context for question tool -> needed for question manager
+			if spec.Args == nil {
+				spec.Args = make(map[string]any)
+			}
+			spec.Args["session_id"] = sessionID
+			spec.Args["request_id"] = tc.ID
 			op := operation.Operation{
 				ID:     tc.ID,
 				Spec:   spec,
@@ -242,8 +244,8 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			opMgr.Add(op)
 		}
 
-		// Collect results
-		timeout := time.After(60 * time.Second)
+		// Collect results - timeout 3m to allow question tool 2m wait -> maps to soraacode running-tool-tracker 2h
+		timeout := time.After(180 * time.Second)
 		collected := 0
 		resultMap := make(map[string]string)
 

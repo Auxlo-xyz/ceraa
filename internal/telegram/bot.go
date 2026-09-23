@@ -412,13 +412,38 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "🔒 Permission required for `" + tool + "`\n`" + fmt.Sprint(e.Data["args"]) + "`", "parse_mode": "Markdown", "reply_markup": kb})
 					_, _ = doTelegramPost(api("sendMessage", token), b)
 				case event.TypeQuestion:
-					// Show question as poll-like inline -> maps to soraacode question-manager + question-menu.js
-					tool, _ := e.Data["tool"].(string)
-					kb := map[string]any{"inline_keyboard": [][]map[string]string{
-						{{"text": "Answer", "callback_data": "question:answer:" + tool}},
-						{{"text": "✕ Close", "callback_data": "close"}},
-					}}
-					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ Question from " + tool, "reply_markup": kb})
+					// Show question as buttons -> maps to soraacode question-manager + question-menu.js showCurrentQuestion
+					ques, _ := e.Data["question"].(string)
+					if ques == "" {
+						ques, _ = e.Data["args"].(string)
+						if ques == "" {
+							ques = "Question from " + fmt.Sprint(e.Data["tool"])
+						}
+					}
+					reqID, _ := e.Data["request_id"].(string)
+					var opts []string
+					if v, ok := e.Data["options"]; ok {
+						switch arr := v.(type) {
+						case []string:
+							opts = arr
+						case []any:
+							for _, o := range arr {
+								if s, ok := o.(string); ok {
+									opts = append(opts, s)
+								}
+							}
+						}
+					}
+					if len(opts) == 0 {
+						opts = []string{"Yes", "No"}
+					}
+					var rows [][]map[string]string
+					for _, opt := range opts {
+						rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + reqID + ":" + opt}})
+					}
+					rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+					kb := map[string]any{"inline_keyboard": rows}
+					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ " + ques, "reply_markup": kb})
 					_, _ = doTelegramPost(api("sendMessage", token), b)
 				case event.TypeCost, event.TypeTokens:
 					// Show cost/tokens separately -> maps to soraacode pinned-message-manager tokens/cost

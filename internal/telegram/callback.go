@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sooraa/harness/question"
 	"sooraa/internal/config"
 	"sooraa/internal/telegram/menus"
 	"strconv"
@@ -148,8 +149,38 @@ func handleCallback(token string, q *struct {
 		send(token, q.Message.Chat.ID, "Permission "+action+" granted (harness permission auto-allow)")
 		return
 	}
+	if strings.HasPrefix(data, "qans:") {
+		// Maps to soraacode question-manager poll answer
+		parts := strings.SplitN(data, ":", 3)
+		if len(parts) < 3 {
+			send(token, q.Message.Chat.ID, "Invalid answer")
+			return
+		}
+		requestID := parts[1]
+		answer := parts[2]
+		sessionID := fmt.Sprint(q.Message.Chat.ID)
+		if question.Default.Answer(sessionID, requestID, answer) {
+			// Remove keyboard and confirm
+			b, _ := json.Marshal(map[string]any{"chat_id": q.Message.Chat.ID, "message_id": q.Message.MessageID, "text": "✓ Answered: " + answer, "reply_markup": map[string]any{"inline_keyboard": [][]any{}}})
+			http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
+		} else {
+			send(token, q.Message.Chat.ID, "Question already answered or expired")
+		}
+		return
+	}
 	if strings.HasPrefix(data, "question:") {
 		send(token, q.Message.Chat.ID, "Question answered (soraacode question-manager)")
+		return
+	}
+	if strings.HasPrefix(data, "catalog:") {
+		parts := strings.SplitN(data, ":", 3)
+		if len(parts) >= 3 {
+			kind := parts[1]
+			name := parts[2]
+			send(token, q.Message.Chat.ID, fmt.Sprintf("Catalog %s: %s - use via LLM tool %s_catalog", kind, name, kind))
+			return
+		}
+		send(token, q.Message.Chat.ID, "Catalog: "+data)
 		return
 	}
 	if strings.HasPrefix(data, "context:") {

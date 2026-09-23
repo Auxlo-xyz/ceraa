@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"sooraa/harness/event"
 	"sooraa/harness/primitives"
+	"sooraa/harness/question"
 	"sooraa/harness/redact"
 	"sooraa/harness/search"
 )
@@ -220,6 +222,65 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 		case "view_image":
 			result.Output = "image-view: (stub) - view via Telegram"
 			result.Status = StatusCompleted
+		case "question":
+			// Maps to soraacode tool/question.ts + question-manager poll with buttons
+			ques, _ := op.Spec.Args["question"].(string)
+			var opts []string
+			if v, ok := op.Spec.Args["options"]; ok {
+				switch arr := v.(type) {
+				case []string:
+					opts = arr
+				case []any:
+					for _, o := range arr {
+						if s, ok := o.(string); ok {
+							opts = append(opts, s)
+						}
+					}
+				}
+			}
+			if len(opts) == 0 {
+				opts = []string{"Yes", "No"}
+			}
+			sessionID, _ := op.Spec.Args["session_id"].(string)
+			if sessionID == "" {
+				sessionID = "default"
+			}
+			requestID := op.ID
+			// Publish question event for bridge to show buttons -> maps to soraacode question-menu.js
+			event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"question": ques, "options": opts, "request_id": requestID}})
+			// Wait for answer via question manager (2m timeout, respects context)
+			answer, err := question.Default.Create(sessionID, requestID, ques, opts, 2*time.Minute)
+			if err != nil {
+				// Check if context cancelled
+				select {
+				case <-ctx.Done():
+					result.Error = "question cancelled"
+				default:
+					result.Error = err.Error()
+				}
+				result.Status = StatusFailed
+			} else {
+				result.Output = answer
+				result.Status = StatusCompleted
+			}
+		case "skills_catalog", "command_catalog", "mcp_catalog":
+			var out string
+			var err error
+			switch op.Spec.Type {
+			case "skills_catalog":
+				out, err = runCatalog("skills", op.Spec.Args)
+			case "command_catalog":
+				out, err = runCatalog("commands", op.Spec.Args)
+			case "mcp_catalog":
+				out, err = runCatalog("mcp", op.Spec.Args)
+			}
+			result.Output = out
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+			} else {
+				result.Status = StatusCompleted
+			}
 		case "webfetch", "websearch":
 			if m.runner != nil {
 				// Default timeout: 30s for webfetch, 25s for websearch
@@ -314,5 +375,65 @@ func runFTSSearch(ctx context.Context, dbPath, query string, limit int, args map
 
 func runFTSSearchInternal(ctx context.Context, dbPath, query string, limit int, args map[string]any) (string, error) {
 	return runFTSSearch(ctx, dbPath, query, limit, args)
+}
+
+func runCatalog(kind string, args map[string]any) (string, error) {
+	query, _ := args["query"].(string)
+	lowerQ := strings.ToLower(query)
+	switch kind {
+	case "skills":
+		skills := []struct{ Name, Desc string }{
+			{"read", "Read file contents or list directory"},
+			{"write", "Create or overwrite file"},
+			{"bash", "Execute shell command"},
+			{"grep", "Search via ripgrep"},
+			{"glob", "File pattern match"},
+			{"fts_search", "Indexed full-text search via FTS5"},
+			{"question", "Ask user with buttons"},
+			{"webfetch", "Fetch URL content"},
+			{"websearch", "Search web via Exa"},
+			{"view_image", "View image file"},
+		}
+		var out strings.Builder
+		for _, s := range skills {
+			if lowerQ != "" && !strings.Contains(strings.ToLower(s.Name), lowerQ) && !strings.Contains(strings.ToLower(s.Desc), lowerQ) {
+				continue
+			}
+			fmt.Fprintf(&out, "• %s: %s\n", s.Name, s.Desc)
+		}
+		if out.Len() == 0 {
+			return "No skills match: " + query, nil
+		}
+		return out.String(), nil
+	case "commands":
+		cmds := []struct{ Name, Desc string }{
+			{"/new", "New session"},
+			{"/sessions", "List sessions"},
+			{"/open", "Open session"},
+			{"/messages", "Show recent messages"},
+			{"/ls", "List files"},
+			{"/status", "Show harness status"},
+			{"/settings", "Show config"},
+			{"/model", "Select model"},
+			{"/agent", "Select agent"},
+			{"/project", "Project menu"},
+			{"/worktree", "Git worktree"},
+			{"/compaction", "Compaction status"},
+			{"/help", "Full help"},
+			{"/abort", "Abort turn"},
+			{"/setsecret", "Store secret"},
+		}
+		var out strings.Builder
+		for _, c := range cmds {
+			if lowerQ != "" && !strings.Contains(strings.ToLower(c.Name), lowerQ) {
+				continue
+			}
+			fmt.Fprintf(&out, "• %s: %s\n", c.Name, c.Desc)
+		}
+		return out.String(), nil
+	case "mcp":
+		return "No MCP servers configured. Add to config.json mcp section. (soraacode has mcp-websearch, etc.)", nil
+	}
+	return "", fmt.Errorf("unknown catalog: %s", kind)
 }
 
