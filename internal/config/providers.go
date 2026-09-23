@@ -22,8 +22,8 @@ func ResolveProvider(key string) (SubProvider, bool) {
 		p = SubProvider{Kind: key}
 	}
 
-	// Env prefix: Sooraa_OPENCODE_, Sooraa_HERMES_, Sooraa_CODEX_
-	envPrefix := "Sooraa_" + upper(key) + "_"
+	// Env prefix: SOORAA_OPENCODE_, SOORAA_HERMES_, SOORAA_CODEX_
+	envPrefix := "SOORAA_" + upper(key) + "_"
 
 	if k := os.Getenv(envPrefix + "API_KEY"); k != "" {
 		p.APIKey = k

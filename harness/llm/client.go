@@ -37,7 +37,7 @@ func FromEnv() ProviderConfig {
 	if key == "" {
 		key = os.Getenv("OPENAI_API_KEY")
 	}
-	model := os.Getenv("Sooraa_MODEL")
+	model := os.Getenv("SOORAA_MODEL")
 	if model == "" {
 		model = "atria-dawn-preview"
 	}

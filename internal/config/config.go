@@ -67,7 +67,7 @@ func Load() (*Config, error) {
 	if v := os.Getenv("SOORAA_API_URL"); v != "" {
 		cfg.LLM.URL = v
 	}
-	if v := os.Getenv("Sooraa_MODEL"); v != "" {
+	if v := os.Getenv("SOORAA_MODEL"); v != "" {
 		cfg.LLM.Model = v
 	}
 	if v := os.Getenv("SOORAA_API_KEY"); v != "" {
