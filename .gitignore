@@ -10,3 +10,4 @@ dist/
 sessions/
 bin/
 .lock
+testdata_fuzz/
