@@ -124,6 +124,25 @@ func TestQuestionAnswer(t *testing.T) {
 	}
 }
 
+func TestCancelStopsShellOperation(t *testing.T) {
+	mgr := New(nil)
+	mgr.Add(Operation{
+		ID:     "test-cancel-shell",
+		Spec:   Spec{Type: "shell", Args: map[string]any{"command": "sleep 5"}},
+		Status: StatusPending,
+	})
+	time.Sleep(100 * time.Millisecond)
+	mgr.Cancel("test-cancel-shell")
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCanceled && r.Status != StatusFailed {
+			t.Fatalf("expected canceled or failed, got %s", r.Status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell operation did not stop after cancellation")
+	}
+}
+
 func TestUnknownOperationType(t *testing.T) {
 	mgr := New(nil)
 	mgr.Add(Operation{

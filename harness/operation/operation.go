@@ -87,6 +87,15 @@ func (m *LocalManager) Results() <-chan ResultEvent {
 	return m.results
 }
 
+func (m *LocalManager) CancelAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, cancel := range m.cancels {
+		cancel(context.Canceled)
+		delete(m.cancels, id)
+	}
+}
+
 func (m *LocalManager) Cancel(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -134,7 +143,7 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 					to = time.Duration(ts) * time.Second
 				}
 			}
-			r, err := primitives.RunShell(cmd, "", to)
+			r, err := primitives.RunShellContext(ctx, cmd, "", to)
 			result.Output = r.Content
 			if err != nil {
 				result.Error = err.Error()
@@ -277,7 +286,7 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				sessionID = "default"
 			}
 			requestID := op.ID
-			answer, err := question.Default.CreateWithReady(sessionID, requestID, 2*time.Minute, func() {
+			answer, err := question.Default.CreateWithContext(ctx, sessionID, requestID, ques, opts, 2*time.Minute, func() {
 				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"question": ques, "options": opts, "request_id": requestID}})
 			})
 			if err != nil {

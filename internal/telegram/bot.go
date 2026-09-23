@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -444,65 +445,65 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						reqID, _ := e.Data["request_id"].(string)
 						var opts []string
 						if v, ok := e.Data["options"]; ok {
-						switch arr := v.(type) {
-						case []string:
-							opts = arr
-						case []any:
-							for _, o := range arr {
-								if s, ok := o.(string); ok {
-									opts = append(opts, s)
+							switch arr := v.(type) {
+							case []string:
+								opts = arr
+							case []any:
+								for _, o := range arr {
+									if s, ok := o.(string); ok {
+										opts = append(opts, s)
+									}
 								}
 							}
 						}
-					}
-					if len(opts) == 0 {
-						opts = []string{"Yes", "No"}
-					}
-					var rows [][]map[string]string
-					for _, opt := range opts {
-						rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + reqID + ":" + opt}})
-					}
-					rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
-					kb := map[string]any{"inline_keyboard": rows}
-					b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ " + ques, "reply_markup": kb})
-					_, _ = doTelegramPost(api("sendMessage", token), b)
-				case event.TypeCost, event.TypeTokens:
-					// Show cost/tokens separately -> maps to soraacode pinned-message-manager tokens/cost
-					cost, _ := e.Data["cost"].(string)
-					tok, _ := e.Data["tokens"]
-					if cost != "" {
-						send(token, chatID, fmt.Sprintf("💰 Cost: %s Tokens: %v", cost, tok))
-					} else if tok != nil {
-						send(token, chatID, fmt.Sprintf("📊 Tokens: %v", tok))
-					}
-					// Pinned update -> maps to soraacode pinned-message-manager
-					// For now also update pinned via separate message (real pinned would edit pinned message)
-				case event.TypeCompact:
-					send(token, chatID, "🗜️ Compacted context")
-				case event.TypeCompactProgress:
-					if prog, ok := e.Data["progress"].(string); ok {
-						send(token, chatID, "🗜️ Compact "+prog)
-					}
-				case event.TypeSubagent:
-					if tool, ok := e.Data["tool"].(string); ok {
-						send(token, chatID, "🤖 Subagent: "+tool+" running")
-					}
-				case event.TypeToolStart:
-					if tool, ok := e.Data["tool"].(string); ok {
-						if elapsed, ok := e.Data["elapsed"].(string); ok {
-							send(token, chatID, elapsed)
-						} else {
-							send(token, chatID, "🔧 Tool start: "+tool)
+						if len(opts) == 0 {
+							opts = []string{"Yes", "No"}
+						}
+						var rows [][]map[string]string
+						for _, opt := range opts {
+							rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + reqID + ":" + opt}})
+						}
+						rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+						kb := map[string]any{"inline_keyboard": rows}
+						b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ " + ques, "reply_markup": kb})
+						_, _ = doTelegramPost(api("sendMessage", token), b)
+					case event.TypeCost, event.TypeTokens:
+						// Show cost/tokens separately -> maps to soraacode pinned-message-manager tokens/cost
+						cost, _ := e.Data["cost"].(string)
+						tok, _ := e.Data["tokens"]
+						if cost != "" {
+							send(token, chatID, fmt.Sprintf("💰 Cost: %s Tokens: %v", cost, tok))
+						} else if tok != nil {
+							send(token, chatID, fmt.Sprintf("📊 Tokens: %v", tok))
+						}
+						// Pinned update -> maps to soraacode pinned-message-manager
+						// For now also update pinned via separate message (real pinned would edit pinned message)
+					case event.TypeCompact:
+						send(token, chatID, "🗜️ Compacted context")
+					case event.TypeCompactProgress:
+						if prog, ok := e.Data["progress"].(string); ok {
+							send(token, chatID, "🗜️ Compact "+prog)
+						}
+					case event.TypeSubagent:
+						if tool, ok := e.Data["tool"].(string); ok {
+							send(token, chatID, "🤖 Subagent: "+tool+" running")
+						}
+					case event.TypeToolStart:
+						if tool, ok := e.Data["tool"].(string); ok {
+							if elapsed, ok := e.Data["elapsed"].(string); ok {
+								send(token, chatID, elapsed)
+							} else {
+								send(token, chatID, "🔧 Tool start: "+tool)
+							}
+						}
+					case event.TypeToolEnd:
+						if out, ok := e.Data["output"].(string); ok {
+							if len(out) > 200 {
+								out = out[:200] + "..."
+							}
+							send(token, chatID, "✓ Tool done: "+out)
 						}
 					}
-				case event.TypeToolEnd:
-					if out, ok := e.Data["output"].(string); ok {
-						if len(out) > 200 {
-							out = out[:200] + "..."
-						}
-						send(token, chatID, "✓ Tool done: "+out)
-					}
-				}
 				case <-idleTimer.C:
 					consecutiveTimeouts++
 					if consecutiveTimeouts >= 5 {
@@ -541,8 +542,9 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 		}
 	}()
 	doneCh := make(chan string, 1)
+	runCtx, cancelRun := context.WithCancel(context.Background())
 	go func() {
-		err := runWithThinking(sessionID, prompt, func(r string) {
+		err := runWithThinkingContext(runCtx, sessionID, prompt, func(r string) {
 			reasoning = r
 			if time.Since(lastEdit) > 1200*time.Millisecond {
 				editThinking(token, chatID, thinkingID, reasoning, false)
@@ -565,6 +567,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	}()
 	select {
 	case ans := <-doneCh:
+		cancelRun()
 		close(eventDone)
 		editThinking(token, chatID, thinkingID, reasoning, true)
 		if ans != "" {
@@ -572,8 +575,10 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 			send(token, chatID, ans)
 		}
 	case <-time.After(10 * time.Minute):
+		cancelRun()
+		<-doneCh
 		close(eventDone)
-		send(token, chatID, "Timeout.")
+		send(token, chatID, "Cancelled after timeout.")
 	}
 	// Drain prompt queue -> soraacode prompt-queue-manager dispatchNextQueuedPrompt
 	promptQueue.mu.Lock()
@@ -636,7 +641,7 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var out struct {
-		Ok     bool   `json:"ok"`
+		Ok     bool `json:"ok"`
 		Result struct {
 			FilePath string `json:"file_path"`
 		} `json:"result"`
@@ -666,6 +671,10 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 
 func runWithThinking(sessionID string, prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
 	return runAgent(sessionID, prompt, onReasoning, onTool, onAnswer)
+}
+
+func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgentContext(ctx, sessionID, prompt, onReasoning, onTool, onAnswer)
 }
 
 func handleSetSecret(token string, chatID int64, text string) {

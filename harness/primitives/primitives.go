@@ -16,7 +16,11 @@ type PrimitiveResult struct {
 
 // RunShell executes a bash command with bounded output.
 func RunShell(command string, workDir string, timeout time.Duration) (PrimitiveResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return RunShellContext(context.Background(), command, workDir, timeout)
+}
+
+func RunShellContext(parent context.Context, command string, workDir string, timeout time.Duration) (PrimitiveResult, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if workDir != "" {

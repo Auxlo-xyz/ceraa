@@ -40,15 +40,23 @@ func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, 
 // onReasoning streams thinking blocks, onTool reports tool execution progress,
 // and onAnswer sends the final response.
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgentContext(context.Background(), sessionID, user, onReasoning, onTool, onAnswer)
+}
+
+func runAgentContext(parent context.Context, sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	return runAgentWithConfig(sessionID, user, cfg, onReasoning, onTool, onAnswer)
+	return runAgentWithConfigContext(parent, sessionID, user, cfg, onReasoning, onTool, onAnswer)
 }
 
 func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	return runAgentWithConfigContext(context.Background(), sessionID, user, cfg, onReasoning, onTool, onAnswer)
+}
+
+func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	store, err := sessionstore.New(cfg.SessionFile)
@@ -82,6 +90,15 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 
 	reg := tool.DefaultRegistry()
 	opMgr := operation.New(&toolRunner{reg: reg})
+	runDone := make(chan struct{})
+	defer close(runDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			opMgr.CancelAll()
+		case <-runDone:
+		}
+	}()
 
 	// Build initial messages
 	msgs := []llm.Item{}

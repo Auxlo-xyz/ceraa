@@ -1,6 +1,7 @@
 package question
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -22,14 +23,18 @@ func key(sessionID, requestID string) string { return sessionID + ":" + requestI
 
 // Create creates a pending question and waits for answer, like soraacode question poll
 func (m *Manager) Create(sessionID, requestID, question string, options []string, timeout time.Duration) (string, error) {
-	return m.create(sessionID, requestID, timeout, nil)
+	return m.CreateWithContext(context.Background(), sessionID, requestID, question, options, timeout, nil)
 }
 
 func (m *Manager) CreateWithReady(sessionID, requestID string, timeout time.Duration, ready func()) (string, error) {
-	return m.create(sessionID, requestID, timeout, ready)
+	return m.CreateWithContext(context.Background(), sessionID, requestID, "", nil, timeout, ready)
 }
 
-func (m *Manager) create(sessionID, requestID string, timeout time.Duration, ready func()) (string, error) {
+func (m *Manager) CreateWithContext(parent context.Context, sessionID, requestID, question string, options []string, timeout time.Duration, ready func()) (string, error) {
+	return m.create(parent, sessionID, requestID, timeout, ready)
+}
+
+func (m *Manager) create(parent context.Context, sessionID, requestID string, timeout time.Duration, ready func()) (string, error) {
 	ch := make(chan string, 1)
 	k := key(sessionID, requestID)
 	m.mu.Lock()
@@ -49,6 +54,8 @@ func (m *Manager) create(sessionID, requestID string, timeout time.Duration, rea
 	select {
 	case ans := <-ch:
 		return ans, nil
+	case <-parent.Done():
+		return "", parent.Err()
 	case <-time.After(timeout):
 		return "", fmt.Errorf("question timeout after %s", timeout)
 	}
