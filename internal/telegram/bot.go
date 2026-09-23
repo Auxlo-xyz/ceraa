@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"soraa-agent/internal/codexauth"
 	"soraa-agent/internal/secret"
 	"soraa-agent/internal/telegram/keyboard"
 	"soraa-agent/internal/telegram/menus"
@@ -224,9 +225,15 @@ func Run() error {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				sendWithKeyboard(token, u.Message.Chat.ID, "Soraa Agent ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
+			case "/codex-login":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleCodexLogin(token, u.Message.Chat.ID)
+			case "/codex-status":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleCodexStatus(token, u.Message.Chat.ID)
 			case "/help":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				send(token, u.Message.Chat.ID, "Commands: /new /menu /model /agent /project /session /settings /setsecret <name> <value> /secrets /delsecret <name>")
+				send(token, u.Message.Chat.ID, "Commands: /new /menu /model /agent /project /session /settings /setsecret /secrets /delsecret /codex-login /codex-status")
 			case "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "📋 Hub - 18 menus", "reply_markup": menus.Hub()})
@@ -415,4 +422,42 @@ func handleSecretCommands(token string, updateID int, chatID int64, txt string) 
 		return true
 	}
 	return false
+}
+
+var authMgr = codexauth.NewManager()
+
+func handleCodexLogin(token string, chatID int64) {
+	state, err := authMgr.Start()
+	if err != nil {
+		send(token, chatID, "Failed to start Codex login: "+err.Error())
+		return
+	}
+	// Send inline keyboard message
+	kb, _ := state.InlineKeyboardJSON()
+	encoded, _ := json.Marshal(map[string]any{
+		"chat_id":      chatID,
+		"text":         state.ResultMessage(),
+		"reply_markup": json.RawMessage(kb),
+	})
+	http.Post(api("sendMessage", token), "application/json", bytes.NewReader(encoded))
+}
+
+func handleCodexStatus(token string, chatID int64) {
+	// Check if already authenticated
+	if val, err := secret.Get("codex_authenticated"); err == nil && val == "true" {
+		send(token, chatID, "✅ Codex is authenticated. Use /codex-login to re-authenticate.")
+		return
+	}
+	// Check in-flight auth flows
+	for _, flow := range authMgr.ListFlows() {
+		if flow.Status == "succeeded" {
+			send(token, chatID, "✅ Codex login completed! You can now use Codex.")
+			return
+		}
+		if flow.Status == "waiting" || flow.Status == "checking" {
+			send(token, chatID, "🔄 Login in progress. User code: "+flow.UserCode)
+			return
+		}
+	}
+	send(token, chatID, "❌ Not authenticated. Use /codex-login to start.")
 }

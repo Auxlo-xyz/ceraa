@@ -39,4 +39,30 @@ func handleCallback(token string, q *struct {
 		return
 	}
 	// pagination or selection - no placeholder handling
+	if strings.HasPrefix(data, "codex:check:") {
+		flowID := strings.TrimPrefix(data, "codex:check:")
+		state, err := authMgr.Check(flowID)
+		if err != nil {
+			send(token, q.Message.Chat.ID, "Login check failed: "+err.Error())
+			return
+		}
+		b, _ := json.Marshal(map[string]any{
+			"chat_id": q.Message.Chat.ID,
+			"text":    state.ResultMessage(),
+			"reply_markup": json.RawMessage(`{"inline_keyboard":[]}`),
+		})
+		http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
+		return
+	}
+	if strings.HasPrefix(data, "codex:cancel:") {
+		flowID := strings.TrimPrefix(data, "codex:cancel:")
+		authMgr.Cancel(flowID)
+		b, _ := json.Marshal(map[string]any{
+			"chat_id": q.Message.Chat.ID,
+			"text":    "Login cancelled.",
+			"reply_markup": json.RawMessage(`{"inline_keyboard":[]}`),
+		})
+		http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
+		return
+	}
 }
