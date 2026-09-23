@@ -9,16 +9,32 @@ import (
 
 // Config holds all soraa-agent settings.
 type Config struct {
-	Provider    ProviderConfig `json:"provider"`
-	Telegram    TelegramConfig `json:"telegram,omitempty"`
-	MaxSteps    int            `json:"max_steps,omitempty"`
-	SessionFile string         `json:"session_file,omitempty"`
+	LLM          LLMProvider  `json:"llm"`
+	Subscriptions Subscriptions `json:"subscriptions,omitempty"`
+	Telegram     TelegramConfig `json:"telegram,omitempty"`
+	MaxSteps     int            `json:"max_steps,omitempty"`
+	SessionFile  string         `json:"session_file,omitempty"`
 }
 
-type ProviderConfig struct {
+// LLMProvider holds LLM API settings.
+type LLMProvider struct {
 	URL    string `json:"url"`
 	Model  string `json:"model"`
 	APIKey string `json:"api_key,omitempty"`
+}
+
+// Subscriptions holds provider subscription settings.
+type Subscriptions struct {
+	Providers map[string]SubProvider `json:"providers"`
+}
+
+// SubProvider holds subscription-specific settings.
+type SubProvider struct {
+	Kind    string            `json:"kind"`
+	APIKey  string            `json:"api_key,omitempty"`
+	CLIPath string            `json:"cli_path,omitempty"`
+	AuthDir string            `json:"auth_dir,omitempty"`
+	Extra   map[string]string `json:"extra,omitempty"`
 }
 
 type TelegramConfig struct {
@@ -29,7 +45,7 @@ type TelegramConfig struct {
 // DefaultConfig returns the base defaults before env/file overrides.
 func DefaultConfig() *Config {
 	return &Config{
-		Provider: ProviderConfig{
+		LLM: LLMProvider{
 			URL:   "https://api.atria-asi.ai/v1",
 			Model: "atria-dawn-preview",
 		},
@@ -49,21 +65,13 @@ func Load() (*Config, error) {
 
 	// Env overrides
 	if v := os.Getenv("SORAA_API_URL"); v != "" {
-		cfg.Provider.URL = v
+		cfg.LLM.URL = v
 	}
 	if v := os.Getenv("SORAA_MODEL"); v != "" {
-		cfg.Provider.Model = v
+		cfg.LLM.Model = v
 	}
 	if v := os.Getenv("SORAA_API_KEY"); v != "" {
-		cfg.Provider.APIKey = v
-	}
-	if v := os.Getenv("TELEGRAM_BOT_TOKEN"); v != "" {
-		cfg.Telegram.BotToken = v
-	}
-	if v := os.Getenv("TELEGRAM_ALLOWED_USER_ID"); v != "" {
-		var id int64
-		fmt.Sscanf(v, "%d", &id)
-		cfg.Telegram.AllowedUserID = id
+		cfg.LLM.APIKey = v
 	}
 
 	return cfg, nil

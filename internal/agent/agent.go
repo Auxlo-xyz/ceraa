@@ -94,7 +94,7 @@ func RunWithConfig(user string, cfg *config.Config) error {
 	defer ib.Stop()
 
 	for i := 0; i < cfg.MaxSteps; i++ {
-		client := llm.New(llm.FromProvider(cfg.Provider.URL, cfg.Provider.APIKey, cfg.Provider.Model))
+		client := llm.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
 		streamReq := llm.StreamRequest{
 			Messages: msgs,
 			Tools:    tdefs,

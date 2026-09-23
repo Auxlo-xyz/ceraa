@@ -32,9 +32,9 @@ var configCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Provider URL: %s\n", cfg.Provider.URL)
-		fmt.Printf("Model:        %s\n", cfg.Provider.Model)
-		fmt.Printf("API Key:      %s\n", maskKey(cfg.Provider.APIKey))
+		fmt.Printf("Provider URL: %s\n", cfg.LLM.URL)
+		fmt.Printf("Model:        %s\n", cfg.LLM.Model)
+		fmt.Printf("API Key:      %s\n", maskKey(cfg.LLM.APIKey))
 		fmt.Printf("Telegram:     %s\n", maskToken(cfg.Telegram.BotToken))
 		fmt.Printf("User ID:      %d\n", cfg.Telegram.AllowedUserID)
 		fmt.Printf("Max Steps:    %d\n", cfg.MaxSteps)
@@ -48,10 +48,17 @@ var configInitCmd = &cobra.Command{
 	Short: "Write a sample config file to ~/.config/soraa-agent/config.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sample := `{
-  "provider": {
+  "llm": {
     "url": "https://api.atria-asi.ai/v1",
     "model": "atria-dawn-preview",
     "api_key": "atr_..."
+  },
+  "subscriptions": {
+    "providers": {
+      "opencode": { "kind": "opencode" },
+      "hermes": { "kind": "hermes" },
+      "codex": { "kind": "codex" }
+    }
   },
   "telegram": {
     "bot_token": "123:ABC...",
