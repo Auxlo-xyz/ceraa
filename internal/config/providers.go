@@ -8,10 +8,10 @@ import (
 
 // ResolveProvider resolves a provider's settings with env var overrides.
 // Env format: SOORAA_<KEY>_API_KEY, SOORAA_<KEY>_CLI
-// Supported keys: "opencode", "hermes", "codex"
+// Supported keys: "opencode", "hermes", "codex", "poolside"
 func ResolveProvider(key string) (SubProvider, bool) {
 	switch key {
-	case "opencode", "hermes", "codex":
+	case "opencode", "hermes", "codex", "poolside":
 	default:
 		return SubProvider{}, false
 	}
@@ -80,6 +80,11 @@ func findCLI(kind string) string {
 			"codex",
 			filepath.Join(home, ".local", "bin", "codex"),
 		}
+	case "poolside":
+		candidates = []string{
+			"poolside",
+			filepath.Join(home, ".local", "bin", "poolside"),
+		}
 	}
 
 	for _, c := range candidates {
@@ -102,6 +107,8 @@ func defaultAuthDir(kind string) string {
 		return filepath.Join(home, ".hermes")
 	case "codex":
 		return filepath.Join(home, ".codex")
+	case "poolside":
+		return filepath.Join(home, ".config", "poolside")
 	default:
 		return ""
 	}

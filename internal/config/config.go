@@ -46,8 +46,8 @@ type TelegramConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		LLM: LLMProvider{
-			URL:   "https://api.atria-asi.ai/v1",
-			Model: "atria-dawn-preview",
+			URL:   "https://api.poolside.ai/v1",
+			Model: "poolside/laguna-xs-2.1",
 		},
 		MaxSteps:    10,
 		SessionFile: "sessions",
@@ -72,6 +72,17 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("SOORAA_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
+	}
+
+	// Poolside provider env override
+	if v := os.Getenv("POOLSIDE_API_URL"); v != "" {
+		cfg.LLM.URL = v
+	}
+	if v := os.Getenv("POOLSIDE_API_KEY"); v != "" {
+		cfg.LLM.APIKey = v
+	}
+	if v := os.Getenv("POOLSIDE_MODEL"); v != "" {
+		cfg.LLM.Model = v
 	}
 
 	return cfg, nil
