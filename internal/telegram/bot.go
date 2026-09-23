@@ -123,8 +123,8 @@ func Run() error {
 	if allow != "" {
 		allowID, _ = strconv.ParseInt(strings.TrimSpace(allow), 10, 64)
 	}
-	offset := 0
-	fmt.Println("telegram polling start")
+	offset := getInitialOffset(token)
+	fmt.Printf("telegram polling start offset=%d\n", offset)
 	for {
 		resp, err := http.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d", offset), token))
 		if err != nil {
@@ -134,10 +134,22 @@ func Run() error {
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		var out struct {
-			Ok     bool     `json:"ok"`
-			Result []update `json:"result"`
+			Ok          bool     `json:"ok"`
+			Result      []update `json:"result"`
+			ErrorCode   int      `json:"error_code"`
+			Description string   `json:"description"`
 		}
 		_ = json.Unmarshal(raw, &out)
+		if out.ErrorCode == 409 {
+			fmt.Printf("conflict 409 - backing off 5s: %s\n", out.Description)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if !out.Ok && out.ErrorCode != 0 {
+			fmt.Printf("poll error %d: %s\n", out.ErrorCode, out.Description)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		for _, u := range out.Result {
 			offset = u.UpdateID + 1
 			if u.CallbackQuery != nil {
@@ -256,6 +268,23 @@ func editTool(token string, chatID int64, msgID int, text string) {
 	}
 	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": "```\n" + text + "\n```", "parse_mode": "Markdown"})
 	http.Post(api("editMessageText", token), "application/json", bytes.NewReader(b))
+}
+
+func getInitialOffset(token string) int {
+	resp, err := http.Get(api("getUpdates?timeout=0&offset=-1", token))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out struct {
+		Result []update `json:"result"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	if len(out.Result) == 0 {
+		return 0
+	}
+	return out.Result[len(out.Result)-1].UpdateID + 1
 }
 
 func runWithThinking(prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
