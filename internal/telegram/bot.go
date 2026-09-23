@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"soraa-agent/internal/secret"
 	"soraa-agent/internal/telegram/keyboard"
 	"soraa-agent/internal/telegram/menus"
 )
@@ -130,6 +132,15 @@ func Run() error {
 	if token == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN required")
 	}
+
+	// Initialize encrypted secret store
+	home, _ := os.UserHomeDir()
+	keyFile := filepath.Join(home, ".config", "soraa-agent", "secret.key")
+	secretFile := filepath.Join(home, ".config", "soraa-agent", "secrets.json")
+	if err := secret.Init(keyFile, secretFile); err != nil {
+		return fmt.Errorf("secret store: %w", err)
+	}
+
 	allow := os.Getenv("TELEGRAM_ALLOWED_USER_ID")
 	var allowID int64
 	if allow != "" {
@@ -204,13 +215,18 @@ func Run() error {
 				continue
 			}
 			txt := strings.TrimSpace(u.Message.Text)
+			// Handle secret commands first
+			if handleSecretCommands(token, u.UpdateID, u.Message.Chat.ID, txt) {
+				continue
+			}
+
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				sendWithKeyboard(token, u.Message.Chat.ID, "Soraa Agent ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
 			case "/help":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				send(token, u.Message.Chat.ID, "Commands: /new /menu /model /agent /project /session /settings")
+				send(token, u.Message.Chat.ID, "Commands: /new /menu /model /agent /project /session /settings /setsecret <name> <value> /secrets /delsecret <name>")
 			case "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "📋 Hub - 18 menus", "reply_markup": menus.Hub()})
@@ -330,4 +346,73 @@ func getInitialOffset(token string) int {
 
 func runWithThinking(sessionID string, prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
 	return runAgent(sessionID, prompt, onReasoning, onTool, onAnswer)
+}
+
+func handleSetSecret(token string, chatID int64, text string) {
+	parts := strings.SplitN(text, " ", 3)
+	if len(parts) < 3 {
+		send(token, chatID, "Usage: /setsecret <name> <value>")
+		return
+	}
+	name := parts[1]
+	value := strings.TrimSpace(parts[2])
+
+	if err := secret.Set(name, value); err != nil {
+		send(token, chatID, "Failed to store secret: "+err.Error())
+		return
+	}
+	// Never echo the value back
+	send(token, chatID, "Secret "+name+" stored securely.")
+}
+
+func handleListSecrets(token string, chatID int64) {
+	names := secret.List()
+	if len(names) == 0 {
+		send(token, chatID, "No secrets stored. Use /setsecret <name> <value> to add.")
+		return
+	}
+	var lines []string
+	for _, n := range names {
+		lines = append(lines, "  /delsecret "+n)
+	}
+	send(token, chatID, "Stored secrets:\n"+strings.Join(lines, "\n"))
+}
+
+func handleDeleteSecret(token string, chatID int64, text string) {
+	parts := strings.SplitN(text, " ", 2)
+	if len(parts) < 2 {
+		send(token, chatID, "Usage: /delsecret <name>")
+		return
+	}
+	name := parts[1]
+	if err := secret.Delete(name); err != nil {
+		send(token, chatID, "Failed to delete: "+err.Error())
+		return
+	}
+	send(token, chatID, "Secret "+name+" deleted.")
+}
+
+// handleSecretCommands returns true if the text was a secret command.
+func handleSecretCommands(token string, updateID int, chatID int64, txt string) bool {
+	if txt == "/setsecret" {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		send(token, chatID, "Usage: /setsecret <name> <value>\nExample: /setsecret opencode atr_xxx\nStored encrypted. List with /secrets.")
+		return true
+	}
+	if strings.HasPrefix(txt, "/setsecret ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleSetSecret(token, chatID, txt)
+		return true
+	}
+	if txt == "/secrets" {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleListSecrets(token, chatID)
+		return true
+	}
+	if strings.HasPrefix(txt, "/delsecret ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleDeleteSecret(token, chatID, txt)
+		return true
+	}
+	return false
 }
