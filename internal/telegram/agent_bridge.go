@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/emperormk01/soraa-agent/internal/llm"
-	"github.com/emperormk01/soraa-agent/internal/prompt"
-	"github.com/emperormk01/soraa-agent/internal/tools"
+	"soraa-agent/internal/llm"
+	"soraa-agent/internal/prompt"
+	"soraa-agent/internal/tools"
 )
 
 func runAgent(user string, onReasoning func(string), onAnswer func(string)) error {

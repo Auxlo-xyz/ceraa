@@ -1,4 +1,4 @@
-module github.com/emperormk01/soraa-agent
+module soraa-agent
 
 go 1.23
 

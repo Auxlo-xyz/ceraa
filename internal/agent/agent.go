@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/emperormk01/soraa-agent/internal/llm"
-	"github.com/emperormk01/soraa-agent/internal/prompt"
-	"github.com/emperormk01/soraa-agent/internal/tools"
+	"soraa-agent/internal/llm"
+	"soraa-agent/internal/prompt"
+	"soraa-agent/internal/tools"
 )
 
 func Run(user string) error {

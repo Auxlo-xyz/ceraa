@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/emperormk01/soraa-agent/internal/telegram"
+	"soraa-agent/internal/telegram"
 	"github.com/spf13/cobra"
 )
 

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/emperormk01/soraa-agent/internal/agent"
+	"soraa-agent/internal/agent"
 	"github.com/spf13/cobra"
 )
 
