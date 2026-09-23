@@ -41,6 +41,9 @@ func runAgent(user string, onReasoning func(string), onTool func(string), onAnsw
 		}
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: content, ToolCalls: toolCalls})
 		for _, tc := range toolCalls {
+			if !json.Valid([]byte(tc.Function.Arguments)) {
+				continue
+			}
 			tool, ok := m[tc.Function.Name]
 			if !ok {
 				continue

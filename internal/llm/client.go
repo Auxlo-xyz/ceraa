@@ -37,50 +37,14 @@ type StreamDelta struct {
 
 func Chat(api, key, model string, msgs []Message, tools []map[string]any) (Message, error) {
 	var final Message
-	var acc = map[int]*ToolCall{}
 	err := ChatStream(api, key, model, msgs, tools, func(d StreamDelta) {
 		final.Content += d.Content
 		final.Reasoning += d.Reasoning
-		for _, tc := range d.ToolCalls {
-			// find by ID or index
-			found := -1
-			for idx, existing := range acc {
-				if existing.ID == tc.ID && tc.ID != "" {
-					found = idx
-					break
-				}
-			}
-			if found == -1 {
-				// use next index
-				found = len(acc)
-				acc[found] = &ToolCall{}
-			}
-			c := acc[found]
-			if tc.ID != "" {
-				c.ID = tc.ID
-			}
-			if tc.Type != "" {
-				c.Type = tc.Type
-			}
-			if tc.Function.Name != "" {
-				c.Function.Name = tc.Function.Name
-			}
-			// ChatStream already accumulates, so take latest snapshot
-			c.Function.Arguments = tc.Function.Arguments
-			if c.Type == "" {
-				c.Type = "function"
-			}
+		if len(d.ToolCalls) > 0 {
+			final.ToolCalls = d.ToolCalls // ChatStream already accumulates valid JSON
 		}
 	})
-	if err != nil {
-		return Message{}, err
-	}
-	for i := 0; i < len(acc); i++ {
-		if c, ok := acc[i]; ok {
-			final.ToolCalls = append(final.ToolCalls, *c)
-		}
-	}
-	return final, nil
+	return final, err
 }
 
 func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, onDelta func(StreamDelta)) error {
