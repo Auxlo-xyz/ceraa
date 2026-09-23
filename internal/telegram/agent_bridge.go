@@ -144,7 +144,7 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"reasoning": delta.Reasoning, "full": accumulatedReasoning}})
 			}
 			if len(delta.ToolCalls) > 0 {
-				toolCalls = delta.ToolCalls
+				toolCalls = llm.MergeStreamedToolCalls(toolCalls, delta.ToolCalls)
 				for _, tc := range delta.ToolCalls {
 					event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"tool": tc.Name, "args": tc.Arguments}})
 				}
@@ -188,27 +188,26 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 			return nil
 		}
 
-		// Append assistant message
-		tc := toolCalls[0]
 		assistantMessage := sessionstore.Message{
-			Role:    llm.RoleAssistant,
-			Content: content,
-			ToolCall: &sessionstore.ToolCallRef{
-				ID:   tc.ID,
-				Name: tc.Name,
-				Args: tc.Arguments,
-			},
+			Role:      llm.RoleAssistant,
+			Content:   content,
+			ToolCalls: make([]sessionstore.ToolCallRef, 0, len(toolCalls)),
+		}
+		for _, tc := range toolCalls {
+			assistantMessage.ToolCalls = append(assistantMessage.ToolCalls, sessionstore.ToolCallRef{ID: tc.ID, Name: tc.Name, Args: tc.Arguments})
 		}
 		sess.Messages = append(sess.Messages, assistantMessage)
 		msgs = append(msgs, toLLMItem(assistantMessage))
 		_ = store.Save(sess)
 
 		if onTool != nil {
-			argPreview := tc.Arguments
-			if len(argPreview) > 200 {
-				argPreview = argPreview[:200] + "..."
+			for _, tc := range toolCalls {
+				argPreview := tc.Arguments
+				if len(argPreview) > 200 {
+					argPreview = argPreview[:200] + "..."
+				}
+				onTool("🔧 " + tc.Name + " " + argPreview)
 			}
-			onTool("🔧 " + tc.Name + " " + argPreview)
 		}
 
 		// Execute all tool calls concurrently
@@ -330,13 +329,15 @@ func toLLMItem(m sessionstore.Message) llm.Item {
 			Text: fmt.Sprintf("<conversation-checkpoint>\n<summary>%s</summary>\n<recent-context>%s</recent-context>\n</conversation-checkpoint>", m.Compaction.Summary, m.Compaction.Recent),
 		}
 	}
-	if m.ToolCall != nil {
-		return llm.Item{
-			Kind:   "tool_call",
-			CallID: m.ToolCall.ID,
-			Name:   m.ToolCall.Name,
-			Args:   m.ToolCall.Args,
+	if calls := m.AllToolCalls(); len(calls) > 0 {
+		if len(calls) == 1 {
+			return llm.Item{Kind: "tool_call", CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, Text: m.Content}
 		}
+		items := make([]llm.ToolCall, 0, len(calls))
+		for _, call := range calls {
+			items = append(items, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
+		}
+		return llm.Item{Kind: "tool_calls", ToolCalls: items, Text: m.Content}
 	}
 	return llm.Item{
 		Kind:   "text",

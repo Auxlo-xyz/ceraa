@@ -11,11 +11,11 @@ import (
 
 // Constants from soraacode agent/core/src/session/compaction.ts
 const (
-	DefaultBuffer         = 20000
-	DefaultKeepTokens     = 8000
-	ToolOutputMaxChars    = 2000
-	SummaryOutputTokens   = 4096
-	MaxTotalTokens        = 236000 // 256k - margin, matches contextbuilder
+	DefaultBuffer       = 20000
+	DefaultKeepTokens   = 8000
+	ToolOutputMaxChars  = 2000
+	SummaryOutputTokens = 4096
+	MaxTotalTokens      = 236000 // 256k - margin, matches contextbuilder
 )
 
 // Settings mirrors soraacode Config.Document.info.compaction
@@ -47,8 +47,8 @@ func EstimateTokens(s string) int {
 
 func estimateMessage(m sessionstore.Message) int {
 	n := EstimateTokens(m.Content) + EstimateTokens(m.Reasoning) + EstimateTokens(m.ToolResult)
-	if m.ToolCall != nil {
-		n += EstimateTokens(m.ToolCall.Args) + EstimateTokens(m.ToolCall.Name) + 10
+	for _, call := range m.AllToolCalls() {
+		n += EstimateTokens(call.Args) + EstimateTokens(call.Name) + 10
 	}
 	if m.Compaction != nil {
 		n += EstimateTokens(m.Compaction.Summary) + EstimateTokens(m.Compaction.Recent)
@@ -101,8 +101,8 @@ func serializeMessage(m sessionstore.Message) string {
 		if m.Reasoning != "" {
 			parts = append(parts, fmt.Sprintf("[Assistant reasoning]: %s", truncate(m.Reasoning, ToolOutputMaxChars)))
 		}
-		if m.ToolCall != nil {
-			parts = append(parts, fmt.Sprintf("[Assistant tool call]: %s(%s)", m.ToolCall.Name, truncate(m.ToolCall.Args, ToolOutputMaxChars)))
+		for _, call := range m.AllToolCalls() {
+			parts = append(parts, fmt.Sprintf("[Assistant tool call]: %s(%s)", call.Name, truncate(call.Args, ToolOutputMaxChars)))
 		}
 		if m.ToolResult != "" {
 			parts = append(parts, fmt.Sprintf("[Tool result]: %s", truncate(m.ToolResult, ToolOutputMaxChars)))

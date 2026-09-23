@@ -1,6 +1,9 @@
 package llm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ReasonLevel controls how much internal reasoning the model emits.
 type ReasonLevel string
@@ -30,15 +33,22 @@ const (
 	RoleTool      Role = "tool"
 )
 
+type ToolCall struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Args string `json:"arguments"`
+}
+
 type Item struct {
-	Kind   string `json:"type"` // text, tool_call, tool_result, reasoning
-	Role   Role   `json:"role,omitempty"`
-	Text   string `json:"text,omitempty"`
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Args   string `json:"arguments,omitempty"`
-	Output string `json:"output,omitempty"`
-	Reason string `json:"reasoning,omitempty"`
+	Kind      string     `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
+	Role      Role       `json:"role,omitempty"`
+	Text      string     `json:"text,omitempty"`
+	CallID    string     `json:"call_id,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	Args      string     `json:"arguments,omitempty"`
+	Output    string     `json:"output,omitempty"`
+	Reason    string     `json:"reasoning,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 func (i Item) String() string {
@@ -47,10 +57,43 @@ func (i Item) String() string {
 		return fmt.Sprintf("%s: %s", i.Role, i.Text)
 	case "tool_call":
 		return fmt.Sprintf("tool_call: %s(%s)", i.Name, i.Args)
+	case "tool_calls":
+		return fmt.Sprintf("tool_calls: %d", len(i.ToolCalls))
 	case "tool_result":
 		return fmt.Sprintf("tool_result[%s]: %s", i.CallID, i.Output)
 	case "reasoning":
 		return i.Reason
 	}
 	return ""
+}
+
+func MergeStreamedToolCalls(dst, incoming []StreamedToolCall) []StreamedToolCall {
+	positions := make(map[int]int, len(dst)+len(incoming))
+	for i, call := range dst {
+		positions[call.Index] = i
+	}
+	for _, call := range incoming {
+		position, ok := positions[call.Index]
+		if !ok {
+			positions[call.Index] = len(dst)
+			dst = append(dst, call)
+			continue
+		}
+		current := dst[position]
+		if call.ID != "" {
+			current.ID = call.ID
+		}
+		if call.Name != "" {
+			current.Name = call.Name
+		}
+		if call.Arguments != "" {
+			if current.Arguments == "" || strings.HasPrefix(call.Arguments, current.Arguments) {
+				current.Arguments = call.Arguments
+			} else {
+				current.Arguments += call.Arguments
+			}
+		}
+		dst[position] = current
+	}
+	return dst
 }

@@ -34,6 +34,26 @@ func TestItemString(t *testing.T) {
 	}
 }
 
+func TestMergeStreamedToolCalls(t *testing.T) {
+	calls := MergeStreamedToolCalls(nil, []StreamedToolCall{
+		{Index: 0, ID: "a", Name: "read", Arguments: `{"path":`},
+		{Index: 1, ID: "b", Name: "glob", Arguments: `{"pattern":`},
+	})
+	calls = MergeStreamedToolCalls(calls, []StreamedToolCall{
+		{Index: 0, ID: "a", Name: "read", Arguments: `{"path":"go.mod"}`},
+		{Index: 1, ID: "b", Name: "glob", Arguments: `{"pattern":"*.go"}`},
+	})
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(calls))
+	}
+	if calls[0].ID != "a" || calls[0].Arguments != `{"path":"go.mod"}` {
+		t.Fatalf("unexpected first call: %+v", calls[0])
+	}
+	if calls[1].ID != "b" || calls[1].Arguments != `{"pattern":"*.go"}` {
+		t.Fatalf("unexpected second call: %+v", calls[1])
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {

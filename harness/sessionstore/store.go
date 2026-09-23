@@ -37,13 +37,14 @@ type Operation struct {
 }
 
 type Message struct {
-	Role        llm.Role      `json:"role"`
-	Content     string        `json:"content,omitempty"`
-	ToolCallID  string        `json:"tool_call_id,omitempty"`
-	ToolResult  string        `json:"tool_result,omitempty"`
-	ToolCall    *ToolCallRef  `json:"tool_call,omitempty"`
-	Reasoning   string        `json:"reasoning,omitempty"`
-	Compaction  *CompactionInfo `json:"compaction,omitempty"`
+	Role       llm.Role        `json:"role"`
+	Content    string          `json:"content,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolResult string          `json:"tool_result,omitempty"`
+	ToolCall   *ToolCallRef    `json:"tool_call,omitempty"`
+	ToolCalls  []ToolCallRef   `json:"tool_calls,omitempty"`
+	Reasoning  string          `json:"reasoning,omitempty"`
+	Compaction *CompactionInfo `json:"compaction,omitempty"`
 }
 
 type CompactionInfo struct {
@@ -56,6 +57,16 @@ type ToolCallRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Args string `json:"arguments"`
+}
+
+func (m Message) AllToolCalls() []ToolCallRef {
+	if len(m.ToolCalls) > 0 {
+		return m.ToolCalls
+	}
+	if m.ToolCall != nil {
+		return []ToolCallRef{*m.ToolCall}
+	}
+	return nil
 }
 
 type Session struct {

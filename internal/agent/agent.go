@@ -34,6 +34,23 @@ func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, 
 	return runner.Run(spec)
 }
 
+func toLLMItem(m sessionstore.Message) llm.Item {
+	if m.Compaction != nil {
+		return llm.Item{Kind: "text", Role: llm.RoleUser, Text: "<conversation-checkpoint>\n<summary>" + m.Compaction.Summary + "</summary>\n<recent-context>" + m.Compaction.Recent + "</recent-context>\n</conversation-checkpoint>"}
+	}
+	if calls := m.AllToolCalls(); len(calls) > 0 {
+		if len(calls) == 1 {
+			return llm.Item{Kind: "tool_call", CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, Text: m.Content}
+		}
+		items := make([]llm.ToolCall, 0, len(calls))
+		for _, call := range calls {
+			items = append(items, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
+		}
+		return llm.Item{Kind: "tool_calls", ToolCalls: items, Text: m.Content}
+	}
+	return llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Output: m.ToolResult}
+}
+
 // Run executes the agent for a single user message via the harness.
 func Run(user string) error {
 	cfg, err := config.Load()
@@ -109,7 +126,7 @@ func RunWithConfig(user string, cfg *config.Config) error {
 				fmt.Print(delta.Content)
 			}
 			if len(delta.ToolCalls) > 0 {
-				toolCalls = delta.ToolCalls
+				toolCalls = llm.MergeStreamedToolCalls(toolCalls, delta.ToolCalls)
 			}
 		})
 		if err != nil {
@@ -128,27 +145,20 @@ func RunWithConfig(user string, cfg *config.Config) error {
 			return nil
 		}
 
-		// Append assistant message with tool calls
-		tc := toolCalls[0]
 		assistantMessage := sessionstore.Message{
-			Role:    llm.RoleAssistant,
-			Content: content,
-			ToolCall: &sessionstore.ToolCallRef{
-				ID:   tc.ID,
-				Name: tc.Name,
-				Args: tc.Arguments,
-			},
+			Role:      llm.RoleAssistant,
+			Content:   content,
+			ToolCalls: make([]sessionstore.ToolCallRef, 0, len(toolCalls)),
+		}
+		for _, tc := range toolCalls {
+			assistantMessage.ToolCalls = append(assistantMessage.ToolCalls, sessionstore.ToolCallRef{ID: tc.ID, Name: tc.Name, Args: tc.Arguments})
 		}
 		sess.Messages = append(sess.Messages, assistantMessage)
-		msgs = append(msgs, llm.Item{
-			Kind:   "tool_call",
-			CallID: assistantMessage.ToolCall.ID,
-			Name:   assistantMessage.ToolCall.Name,
-			Args:   assistantMessage.ToolCall.Args,
-		})
+		msgs = append(msgs, toLLMItem(assistantMessage))
 
-		// Display start
-		fmt.Printf("\n» %s\n", tc.Name)
+		for _, tc := range toolCalls {
+			fmt.Printf("\n» %s\n", tc.Name)
+		}
 
 		// Execute all tool calls concurrently
 		for _, tc := range toolCalls {

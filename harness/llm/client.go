@@ -127,12 +127,28 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			}
 			msgs = append(msgs, msg)
 		case "tool_call":
-			msgs = append(msgs, map[string]any{
+			assistant := map[string]any{
 				"role": "assistant",
 				"tool_calls": []map[string]any{
 					{"id": item.CallID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": item.Args}},
 				},
-			})
+			}
+			if item.Text != "" {
+				assistant["content"] = item.Text
+			}
+			msgs = append(msgs, assistant)
+		case "tool_calls":
+			calls := make([]map[string]any, 0, len(item.ToolCalls))
+			for _, call := range item.ToolCalls {
+				calls = append(calls, map[string]any{
+					"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": call.Args},
+				})
+			}
+			assistant := map[string]any{"role": "assistant", "tool_calls": calls}
+			if item.Text != "" {
+				assistant["content"] = item.Text
+			}
+			msgs = append(msgs, assistant)
 		}
 	}
 

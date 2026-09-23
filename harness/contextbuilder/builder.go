@@ -78,19 +78,24 @@ func (b *Builder) Build() Request {
 			Role: role,
 			Text: m.Content,
 		}
-		if m.ToolCall != nil {
-			item.Kind = "tool_call"
-			item.CallID = m.ToolCall.ID
-			item.Name = m.ToolCall.Name
-			item.Args = m.ToolCall.Args
+		if calls := m.AllToolCalls(); len(calls) > 0 {
+			if len(calls) == 1 {
+				item.Kind = "tool_call"
+				item.CallID = calls[0].ID
+				item.Name = calls[0].Name
+				item.Args = calls[0].Args
+			} else {
+				item.Kind = "tool_calls"
+				item.ToolCalls = make([]llm.ToolCall, 0, len(calls))
+				for _, call := range calls {
+					item.ToolCalls = append(item.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
+				}
+			}
 		}
 		if m.ToolResult != "" {
 			item.Kind = "text"
 			item.Role = llm.RoleTool
 			item.CallID = m.ToolCallID
-			if m.ToolCall != nil {
-				item.CallID = m.ToolCall.ID
-			}
 			item.Output = m.ToolResult
 		}
 		if m.Reasoning != "" {
