@@ -1,13 +1,11 @@
 package tool
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"soraa-agent/harness/operation"
 )
@@ -242,6 +240,16 @@ func DefaultRegistry() *Registry {
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
 	r.Register(&ViewImageTool{})
+	r.Register(&WebFetchTool{})
+
+	// WebSearch with config from env
+	provider := os.Getenv("SORAA_WEBSEARCH_PROVIDER")
+	apiKey := os.Getenv("EXA_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	r.Register(NewWebSearchTool(apiKey, provider))
+
 	return r
 }
 
@@ -262,9 +270,7 @@ func RunBash(command, workDir string, timeoutSec int) (string, error) {
 	if timeoutSec <= 0 {
 		timeoutSec = 60
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd := exec.Command("bash", "-c", command)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}

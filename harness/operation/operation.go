@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"soraa-agent/harness/primitives"
+	"soraa-agent/harness/tool"
 )
 
 // Spec describes work to be done.
