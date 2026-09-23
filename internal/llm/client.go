@@ -36,23 +36,59 @@ type StreamDelta struct {
 }
 
 func Chat(api, key, model string, msgs []Message, tools []map[string]any) (Message, error) {
-	var final Message
-	err := ChatStream(api, key, model, msgs, tools, func(d StreamDelta) {
-		final.Content += d.Content
-		final.Reasoning += d.Reasoning
-		if len(d.ToolCalls) > 0 {
-			final.ToolCalls = d.ToolCalls
-		}
-	})
-	return final, err
-}
-
-func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, onDelta func(StreamDelta)) error {
-	body := map[string]any{"model": model, "messages": msgs, "temperature": 0.2, "stream": true}
+	// Non-stream for tool reliability: streaming splits tool args into invalid partial JSON
+	body := map[string]any{"model": model, "messages": msgs, "temperature": 0.2}
 	if len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", api+"/chat/completions", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Message{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return Message{}, fmt.Errorf("%d %s", resp.StatusCode, string(raw))
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content          string     `json:"content"`
+				ReasoningContent string     `json:"reasoning_content"`
+				Reasoning        string     `json:"reasoning"`
+				ToolCalls        []ToolCall `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Message{}, err
+	}
+	if len(out.Choices) == 0 {
+		return Message{}, fmt.Errorf("no choices")
+	}
+	m := out.Choices[0].Message
+	reasoning := m.ReasoningContent
+	if reasoning == "" {
+		reasoning = m.Reasoning
+	}
+	return Message{Role: "assistant", Content: m.Content, Reasoning: reasoning, ToolCalls: m.ToolCalls}, nil
+}
+
+func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, onDelta func(StreamDelta)) error {
+	body := map[string]any{"model": model, "messages": msgs, "temperature": 0.2, "stream": true, "stream_options": map[string]any{"include_usage": false}}
+	if len(tools) > 0 {
+		body["tools"] = tools
+		body["tool_choice"] = "auto"
+	}
+	// Accumulate tool calls by index to handle fragmented streaming args
+	acc := map[int]*ToolCall{}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", api+"/chat/completions", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
@@ -82,10 +118,18 @@ func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, 
 		var ev struct {
 			Choices []struct {
 				Delta struct {
-					Content          *string    `json:"content"`
-					Reasoning        *string    `json:"reasoning_content"`
-					Reasoning2       *string    `json:"reasoning"`
-					ToolCalls        []ToolCall `json:"tool_calls"`
+					Content    *string `json:"content"`
+					Reasoning  *string `json:"reasoning_content"`
+					Reasoning2 *string `json:"reasoning"`
+					ToolCalls  []struct {
+						Index int `json:"index"`
+						ID    string `json:"id"`
+						Type  string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -102,8 +146,21 @@ func ChatStream(api, key, model string, msgs []Message, tools []map[string]any, 
 		} else if d.Reasoning2 != nil {
 			delta.Reasoning = *d.Reasoning2
 		}
-		if len(d.ToolCalls) > 0 {
-			delta.ToolCalls = d.ToolCalls
+		for _, tc := range d.ToolCalls {
+			existing, ok := acc[tc.Index]
+			if !ok {
+				existing = &ToolCall{ID: tc.ID, Type: tc.Type}
+				existing.Function.Name = tc.Function.Name
+				acc[tc.Index] = existing
+			}
+			if tc.ID != "" {
+				existing.ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				existing.Function.Name = tc.Function.Name
+			}
+			existing.Function.Arguments += tc.Function.Arguments
+			delta.ToolCalls = append(delta.ToolCalls, *existing)
 		}
 		if delta.Content != "" || delta.Reasoning != "" || len(delta.ToolCalls) > 0 {
 			onDelta(delta)
