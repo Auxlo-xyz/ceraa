@@ -165,7 +165,16 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			result.Status = StatusCompleted
 		case "webfetch", "websearch":
 			if m.runner != nil {
-				out, err := m.runner.RunTool(ctx, op.Spec)
+				// Default timeout: 30s for webfetch, 25s for websearch
+				to := 30 * time.Second
+				if t, ok := op.Spec.Args["timeout"]; ok {
+					if ts, ok := t.(int); ok && ts > 0 {
+						to = time.Duration(ts) * time.Second
+					}
+				}
+				tctx, tcancel := context.WithTimeout(ctx, to)
+				defer tcancel()
+				out, err := m.runner.RunTool(tctx, op.Spec)
 				result.Output = out
 				if err != nil {
 					result.Error = err.Error()
