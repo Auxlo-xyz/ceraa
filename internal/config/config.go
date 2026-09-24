@@ -10,13 +10,16 @@ import (
 
 // Config holds all sooraa settings.
 type Config struct {
-	LLM                LLMProvider    `json:"llm"`
-	Subscriptions      Subscriptions  `json:"subscriptions,omitempty"`
-	Telegram           TelegramConfig `json:"telegram,omitempty"`
-	MaxSteps           int            `json:"max_steps,omitempty"`
-	SessionFile        string         `json:"session_file,omitempty"`
-	ToolOutputDir      string         `json:"tool_output_dir,omitempty"`
-	MaxToolResultChars int            `json:"max_tool_result_chars,omitempty"`
+	LLM                      LLMProvider    `json:"llm"`
+	Subscriptions            Subscriptions  `json:"subscriptions,omitempty"`
+	Telegram                 TelegramConfig `json:"telegram,omitempty"`
+	MaxSteps                 int            `json:"max_steps,omitempty"`
+	SessionFile              string         `json:"session_file,omitempty"`
+	ToolOutputDir            string         `json:"tool_output_dir,omitempty"`
+	MaxToolResultChars       int            `json:"max_tool_result_chars,omitempty"`
+	ModelCatalogURL          string         `json:"model_catalog_url,omitempty"`
+	ModelCatalogCache        string         `json:"model_catalog_cache,omitempty"`
+	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
@@ -56,9 +59,11 @@ func DefaultConfig() *Config {
 			ContextLimit:    236000,
 			MaxOutputTokens: 8192,
 		},
-		MaxSteps:           10,
-		SessionFile:        "sessions",
-		MaxToolResultChars: 12000,
+		MaxSteps:                 10,
+		SessionFile:              "sessions",
+		MaxToolResultChars:       12000,
+		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
+		ModelCatalogRefreshHours: 24,
 	}
 }
 
@@ -105,6 +110,17 @@ func Load() (*Config, error) {
 	if v := os.Getenv("SOORAA_MAX_TOOL_RESULT_CHARS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxToolResultChars = n
+		}
+	}
+	if v := os.Getenv("SOORAA_MODEL_CATALOG_URL"); v != "" {
+		cfg.ModelCatalogURL = v
+	}
+	if v := os.Getenv("SOORAA_MODEL_CATALOG_CACHE"); v != "" {
+		cfg.ModelCatalogCache = v
+	}
+	if v := os.Getenv("SOORAA_MODEL_CATALOG_REFRESH_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ModelCatalogRefreshHours = n
 		}
 	}
 

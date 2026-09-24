@@ -14,6 +14,6 @@ fuzz:
 	go test -run Fuzz -fuzz=FuzzOperationSpec -fuzztime=10s ./harness/coordinator/...
 
 clean:
-	rm -rf bin/ testdata_fuzz/ sessions/
+	rm -rf bin/ testdata-fuzz/ sessions/
 
 .PHONY: build test check fuzz clean

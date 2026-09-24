@@ -47,17 +47,20 @@ func runAgentWithConfigContext(parent context.Context, sessionID string, user st
 	}
 	compactor := newCompactor(cfg)
 	runner := coordinator.New(coordinator.RunnerConfig{
-		SessionID:          sessionID,
-		SystemPrompt:       prompt.System,
-		MaxSteps:           cfg.MaxSteps,
-		Model:              llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
-		ContextLimit:       cfg.LLM.ContextLimit,
-		MaxOutputTokens:    cfg.LLM.MaxOutputTokens,
-		WorkDir:            projectRoot,
-		ToolOutputDir:      cfg.ToolOutputDir,
-		MaxToolResultChars: cfg.MaxToolResultChars,
-		Compactor:          compactor,
-		ForcedCompaction:   func() bool { return consumeForcedCompaction(sessionID) },
+		SessionID:           sessionID,
+		SystemPrompt:        prompt.System,
+		MaxSteps:            cfg.MaxSteps,
+		Model:               llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
+		ContextLimit:        cfg.LLM.ContextLimit,
+		MaxOutputTokens:     cfg.LLM.MaxOutputTokens,
+		WorkDir:             projectRoot,
+		ToolOutputDir:       cfg.ToolOutputDir,
+		MaxToolResultChars:  cfg.MaxToolResultChars,
+		ModelCatalogURL:     cfg.ModelCatalogURL,
+		ModelCatalogCache:   cfg.ModelCatalogCache,
+		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
+		Compactor:           compactor,
+		ForcedCompaction:    func() bool { return consumeForcedCompaction(sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
 			return needsPermission(name, fmt.Sprint(args))
 		},
@@ -124,6 +127,15 @@ func runAgentWithConfigContext(parent context.Context, sessionID string, user st
 			OnUsage: func(usage llm.UsageInfo) {
 				tokens := usage.InputTokens + usage.OutputTokens
 				event.Default.Publish(event.Event{Type: event.TypeTokens, SessionID: sessionID, Data: map[string]any{"tokens": tokens}})
+			},
+			OnCost: func(cost llm.CostInfo, status string) {
+				text := "unavailable"
+				if cost.Known {
+					text = fmt.Sprintf("$%.6f", cost.TotalUSD)
+				} else if status != "" && status != "unavailable" {
+					text += " (" + status + ")"
+				}
+				event.Default.Publish(event.Event{Type: event.TypeCost, SessionID: sessionID, Data: map[string]any{"cost": text, "status": status}})
 			},
 			OnDone: func(answer string) {
 				event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"content": answer}})

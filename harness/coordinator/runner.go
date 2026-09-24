@@ -19,25 +19,28 @@ import (
 )
 
 type RunnerConfig struct {
-	SessionID          string
-	SystemPrompt       string
-	MaxSteps           int
-	Reasoning          llm.ReasonLevel
-	StopWhenIdle       bool
-	Model              llm.ProviderConfig
-	ContextLimit       int
-	MaxOutputTokens    int
-	WorkDir            string
-	ToolOutputDir      string
-	MaxToolResultChars int
-	Inbox              *inbox.Inbox
-	OperationPool      *operation.LocalManager
-	Compactor          *compaction.Compactor
-	ForcedCompaction   func() bool
-	AuthorizeTool      func(context.Context, string, string, map[string]any) (bool, error)
-	NeedsAuthorization func(string, map[string]any) bool
-	AdjustSpec         func(*operation.Spec)
-	Callbacks          Callbacks
+	SessionID           string
+	SystemPrompt        string
+	MaxSteps            int
+	Reasoning           llm.ReasonLevel
+	StopWhenIdle        bool
+	Model               llm.ProviderConfig
+	ContextLimit        int
+	MaxOutputTokens     int
+	WorkDir             string
+	ToolOutputDir       string
+	MaxToolResultChars  int
+	ModelCatalogURL     string
+	ModelCatalogCache   string
+	ModelCatalogRefresh time.Duration
+	Inbox               *inbox.Inbox
+	OperationPool       *operation.LocalManager
+	Compactor           *compaction.Compactor
+	ForcedCompaction    func() bool
+	AuthorizeTool       func(context.Context, string, string, map[string]any) (bool, error)
+	NeedsAuthorization  func(string, map[string]any) bool
+	AdjustSpec          func(*operation.Spec)
+	Callbacks           Callbacks
 }
 
 type Config = RunnerConfig
@@ -50,21 +53,25 @@ type Callbacks struct {
 	OnCompactionStart func()
 	OnCompactionDone  func(bool, error)
 	OnUsage           func(llm.UsageInfo)
+	OnCost            func(llm.CostInfo, string)
 	OnDone            func(string)
 	OnError           func(error)
 }
 
 type Result struct {
-	Final string
-	Usage llm.UsageInfo
+	Final         string
+	Usage         llm.UsageInfo
+	Cost          llm.CostInfo
+	PricingStatus string
 }
 
 type Runner struct {
-	cfg   RunnerConfig
-	store *sessionstore.Store
-	reg   *tool.Registry
-	opMgr *operation.LocalManager
-	cb    Callbacks
+	cfg     RunnerConfig
+	store   *sessionstore.Store
+	reg     *tool.Registry
+	opMgr   *operation.LocalManager
+	catalog *llm.CatalogClient
+	cb      Callbacks
 }
 
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
@@ -90,7 +97,8 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	if opMgr == nil {
 		opMgr = operation.NewWithBuffer(&toolRunner{reg: reg}, 4096)
 	}
-	return &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, cb: cfg.Callbacks}
+	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
+	return &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, cb: cfg.Callbacks}
 }
 
 type toolRunner struct {
@@ -147,11 +155,39 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 	var runUsage llm.UsageInfo
 	var runBreakdown llm.TokenBreakdown
+	var runCost llm.CostInfo
+	if r.catalog == nil {
+		r.catalog = llm.NewCatalogClient(r.cfg.ModelCatalogURL, r.cfg.ModelCatalogCache, r.cfg.ModelCatalogRefresh)
+	}
+	pricingMetadata, pricingErr := r.catalog.Lookup(ctx, r.cfg.Model.Model)
+	pricingStatus := pricingMetadata.PricingStatus(pricingErr)
+	pricingUsable := pricingStatus == "current"
+	for i := range sess.Runs {
+		if sess.Runs[i].ID == runID {
+			sess.Runs[i].PricingModel = r.cfg.Model.Model
+			sess.Runs[i].PricingStatus = pricingStatus
+			sess.Runs[i].PricingFetchedAt = pricingMetadata.PricingFetchedAt
+			sess.Runs[i].ModelContextWindow = pricingMetadata.ContextWindow
+			sess.Runs[i].ModelMaxTokens = pricingMetadata.MaxTokens
+			sess.Runs[i].ReasoningOptions = pricingMetadata.ReasoningOptions
+		}
+	}
+	if err := r.store.Save(sess); err != nil {
+		return Result{PricingStatus: pricingStatus}, fmt.Errorf("save pricing metadata: %w", err)
+	}
 	if r.cfg.Compactor != nil {
 		r.cfg.Compactor.OnUsage = func(delta llm.UsageInfo) {
 			runUsage.Add(delta)
+			if pricingUsable {
+				if cost, ok := pricingMetadata.Cost(delta); ok {
+					runCost.Add(cost)
+				}
+			}
 			if r.cb.OnUsage != nil {
 				r.cb.OnUsage(runUsage)
+			}
+			if r.cb.OnCost != nil {
+				r.cb.OnCost(runCost, pricingStatus)
 			}
 		}
 	}
@@ -162,7 +198,10 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Status = status
 				sess.Runs[i].UpdatedAt = time.Now()
 				sess.Runs[i].Usage = runUsage
+				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].PricingStatus = pricingStatus
+				sess.Runs[i].PricingFetchedAt = pricingMetadata.PricingFetchedAt
 				if runErr != nil {
 					sess.Runs[i].Error = runErr.Error()
 				}
@@ -183,15 +222,16 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Step = step
 				sess.Runs[i].Requests++
 				sess.Runs[i].Usage = runUsage
+				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
 				sess.Runs[i].UpdatedAt = time.Now()
 			}
 		}
 		if err := r.store.Save(sess); err != nil {
-			return Result{}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 		if err := r.handleInbox(ctx); err != nil {
-			return Result{}, finish(sessionstore.RunInterrupted, err)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunInterrupted, err)
 		}
 		if r.cfg.Compactor != nil {
 			forced := r.cfg.ForcedCompaction != nil && r.cfg.ForcedCompaction()
@@ -206,7 +246,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				}
 				if err != nil {
 					if forced {
-						return Result{}, finish(sessionstore.RunFailed, fmt.Errorf("compaction: %w", err))
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, fmt.Errorf("compaction: %w", err))
 					}
 				} else if ok {
 					for i := range sess.Runs {
@@ -216,14 +256,14 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						}
 					}
 					if err := r.store.Save(sess); err != nil {
-						return Result{}, finish(sessionstore.RunFailed, err)
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 					}
 				}
 			}
 		}
 		if compaction.Prune(sess) > 0 {
 			if err := r.store.Save(sess); err != nil {
-				return Result{}, finish(sessionstore.RunFailed, err)
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 			}
 		}
 
@@ -264,15 +304,24 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				}
 			}
 		})
+		if pricingUsable {
+			if cost, ok := pricingMetadata.Cost(usage); ok {
+				runCost.Add(cost)
+			}
+		}
+		if r.cb.OnCost != nil {
+			r.cb.OnCost(runCost, pricingStatus)
+		}
 		runBreakdown.Add(breakdown)
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
 				sess.Runs[i].Usage = runUsage
+				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
 			}
 		}
 		if saveErr := r.store.Save(sess); saveErr != nil {
-			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, saveErr)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 		}
 		if err != nil {
 			if r.cfg.Compactor != nil && (r.cfg.Compactor.IsOverflow(sess) || strings.Contains(strings.ToLower(err.Error()), "context") || strings.Contains(strings.ToLower(err.Error()), "token")) {
@@ -292,7 +341,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						}
 					}
 					if saveErr := r.store.Save(sess); saveErr != nil {
-						return Result{}, finish(sessionstore.RunFailed, saveErr)
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 					}
 					step--
 					continue
@@ -302,7 +351,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			if ctx.Err() != nil {
 				status = sessionstore.RunCanceled
 			}
-			return Result{Usage: runUsage}, finish(status, err)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(status, err)
 		}
 
 		calls = llm.EnsureToolCallIDs(calls, fmt.Sprintf("%s_%d", runID, step))
@@ -311,12 +360,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			answer := content.String()
 			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: reasoning.String()})
 			if err := r.store.Save(sess); err != nil {
-				return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 			}
 			if r.cb.OnDone != nil {
 				r.cb.OnDone(answer)
 			}
-			return Result{Final: answer, Usage: runUsage}, finish(sessionstore.RunCompleted, nil)
+			return Result{Final: answer, Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunCompleted, nil)
 		}
 
 		assistant := sessionstore.Message{Role: llm.RoleAssistant, Content: content.String(), Reasoning: reasoning.String(), ToolCalls: make([]sessionstore.ToolCallRef, 0, len(calls))}
@@ -325,12 +374,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		sess.Messages = append(sess.Messages, assistant)
 		if err := r.store.Save(sess); err != nil {
-			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 
 		prepared, results, err := r.prepareTools(ctx, sess, runID, calls)
 		if err != nil {
-			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 		pending := make(map[string]struct{}, len(prepared))
 		for _, item := range prepared {
@@ -346,7 +395,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				delete(pending, result.OpID)
 				results[result.OpID] = r.resultText(runID, result)
 				if err := r.persistResult(sess, runID, result); err != nil {
-					return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
 				if r.cb.OnToolDone != nil {
 					r.cb.OnToolDone(result)
@@ -356,27 +405,27 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				for id := range pending {
 					results[id] = "Error: operation canceled before a durable result was recorded"
 					if err := r.persistUnknown(sess, runID, id, ctx.Err()); err != nil {
-						return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 					}
 				}
 				r.appendResults(sess, calls, results)
 				if saveErr := r.store.Save(sess); saveErr != nil {
-					return Result{Usage: runUsage}, finish(sessionstore.RunFailed, saveErr)
+					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 				}
-				return Result{Usage: runUsage}, finish(sessionstore.RunCanceled, ctx.Err())
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunCanceled, ctx.Err())
 			case <-timeout.C:
 				r.opMgr.CancelAll()
 				for id := range pending {
 					results[id] = "Error: operation outcome is unknown after timeout"
 					if err := r.persistUnknown(sess, runID, id, fmt.Errorf("operation timeout")); err != nil {
-						return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 					}
 				}
 				r.appendResults(sess, calls, results)
 				if saveErr := r.store.Save(sess); saveErr != nil {
-					return Result{Usage: runUsage}, finish(sessionstore.RunFailed, saveErr)
+					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 				}
-				return Result{Usage: runUsage}, finish(sessionstore.RunFailed, fmt.Errorf("tool execution timeout"))
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, fmt.Errorf("tool execution timeout"))
 			}
 		}
 		if !timeout.Stop() {
@@ -387,11 +436,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		r.appendResults(sess, calls, results)
 		if err := r.store.Save(sess); err != nil {
-			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 	}
 	err = fmt.Errorf("maximum steps reached without a final answer")
-	return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
+	return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 }
 
 func (r *Runner) handleInbox(ctx context.Context) error {

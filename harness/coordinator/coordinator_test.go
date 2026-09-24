@@ -61,7 +61,7 @@ func TestRunnerPersistsOperationLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ib.Stop()
-	err = RunAsync(context.Background(), Config{SessionID: "ledger", SystemPrompt: "test", MaxSteps: 3}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{})
+	err = RunAsync(context.Background(), Config{SessionID: "ledger", SystemPrompt: "test", MaxSteps: 3, ModelCatalogURL: "http://127.0.0.1:1"}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestRunnerPersistsCumulativeUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := New(RunnerConfig{SessionID: "usage", SystemPrompt: "system", MaxSteps: 1, Model: llm.FromProvider(server.URL, "test", "test")}, store, tool.NewRegistry())
+	runner := New(RunnerConfig{SessionID: "usage", SystemPrompt: "system", MaxSteps: 1, Model: llm.FromProvider(server.URL, "test", "test"), ModelCatalogURL: "http://127.0.0.1:1"}, store, tool.NewRegistry())
 	result, err := runner.Run(context.Background(), "hello")
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestCoordinatorDispatchesTools(t *testing.T) {
 	done := make(chan string, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = RunAsync(ctx, Config{SessionID: "test-sess", SystemPrompt: "test", MaxSteps: 3}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{OnDone: func(answer string) { done <- answer }})
+	err = RunAsync(ctx, Config{SessionID: "test-sess", SystemPrompt: "test", MaxSteps: 3, ModelCatalogURL: "http://127.0.0.1:1"}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{OnDone: func(answer string) { done <- answer }})
 	if err != nil {
 		t.Fatal(err)
 	}
