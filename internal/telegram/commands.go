@@ -81,8 +81,14 @@ func startNewSession(token string, chatID int64) {
 	send(token, chatID, "🆕 New session started. Send a task to name it automatically.")
 }
 
+type menuRoot struct {
+	text   string
+	markup map[string]any
+}
+
 var menuTriggerPending sync.Map
 var menuTriggerByMessage sync.Map
+var menuRootByMessage sync.Map
 
 func menuTriggerKey(chatID int64, messageID int) string {
 	return fmt.Sprintf("%d:%d", chatID, messageID)
@@ -103,6 +109,15 @@ func menuTriggerForMessage(chatID int64, messageID int) int {
 	return triggerID
 }
 
+func menuRootForMessage(chatID int64, messageID int) (menuRoot, bool) {
+	value, ok := menuRootByMessage.Load(menuTriggerKey(chatID, messageID))
+	if !ok {
+		return menuRoot{}, false
+	}
+	root, _ := value.(menuRoot)
+	return root, true
+}
+
 func sendMenuMarkup(token string, chatID int64, text string, markup map[string]any) {
 	body, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "reply_markup": markup})
 	resp, _ := doTelegramPost(api("sendMessage", token), body)
@@ -119,6 +134,7 @@ func sendMenuMarkup(token string, chatID int64, text string, markup map[string]a
 	if decodeErr != nil || result.Result.MessageID == 0 {
 		return
 	}
+	menuRootByMessage.Store(menuTriggerKey(chatID, result.Result.MessageID), menuRoot{text: text, markup: markup})
 	if trigger, ok := menuTriggerPending.LoadAndDelete(chatID); ok {
 		menuTriggerByMessage.Store(menuTriggerKey(chatID, result.Result.MessageID), trigger)
 	}

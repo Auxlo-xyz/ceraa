@@ -69,13 +69,18 @@ func removeCallbackMarkup(token string, chatID int64, messageID int, text string
 	discardTelegramResponse(resp)
 }
 
-func closeCallbackMenu(token string, chatID int64, menuMessageID int) {
+func closeCallbackMenu(token string, chatID int64, menuMessageID int, currentText string) {
+	if root, ok := menuRootForMessage(chatID, menuMessageID); ok && currentText != root.text {
+		editCallback(token, chatID, menuMessageID, root.text, root.markup)
+		return
+	}
 	triggerMessageID := menuTriggerForMessage(chatID, menuMessageID)
 	_ = deleteTelegramMessage(token, chatID, menuMessageID)
 	if triggerMessageID > 0 && triggerMessageID != menuMessageID {
 		_ = deleteTelegramMessage(token, chatID, triggerMessageID)
 	}
 	menuTriggerByMessage.Delete(menuTriggerKey(chatID, menuMessageID))
+	menuRootByMessage.Delete(menuTriggerKey(chatID, menuMessageID))
 	menuTriggerPending.Delete(chatID)
 }
 
@@ -107,7 +112,7 @@ func handleCallback(token string, q *struct {
 		menuTriggerPending.Delete(chatID)
 	}
 	if data == "close" || data == "close_menu" {
-		closeCallbackMenu(token, chatID, q.Message.MessageID)
+		closeCallbackMenu(token, chatID, q.Message.MessageID, q.Message.Text)
 		return
 	}
 	if data == "noop" {

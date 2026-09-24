@@ -53,6 +53,7 @@ func TestSendMenuMarkupTracksTrigger(t *testing.T) {
 		t.Fatalf("menu trigger = %d", got)
 	}
 	menuTriggerByMessage.Delete(menuTriggerKey(42, 7))
+	menuRootByMessage.Delete(menuTriggerKey(42, 7))
 	menuTriggerPending.Delete(42)
 }
 
@@ -72,6 +73,44 @@ func TestRemoveCallbackMarkupAcceptsEmptyKeyboard(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("calls = %d", calls)
 	}
+}
+
+func TestCloseCallbackMenuRestoresRootMenu(t *testing.T) {
+	var mu sync.Mutex
+	var restoredText string
+	var deleteCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.HasSuffix(r.URL.Path, "/deleteMessage") {
+			mu.Lock()
+			deleteCalls++
+			mu.Unlock()
+		}
+		if text, ok := body["text"].(string); ok {
+			mu.Lock()
+			restoredText = text
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	menuRootByMessage.Store(menuTriggerKey(42, 7), menuRoot{text: "Root menu", markup: map[string]any{"inline_keyboard": []any{}}})
+	closeCallbackMenu("token", 42, 7, "Submenu")
+
+	mu.Lock()
+	gotText := restoredText
+	gotDeletes := deleteCalls
+	mu.Unlock()
+	if gotText != "Root menu" || gotDeletes != 0 {
+		t.Fatalf("restored text = %q, delete calls = %d", gotText, gotDeletes)
+	}
+	menuRootByMessage.Delete(menuTriggerKey(42, 7))
 }
 
 func TestCloseCallbackMenuDeletesMenuAndTrigger(t *testing.T) {
@@ -94,7 +133,7 @@ func TestCloseCallbackMenuDeletesMenuAndTrigger(t *testing.T) {
 	defer func() { telegramAPIBase = oldBase }()
 
 	menuTriggerByMessage.Store(menuTriggerKey(42, 7), 5)
-	closeCallbackMenu("token", 42, 7)
+	closeCallbackMenu("token", 42, 7, "Menu text")
 
 	mu.Lock()
 	got := append([]int(nil), deleted...)
