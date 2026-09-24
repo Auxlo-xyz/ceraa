@@ -182,8 +182,8 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	defer pinned.close()
 	pinned.Init()
 	renderer := newRunRenderer("token", 42, pinned)
-	renderer.tool("🔄 Read file · /workspace/sooraa")
-	renderer.tool("✅ Read file completed")
+	renderer.tool("🔄 📚 Read file · /workspace/sooraa")
+	renderer.tool("✅ 📚 Read file completed")
 	renderer.finish("Done")
 	renderer.close()
 
@@ -192,7 +192,7 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	final := finalMarkdown
 	pinnedStatus := pinnedText
 	mu.Unlock()
-	if !strings.Contains(live, "🛠 Tools") || !strings.Contains(live, "⏳ Read file") {
+	if !strings.Contains(live, "🛠 Tools") || !strings.Contains(live, "📚 Read file") || strings.Contains(live, "⏳") {
 		t.Fatalf("live assistant message = %q", live)
 	}
 	if final != "Done" {
@@ -225,8 +225,11 @@ func TestToolActivityIsReadableAndRedacted(t *testing.T) {
 	if summary != " · /workspace/sooraa/.env" {
 		t.Fatalf("tool argument summary = %q", summary)
 	}
-	if got := formatToolStatus("🔄 Read file · /workspace/sooraa"); got != "⏳ Read file · /workspace/sooraa" {
+	if got := formatToolStatus("🔄 📚 Read file · /workspace/sooraa"); got != "📚 Read file · /workspace/sooraa" {
 		t.Fatalf("running tool status = %q", got)
+	}
+	if got := formatToolStatus("🔄 >_ Run command · ls"); got != ">_ Run command · ls" {
+		t.Fatalf("running command status = %q", got)
 	}
 	if got := formatToolStatus("✅ Read file completed"); got != "✓ Read file completed" {
 		t.Fatalf("completed tool status = %q", got)
@@ -243,7 +246,7 @@ func TestToolDisplayNamesAreHumanReadable(t *testing.T) {
 	if got := toolDisplayName("edit"); got != "📝 Edit file" {
 		t.Fatalf("edit label = %q", got)
 	}
-	if got := toolDisplayName("bash"); got != "Run command" {
+	if got := toolDisplayName("bash"); got != ">_ Run command" {
 		t.Fatalf("bash label = %q", got)
 	}
 }

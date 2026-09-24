@@ -223,7 +223,7 @@ func (p *PinnedManager) formatLocked() string {
 func formatToolStatus(status string) string {
 	switch {
 	case strings.HasPrefix(status, "🔄 "):
-		return "⏳ " + strings.TrimPrefix(status, "🔄 ")
+		return strings.TrimPrefix(status, "🔄 ")
 	case strings.HasPrefix(status, "✅ "):
 		return "✓ " + strings.TrimPrefix(status, "✅ ")
 	case strings.HasPrefix(status, "⚠️ "):

@@ -408,7 +408,7 @@ func toolDisplayName(name string) string {
 	case "edit":
 		return "📝 Edit file"
 	case "bash":
-		return "Run command"
+		return ">_ Run command"
 	case "glob":
 		return "Find files"
 	case "grep":
