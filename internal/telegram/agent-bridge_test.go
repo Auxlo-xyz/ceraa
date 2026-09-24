@@ -58,7 +58,6 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 			ContextLimit:    236000,
 			MaxOutputTokens: 1024,
 		},
-		MaxSteps:       5,
 		SessionFile:    dir,
 		MemoryFile:     dir + "/memory",
 		SkillFile:      dir + "/skills",

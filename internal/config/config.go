@@ -15,7 +15,6 @@ type Config struct {
 	ActiveProvider           string                     `json:"active_provider,omitempty"`
 	Subscriptions            Subscriptions              `json:"subscriptions,omitempty"`
 	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
-	MaxSteps                 int                        `json:"max_steps,omitempty"`
 	SessionFile              string                     `json:"session_file,omitempty"`
 	WorkspaceRoot            string                     `json:"workspace_root,omitempty"`
 	ToolOutputDir            string                     `json:"tool_output_dir,omitempty"`
@@ -92,7 +91,6 @@ func DefaultConfig() *Config {
 	return &Config{
 		LLM:                      LLMProvider{ContextLimit: 236000, MaxOutputTokens: 8192},
 		ProviderProfiles:         map[string]ProviderProfile{},
-		MaxSteps:                 10,
 		SessionFile:              "sessions",
 		WorkspaceRoot:            defaultWorkspaceRoot(),
 		MaxToolResultChars:       12000,
@@ -198,11 +196,6 @@ func Load() (*Config, error) {
 	if v := os.Getenv("SOORAA_MAX_OUTPUT_TOKENS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.LLM.MaxOutputTokens = n
-		}
-	}
-	if v := os.Getenv("SOORAA_MAX_STEPS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.MaxSteps = n
 		}
 	}
 	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {

@@ -62,7 +62,6 @@ var configCmd = &cobra.Command{
 		fmt.Printf("API Key:      %s\n", maskKey(cfg.LLM.APIKey))
 		fmt.Printf("Telegram:     %s\n", maskToken(cfg.Telegram.BotToken))
 		fmt.Printf("User ID:      %d\n", cfg.Telegram.AllowedUserID)
-		fmt.Printf("Max Steps:    %d\n", cfg.MaxSteps)
 		fmt.Printf("Session File: %s\n", cfg.SessionFile)
 		fmt.Printf("Workspace:    %s\n", cfg.WorkspaceRootPath())
 		return nil
@@ -83,7 +82,6 @@ var configInitCmd = &cobra.Command{
     "bot_token": "",
     "allowed_user_id": 0
   },
-  "max_steps": 10,
   "session_file": "sessions",
   "workspace_root": "/absolute/path/to/sooraa/workspace"
 }

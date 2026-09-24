@@ -136,28 +136,6 @@ func handleVariantCommand(token string, chatID int64, text string) {
 	send(token, chatID, "✅ Variant set to "+variant)
 }
 
-func handleStepsCommand(token string, chatID int64, text string) {
-	parts := strings.Fields(text)
-	if len(parts) < 2 {
-		sendMenuMarkup(token, chatID, "Select max steps", map[string]any{"inline_keyboard": [][]map[string]string{
-			{{"text": "5", "callback_data": "steps:5"}, {"text": "10", "callback_data": "steps:10"}},
-			{{"text": "20", "callback_data": "steps:20"}, {"text": "30", "callback_data": "steps:30"}},
-			{{"text": "✕ Close", "callback_data": "close"}},
-		}})
-		return
-	}
-	steps, err := strconv.Atoi(parts[1])
-	if err != nil {
-		send(token, chatID, "Steps must be a number from 1 to 50")
-		return
-	}
-	if err := defaultState.setMaxSteps(steps); err != nil {
-		send(token, chatID, "Invalid steps: use a value from 1 to 50")
-		return
-	}
-	send(token, chatID, fmt.Sprintf("✅ Max steps set to %d", steps))
-}
-
 func handleProjectCommand(token string, chatID int64, text string) {
 	path := strings.TrimSpace(strings.TrimPrefix(text, "/project"))
 	if path == "" {
@@ -579,7 +557,7 @@ func handleStatus(token string, chatID int64) {
 			sessionTitle = sess.DisplayTitle()
 		}
 	}
-	model, agent, variant, steps := defaultState.values()
+	model, agent, variant := defaultState.values()
 	if model == "" {
 		model = cfg.LLM.Model
 	}
@@ -589,11 +567,8 @@ func handleStatus(token string, chatID int64) {
 	if variant == "" {
 		variant = "default"
 	}
-	if steps == 0 {
-		steps = cfg.MaxSteps
-	}
-	text := fmt.Sprintf("Sooraa status:\n• Session: %s\n• Workspace: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d\n• Max steps: %d",
-		sessionTitle, cfg.WorkspaceRootPath(), defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount, steps)
+	text := fmt.Sprintf("Sooraa status:\n• Session: %s\n• Workspace: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d",
+		sessionTitle, cfg.WorkspaceRootPath(), defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 
@@ -613,9 +588,9 @@ func handleSettings(token string, chatID int64) {
 		providers = append(providers, name+":"+kind)
 	}
 	provider := activeProviderConfig(cfg, defaultState.provider())
-	text := fmt.Sprintf("⚙️ Safe settings\n• Provider: %s\n• Model: %s\n• Endpoint: %s\n• Context limit: %d\n• Max output: %d\n• Max steps: %d\n• Session store: %s\n• Telegram user: configured\n• Subscriptions: %s", defaultState.provider(), provider.Model, provider.URL, provider.ContextLimit, provider.MaxOutputTokens, cfg.MaxSteps, cfg.SessionFile, strings.Join(providers, ", "))
+	text := fmt.Sprintf("⚙️ Safe settings\n• Provider: %s\n• Model: %s\n• Endpoint: %s\n• Context limit: %d\n• Max output: %d\n• Session store: %s\n• Telegram user: configured\n• Subscriptions: %s", defaultState.provider(), provider.Model, provider.URL, provider.ContextLimit, provider.MaxOutputTokens, cfg.SessionFile, strings.Join(providers, ", "))
 	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "reply_markup": map[string]any{"inline_keyboard": [][]map[string]string{
-		{{"text": "🧠 Model", "callback_data": "menu:model"}, {"text": "🔁 Steps", "callback_data": "setting:steps"}},
+		{{"text": "🧠 Model", "callback_data": "menu:model"}},
 		{{"text": "🧮 Context", "callback_data": "menu:context"}, {"text": "✕ Close", "callback_data": "close"}},
 	}}})
 	resp, _ := doTelegramPost(api("sendMessage", token), b)

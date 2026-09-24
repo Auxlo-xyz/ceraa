@@ -19,7 +19,6 @@ func RunAsync(ctx context.Context, cfg Config, store *sessionstore.Store, reg *t
 	_, err := New(RunnerConfig{
 		SessionID:           cfg.SessionID,
 		SystemPrompt:        cfg.SystemPrompt,
-		MaxSteps:            cfg.MaxSteps,
 		Reasoning:           cfg.Reasoning,
 		StopWhenIdle:        cfg.StopWhenIdle,
 		Model:               cfg.Model,

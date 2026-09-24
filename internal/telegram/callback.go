@@ -249,14 +249,6 @@ func handleCallback(token string, q *struct {
 		editCallback(token, chatID, q.Message.MessageID, "Scheduled job removed", menus.InlineForChat("schedule", 0, chatID, currentSessionID(chatID)))
 		return
 	}
-	if data == "setting:steps" {
-		handleStepsCommand(token, chatID, "/steps")
-		return
-	}
-	if strings.HasPrefix(data, "steps:") {
-		handleStepsCommand(token, chatID, "/steps "+strings.TrimPrefix(data, "steps:"))
-		return
-	}
 	if strings.HasPrefix(data, "menu:") {
 		name := strings.TrimPrefix(data, "menu:")
 		editCallback(token, chatID, q.Message.MessageID, "📋 "+name, menus.InlineForChat(name, 0, chatID, currentSessionID(chatID)))
@@ -743,8 +735,6 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 		handleCatalogCommand(token, chatID, command)
 	case "/mcp_catalog":
 		handleCatalogCommand(token, chatID, command)
-	case "/steps":
-		handleStepsCommand(token, chatID, command)
 	case "/help":
 		handleFullHelp(token, chatID)
 	case "/new":

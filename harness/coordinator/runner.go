@@ -23,7 +23,6 @@ import (
 type RunnerConfig struct {
 	SessionID           string
 	SystemPrompt        string
-	MaxSteps            int
 	Reasoning           llm.ReasonLevel
 	StopWhenIdle        bool
 	Model               llm.ProviderConfig
@@ -83,9 +82,6 @@ type Runner struct {
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
 	if cfg.Model.BaseURL == "" {
 		cfg.Model = llm.DefaultConfig()
-	}
-	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = 10
 	}
 	if cfg.ContextLimit <= 0 {
 		cfg.ContextLimit = 236000
@@ -244,7 +240,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		return runErr
 	}
 
-	for step := 0; step < r.cfg.MaxSteps; step++ {
+	step := 0
+	for {
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
 				sess.Runs[i].Step = step
@@ -371,7 +368,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					if saveErr := r.store.Save(sess); saveErr != nil {
 						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 					}
-					step--
 					continue
 				}
 			}
@@ -464,9 +460,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if err := r.store.Save(sess); err != nil {
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
+		step++
 	}
-	err = fmt.Errorf("maximum steps reached without a final answer")
-	return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 }
 
 func (r *Runner) handleInbox(ctx context.Context) error {

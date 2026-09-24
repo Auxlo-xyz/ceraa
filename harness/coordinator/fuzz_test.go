@@ -151,7 +151,6 @@ func TestCoordinatorMalformedInputs(t *testing.T) {
 	cfg := Config{
 		SessionID:    "test-malformed",
 		SystemPrompt: "test",
-		MaxSteps:     1,
 	}
 	cb := Callbacks{}
 

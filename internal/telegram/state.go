@@ -23,7 +23,6 @@ type bridgeState struct {
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
 	Variant          string                            `json:"variant,omitempty"`
-	MaxSteps         int                               `json:"max_steps,omitempty"`
 	ActiveSessions   map[string]string                 `json:"active_sessions,omitempty"`
 	Projects         map[string]string                 `json:"projects,omitempty"`
 	SessionProjects  map[string]string                 `json:"session_projects,omitempty"`
@@ -239,10 +238,10 @@ func (s *bridgeState) alwaysAllowed(toolName string) bool {
 	return s.AlwaysAllow[toolName]
 }
 
-func (s *bridgeState) values() (string, string, string, int) {
+func (s *bridgeState) values() (string, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Model, s.Agent, s.Variant, s.MaxSteps
+	return s.Model, s.Agent, s.Variant
 }
 
 func (s *bridgeState) provider() string {
@@ -322,19 +321,6 @@ func (s *bridgeState) setVariant(variant string) error {
 	s.mu.Lock()
 	s.Variant = variant
 	s.mu.Unlock()
-	return s.save()
-}
-
-func (s *bridgeState) setMaxSteps(steps int) error {
-	if steps < 1 || steps > 50 {
-		return errors.New("max steps must be between 1 and 50")
-	}
-	s.mu.Lock()
-	s.MaxSteps = steps
-	s.mu.Unlock()
-	if err := os.Setenv("SOORAA_MAX_STEPS", strconv.Itoa(steps)); err != nil {
-		return err
-	}
 	return s.save()
 }
 

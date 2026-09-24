@@ -65,7 +65,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
-		MaxSteps:            cfg.MaxSteps,
 		Model:               llm.FromProvider(provider.URL, provider.APIKey, provider.Model),
 		ContextLimit:        provider.ContextLimit,
 		MaxOutputTokens:     provider.MaxOutputTokens,

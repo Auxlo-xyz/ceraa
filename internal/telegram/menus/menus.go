@@ -34,7 +34,6 @@ type runtimeState struct {
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
 	Variant          string                            `json:"variant,omitempty"`
-	MaxSteps         int                               `json:"max_steps,omitempty"`
 	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
 	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
 	Projects         map[string]string                 `json:"projects,omitempty"`
@@ -407,14 +406,13 @@ func projectMenu(roots ...string) map[string]any {
 
 func settingsMenu() map[string]any {
 	cfg, _ := config.Load()
-	model, url, steps, limit := "unknown", "", 0, 0
+	model, url, limit := "unknown", "", 0
 	if cfg != nil {
-		model, url, steps, limit = cfg.LLM.Model, cfg.LLM.URL, cfg.MaxSteps, cfg.LLM.ContextLimit
+		model, url, limit = cfg.LLM.Model, cfg.LLM.URL, cfg.LLM.ContextLimit
 	}
 	rows := [][]map[string]string{
 		{{"text": "🧠 " + model, "callback_data": "menu:model"}},
 		{{"text": "🏷️ Session title settings", "callback_data": "menu:title_settings"}},
-		{{"text": "🔁 Steps: " + strconv.Itoa(steps), "callback_data": "setting:steps"}},
 		{{"text": "🧮 Context: " + strconv.Itoa(limit), "callback_data": "menu:context"}},
 		{{"text": "🌐 " + url, "callback_data": "noop"}},
 		{{"text": "✕ Close", "callback_data": "close"}},

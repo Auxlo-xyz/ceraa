@@ -81,7 +81,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		return errors.New("no project selected")
 	}
 	userText := user
-	_, agentMode, _, _ := defaultState.values()
+	_, agentMode, _ := defaultState.values()
 	if agentMode == "plan" {
 		userText = "[PLAN MODE] Do not modify files or execute commands. Produce a concrete implementation plan and ask before any state-changing action.\n\n" + userText
 	}
@@ -93,7 +93,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		SystemPrompt:        prompt.System,
-		MaxSteps:            cfg.MaxSteps,
 		Model:               llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model),
 		ContextLimit:        providerConfig.ContextLimit,
 		MaxOutputTokens:     providerConfig.MaxOutputTokens,
@@ -229,7 +228,7 @@ func newCompactor(cfg *config.Config, providerID string) *compaction.Compactor {
 	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
-	_, _, variant, _ := defaultState.values()
+	_, _, variant := defaultState.values()
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled
 	}

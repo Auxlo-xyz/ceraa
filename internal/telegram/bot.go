@@ -96,15 +96,12 @@ func registerCommands(token string) error {
 }
 
 func applyStateOverrides() {
-	model, _, _, steps := defaultState.values()
+	model, _, _ := defaultState.values()
 	if model != "" {
 		_ = os.Setenv("SOORAA_MODEL", model)
 	}
 	if provider := defaultState.provider(); provider != "" {
 		_ = os.Setenv("SOORAA_PROVIDER", provider)
-	}
-	if steps > 0 {
-		_ = os.Setenv("SOORAA_MAX_STEPS", strconv.Itoa(steps))
 	}
 	defaultState.mu.RLock()
 	alwaysAllow := make(map[string]bool, len(defaultState.AlwaysAllow))
@@ -895,11 +892,6 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 	if txt == "/project" || strings.HasPrefix(txt, "/project ") {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleProjectCommand(token, chatID, txt)
-		return true
-	}
-	if txt == "/steps" || strings.HasPrefix(txt, "/steps ") {
-		GetDefaultInbox().CheckAndRecord(updateID)
-		handleStepsCommand(token, chatID, txt)
 		return true
 	}
 	if txt == "/search" || strings.HasPrefix(txt, "/search ") {
