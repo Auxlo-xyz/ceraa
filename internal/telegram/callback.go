@@ -247,8 +247,52 @@ func handleCallback(token string, q *struct {
 		return
 	}
 	if data == "provider:custom" {
-		pendingProvider.Store(chatID, providerDraft{})
+		pendingProvider.Store(chatID, providerDraft{ID: "custom", Stage: "url"})
 		send(token, chatID, "Send the provider base URL for the custom profile.")
+		return
+	}
+	if data == "model_catalog_search" {
+		pendingModelSearch.Store(chatID, true)
+		send(token, chatID, "Send words to search for in the model catalog.")
+		return
+	}
+	if data == "provider:model_manual" {
+		cfg, err := config.Load()
+		if err != nil {
+			send(token, chatID, "Config error: "+err.Error())
+			return
+		}
+		profile := activeProviderConfig(cfg, defaultState.provider())
+		pendingProvider.Store(chatID, providerDraft{URL: profile.URL, ID: defaultState.provider(), Stage: "model"})
+		send(token, chatID, "Send the model ID to activate.")
+		return
+	}
+	if strings.HasPrefix(data, "model:") {
+		index, err := strconv.Atoi(strings.TrimPrefix(data, "model:"))
+		if err != nil {
+			return
+		}
+		metadata, ok := menus.ModelChoice(index)
+		if !ok {
+			send(token, chatID, "Model selection expired. Refresh the catalog.")
+			return
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			send(token, chatID, "Config error: "+err.Error())
+			return
+		}
+		current := activeProviderConfig(cfg, defaultState.provider())
+		profile := config.ProviderProfile{URL: current.URL, Model: metadata.ID, ContextLimit: current.ContextLimit, MaxOutputTokens: current.MaxOutputTokens}
+		if err := defaultState.setProviderProfile(defaultState.provider(), profile); err != nil {
+			send(token, chatID, "Model save failed: "+err.Error())
+			return
+		}
+		if err := defaultState.setProvider(defaultState.provider()); err != nil {
+			send(token, chatID, "Provider activation failed: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "✅ Model set to "+metadata.ID, menus.InlineForChat("model", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if strings.HasPrefix(data, "select_agent:") {

@@ -328,6 +328,32 @@ func NewCatalogClient(url, cachePath string, refreshInterval time.Duration) *Cat
 	}
 }
 
+func (c *CatalogClient) List(ctx context.Context) ([]ModelMetadata, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache, _ = c.readCache()
+	}
+	if c.cache != nil && c.fresh() {
+		return c.modelsLocked(), nil
+	}
+	if err := c.refreshLocked(ctx); err != nil {
+		if c.cache != nil {
+			return c.modelsLocked(), err
+		}
+		return nil, err
+	}
+	return c.modelsLocked(), nil
+}
+
+func (c *CatalogClient) modelsLocked() []ModelMetadata {
+	models := make([]ModelMetadata, 0, len(c.cache.Models))
+	for _, model := range c.cache.Models {
+		models = append(models, model)
+	}
+	return models
+}
+
 func (c *CatalogClient) Lookup(ctx context.Context, model string) (ModelMetadata, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

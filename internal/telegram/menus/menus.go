@@ -1,6 +1,7 @@
 package menus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,7 +9,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"sooraa/harness/llm"
 	"sooraa/harness/memory"
 	"sooraa/harness/scheduler"
 	"sooraa/harness/sessionstore"
@@ -77,6 +80,10 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 		return projectMenu(root)
 	case "file_browser":
 		return fileBrowserMenu(root)
+	case "model":
+		return modelMenu(chatID)
+	case "model_catalog":
+		return ModelCatalogForChat(chatID, "")
 	case "memory":
 		return memoryMenu(chatID, sessionID)
 	case "skill":
@@ -96,7 +103,7 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 	case "status", "context":
 		return statusMenu(sessionID)
 	case "model":
-		return modelMenu()
+		return modelMenu(0)
 	case "agent":
 		return agentMenu()
 	case "variant":
@@ -148,7 +155,7 @@ func closeMenu() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "✕ Close", "callback_data": "close"}}}}
 }
 
-func modelMenu() map[string]any {
+func modelMenu(chatID int64) map[string]any {
 	cfg, _ := config.Load()
 	state := runtimeValues()
 	profiles := make(map[string]config.ProviderProfile)
@@ -182,9 +189,79 @@ func modelMenu() map[string]any {
 		}
 		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_provider:" + id}})
 	}
-	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
+	rows = append(rows, []map[string]string{{"text": "🔎 Choose model", "callback_data": "menu:model_catalog"}, {"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
+}
+
+var modelChoices []llm.ModelMetadata
+
+func ModelCatalogForChat(chatID int64, query string) map[string]any {
+	cfg, _ := config.Load()
+	state := runtimeValues()
+	active := state.Provider
+	if active == "" {
+		active = "default"
+	}
+	profileURL := ""
+	for id, profile := range cfg.ProviderProfiles {
+		if id == active {
+			profileURL = profile.URL
+		}
+	}
+	if profile, ok := state.ProviderProfiles[active]; ok {
+		profileURL = profile.URL
+	}
+	if profileURL == "" {
+		profileURL = cfg.LLM.URL
+	}
+	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, time.Duration(cfg.ModelCatalogRefreshHours)*time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	models, _ := catalog.List(ctx)
+	prefix := ""
+	if strings.Contains(profileURL, "poolside") {
+		prefix = "poolside/"
+	}
+	filtered := make([]llm.ModelMetadata, 0, len(models))
+	for _, model := range models {
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(model.ID), prefix) {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(model.ID+" "+model.Name), strings.ToLower(query)) {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID < filtered[j].ID })
+	modelChoices = filtered
+	rows := make([][]map[string]string, 0, 12)
+	for i, model := range filtered {
+		if i >= 10 {
+			break
+		}
+		label := model.ID
+		if len(label) > 44 {
+			label = label[:44] + "..."
+		}
+		rows = append(rows, []map[string]string{{"text": label, "callback_data": fmt.Sprintf("model:%d", i)}})
+	}
+	if len(rows) == 0 {
+		return map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔎 Search models", "callback_data": "model_catalog_search"}, {"text": "✏️ Enter model ID", "callback_data": "provider:model_manual"}},
+			{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}},
+		}}
+	}
+	rows = append(rows, []map[string]string{{"text": "🔎 Search models", "callback_data": "model_catalog_search"}, {"text": "✏️ Enter model ID", "callback_data": "provider:model_manual"}})
+	rows = append(rows, []map[string]string{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+func ModelChoice(index int) (llm.ModelMetadata, bool) {
+	if index < 0 || index >= len(modelChoices) {
+		return llm.ModelMetadata{}, false
+	}
+	return modelChoices[index], true
 }
 
 func agentMenu() map[string]any {
@@ -520,10 +597,11 @@ func scheduleMenu() map[string]any {
 }
 
 func simpleMenu(name, msg string) map[string]any {
-	_ = name
-	_ = msg
+	if msg == "" {
+		msg = name
+	}
 	return map[string]any{"inline_keyboard": [][]map[string]string{
-		{{"text": "✕ Close", "callback_data": "close"}},
+		{{"text": "ℹ️ " + msg, "callback_data": "noop"}, {"text": "✕ Close", "callback_data": "close"}},
 	}}
 }
 
@@ -537,7 +615,7 @@ func Onboarding() map[string]any {
 
 func Hub() map[string]any {
 	labels := map[string]string{
-		"status": "📊 Status", "session": "💬 Sessions", "model": "🧠 Model", "agent": "🤖 Agent",
+		"status": "📊 Status", "session": "💬 Sessions", "model": "🧠 Provider / Model", "agent": "🤖 Agent",
 		"variant": "💭 Variant", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",

@@ -38,6 +38,7 @@ type providerDraft struct {
 }
 
 var pendingMemory sync.Map
+var pendingModelSearch sync.Map
 var pendingProvider sync.Map
 var pendingSchedule sync.Map
 
@@ -739,6 +740,10 @@ func handleWorktree(token string, chatID int64, text string) {
 }
 
 func handlePendingInput(token string, chatID int64, text string) bool {
+	if _, ok := pendingModelSearch.LoadAndDelete(chatID); ok {
+		sendMenuMarkup(token, chatID, "🔎 Model search", menus.ModelCatalogForChat(chatID, text))
+		return true
+	}
 	if value, ok := pendingProvider.Load(chatID); ok {
 		draft := value.(providerDraft)
 		switch draft.Stage {

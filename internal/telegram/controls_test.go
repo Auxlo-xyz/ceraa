@@ -65,6 +65,25 @@ func TestTelegramCommandNamesAreValid(t *testing.T) {
 	}
 }
 
+func TestEmptyMenusExplainTheirState(t *testing.T) {
+	markup := menus.Inline("mcp_catalog", 0)
+	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)
+	if !ok || len(keyboardRows) == 0 {
+		t.Fatal("expected empty-state keyboard")
+	}
+	found := false
+	for _, row := range keyboardRows {
+		for _, button := range row {
+			if strings.Contains(button["text"], "No MCP servers configured") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected an explanation in the empty-state menu")
+	}
+}
+
 func TestOnboardingMenuUsesInlineProviderChoices(t *testing.T) {
 	markup := menus.Onboarding()
 	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)
