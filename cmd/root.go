@@ -24,6 +24,22 @@ var root = &cobra.Command{
 
 var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("sooraa 0.1.0") }}
 
+var setupCmd = &cobra.Command{
+	Use:   "setup",
+	Short: "Configure Sooraa interactively",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSetup(os.Stdin, os.Stdout)
+	},
+}
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Check configuration, provider, Telegram, workspace, and storage",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDoctor()
+	},
+}
+
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Show resolved configuration",
@@ -101,6 +117,8 @@ func maskToken(s string) string {
 
 func Execute() {
 	root.AddCommand(verCmd)
+	root.AddCommand(setupCmd)
+	root.AddCommand(doctorCmd)
 	root.AddCommand(configCmd)
 	root.AddCommand(configInitCmd)
 	if err := root.Execute(); err != nil {
