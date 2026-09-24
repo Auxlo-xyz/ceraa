@@ -141,12 +141,12 @@ func (r *runRenderer) finish(answer string) {
 	if answer != "" {
 		runes := []rune(answer)
 		if len(runes) <= telegramRichMessageLimit {
-			if messageID == 0 {
-				if _, err := sendRichMessage(r.token, r.chatID, answer); err != nil {
+			if !r.publishRichMessage(answer, messageID) {
+				if messageID == 0 {
 					sendPlainMessage(r.token, r.chatID, answer)
+				} else {
+					_ = editTelegramMessage(r.token, r.chatID, messageID, answer)
 				}
-			} else if err := editTelegramRichMessage(r.token, r.chatID, messageID, answer); err != nil {
-				_ = editTelegramMessage(r.token, r.chatID, messageID, answer)
 			}
 		} else if messageID == 0 {
 			for rest := answer; len([]rune(rest)) > 0; {
@@ -163,7 +163,7 @@ func (r *runRenderer) finish(answer string) {
 			}
 		} else {
 			first := string(runes[:telegramRichMessageLimit])
-			if err := editTelegramRichMessage(r.token, r.chatID, messageID, first); err != nil {
+			if !r.publishRichMessage(first, messageID) {
 				_ = editTelegramMessage(r.token, r.chatID, messageID, first)
 			}
 			for rest := string(runes[telegramRichMessageLimit:]); len([]rune(rest)) > 0; {
@@ -211,6 +211,21 @@ func (r *runRenderer) isStopped() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopped
+}
+
+func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
+	if messageID != 0 {
+		if err := editTelegramRichMessage(r.token, r.chatID, messageID, markdown); err == nil {
+			return true
+		}
+	}
+	if _, err := sendRichMessage(r.token, r.chatID, markdown); err != nil {
+		return false
+	}
+	if messageID != 0 {
+		_ = deleteTelegramMessage(r.token, r.chatID, messageID)
+	}
+	return true
 }
 
 const telegramRichMessageLimit = 32768
@@ -294,6 +309,36 @@ func sendRichMessage(token string, chatID int64, markdown string) (int, error) {
 		return 0, fmt.Errorf("sendRichMessage: %s", result.Description)
 	}
 	return result.Result.MessageID, nil
+}
+
+func deleteTelegramMessage(token string, chatID int64, messageID int) error {
+	body, _ := json.Marshal(map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	})
+	resp, err := doTelegramPost(api("deleteMessage", token), body)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("deleteMessage: empty response")
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("deleteMessage: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("deleteMessage response: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("deleteMessage: %s", result.Description)
+	}
+	return nil
 }
 
 func truncateStream(value string) string {

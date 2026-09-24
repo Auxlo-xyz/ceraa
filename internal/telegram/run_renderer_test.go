@@ -75,6 +75,64 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	}
 }
 
+func TestRichMessageFallbackReplacesPreview(t *testing.T) {
+	var mu sync.Mutex
+	var sentMarkdown string
+	var deleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":12}}`))
+		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if _, ok := body["rich_message"]; ok {
+				_, _ = w.Write([]byte(`{"ok":false,"description":"rich edit is unavailable"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if richMessage, ok := body["rich_message"].(map[string]any); ok {
+				mu.Lock()
+				sentMarkdown, _ = richMessage["markdown"].(string)
+				mu.Unlock()
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":13}}`))
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+			mu.Lock()
+			deleted = true
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	pinned := NewPinnedManager("token", 42)
+	defer pinned.close()
+	pinned.Init()
+	renderer := newRunRenderer("token", 42, pinned)
+	answer := "## Heading\n\n1. Step"
+	renderer.content(answer)
+	renderer.finish(answer)
+	renderer.close()
+
+	mu.Lock()
+	markdown := sentMarkdown
+	wasDeleted := deleted
+	mu.Unlock()
+	if markdown != answer || !wasDeleted {
+		t.Fatalf("rich fallback = %q, deleted=%t", markdown, wasDeleted)
+	}
+}
+
 func TestRunRendererStopCancelsTheRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pinned := NewPinnedManager("token", 42)
