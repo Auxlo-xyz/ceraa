@@ -35,8 +35,9 @@ type update struct {
 		From struct {
 			ID int64 `json:"id"`
 		} `json:"from"`
-		Text  string `json:"text"`
-		Photo []struct {
+		MessageID int    `json:"message_id"`
+		Text      string `json:"text"`
+		Photo     []struct {
 			FileID string `json:"file_id"`
 		} `json:"photo"`
 		Document *struct {
@@ -390,6 +391,7 @@ func Run() error {
 				continue
 			}
 			txt := normalizeCommandText(strings.TrimSpace(u.Message.Text))
+			setMenuTriggerPending(u.Message.Chat.ID, u.Message.MessageID)
 			if handlePendingInput(token, u.Message.Chat.ID, txt) {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				continue

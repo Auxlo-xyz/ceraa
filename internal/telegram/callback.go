@@ -69,6 +69,16 @@ func removeCallbackMarkup(token string, chatID int64, messageID int, text string
 	discardTelegramResponse(resp)
 }
 
+func closeCallbackMenu(token string, chatID int64, menuMessageID int) {
+	triggerMessageID := menuTriggerForMessage(chatID, menuMessageID)
+	_ = deleteTelegramMessage(token, chatID, menuMessageID)
+	if triggerMessageID > 0 && triggerMessageID != menuMessageID {
+		_ = deleteTelegramMessage(token, chatID, triggerMessageID)
+	}
+	menuTriggerByMessage.Delete(menuTriggerKey(chatID, menuMessageID))
+	menuTriggerPending.Delete(chatID)
+}
+
 func handleCallback(token string, q *struct {
 	ID   string `json:"id"`
 	From struct {
@@ -91,8 +101,13 @@ func handleCallback(token string, q *struct {
 	fmt.Printf("callback handle id=%s data=%q message=%d\n", q.ID, q.Data, q.Message.MessageID)
 	chatID := q.Message.Chat.ID
 	data := q.Data
+	if triggerMessageID := menuTriggerForMessage(chatID, q.Message.MessageID); triggerMessageID > 0 {
+		setMenuTriggerPending(chatID, triggerMessageID)
+	} else {
+		menuTriggerPending.Delete(chatID)
+	}
 	if data == "close" || data == "close_menu" {
-		removeCallbackMarkup(token, chatID, q.Message.MessageID, q.Message.Text)
+		closeCallbackMenu(token, chatID, q.Message.MessageID)
 		return
 	}
 	if data == "noop" {
