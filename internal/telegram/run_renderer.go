@@ -21,6 +21,7 @@ type runRenderer struct {
 	mu            sync.Mutex
 	messageID     int
 	streamContent string
+	tools         []string
 	lastStream    time.Time
 	lastStatus    time.Time
 	stopped       bool
@@ -49,12 +50,12 @@ func (r *runRenderer) runStream() {
 	for range r.streamSignal {
 		r.mu.Lock()
 		messageID := r.messageID
-		content := r.streamContent
+		text := r.streamTextLocked()
 		r.mu.Unlock()
 		if messageID == 0 {
 			continue
 		}
-		_ = editTelegramMessage(r.token, r.chatID, messageID, truncateStream(content+" ▌"))
+		_ = editTelegramMessage(r.token, r.chatID, messageID, text)
 	}
 }
 
@@ -63,6 +64,19 @@ func (r *runRenderer) signalStream() {
 	case r.streamSignal <- struct{}{}:
 	default:
 	}
+}
+
+func (r *runRenderer) streamTextLocked() string {
+	parts := make([]string, 0, 2)
+	if len(r.tools) > 0 {
+		parts = append(parts, formatToolActivity(r.tools, false))
+	}
+	if content := strings.TrimSpace(r.streamContent); content != "" {
+		parts = append(parts, truncateStream(content+" ▌"))
+	} else if len(parts) == 0 {
+		parts = append(parts, "▌")
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (r *runRenderer) setCancel(cancel context.CancelFunc) {
@@ -98,18 +112,21 @@ func (r *runRenderer) reasoning(value string) {
 }
 
 func (r *runRenderer) tool(value string) {
+	r.mu.Lock()
 	if strings.HasPrefix(value, "🔄") || strings.HasPrefix(value, "✅") || strings.HasPrefix(value, "⚠️") {
-		r.mu.Lock()
 		r.streamContent = ""
-		messageID := r.messageID
-		r.mu.Unlock()
-		if messageID == 0 {
-			r.pinned.ClearContent()
-		} else {
-			r.signalStream()
-		}
 	}
-	r.pinned.UpdateTool(value)
+	r.tools = append(r.tools, value)
+	if len(r.tools) > 8 {
+		r.tools = r.tools[len(r.tools)-8:]
+	}
+	messageID := r.messageID
+	r.mu.Unlock()
+	if messageID == 0 {
+		r.pinned.ClearContent()
+	} else {
+		r.signalStream()
+	}
 }
 
 func (r *runRenderer) content(delta string) {
@@ -134,22 +151,27 @@ func (r *runRenderer) finish(answer string) {
 	r.mu.Lock()
 	stopped := r.stopped
 	messageID := r.messageID
+	tools := append([]string(nil), r.tools...)
 	r.mu.Unlock()
 	if stopped {
 		return
 	}
 	if answer != "" {
-		runes := []rune(answer)
+		displayAnswer := answer
+		if len(tools) > 0 {
+			displayAnswer += "\n\n" + formatToolActivity(tools, true)
+		}
+		runes := []rune(displayAnswer)
 		if len(runes) <= telegramRichMessageLimit {
-			if !r.publishRichMessage(answer, messageID) {
+			if !r.publishRichMessage(displayAnswer, messageID) {
 				if messageID == 0 {
-					sendPlainMessage(r.token, r.chatID, answer)
+					sendPlainMessage(r.token, r.chatID, displayAnswer)
 				} else {
-					_ = editTelegramMessage(r.token, r.chatID, messageID, answer)
+					_ = editTelegramMessage(r.token, r.chatID, messageID, displayAnswer)
 				}
 			}
 		} else if messageID == 0 {
-			for rest := answer; len([]rune(rest)) > 0; {
+			for rest := displayAnswer; len([]rune(rest)) > 0; {
 				chunkRunes := []rune(rest)
 				size := telegramRichMessageLimit
 				if len(chunkRunes) < size {
@@ -404,6 +426,20 @@ func toolDisplayName(name string) string {
 		}
 		return strings.ReplaceAll(name, "_", " ")
 	}
+}
+
+func formatToolActivity(tools []string, final bool) string {
+	lines := make([]string, 0, len(tools))
+	prefix := "• "
+	title := "🛠 Tools"
+	if final {
+		prefix = "- "
+		title = "🛠 Tools used"
+	}
+	for _, status := range tools {
+		lines = append(lines, prefix+formatToolStatus(status))
+	}
+	return title + "\n" + strings.Join(lines, "\n")
 }
 
 func toolResultLabel(result operation.ResultEvent) string {

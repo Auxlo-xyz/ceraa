@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +131,75 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 	mu.Unlock()
 	if markdown != answer || !wasDeleted {
 		t.Fatalf("rich fallback = %q, deleted=%t", markdown, wasDeleted)
+	}
+}
+
+func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
+	var mu sync.Mutex
+	var liveText string
+	var finalMarkdown string
+	var pinnedText string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			messageID := 12
+			if text, ok := body["text"].(string); ok {
+				mu.Lock()
+				pinnedText = text
+				mu.Unlock()
+				if text == "💬" {
+					messageID = 13
+				}
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":` + strconv.Itoa(messageID) + `}}`))
+		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			if messageID, ok := body["message_id"].(float64); ok && messageID == 13 {
+				if text, ok := body["text"].(string); ok {
+					mu.Lock()
+					liveText = text
+					mu.Unlock()
+				}
+			}
+			if richMessage, ok := body["rich_message"].(map[string]any); ok {
+				mu.Lock()
+				finalMarkdown, _ = richMessage["markdown"].(string)
+				mu.Unlock()
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	pinned := NewPinnedManager("token", 42)
+	defer pinned.close()
+	pinned.Init()
+	renderer := newRunRenderer("token", 42, pinned)
+	renderer.tool("🔄 Read file · /workspace/sooraa")
+	renderer.tool("✅ Read file completed")
+	renderer.finish("Done")
+	renderer.close()
+
+	mu.Lock()
+	live := liveText
+	final := finalMarkdown
+	pinnedStatus := pinnedText
+	mu.Unlock()
+	if !strings.Contains(live, "🛠 Tools") || !strings.Contains(live, "⏳ Read file") {
+		t.Fatalf("live assistant message = %q", live)
+	}
+	if !strings.Contains(final, "🛠 Tools used") || !strings.Contains(final, "✓ Read file completed") {
+		t.Fatalf("final assistant message = %q", final)
+	}
+	if strings.Contains(pinnedStatus, "🛠 Tools") {
+		t.Fatalf("pinned message contains tools: %q", pinnedStatus)
 	}
 }
 

@@ -19,7 +19,6 @@ type PinnedManager struct {
 	state     string
 	reasoning string
 	content   string
-	tools     []string
 	updates   chan string
 	closeOnce sync.Once
 	done      chan struct{}
@@ -116,7 +115,6 @@ func (p *PinnedManager) BeginRun() {
 		p.context = ""
 		p.reasoning = ""
 		p.content = ""
-		p.tools = nil
 	})
 }
 
@@ -135,15 +133,6 @@ func (p *PinnedManager) UpdateContent(content string) {
 func (p *PinnedManager) ClearContent() {
 	p.update(func() {
 		p.content = ""
-	})
-}
-
-func (p *PinnedManager) UpdateTool(status string) {
-	p.update(func() {
-		p.tools = append(p.tools, status)
-		if len(p.tools) > 8 {
-			p.tools = p.tools[len(p.tools)-8:]
-		}
 	})
 }
 
@@ -224,13 +213,6 @@ func (p *PinnedManager) formatLocked() string {
 	}
 	if content := strings.TrimSpace(p.content); content != "" {
 		sections = append(sections, "💬 "+truncateStatus(content, 1200))
-	}
-	if len(p.tools) > 0 {
-		toolLines := make([]string, 0, len(p.tools))
-		for _, status := range p.tools {
-			toolLines = append(toolLines, "  "+formatToolStatus(status))
-		}
-		sections = append(sections, "🛠 Tools\n"+strings.Join(toolLines, "\n"))
 	}
 	if len(p.files) > 0 {
 		sections = append(sections, "Files: "+fmt.Sprint(p.files))
