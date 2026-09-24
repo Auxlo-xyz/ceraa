@@ -234,8 +234,14 @@ func TestToolActivityIsReadableAndRedacted(t *testing.T) {
 }
 
 func TestToolDisplayNamesAreHumanReadable(t *testing.T) {
-	if got := toolDisplayName("read"); got != "Read file" {
+	if got := toolDisplayName("read"); got != "📚 Read file" {
 		t.Fatalf("read label = %q", got)
+	}
+	if got := toolDisplayName("write"); got != "📝 Write file" {
+		t.Fatalf("write label = %q", got)
+	}
+	if got := toolDisplayName("edit"); got != "📝 Edit file" {
+		t.Fatalf("edit label = %q", got)
 	}
 	if got := toolDisplayName("bash"); got != "Run command" {
 		t.Fatalf("bash label = %q", got)

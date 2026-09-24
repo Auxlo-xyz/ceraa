@@ -402,11 +402,11 @@ func toolArgsSummary(name string, args map[string]any) string {
 func toolDisplayName(name string) string {
 	switch name {
 	case "read":
-		return "Read file"
+		return "📚 Read file"
 	case "write":
-		return "Write file"
+		return "📝 Write file"
 	case "edit":
-		return "Edit file"
+		return "📝 Edit file"
 	case "bash":
 		return "Run command"
 	case "glob":
