@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,8 +61,11 @@ func (w *WebFetchTool) TranslateResult(op operation.Operation) string {
 	return op.Output
 }
 
-// Run executes the fetch.
 func (w *WebFetchTool) Run(spec operation.Spec) (string, error) {
+	return w.RunContext(context.Background(), spec)
+}
+
+func (w *WebFetchTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
 	url, _ := spec.Args["url"].(string)
 	format, _ := spec.Args["format"].(string)
 	timeout, _ := spec.Args["timeout"].(int)
@@ -75,7 +79,7 @@ func (w *WebFetchTool) Run(spec operation.Spec) (string, error) {
 	}
 
 	// First attempt: browser user agent
-	req, _ := http.NewRequest("GET", url, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 

@@ -17,6 +17,72 @@ import (
 	"sooraa/harness/tool"
 )
 
+func TestRunnerPersistsOperationLedger(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var payload map[string]any
+		if requests.Add(1) == 1 {
+			payload = map[string]any{
+				"choices": []any{map[string]any{
+					"delta": map[string]any{
+						"tool_calls": []any{map[string]any{
+							"index":    0,
+							"id":       "call1",
+							"function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`},
+						}},
+					},
+				}},
+			}
+		} else {
+			payload = map[string]any{
+				"choices": []any{map[string]any{
+					"delta": map[string]any{"content": "done"},
+				}},
+			}
+		}
+		encoded, _ := json.Marshal(payload)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	t.Setenv("SOORAA_API_URL", server.URL)
+	t.Setenv("SOORAA_API_KEY", "test")
+	t.Setenv("SOORAA_MODEL", "test")
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ib, err := inbox.New(context.Background(), nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ib.Stop()
+	err = RunAsync(context.Background(), Config{SessionID: "ledger", SystemPrompt: "test", MaxSteps: 3}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Load("ledger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Operations) != 1 {
+		t.Fatalf("expected one durable operation, got %d", len(sess.Operations))
+	}
+	if sess.Operations[0].Status != sessionstore.StatusCompleted || !sess.Operations[0].ResultPresent {
+		t.Fatalf("operation was not checkpointed: %+v", sess.Operations[0])
+	}
+	found := false
+	for _, message := range sess.Messages {
+		if message.Role == llm.RoleTool && message.ToolCallID == sess.Operations[0].ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("durable operation has no tool result message")
+	}
+}
+
 func TestBuildLLMMessages(t *testing.T) {
 	msgs := []sessionstore.Message{
 		{Role: llm.RoleSystem, Content: "sys"},

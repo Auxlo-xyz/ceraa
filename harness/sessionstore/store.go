@@ -1,50 +1,73 @@
 // Package sessionstore persists session history and operation state.
-// Each session is an append-only JSONL file that can be replayed on restart.
+// Each session is stored as an atomically replaced JSON document with recovery checkpoints.
 // Fork support creates a new session by copying history up to a turn boundary.
 package sessionstore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"sooraa/harness/flock"
 	"sooraa/harness/llm"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 type OperationStatus string
 
 const (
-	StatusPending   OperationStatus = "pending"
-	StatusRunning   OperationStatus = "running"
-	StatusCompleted OperationStatus = "completed"
-	StatusFailed    OperationStatus = "failed"
-	StatusCanceled  OperationStatus = "canceled"
+	StatusPending         OperationStatus = "pending"
+	StatusRunning         OperationStatus = "running"
+	StatusCompleted       OperationStatus = "completed"
+	StatusFailed          OperationStatus = "failed"
+	StatusCanceled        OperationStatus = "canceled"
+	StatusUnknown         OperationStatus = "unknown"
+	StatusCancelRequested OperationStatus = "cancel_requested"
+	StatusCanceledUnknown OperationStatus = "canceled_unknown"
+)
+
+type RunStatus string
+
+const (
+	RunRunning     RunStatus = "running"
+	RunCompleted   RunStatus = "completed"
+	RunFailed      RunStatus = "failed"
+	RunCanceled    RunStatus = "canceled"
+	RunInterrupted RunStatus = "interrupted"
 )
 
 type Operation struct {
-	ID       string          `json:"id"`
-	Tool     string          `json:"tool"`
-	Args     map[string]any  `json:"args,omitempty"`
-	Status   OperationStatus `json:"status"`
-	Output   string          `json:"output,omitempty"`
-	Error    string          `json:"error,omitempty"`
-	ThreadID string          `json:"thread_id,omitempty"`
+	ID            string          `json:"id"`
+	Tool          string          `json:"tool"`
+	Args          map[string]any  `json:"args,omitempty"`
+	Status        OperationStatus `json:"status"`
+	Output        string          `json:"output,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	ThreadID      string          `json:"thread_id,omitempty"`
+	RunID         string          `json:"run_id,omitempty"`
+	ToolCallID    string          `json:"tool_call_id,omitempty"`
+	SpecType      string          `json:"spec_type,omitempty"`
+	SpecArgs      map[string]any  `json:"spec_args,omitempty"`
+	ResultPresent bool            `json:"result_present,omitempty"`
 }
 
 type Message struct {
-	Role       llm.Role        `json:"role"`
-	Content    string          `json:"content,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	ToolResult string          `json:"tool_result,omitempty"`
-	ToolCall   *ToolCallRef    `json:"tool_call,omitempty"`
-	ToolCalls  []ToolCallRef   `json:"tool_calls,omitempty"`
-	Reasoning  string          `json:"reasoning,omitempty"`
-	Compaction *CompactionInfo `json:"compaction,omitempty"`
+	Role              llm.Role        `json:"role"`
+	Content           string          `json:"content,omitempty"`
+	ToolCallID        string          `json:"tool_call_id,omitempty"`
+	ToolResult        string          `json:"tool_result,omitempty"`
+	ToolResultPresent bool            `json:"tool_result_present,omitempty"`
+	ResultStatus      OperationStatus `json:"result_status,omitempty"`
+	ToolCall          *ToolCallRef    `json:"tool_call,omitempty"`
+	ToolCalls         []ToolCallRef   `json:"tool_calls,omitempty"`
+	Reasoning         string          `json:"reasoning,omitempty"`
+	Compaction        *CompactionInfo `json:"compaction,omitempty"`
 }
 
 type CompactionInfo struct {
@@ -69,10 +92,21 @@ func (m Message) AllToolCalls() []ToolCallRef {
 	return nil
 }
 
+type Run struct {
+	ID        string    `json:"id"`
+	User      string    `json:"user,omitempty"`
+	Status    RunStatus `json:"status"`
+	Step      int       `json:"step"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Error     string    `json:"error,omitempty"`
+}
+
 type Session struct {
 	ID         string      `json:"id"`
 	Messages   []Message   `json:"messages"`
 	Operations []Operation `json:"operations"`
+	Runs       []Run       `json:"runs,omitempty"`
 	Version    int         `json:"version"`
 	ParentID   string      `json:"parent_id,omitempty"`
 }
@@ -80,6 +114,7 @@ type Session struct {
 func (s *Session) Clear() error {
 	s.Messages = []Message{}
 	s.Operations = []Operation{}
+	s.Runs = []Run{}
 	return nil
 }
 
@@ -94,6 +129,16 @@ func New(dir string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{dir: dir}, nil
+}
+
+func (s *Store) AcquireRun(id string) (func(), error) {
+	hash := sha256.Sum256([]byte(id))
+	path := filepath.Join(s.dir, ".run-"+hex.EncodeToString(hash[:])+".lock")
+	lock, err := flock.Acquire(path)
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Release() }, nil
 }
 
 func (s *Store) path(id string) string {
@@ -125,6 +170,15 @@ func (s *Store) loadUnlocked(id string) (*Session, error) {
 	}
 	if sess.Version == 0 {
 		sess.Version = schemaVersion
+	}
+	if sess.Messages == nil {
+		sess.Messages = []Message{}
+	}
+	if sess.Operations == nil {
+		sess.Operations = []Operation{}
+	}
+	if sess.Runs == nil {
+		sess.Runs = []Run{}
 	}
 	return &sess, nil
 }
@@ -227,42 +281,94 @@ func (s *Store) Clear(id string) error {
 	return s.Update(id, func(sess *Session) error {
 		sess.Messages = []Message{}
 		sess.Operations = []Operation{}
+		sess.Runs = []Run{}
 		return nil
 	})
 }
 
 func Recover(sess *Session) bool {
 	changed := false
+	if sess.Messages == nil {
+		sess.Messages = []Message{}
+	}
+	if sess.Operations == nil {
+		sess.Operations = []Operation{}
+	}
+	if sess.Runs == nil {
+		sess.Runs = []Run{}
+	}
+
+	operations := make(map[string]*Operation, len(sess.Operations))
+	for i := range sess.Operations {
+		op := &sess.Operations[i]
+		key := op.ToolCallID
+		if key == "" {
+			key = op.ID
+		}
+		if key != "" {
+			operations[key] = op
+		}
+		if op.Status == StatusPending || op.Status == StatusRunning || op.Status == StatusCancelRequested {
+			op.Status = StatusUnknown
+			op.Error = "operation outcome is unknown after restart"
+			changed = true
+		}
+		if (op.Status == StatusCompleted || op.Status == StatusFailed || op.Status == StatusCanceled || op.Status == StatusUnknown) && !op.ResultPresent {
+			op.ResultPresent = true
+			changed = true
+		}
+	}
+	for i := range sess.Runs {
+		if sess.Runs[i].Status == RunRunning {
+			sess.Runs[i].Status = RunInterrupted
+			sess.Runs[i].Error = "run interrupted before completion"
+			changed = true
+		}
+	}
+
 	results := make(map[string]bool)
 	for _, message := range sess.Messages {
 		if message.Role == llm.RoleTool && message.ToolCallID != "" {
-			results[message.ToolCallID] = true
+			if message.ToolResultPresent || message.ToolResult != "" {
+				results[message.ToolCallID] = true
+			}
 		}
 	}
 	recovered := make([]Message, 0, len(sess.Messages))
 	for _, message := range sess.Messages {
+		if message.Role == llm.RoleTool && message.ToolCallID != "" && !message.ToolResultPresent && message.ToolResult != "" {
+			message.ToolResultPresent = true
+			changed = true
+		}
 		recovered = append(recovered, message)
 		for _, call := range message.AllToolCalls() {
 			if results[call.ID] {
 				continue
 			}
+			result := "Error: operation outcome is unknown after restart"
+			status := StatusUnknown
+			if op := operations[call.ID]; op != nil {
+				if op.Output != "" || op.ResultPresent || op.Status == StatusCompleted || op.Status == StatusFailed || op.Status == StatusCanceled {
+					if op.Output != "" {
+						result = op.Output
+					} else if op.Error != "" {
+						result = "Error: " + op.Error
+					}
+					status = op.Status
+				}
+			}
 			recovered = append(recovered, Message{
-				Role:       llm.RoleTool,
-				ToolCallID: call.ID,
-				ToolResult: "Error: execution interrupted before completion",
+				Role:              llm.RoleTool,
+				ToolCallID:        call.ID,
+				ToolResult:        result,
+				ToolResultPresent: true,
+				ResultStatus:      status,
 			})
 			results[call.ID] = true
 			changed = true
 		}
 	}
 	sess.Messages = recovered
-	for i := range sess.Operations {
-		if sess.Operations[i].Status == StatusPending || sess.Operations[i].Status == StatusRunning {
-			sess.Operations[i].Status = StatusFailed
-			sess.Operations[i].Error = "execution interrupted before completion"
-			changed = true
-		}
-	}
 	return changed
 }
 

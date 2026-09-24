@@ -76,9 +76,11 @@ func (w *WebSearchTool) TranslateResult(op operation.Operation) string {
 	return op.Output
 }
 
-// Run executes the search.
 func (w *WebSearchTool) Run(spec operation.Spec) (string, error) {
-	ctx := context.Background()
+	return w.RunContext(context.Background(), spec)
+}
+
+func (w *WebSearchTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
 	query, _ := spec.Args["query"].(string)
 	numResults := 8
 	if n, ok := spec.Args["numResults"].(float64); ok {
@@ -92,7 +94,7 @@ func (w *WebSearchTool) Run(spec operation.Spec) (string, error) {
 	if provider == "exa" {
 		return w.searchExa(ctx, query, numResults)
 	}
-	return w.searchParallel(ctx, query, numResults)
+	return w.searchParallel(ctx, query, numResults, spec.Args["session_id"])
 }
 
 type exaArgs struct {
@@ -145,11 +147,15 @@ func (w *WebSearchTool) searchExa(ctx context.Context, query string, numResults 
 	return callMcp(ctx, url, payload, searchTimeoutSecs, nil)
 }
 
-func (w *WebSearchTool) searchParallel(ctx context.Context, query string, numResults int) (string, error) {
+func (w *WebSearchTool) searchParallel(ctx context.Context, query string, numResults int, rawSessionID any) (string, error) {
+	sessionID, _ := rawSessionID.(string)
+	if sessionID == "" {
+		sessionID = "default"
+	}
 	args := map[string]any{
 		"objective":      query,
 		"search_queries": []string{query},
-		"session_id":     ctx.Value(sessionIDKey{}).(string),
+		"session_id":     sessionID,
 	}
 
 	payload := mcpRequest{

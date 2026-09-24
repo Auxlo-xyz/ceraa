@@ -39,7 +39,7 @@ func (q *QuestionTool) Translate(args map[string]any) (operation.Spec, error) {
 	if v, ok := args["header"]; ok {
 		spec.Args["header"] = v
 	}
-	// Pass sessionID if available in args (set by agent_bridge)
+	// Pass sessionID if available in args (set by agent-bridge)
 	if v, ok := args["session_id"]; ok {
 		spec.Args["session_id"] = v
 	}

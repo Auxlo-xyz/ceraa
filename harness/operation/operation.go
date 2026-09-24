@@ -66,6 +66,10 @@ type ToolRunner interface {
 	RunTool(ctx context.Context, spec Spec) (string, error)
 }
 
+type ContextRunner interface {
+	RunContext(ctx context.Context, spec Spec) (string, error)
+}
+
 // LocalManager runs operations in goroutines within the current process.
 type LocalManager struct {
 	mu      sync.Mutex
@@ -76,8 +80,15 @@ type LocalManager struct {
 
 // New creates a LocalManager. If runner is nil, only built-in types (shell, read, write, glob) are supported.
 func New(runner ToolRunner) *LocalManager {
+	return NewWithBuffer(runner, 64)
+}
+
+func NewWithBuffer(runner ToolRunner, capacity int) *LocalManager {
+	if capacity < 1 {
+		capacity = 1
+	}
 	return &LocalManager{
-		results: make(chan ResultEvent, 64),
+		results: make(chan ResultEvent, capacity),
 		cancels: make(map[string]context.CancelCauseFunc),
 		runner:  runner,
 	}
@@ -143,7 +154,8 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 					to = time.Duration(ts) * time.Second
 				}
 			}
-			r, err := primitives.RunShellContext(ctx, cmd, "", to)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			r, err := primitives.RunShellContext(ctx, cmd, workDir, to)
 			result.Output = r.Content
 			if err != nil {
 				result.Error = err.Error()
@@ -153,6 +165,8 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			}
 		case "read":
 			p, _ := op.Spec.Args["path"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			p = operationPath(p, workDir)
 			r, err := primitives.ReadFile(p)
 			result.Output = r.Content
 			if err != nil {
@@ -163,6 +177,8 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			}
 		case "write":
 			p, _ := op.Spec.Args["path"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			p = operationPath(p, workDir)
 			c, _ := op.Spec.Args["content"].(string)
 			if d := filepath.Dir(p); d != "" {
 				_ = os.MkdirAll(d, 0o755)
@@ -204,15 +220,19 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			result.Status = StatusFailed
 		case "glob":
 			p, _ := op.Spec.Args["pattern"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			p = operationPath(p, workDir)
 			r, _ := primitives.GlobFiles(p)
 			result.Output = r.Content
 			result.Status = StatusCompleted
 		case "grep":
 			pattern, _ := op.Spec.Args["pattern"].(string)
 			path, _ := op.Spec.Args["path"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
 			if path == "" {
-				path = "."
+				path = workDir
 			}
+			path = operationPath(path, workDir)
 			// Use ripgrep if available, fallback to grep
 			var cmd string
 			if _, err := os.Stat("/usr/bin/rg"); err == nil {
@@ -240,6 +260,11 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 					limit = n
 				case int64:
 					limit = int(n)
+				}
+			}
+			if workDir, _ := op.Spec.Args["workdir"].(string); workDir != "" {
+				if _, ok := op.Spec.Args["path"]; !ok {
+					op.Spec.Args["path"] = workDir
 				}
 			}
 			dbPath, _ := op.Spec.Args["db_path"].(string)
@@ -347,6 +372,11 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			result.Error = "unknown operation type: " + op.Spec.Type
 			result.Status = StatusFailed
 		}
+	}
+
+	if ctx.Err() != nil && result.Status == StatusFailed {
+		result.Status = StatusCanceled
+		result.Error = ctx.Err().Error()
 	}
 
 	// Scrub secrets from results before persistence
@@ -476,8 +506,22 @@ func runCatalog(kind string, args map[string]any) (string, error) {
 	return "", fmt.Errorf("unknown catalog: %s", kind)
 }
 
+func operationPath(path, workDir string) string {
+	if path == "" {
+		path = "."
+	}
+	if filepath.IsAbs(path) || workDir == "" {
+		return path
+	}
+	return filepath.Join(workDir, path)
+}
+
 func newSnapshotStore() (*snapshot.Store, error) {
-	return snapshot.New("sessions/.snapshots")
+	dir := os.Getenv("SOORAA_SESSION_FILE")
+	if dir == "" {
+		dir = "sessions"
+	}
+	return snapshot.New(filepath.Join(dir, ".snapshots"))
 }
 
 func todoStoreDir() (string, error) {

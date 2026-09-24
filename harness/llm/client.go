@@ -182,19 +182,24 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 
 	b, _ := json.Marshal(body)
-	hreq, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
-	hreq.Header.Set("Content-Type", "application/json")
-	if c.cfg.APIKey != "" {
-		hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
 
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+		hreq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
+		if err != nil {
+			return err
+		}
+		hreq.Header.Set("Content-Type", "application/json")
+		if c.cfg.APIKey != "" {
+			hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
 		resp, err := c.http.Do(hreq)
 		if err != nil {
 			lastErr = fmt.Errorf("request: %w", err)
 			if attempt < c.cfg.MaxRetries {
-				time.Sleep(backoff(attempt))
+				if !sleepContext(ctx, backoff(attempt)) {
+					break
+				}
 				continue
 			}
 			break
@@ -205,11 +210,14 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			errMsg := fmt.Sprintf("provider error %d: %s", resp.StatusCode, string(raw))
 			lastErr = fmt.Errorf("%s", errMsg)
 			if isTransient(resp.StatusCode) && attempt < c.cfg.MaxRetries {
-				time.Sleep(backoff(attempt))
+				if !sleepContext(ctx, backoff(attempt)) {
+					break
+				}
 				continue
 			}
 			break
 		}
+		defer resp.Body.Close()
 		return c.readStream(resp.Body, onDelta)
 	}
 	return fmt.Errorf("after %d retries: %w", c.cfg.MaxRetries, lastErr)
@@ -309,6 +317,17 @@ func isTransient(status int) bool {
 		return true
 	}
 	return false
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // backoff returns exponential backoff duration for the given attempt (0-based).

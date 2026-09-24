@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"sooraa/harness/operation"
@@ -47,6 +48,7 @@ func (r *Registry) All() []Tool {
 	for _, t := range r.tools {
 		out = append(out, t)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out
 }
 
@@ -227,10 +229,14 @@ func (v *ViewImageTool) Translate(args map[string]any) (operation.Spec, error) {
 	if !ok || p == "" {
 		return operation.Spec{}, fmt.Errorf("path is required")
 	}
+	workDir, _ := args["workdir"].(string)
+	if !filepath.IsAbs(p) && workDir != "" {
+		p = filepath.Join(workDir, p)
+	}
 	if _, err := os.Stat(p); err != nil {
 		return operation.Spec{}, fmt.Errorf("image not found: %s", p)
 	}
-	return operation.Spec{Type: "view_image", Args: map[string]any{"path": p}}, nil
+	return operation.Spec{Type: "view_image", Args: map[string]any{"path": p, "workdir": workDir}}, nil
 }
 func (v *ViewImageTool) TranslateResult(op operation.Operation) string {
 	return op.Output

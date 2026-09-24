@@ -56,7 +56,7 @@ func FuzzSessionStoreCorrupt(f *testing.F) {
 	f.Add([]byte(`{"id":"",}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		store, err := sessionstore.New("testdata_fuzz")
+		store, err := sessionstore.New(t.TempDir())
 		if err != nil {
 			return
 		}

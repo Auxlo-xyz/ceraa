@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"sooraa/harness/event"
+	"sooraa/harness/permission"
 	"sooraa/internal/codexauth"
+	"sooraa/internal/config"
 	"sooraa/internal/logger"
 	"sooraa/internal/secret"
 	"sooraa/internal/telegram/keyboard"
@@ -53,19 +56,71 @@ type update struct {
 			Chat struct {
 				ID int64 `json:"id"`
 			} `json:"chat"`
-			MessageID int `json:"message_id"`
+			MessageID int    `json:"message_id"`
+			Text      string `json:"text"`
 		} `json:"message"`
 	} `json:"callback_query"`
 }
 
-func api(method, token string) string { return "https://api.telegram.org/bot" + token + "/" + method }
+var telegramAPIBase = "https://api.telegram.org/bot"
+var telegramClient = &http.Client{Timeout: 10 * time.Second}
+var telegramPollClient = &http.Client{Timeout: 45 * time.Second}
+
+func api(method, token string) string { return telegramAPIBase + token + "/" + method }
+
+func registerCommands(token string) error {
+	body, err := json.Marshal(commandNames())
+	if err != nil {
+		return err
+	}
+	resp, err := doTelegramPost(api("setMyCommands", token), body)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("setMyCommands returned no response")
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Ok          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.Ok {
+		return fmt.Errorf("setMyCommands: %s", result.Description)
+	}
+	return nil
+}
+
+func applyStateOverrides() {
+	model, _, _, steps := defaultState.values()
+	if model != "" {
+		_ = os.Setenv("SOORAA_MODEL", model)
+	}
+	if steps > 0 {
+		_ = os.Setenv("SOORAA_MAX_STEPS", strconv.Itoa(steps))
+	}
+	defaultState.mu.RLock()
+	alwaysAllow := make(map[string]bool, len(defaultState.AlwaysAllow))
+	for toolName, allowed := range defaultState.AlwaysAllow {
+		alwaysAllow[toolName] = allowed
+	}
+	defaultState.mu.RUnlock()
+	for toolName, allowed := range alwaysAllow {
+		if allowed {
+			permission.Default.AllowAlways(toolName)
+		}
+	}
+}
 
 // doTelegramPost posts with rate-limit retry -> maps to soraacode bot/telegram-client-options.js withTelegramRateLimitRetry max 5
 func doTelegramPost(url string, body []byte) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	for attempt := 0; attempt < 5; attempt++ {
-		resp, err = http.Post(url, "application/json", bytes.NewReader(body))
+		resp, err = telegramClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 			continue
@@ -89,6 +144,14 @@ func doTelegramPost(url string, body []byte) (*http.Response, error) {
 		break
 	}
 	return resp, err
+}
+
+func discardTelegramResponse(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 func send(token string, chatID int64, text string) int {
@@ -166,7 +229,8 @@ func editThinking(token string, chatID int64, msgID int, reasoning string, colla
 	}
 	entities := []map[string]any{{"type": typ, "offset": len(header) + 1, "length": len(text) - len(header) - 1}}
 	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": text, "entities": entities})
-	_, _ = doTelegramPost(api("editMessageText", token), b)
+	resp, _ := doTelegramPost(api("editMessageText", token), b)
+	discardTelegramResponse(resp)
 }
 
 // promptQueue serializes prompts per chat -> maps to soraacode app/managers/prompt-queue-manager.js
@@ -179,8 +243,18 @@ var promptQueue = struct {
 	queue: make(map[int64][]string),
 }
 
+var activeRuns sync.Map
+var detachedChats sync.Map
+
 func Run() error {
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		return fmt.Errorf("load config: %w", cfgErr)
+	}
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		token = cfg.Telegram.BotToken
+	}
 	if token == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN required")
 	}
@@ -203,13 +277,21 @@ func Run() error {
 
 	allow := os.Getenv("TELEGRAM_ALLOWED_USER_ID")
 	var allowID int64
-	if allow != "" {
+	if allow == "" {
+		allowID = cfg.Telegram.AllowedUserID
+	} else {
 		allowID, _ = strconv.ParseInt(strings.TrimSpace(allow), 10, 64)
+	}
+	applyStateOverrides()
+	if err := registerCommands(token); err != nil {
+		logger.Warn("Telegram command registration failed: " + err.Error())
+	} else {
+		logger.Info("Telegram command list registered")
 	}
 	offset := getInitialOffset(token)
 	fmt.Printf("telegram polling start offset=%d\n", offset)
 	for {
-		resp, err := http.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d", offset), token))
+		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
@@ -235,6 +317,7 @@ func Run() error {
 		}
 		for _, u := range out.Result {
 			offset = u.UpdateID + 1
+			fmt.Printf("update=%d has_callback=%t has_message=%t\n", u.UpdateID, u.CallbackQuery != nil, u.Message != nil)
 
 			// Check local inbox cache to prevent processing duplicate updates
 			if u.UpdateID > 0 && GetDefaultInbox().IsDuplicate(u.UpdateID) {
@@ -244,10 +327,24 @@ func Run() error {
 
 			if u.CallbackQuery != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				chatID := int64(0)
+				if u.CallbackQuery.Message != nil {
+					chatID = u.CallbackQuery.Message.Chat.ID
+				}
+				fmt.Printf("callback update=%d data=%q message=%d\n", u.UpdateID, u.CallbackQuery.Data, chatID)
+				if !authorized(allowID, u.CallbackQuery.From.ID, chatID) {
+					send(token, chatID, "Unauthorized.")
+					continue
+				}
 				handleCallback(token, u.CallbackQuery)
 				continue
 			}
 			if u.Message == nil {
+				continue
+			}
+			if !authorized(allowID, u.Message.From.ID, u.Message.Chat.ID) {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				send(token, u.Message.Chat.ID, "Unauthorized.")
 				continue
 			}
 			// media handlers -> map to soraacode app/services/file-browser-service + document-extractor + stt-service
@@ -258,7 +355,7 @@ func Run() error {
 				if path, err := downloadTelegramFile(token, fileID); err == nil {
 					send(token, u.Message.Chat.ID, "📷 Photo saved: "+path+" — send a prompt describing what to do with it, it will be attached via harness/tool view_image")
 				} else {
-					send(token, u.Message.Chat.ID, "📷 Photo received: "+fileID[:16]+"... (download failed: "+err.Error()+")")
+					send(token, u.Message.Chat.ID, "📷 Photo received: "+telegramFilePreview(fileID)+" (download failed: "+err.Error()+")")
 				}
 				continue
 			}
@@ -302,11 +399,11 @@ func Run() error {
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendWithKeyboard(token, u.Message.Chat.ID, "Sooraa ready. Send a task. Use /menu for all 18 menus.", keyboard.Main())
-			case "/codex-login":
+				sendWithKeyboard(token, u.Message.Chat.ID, "Sooraa ready. Send a task. Use /menu for live controls.", keyboard.Main())
+			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexLogin(token, u.Message.Chat.ID)
-			case "/codex-status":
+			case "/codex-status", "/codex_status":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexStatus(token, u.Message.Chat.ID)
 			case "/help":
@@ -321,6 +418,18 @@ func Run() error {
 			case "/status":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleStatus(token, u.Message.Chat.ID)
+			case "/tools":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleToolsCommand(token, u.Message.Chat.ID)
+			case "/todos":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleTodosCommand(token, u.Message.Chat.ID)
+			case "/context", "/context_control":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleContextCommand(token, u.Message.Chat.ID)
+			case "/permission":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handlePermissionCommand(token, u.Message.Chat.ID)
 			case "/settings":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleSettings(token, u.Message.Chat.ID)
@@ -329,38 +438,39 @@ func Run() error {
 				handleAbort(token, u.Message.Chat.ID)
 			case "/detach":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				send(token, u.Message.Chat.ID, "Detached from session. Send any prompt to re-attach.")
+				detachedChats.Store(u.Message.Chat.ID, true)
+				send(token, u.Message.Chat.ID, "🔌 Detached. Send /attach to reattach to this session.")
+			case "/attach":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				detachedChats.Delete(u.Message.Chat.ID)
+				send(token, u.Message.Chat.ID, "🔗 Attached to session "+currentSessionID(u.Message.Chat.ID))
 			case "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "📋 Hub - 18 menus", "reply_markup": menus.Hub()})
-				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Hub())
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				clearSession(strconv.FormatInt(u.Message.Chat.ID, 10))
-				send(token, u.Message.Chat.ID, "🆕 New session started")
+				startNewSession(token, u.Message.Chat.ID)
 			case "/model", "🧠 Model":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Select model", "reply_markup": menus.Inline("model", 0)})
-				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+				handleModelCommand(token, u.Message.Chat.ID, "/model")
 			case "/agent", "🤖 Agent":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Select agent", "reply_markup": menus.Inline("agent", 0)})
-				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+				handleAgentCommand(token, u.Message.Chat.ID, "/agent")
 			case "📊 Context":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				send(token, u.Message.Chat.ID, "Context: 12k/200k 6%")
+				handleContextCommand(token, u.Message.Chat.ID)
 			case "💭 Variant":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": "Variant", "reply_markup": menus.Inline("variant", 0)})
-				http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+				handleVariantCommand(token, u.Message.Chat.ID, "/variant")
 			default:
 				if strings.HasPrefix(txt, "/") {
 					name := strings.TrimPrefix(strings.Fields(txt)[0], "/")
 					for _, m := range menus.All {
 						if m == name {
 							GetDefaultInbox().CheckAndRecord(u.UpdateID)
-							b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": m, "reply_markup": menus.Inline(m, 0)})
-							http.Post(api("sendMessage", token), "application/json", bytes.NewReader(b))
+							b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": m, "reply_markup": menus.InlineForChat(m, 0, u.Message.Chat.ID, currentSessionID(u.Message.Chat.ID))})
+							resp, _ := doTelegramPost(api("sendMessage", token), b)
+							discardTelegramResponse(resp)
 							goto next
 						}
 					}
@@ -369,6 +479,11 @@ func Run() error {
 					continue
 				next:
 				} else {
+					if detached, ok := detachedChats.Load(u.Message.Chat.ID); ok && detached == true {
+						GetDefaultInbox().CheckAndRecord(u.UpdateID)
+						send(token, u.Message.Chat.ID, "🔌 Detached. Send /attach before sending a prompt.")
+						continue
+					}
 					// Deduplicate user prompt request before triggering agent execution
 					if !GetDefaultInbox().CheckAndRecord(u.UpdateID) {
 						fmt.Printf("inbox: duplicate update_id %d skipped before agent execution\n", u.UpdateID)
@@ -381,8 +496,14 @@ func Run() error {
 	}
 }
 
+func authorized(allowID, userID, chatID int64) bool {
+	return allowID == 0 || userID == allowID || chatID == allowID
+}
+
 func handlePrompt(token string, chatID int64, prompt string, updateID int) {
-	sessionID := strconv.FormatInt(chatID, 10)
+	sessionID := currentSessionID(chatID)
+	pinned := getPinnedManager(token, chatID)
+	pinned.Init()
 	thinkingID := sendThinking(token, chatID, "", false)
 	toolID := 0
 	var toolLines []string
@@ -392,11 +513,17 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	// SSE-like event subscription -> maps to soraacode soraacode/events.js subscribeToEvents + event-subscription-service.js
 	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff, 30s idle
 	eventDone := make(chan struct{})
+	eventReady := make(chan struct{})
 	go func() {
 		backoff := time.Second
 		consecutiveTimeouts := 0
 		for {
 			eventCh := event.Default.Subscribe(sessionID, 64)
+			select {
+			case <-eventReady:
+			default:
+				close(eventReady)
+			}
 			idleTimer := time.NewTimer(30 * time.Second)
 			innerDone := false
 			for !innerDone {
@@ -428,12 +555,13 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						tool, _ := e.Data["tool"].(string)
 						reqID, _ := e.Data["request_id"].(string)
 						kb := map[string]any{"inline_keyboard": [][]map[string]string{
-							{{"text": "✓ Allow once", "callback_data": "perm:allowOnce:" + reqID}},
-							{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID}},
-							{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID}},
+							{{"text": "✓ Allow once", "callback_data": "perm:allowOnce:" + reqID + ":" + tool}},
+							{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID + ":" + tool}},
+							{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID + ":" + tool}},
 						}}
 						b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "🔒 Permission required for `" + tool + "`\n`" + fmt.Sprint(e.Data["args"]) + "`", "parse_mode": "Markdown", "reply_markup": kb})
-						_, _ = doTelegramPost(api("sendMessage", token), b)
+						resp, _ := doTelegramPost(api("sendMessage", token), b)
+						discardTelegramResponse(resp)
 					case event.TypeQuestion:
 						ques, _ := e.Data["question"].(string)
 						if ques == "" {
@@ -466,18 +594,17 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 						kb := map[string]any{"inline_keyboard": rows}
 						b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ " + ques, "reply_markup": kb})
-						_, _ = doTelegramPost(api("sendMessage", token), b)
+						resp, _ := doTelegramPost(api("sendMessage", token), b)
+						discardTelegramResponse(resp)
 					case event.TypeCost, event.TypeTokens:
-						// Show cost/tokens separately -> maps to soraacode pinned-message-manager tokens/cost
 						cost, _ := e.Data["cost"].(string)
-						tok, _ := e.Data["tokens"]
 						if cost != "" {
-							send(token, chatID, fmt.Sprintf("💰 Cost: %s Tokens: %v", cost, tok))
-						} else if tok != nil {
-							send(token, chatID, fmt.Sprintf("📊 Tokens: %v", tok))
+							pinned.UpdateCost(cost)
 						}
-						// Pinned update -> maps to soraacode pinned-message-manager
-						// For now also update pinned via separate message (real pinned would edit pinned message)
+						if tok, ok := e.Data["tokens"].(int); ok {
+							pinned.UpdateTokens(tok)
+						}
+						pinned.UpdateContext("Session: " + sessionID)
 					case event.TypeCompact:
 						send(token, chatID, "🗜️ Compacted context")
 					case event.TypeCompactProgress:
@@ -541,8 +668,11 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 			}
 		}
 	}()
+	<-eventReady
 	doneCh := make(chan string, 1)
 	runCtx, cancelRun := context.WithCancel(context.Background())
+	activeRuns.Store(chatID, cancelRun)
+	defer activeRuns.Delete(chatID)
 	go func() {
 		err := runWithThinkingContext(runCtx, sessionID, prompt, func(r string) {
 			reasoning = r
@@ -562,7 +692,11 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 			doneCh <- answer
 		})
 		if err != nil {
-			doneCh <- "error: " + err.Error()
+			if errors.Is(err, context.Canceled) {
+				doneCh <- ""
+			} else {
+				doneCh <- "error: " + err.Error()
+			}
 		}
 	}()
 	select {
@@ -612,11 +746,12 @@ func editTool(token string, chatID int64, msgID int, text string) {
 		text = text[len(text)-3500:]
 	}
 	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": "```\n" + text + "\n```", "parse_mode": "Markdown"})
-	_, _ = doTelegramPost(api("editMessageText", token), b)
+	resp, _ := doTelegramPost(api("editMessageText", token), b)
+	discardTelegramResponse(resp)
 }
 
 func getInitialOffset(token string) int {
-	resp, err := http.Get(api("getUpdates?timeout=0&offset=-1", token))
+	resp, err := telegramClient.Get(api("getUpdates?timeout=0&offset=-1&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D", token))
 	if err != nil {
 		return 0
 	}
@@ -632,9 +767,16 @@ func getInitialOffset(token string) int {
 	return out.Result[len(out.Result)-1].UpdateID + 1
 }
 
+func telegramFilePreview(fileID string) string {
+	if len(fileID) <= 16 {
+		return fileID
+	}
+	return fileID[:16] + "..."
+}
+
 // downloadTelegramFile downloads a Telegram file by file_id -> maps to soraacode app/services/file-download-service.js + document-extractor
 func downloadTelegramFile(token, fileID string) (string, error) {
-	resp, err := http.Get(api("getFile?file_id="+fileID, token))
+	resp, err := telegramClient.Get(api("getFile?file_id="+fileID, token))
 	if err != nil {
 		return "", err
 	}
@@ -653,7 +795,7 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 		return "", fmt.Errorf("getFile failed")
 	}
 	fileURL := "https://api.telegram.org/file/bot" + token + "/" + out.Result.FilePath
-	resp2, err := http.Get(fileURL)
+	resp2, err := telegramClient.Get(fileURL)
 	if err != nil {
 		return "", err
 	}
@@ -748,6 +890,51 @@ func handleSecretCommands(token string, updateID int, chatID int64, txt string) 
 
 // handleHarnessCommands handles harness-mapped commands with args -> maps to soraacode bot/commands
 func handleHarnessCommands(token string, updateID int, chatID int64, txt string) bool {
+	if txt == "/model" || strings.HasPrefix(txt, "/model ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleModelCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/agent" || strings.HasPrefix(txt, "/agent ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleAgentCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/variant" || strings.HasPrefix(txt, "/variant ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleVariantCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/project" || strings.HasPrefix(txt, "/project ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleProjectCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/steps" || strings.HasPrefix(txt, "/steps ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleStepsCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/search" || strings.HasPrefix(txt, "/search ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleSearchCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/index" || strings.HasPrefix(txt, "/index ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleIndexCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/snapshots" {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleSnapshotsCommand(token, chatID)
+		return true
+	}
+	if txt == "/revert" || strings.HasPrefix(txt, "/revert ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleRevertCommand(token, chatID, txt)
+		return true
+	}
 	if txt == "/ls" || strings.HasPrefix(txt, "/ls ") {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleListFiles(token, chatID, txt)
@@ -778,10 +965,9 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 		handleCompaction(token, chatID, txt)
 		return true
 	}
-	// Catalog stubs -> map to soraacode skills/mcp/command catalogs
-	if txt == "/mcp_catalog" || txt == "/skills_catalog" || txt == "/command_catalog" || txt == "/task" || strings.HasPrefix(txt, "/task ") || txt == "/scheduled_task" {
+	if txt == "/mcp_catalog" || txt == "/skills_catalog" || txt == "/command_catalog" {
 		GetDefaultInbox().CheckAndRecord(updateID)
-		send(token, chatID, "Catalog `"+strings.Fields(txt)[0]+"` - harness catalog not yet wired. See `harness/tool/registry.go` - stub, use /menu for available menus.")
+		handleCatalogCommand(token, chatID, txt)
 		return true
 	}
 	return false
@@ -802,7 +988,8 @@ func handleCodexLogin(token string, chatID int64) {
 		"text":         state.ResultMessage(),
 		"reply_markup": json.RawMessage(kb),
 	})
-	http.Post(api("sendMessage", token), "application/json", bytes.NewReader(encoded))
+	resp, _ := telegramClient.Post(api("sendMessage", token), "application/json", bytes.NewReader(encoded))
+	discardTelegramResponse(resp)
 }
 
 func handleCodexStatus(token string, chatID int64) {

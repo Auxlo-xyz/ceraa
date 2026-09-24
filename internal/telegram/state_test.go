@@ -1,0 +1,55 @@
+package telegram
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestBridgeStatePersistsSessionAndProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge-state.json")
+	state := loadBridgeStateFromFile(path)
+	if err := state.setSession(42, "session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.setProject(42, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	loaded := loadBridgeStateFromFile(path)
+	if loaded.sessionID(42) != "session-a" {
+		t.Fatalf("session = %q", loaded.sessionID(42))
+	}
+	if loaded.project(42) == "" {
+		t.Fatal("expected persisted project")
+	}
+	if loaded.projectForSession("session-a") == "" {
+		t.Fatal("expected session project")
+	}
+}
+
+func TestBridgeStateRuntimeValues(t *testing.T) {
+	t.Setenv("SOORAA_MODEL", "test/model")
+	path := filepath.Join(t.TempDir(), "bridge-state.json")
+	state := loadBridgeStateFromFile(path)
+	if err := state.setModel("test/model"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.setAgent("plan"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.setVariant("compact"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.setMaxSteps(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.setAutoCompaction(false); err != nil {
+		t.Fatal(err)
+	}
+	model, agent, variant, steps := state.values()
+	if model != "test/model" || agent != "plan" || variant != "compact" || steps != 7 {
+		t.Fatalf("runtime values = %q %q %q %d", model, agent, variant, steps)
+	}
+	if enabled, configured := state.autoCompaction(); !configured || enabled {
+		t.Fatal("expected automatic compaction to be disabled")
+	}
+}

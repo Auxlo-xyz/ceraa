@@ -70,6 +70,56 @@ func TestRecoverAddsMissingToolResults(t *testing.T) {
 	}
 }
 
+func TestRecoverMaterializesPersistedOperationResult(t *testing.T) {
+	sess := &Session{Messages: []Message{{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []ToolCallRef{{ID: "call-1", Name: "bash", Args: `{"command":"echo hi"}`}},
+	}}, Operations: []Operation{{
+		ID:            "call-1",
+		ToolCallID:    "call-1",
+		Tool:          "bash",
+		Status:        StatusCompleted,
+		Output:        "hi\n",
+		ResultPresent: true,
+	}}}
+	if !Recover(sess) {
+		t.Fatal("expected recovery changes")
+	}
+	if len(sess.Messages) != 2 {
+		t.Fatalf("expected one materialized result, got %d messages", len(sess.Messages))
+	}
+	if sess.Messages[1].ToolResult != "hi\n" || !sess.Messages[1].ToolResultPresent {
+		t.Fatalf("unexpected materialized result: %+v", sess.Messages[1])
+	}
+	if Recover(sess) {
+		t.Fatal("recovery should be idempotent")
+	}
+}
+
+func TestRecoverMarksRunningOperationUnknown(t *testing.T) {
+	sess := &Session{Messages: []Message{{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []ToolCallRef{{ID: "call-1", Name: "write", Args: `{"path":"answer","content":"done"}`}},
+	}}, Operations: []Operation{{
+		ID:         "call-1",
+		ToolCallID: "call-1",
+		Tool:       "write",
+		Status:     StatusRunning,
+	}}}
+	if !Recover(sess) {
+		t.Fatal("expected recovery changes")
+	}
+	if sess.Operations[0].Status != StatusUnknown {
+		t.Fatalf("expected unknown operation, got %s", sess.Operations[0].Status)
+	}
+	if !sess.Messages[1].ToolResultPresent || sess.Messages[1].ResultStatus != StatusUnknown {
+		t.Fatalf("unexpected unknown result: %+v", sess.Messages[1])
+	}
+	if Recover(sess) {
+		t.Fatal("recovery should be idempotent")
+	}
+}
+
 func TestUpdatePersistsClear(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {

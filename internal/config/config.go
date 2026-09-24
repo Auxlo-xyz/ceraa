@@ -88,6 +88,14 @@ func Load() (*Config, error) {
 			cfg.LLM.MaxOutputTokens = n
 		}
 	}
+	if v := os.Getenv("SOORAA_MAX_STEPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxSteps = n
+		}
+	}
+	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {
+		cfg.SessionFile = v
+	}
 
 	// Poolside provider env override
 	if v := os.Getenv("POOLSIDE_API_URL"); v != "" {

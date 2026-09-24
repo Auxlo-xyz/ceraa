@@ -2,13 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
-	"time"
 
-	"sooraa/harness/contextbuilder"
-	"sooraa/harness/inbox"
+	"sooraa/harness/compaction"
+	"sooraa/harness/coordinator"
 	"sooraa/harness/llm"
 	"sooraa/harness/operation"
 	"sooraa/harness/sessionstore"
@@ -17,53 +14,6 @@ import (
 	"sooraa/internal/prompt"
 )
 
-// toolRunner bridges tool.Tool Run methods to operation.ToolRunner.
-type toolRunner struct {
-	reg *tool.Registry
-}
-
-func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, error) {
-	t, ok := r.reg.Get(spec.Type)
-	if !ok {
-		return "", fmt.Errorf("unknown tool type: %s", spec.Type)
-	}
-	runner, ok := t.(tool.Runner)
-	if !ok {
-		return "", fmt.Errorf("tool %s does not support Run", spec.Type)
-	}
-	return runner.Run(spec)
-}
-
-func toLLMItem(m sessionstore.Message) llm.Item {
-	if m.Compaction != nil {
-		return llm.Item{Kind: "text", Role: llm.RoleUser, Text: "<conversation-checkpoint>\n<summary>" + m.Compaction.Summary + "</summary>\n</conversation-checkpoint>"}
-	}
-	if calls := m.AllToolCalls(); len(calls) > 0 {
-		if len(calls) == 1 {
-			return llm.Item{Kind: "tool_call", Role: llm.RoleAssistant, CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, Text: m.Content}
-		}
-		items := make([]llm.ToolCall, 0, len(calls))
-		for _, call := range calls {
-			items = append(items, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
-		}
-		return llm.Item{Kind: "tool_calls", Role: llm.RoleAssistant, ToolCalls: items, Text: m.Content}
-	}
-	return llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Output: m.ToolResult}
-}
-
-func buildRequestMessages(sess *sessionstore.Session, cfg *config.Config) []llm.Item {
-	history := *sess
-	if len(history.Messages) > 0 && history.Messages[0].Role == llm.RoleSystem && history.Messages[0].Compaction == nil {
-		history.Messages = history.Messages[1:]
-	}
-	limit := cfg.LLM.ContextLimit - cfg.LLM.MaxOutputTokens
-	if limit <= 0 {
-		limit = 216000
-	}
-	return contextbuilder.New(&history, prompt.System).BuildWithLimit(limit).Messages
-}
-
-// Run executes the agent for a single user message via the harness.
 func Run(user string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -72,206 +22,39 @@ func Run(user string) error {
 	return RunWithConfig(user, cfg)
 }
 
-// RunWithConfig executes the agent with the provided config.
 func RunWithConfig(user string, cfg *config.Config) error {
-	ctx := context.Background()
+	return RunWithConfigContext(context.Background(), user, cfg)
+}
 
+func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) error {
 	store, err := sessionstore.New(cfg.SessionFile)
 	if err != nil {
 		return fmt.Errorf("session store: %w", err)
 	}
-
-	sess, err := store.Load("cli")
-	if err != nil {
-		return fmt.Errorf("load session: %w", err)
-	}
-	if sessionstore.Recover(sess) {
-		if err := store.Save(sess); err != nil {
-			return fmt.Errorf("recover session: %w", err)
-		}
-	}
-	if len(sess.Messages) == 0 {
-		sess.Messages = append(sess.Messages, sessionstore.Message{
-			Role:    llm.RoleSystem,
-			Content: prompt.System,
-		})
-		_ = store.Save(sess)
-	}
-	sess.Messages = append(sess.Messages, sessionstore.Message{
-		Role:    llm.RoleUser,
-		Content: user,
-	})
-	if err := store.Save(sess); err != nil {
-		return fmt.Errorf("save user turn: %w", err)
-	}
-
-	reg := tool.DefaultRegistry()
-	opMgr := operation.New(&toolRunner{reg: reg})
-
-	// Build initial request
-	builder := contextbuilder.New(sess, prompt.System)
-	req := builder.Build()
-	msgs := req.Messages
-
-	// Tool definitions
-	tdefs := []llm.ToolDef{}
-	for _, t := range reg.All() {
-		tdefs = append(tdefs, llm.ToolDef{
-			Name:        t.Name(),
-			Description: t.Description(),
-			Parameters:  t.Schema(),
-		})
-	}
-
-	// Create inbox (single message, no prior IDs)
-	ib, err := inbox.New(ctx, nil, 1000)
-	if err != nil {
-		return err
-	}
-	defer ib.Stop()
-
-	for i := 0; i < cfg.MaxSteps; i++ {
-		msgs = buildRequestMessages(sess, cfg)
-		client := llm.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
-		streamReq := llm.StreamRequest{
-			Messages:  msgs,
-			Tools:     tdefs,
-			MaxTokens: cfg.LLM.MaxOutputTokens,
-		}
-
-		var contentBuilder strings.Builder
-		var toolCalls []llm.StreamedToolCall
-
-		err := client.Stream(ctx, streamReq, func(delta llm.ProviderResponse) {
-			if delta.Content != "" {
-				contentBuilder.WriteString(delta.Content)
-				fmt.Print(delta.Content)
-			}
-			if len(delta.ToolCalls) > 0 {
-				toolCalls = llm.MergeStreamedToolCalls(toolCalls, delta.ToolCalls)
-			}
-		})
-		if err != nil {
-			return fmt.Errorf("LLM: %w", err)
-		}
-
-		content := contentBuilder.String()
-
-		if len(toolCalls) == 0 {
-			fmt.Println()
-			sess.Messages = append(sess.Messages, sessionstore.Message{
-				Role:    llm.RoleAssistant,
-				Content: content,
-			})
-			_ = store.Save(sess)
-			return nil
-		}
-
-		toolCalls = llm.EnsureToolCallIDs(toolCalls, fmt.Sprintf("call_%d", i))
-		assistantMessage := sessionstore.Message{
-			Role:      llm.RoleAssistant,
-			Content:   content,
-			ToolCalls: make([]sessionstore.ToolCallRef, 0, len(toolCalls)),
-		}
-		for _, tc := range toolCalls {
-			assistantMessage.ToolCalls = append(assistantMessage.ToolCalls, sessionstore.ToolCallRef{ID: tc.ID, Name: tc.Name, Args: tc.Arguments})
-		}
-		sess.Messages = append(sess.Messages, assistantMessage)
-		msgs = append(msgs, toLLMItem(assistantMessage))
-
-		for _, tc := range toolCalls {
-			fmt.Printf("\n» %s\n", tc.Name)
-		}
-
-		resultMap := make(map[string]string)
-		pendingToolIDs := make(map[string]struct{})
-
-		// Execute all tool calls concurrently
-		for _, tc := range toolCalls {
-			var args map[string]any
-			if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
-				resultMap[tc.ID] = "Error: invalid arguments for " + tc.Name + ": " + err.Error()
-				fmt.Printf("✗ invalid args: %s\n", err)
-				continue
-			}
-			t, ok := reg.Get(tc.Name)
-			if !ok {
-				resultMap[tc.ID] = "Error: unknown tool " + tc.Name
-				fmt.Printf("✗ tool %s not found\n", tc.Name)
-				continue
-			}
-			spec, err := t.Translate(args)
-			if err != nil {
-				resultMap[tc.ID] = "Error: " + err.Error()
-				fmt.Printf("✗ translate error: %s\n", err)
-				continue
-			}
-			op := operation.Operation{
-				ID:     tc.ID,
-				Spec:   spec,
-				Status: operation.StatusRunning,
-			}
-			sess.Operations = append(sess.Operations, sessionstore.Operation{ID: tc.ID, Tool: tc.Name, Args: args, Status: sessionstore.StatusRunning})
-			opMgr.Add(op)
-			pendingToolIDs[tc.ID] = struct{}{}
-		}
-
-		if err := store.Save(sess); err != nil {
-			return fmt.Errorf("save tool operations: %w", err)
-		}
-
-		// Collect results
-		timeout := time.After(60 * time.Second)
-		for len(pendingToolIDs) > 0 {
-			select {
-			case r := <-opMgr.Results():
-				delete(pendingToolIDs, r.OpID)
-				if r.Error != "" {
-					resultMap[r.OpID] = "Error: " + r.Error
-				} else {
-					resultMap[r.OpID] = r.Output
+	compactor := compaction.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
+	compactor.ContextLimit = cfg.LLM.ContextLimit
+	compactor.MaxOutputTokens = cfg.LLM.MaxOutputTokens
+	runner := coordinator.New(coordinator.RunnerConfig{
+		SessionID:       "cli",
+		SystemPrompt:    prompt.System,
+		MaxSteps:        cfg.MaxSteps,
+		Model:           llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
+		ContextLimit:    cfg.LLM.ContextLimit,
+		MaxOutputTokens: cfg.LLM.MaxOutputTokens,
+		Compactor:       compactor,
+		Callbacks: coordinator.Callbacks{
+			OnContent: func(content string) { fmt.Print(content) },
+			OnToolStart: func(_ tool.Tool, args map[string]any) {
+				if name, ok := args["tool"].(string); ok {
+					fmt.Printf("\n» %s\n", name)
 				}
-				for i := range sess.Operations {
-					if sess.Operations[i].ID == r.OpID {
-						if r.Status == operation.StatusFailed {
-							sess.Operations[i].Status = sessionstore.StatusFailed
-						} else {
-							sess.Operations[i].Status = sessionstore.StatusCompleted
-						}
-						sess.Operations[i].Output = resultMap[r.OpID]
-						sess.Operations[i].Error = r.Error
-						break
-					}
-				}
-				status := "✓"
-				if r.Status == operation.StatusFailed {
-					status = "✗"
-				}
-				fmt.Printf("%s %s → %d chars\n", status, r.OpID, len(resultMap[r.OpID]))
-			case <-timeout:
-				return fmt.Errorf("tool execution timeout after %d calls", len(pendingToolIDs))
-			}
-		}
-
-		// Append tool results to messages
-		for _, tc := range toolCalls {
-			out := resultMap[tc.ID]
-			if len(out) > 4000 {
-				out = out[:4000] + "...[truncated]"
-			}
-			sess.Messages = append(sess.Messages, sessionstore.Message{
-				Role:       llm.RoleTool,
-				ToolCallID: tc.ID,
-				ToolResult: out,
-			})
-			msgs = append(msgs, llm.Item{
-				Kind:   "text",
-				Role:   llm.RoleTool,
-				CallID: tc.ID,
-				Output: out,
-			})
-		}
-		_ = store.Save(sess)
-	}
-	return nil
+			},
+			OnToolDone: func(result operation.ResultEvent) {
+				fmt.Printf("%s %s → %d chars\n", result.Status, result.OpID, len(result.Output))
+			},
+			OnCompactionStart: func() { fmt.Println("⚡ Compacting context...") },
+		},
+	}, store, tool.DefaultRegistry())
+	_, err = runner.Run(ctx, user)
+	return err
 }
