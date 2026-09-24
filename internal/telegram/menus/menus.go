@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -25,13 +26,15 @@ var All = []string{
 }
 
 type runtimeState struct {
-	Model          string            `json:"model,omitempty"`
-	Agent          string            `json:"agent,omitempty"`
-	Variant        string            `json:"variant,omitempty"`
-	MaxSteps       int               `json:"max_steps,omitempty"`
-	AutoCompaction bool              `json:"auto_compaction,omitempty"`
-	AutoSet        bool              `json:"auto_compaction_set,omitempty"`
-	Projects       map[string]string `json:"projects,omitempty"`
+	Model            string                            `json:"model,omitempty"`
+	Provider         string                            `json:"provider,omitempty"`
+	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
+	Agent            string                            `json:"agent,omitempty"`
+	Variant          string                            `json:"variant,omitempty"`
+	MaxSteps         int                               `json:"max_steps,omitempty"`
+	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
+	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
+	Projects         map[string]string                 `json:"projects,omitempty"`
 }
 
 func runtimeValues() runtimeState {
@@ -147,11 +150,40 @@ func closeMenu() map[string]any {
 
 func modelMenu() map[string]any {
 	cfg, _ := config.Load()
-	model := "unknown"
+	state := runtimeValues()
+	profiles := make(map[string]config.ProviderProfile)
 	if cfg != nil {
-		model = cfg.LLM.Model
+		for id, profile := range cfg.ProviderProfiles {
+			profiles[id] = profile
+		}
+		profiles["default"] = config.ProviderProfile{URL: cfg.LLM.URL, Model: cfg.LLM.Model}
 	}
-	rows := [][]map[string]string{{{"text": "✅ " + model, "callback_data": "noop"}, {"text": "✏️ Set model", "callback_data": "model:custom"}}}
+	for id, profile := range state.ProviderProfiles {
+		profiles[id] = profile
+	}
+	ids := make([]string, 0, len(profiles))
+	for id := range profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	active := state.Provider
+	if active == "" {
+		active = "default"
+	}
+	rows := make([][]map[string]string, 0, len(ids)+1)
+	for _, id := range ids {
+		profile := profiles[id]
+		label := id + " · " + profile.Model
+		if profile.Model == "" {
+			label = id
+		}
+		if id == active {
+			label = "✅ " + label
+		}
+		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_provider:" + id}})
+	}
+	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
+	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }
 

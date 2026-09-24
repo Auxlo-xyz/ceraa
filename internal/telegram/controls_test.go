@@ -65,6 +65,29 @@ func TestTelegramCommandNamesAreValid(t *testing.T) {
 	}
 }
 
+func TestModelMenuOffersProviderButtons(t *testing.T) {
+	markup := menus.Inline("model", 0)
+	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)
+	if !ok {
+		t.Fatal("expected model inline keyboard")
+	}
+	foundProvider := false
+	foundCustom := false
+	for _, row := range keyboardRows {
+		for _, button := range row {
+			if button["callback_data"] == "select_provider:default" {
+				foundProvider = true
+			}
+			if button["callback_data"] == "provider:custom" {
+				foundCustom = true
+			}
+		}
+	}
+	if !foundProvider || !foundCustom {
+		t.Fatal("expected saved-provider and custom-provider buttons")
+	}
+}
+
 func TestNewFeatureMenusUseInlineButtons(t *testing.T) {
 	for _, name := range []string{"memory", "skill", "eval", "schedule"} {
 		markup := menus.Inline(name, 0)

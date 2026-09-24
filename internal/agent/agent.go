@@ -56,18 +56,19 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	if err != nil {
 		return fmt.Errorf("evaluation store: %w", err)
 	}
-	compactor := compaction.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
-	compactor.ContextLimit = cfg.LLM.ContextLimit
-	compactor.MaxOutputTokens = cfg.LLM.MaxOutputTokens
+	provider := cfg.ActiveLLM()
+	compactor := compaction.New(llm.FromProvider(provider.URL, provider.APIKey, provider.Model))
+	compactor.ContextLimit = provider.ContextLimit
+	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
 		MaxSteps:            cfg.MaxSteps,
-		Model:               llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
-		ContextLimit:        cfg.LLM.ContextLimit,
-		MaxOutputTokens:     cfg.LLM.MaxOutputTokens,
+		Model:               llm.FromProvider(provider.URL, provider.APIKey, provider.Model),
+		ContextLimit:        provider.ContextLimit,
+		MaxOutputTokens:     provider.MaxOutputTokens,
 		ToolOutputDir:       cfg.ToolOutputDir,
 		MaxToolResultChars:  cfg.MaxToolResultChars,
 		ModelCatalogURL:     cfg.ModelCatalogURL,

@@ -207,8 +207,18 @@ func handleCallback(token string, q *struct {
 		editCallback(token, chatID, q.Message.MessageID, "✅ Model set to "+model, nil)
 		return
 	}
-	if data == "model:custom" {
-		send(token, chatID, "Send /model <provider/model-id> to set a custom model.")
+	if strings.HasPrefix(data, "select_provider:") {
+		provider := strings.TrimPrefix(data, "select_provider:")
+		if err := defaultState.setProvider(provider); err != nil {
+			send(token, chatID, "Provider save failed: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "✅ Provider set to "+provider, menus.InlineForChat("model", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "provider:custom" {
+		pendingProvider.Store(chatID, providerDraft{})
+		send(token, chatID, "Send the provider base URL for the custom profile.")
 		return
 	}
 	if strings.HasPrefix(data, "select_agent:") {

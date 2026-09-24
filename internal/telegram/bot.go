@@ -100,6 +100,9 @@ func applyStateOverrides() {
 	if model != "" {
 		_ = os.Setenv("SOORAA_MODEL", model)
 	}
+	if provider := defaultState.provider(); provider != "" {
+		_ = os.Setenv("SOORAA_PROVIDER", provider)
+	}
 	if steps > 0 {
 		_ = os.Setenv("SOORAA_MAX_STEPS", strconv.Itoa(steps))
 	}

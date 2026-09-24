@@ -76,16 +76,18 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	if agentMode == "plan" {
 		userText = "[PLAN MODE] Do not modify files or execute commands. Produce a concrete implementation plan and ask before any state-changing action.\n\n" + userText
 	}
-	compactor := newCompactor(cfg)
+	providerID := defaultState.provider()
+	providerConfig := activeProviderConfig(cfg, providerID)
+	compactor := newCompactor(cfg, providerID)
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		SystemPrompt:        prompt.System,
 		MaxSteps:            cfg.MaxSteps,
-		Model:               llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
-		ContextLimit:        cfg.LLM.ContextLimit,
-		MaxOutputTokens:     cfg.LLM.MaxOutputTokens,
+		Model:               llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model),
+		ContextLimit:        providerConfig.ContextLimit,
+		MaxOutputTokens:     providerConfig.MaxOutputTokens,
 		WorkDir:             projectRoot,
 		ToolOutputDir:       cfg.ToolOutputDir,
 		MaxToolResultChars:  cfg.MaxToolResultChars,
@@ -185,11 +187,40 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	return err
 }
 
-func newCompactor(cfg *config.Config) *compaction.Compactor {
-	pcfg := llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model)
+func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvider {
+	result := cfg.LLM
+	profile, ok := cfg.ProviderProfile(providerID)
+	if custom, exists := defaultState.providerProfiles()[providerID]; exists {
+		profile = custom
+		ok = true
+	}
+	if !ok {
+		return result
+	}
+	if profile.URL != "" {
+		result.URL = profile.URL
+	}
+	if profile.APIKey != "" {
+		result.APIKey = profile.APIKey
+	}
+	if profile.Model != "" {
+		result.Model = profile.Model
+	}
+	if profile.ContextLimit > 0 {
+		result.ContextLimit = profile.ContextLimit
+	}
+	if profile.MaxOutputTokens > 0 {
+		result.MaxOutputTokens = profile.MaxOutputTokens
+	}
+	return result
+}
+
+func newCompactor(cfg *config.Config, providerID string) *compaction.Compactor {
+	provider := activeProviderConfig(cfg, providerID)
+	pcfg := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	compactor := compaction.New(pcfg)
-	compactor.ContextLimit = cfg.LLM.ContextLimit
-	compactor.MaxOutputTokens = cfg.LLM.MaxOutputTokens
+	compactor.ContextLimit = provider.ContextLimit
+	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	_, _, variant, _ := defaultState.values()
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled

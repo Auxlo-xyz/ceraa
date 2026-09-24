@@ -6,23 +6,28 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+
+	"sooraa/internal/config"
 )
 
 type bridgeState struct {
-	mu              sync.RWMutex
-	writeMu         sync.Mutex
-	path            string
-	Model           string            `json:"model,omitempty"`
-	Agent           string            `json:"agent,omitempty"`
-	Variant         string            `json:"variant,omitempty"`
-	MaxSteps        int               `json:"max_steps,omitempty"`
-	ActiveSessions  map[string]string `json:"active_sessions,omitempty"`
-	Projects        map[string]string `json:"projects,omitempty"`
-	SessionProjects map[string]string `json:"session_projects,omitempty"`
-	AlwaysAllow     map[string]bool   `json:"always_allow,omitempty"`
-	AutoCompaction  bool              `json:"auto_compaction,omitempty"`
-	AutoSet         bool              `json:"auto_compaction_set,omitempty"`
+	mu               sync.RWMutex
+	writeMu          sync.Mutex
+	path             string
+	Model            string                            `json:"model,omitempty"`
+	Provider         string                            `json:"provider,omitempty"`
+	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
+	Agent            string                            `json:"agent,omitempty"`
+	Variant          string                            `json:"variant,omitempty"`
+	MaxSteps         int                               `json:"max_steps,omitempty"`
+	ActiveSessions   map[string]string                 `json:"active_sessions,omitempty"`
+	Projects         map[string]string                 `json:"projects,omitempty"`
+	SessionProjects  map[string]string                 `json:"session_projects,omitempty"`
+	AlwaysAllow      map[string]bool                   `json:"always_allow,omitempty"`
+	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
+	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
 }
 
 var defaultState = loadBridgeState()
@@ -34,7 +39,7 @@ func loadBridgeState() *bridgeState {
 }
 
 func loadBridgeStateFromFile(path string) *bridgeState {
-	state := &bridgeState{path: path, ActiveSessions: make(map[string]string), Projects: make(map[string]string), SessionProjects: make(map[string]string), AlwaysAllow: make(map[string]bool)}
+	state := &bridgeState{path: path, ActiveSessions: make(map[string]string), Projects: make(map[string]string), SessionProjects: make(map[string]string), AlwaysAllow: make(map[string]bool), ProviderProfiles: make(map[string]config.ProviderProfile)}
 	data, err := os.ReadFile(path)
 	if err == nil {
 		_ = json.Unmarshal(data, state)
@@ -50,6 +55,9 @@ func loadBridgeStateFromFile(path string) *bridgeState {
 	}
 	if state.AlwaysAllow == nil {
 		state.AlwaysAllow = make(map[string]bool)
+	}
+	if state.ProviderProfiles == nil {
+		state.ProviderProfiles = make(map[string]config.ProviderProfile)
 	}
 	state.path = path
 	return state
@@ -189,6 +197,46 @@ func (s *bridgeState) values() (string, string, string, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.Model, s.Agent, s.Variant, s.MaxSteps
+}
+
+func (s *bridgeState) provider() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.Provider == "" {
+		return "default"
+	}
+	return s.Provider
+}
+
+func (s *bridgeState) providerProfiles() map[string]config.ProviderProfile {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profiles := make(map[string]config.ProviderProfile, len(s.ProviderProfiles))
+	for key, profile := range s.ProviderProfiles {
+		profiles[key] = profile
+	}
+	return profiles
+}
+
+func (s *bridgeState) setProvider(provider string) error {
+	if provider == "" {
+		provider = "default"
+	}
+	s.mu.Lock()
+	s.Provider = provider
+	s.mu.Unlock()
+	return s.save()
+}
+
+func (s *bridgeState) setProviderProfile(name string, profile config.ProviderProfile) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("provider name is empty")
+	}
+	s.mu.Lock()
+	s.ProviderProfiles[name] = profile
+	s.mu.Unlock()
+	return s.save()
 }
 
 func (s *bridgeState) setModel(model string) error {

@@ -10,20 +10,22 @@ import (
 
 // Config holds all sooraa settings.
 type Config struct {
-	LLM                      LLMProvider    `json:"llm"`
-	Subscriptions            Subscriptions  `json:"subscriptions,omitempty"`
-	Telegram                 TelegramConfig `json:"telegram,omitempty"`
-	MaxSteps                 int            `json:"max_steps,omitempty"`
-	SessionFile              string         `json:"session_file,omitempty"`
-	ToolOutputDir            string         `json:"tool_output_dir,omitempty"`
-	MaxToolResultChars       int            `json:"max_tool_result_chars,omitempty"`
-	ModelCatalogURL          string         `json:"model_catalog_url,omitempty"`
-	ModelCatalogCache        string         `json:"model_catalog_cache,omitempty"`
-	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
-	MemoryFile               string         `json:"memory_file,omitempty"`
-	SkillFile                string         `json:"skill_file,omitempty"`
-	EvaluationFile           string         `json:"evaluation_file,omitempty"`
-	SchedulerFile            string         `json:"scheduler_file,omitempty"`
+	LLM                      LLMProvider                `json:"llm"`
+	ProviderProfiles         map[string]ProviderProfile `json:"provider_profiles,omitempty"`
+	ActiveProvider           string                     `json:"active_provider,omitempty"`
+	Subscriptions            Subscriptions              `json:"subscriptions,omitempty"`
+	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
+	MaxSteps                 int                        `json:"max_steps,omitempty"`
+	SessionFile              string                     `json:"session_file,omitempty"`
+	ToolOutputDir            string                     `json:"tool_output_dir,omitempty"`
+	MaxToolResultChars       int                        `json:"max_tool_result_chars,omitempty"`
+	ModelCatalogURL          string                     `json:"model_catalog_url,omitempty"`
+	ModelCatalogCache        string                     `json:"model_catalog_cache,omitempty"`
+	ModelCatalogRefreshHours int                        `json:"model_catalog_refresh_hours,omitempty"`
+	MemoryFile               string                     `json:"memory_file,omitempty"`
+	SkillFile                string                     `json:"skill_file,omitempty"`
+	EvaluationFile           string                     `json:"evaluation_file,omitempty"`
+	SchedulerFile            string                     `json:"scheduler_file,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
@@ -31,6 +33,14 @@ type LLMProvider struct {
 	URL             string `json:"url"`
 	Model           string `json:"model"`
 	APIKey          string `json:"api_key,omitempty"`
+	ContextLimit    int    `json:"context_limit,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+}
+
+type ProviderProfile struct {
+	URL             string `json:"url"`
+	APIKey          string `json:"api_key,omitempty"`
+	Model           string `json:"model"`
 	ContextLimit    int    `json:"context_limit,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 }
@@ -65,6 +75,8 @@ func DefaultConfig() *Config {
 			ContextLimit:    236000,
 			MaxOutputTokens: 8192,
 		},
+		ProviderProfiles:         map[string]ProviderProfile{},
+		ActiveProvider:           "default",
 		MaxSteps:                 10,
 		SessionFile:              "sessions",
 		MaxToolResultChars:       12000,
@@ -77,6 +89,55 @@ func DefaultConfig() *Config {
 	}
 }
 
+func (c *Config) ActiveLLM() LLMProvider {
+	id := c.ActiveProvider
+	if id == "" {
+		id = "default"
+	}
+	profile, ok := c.ProviderProfile(id)
+	if !ok {
+		return c.LLM
+	}
+	result := c.LLM
+	if profile.URL != "" {
+		result.URL = profile.URL
+	}
+	if profile.APIKey != "" {
+		result.APIKey = profile.APIKey
+	}
+	if profile.Model != "" {
+		result.Model = profile.Model
+	}
+	if profile.ContextLimit > 0 {
+		result.ContextLimit = profile.ContextLimit
+	}
+	if profile.MaxOutputTokens > 0 {
+		result.MaxOutputTokens = profile.MaxOutputTokens
+	}
+	return result
+}
+
+func (c *Config) ProviderProfile(id string) (ProviderProfile, bool) {
+	if profile, ok := c.ProviderProfiles[id]; ok {
+		return profile, true
+	}
+	if id == "default" {
+		return ProviderProfile{URL: c.LLM.URL, APIKey: c.LLM.APIKey, Model: c.LLM.Model, ContextLimit: c.LLM.ContextLimit, MaxOutputTokens: c.LLM.MaxOutputTokens}, true
+	}
+	return ProviderProfile{}, false
+}
+
+func (c *Config) ProviderIDs() []string {
+	ids := make([]string, 0, len(c.ProviderProfiles)+1)
+	ids = append(ids, "default")
+	for id := range c.ProviderProfiles {
+		if id != "default" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // Load loads config from config file + env override + defaults.
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
@@ -87,6 +148,9 @@ func Load() (*Config, error) {
 	}
 
 	// Env overrides
+	if v := os.Getenv("SOORAA_PROVIDER"); v != "" {
+		cfg.ActiveProvider = v
+	}
 	if v := os.Getenv("SOORAA_API_URL"); v != "" {
 		cfg.LLM.URL = v
 	}

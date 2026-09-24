@@ -29,7 +29,12 @@ func commandCatalog() []menus.CommandSpec {
 	return menus.Commands()
 }
 
+type providerDraft struct {
+	URL string
+}
+
 var pendingMemory sync.Map
+var pendingProvider sync.Map
 var pendingSchedule sync.Map
 
 func commandNames() []map[string]string {
@@ -581,7 +586,8 @@ func handleSettings(token string, chatID int64) {
 		}
 		providers = append(providers, name+":"+kind)
 	}
-	text := fmt.Sprintf("⚙️ Safe settings\n• Model: %s\n• Endpoint: %s\n• Context limit: %d\n• Max output: %d\n• Max steps: %d\n• Session store: %s\n• Telegram user: configured\n• Subscriptions: %s", cfg.LLM.Model, cfg.LLM.URL, cfg.LLM.ContextLimit, cfg.LLM.MaxOutputTokens, cfg.MaxSteps, cfg.SessionFile, strings.Join(providers, ", "))
+	provider := activeProviderConfig(cfg, defaultState.provider())
+	text := fmt.Sprintf("⚙️ Safe settings\n• Provider: %s\n• Model: %s\n• Endpoint: %s\n• Context limit: %d\n• Max output: %d\n• Max steps: %d\n• Session store: %s\n• Telegram user: configured\n• Subscriptions: %s", defaultState.provider(), provider.Model, provider.URL, provider.ContextLimit, provider.MaxOutputTokens, cfg.MaxSteps, cfg.SessionFile, strings.Join(providers, ", "))
 	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "reply_markup": map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "🧠 Model", "callback_data": "menu:model"}, {"text": "🔁 Steps", "callback_data": "setting:steps"}},
 		{{"text": "🧮 Context", "callback_data": "menu:context"}, {"text": "✕ Close", "callback_data": "close"}},
@@ -729,6 +735,36 @@ func handleWorktree(token string, chatID int64, text string) {
 }
 
 func handlePendingInput(token string, chatID int64, text string) bool {
+	if value, ok := pendingProvider.Load(chatID); ok {
+		draft := value.(providerDraft)
+		if draft.URL == "" {
+			if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
+				send(token, chatID, "Provider URL must start with http:// or https://")
+				return true
+			}
+			draft.URL = text
+			pendingProvider.Store(chatID, draft)
+			send(token, chatID, "Send the model ID for the custom provider.")
+			return true
+		}
+		pendingProvider.Delete(chatID)
+		cfg, err := config.Load()
+		if err != nil {
+			send(token, chatID, "Config error: "+err.Error())
+			return true
+		}
+		profile := config.ProviderProfile{URL: draft.URL, Model: text, APIKey: cfg.LLM.APIKey}
+		if err := defaultState.setProviderProfile("custom", profile); err != nil {
+			send(token, chatID, "Custom provider save failed: "+err.Error())
+			return true
+		}
+		if err := defaultState.setProvider("custom"); err != nil {
+			send(token, chatID, "Custom provider activation failed: "+err.Error())
+			return true
+		}
+		send(token, chatID, "✅ Custom provider activated: "+text)
+		return true
+	}
 	if _, ok := pendingMemory.LoadAndDelete(chatID); ok {
 		cfg, err := config.Load()
 		if err != nil {
