@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"sooraa/harness/memory"
 	"sooraa/harness/operation"
+	"sooraa/harness/skills"
 )
 
 // Tool is a capability with a schema and translator.
@@ -244,6 +246,10 @@ func (v *ViewImageTool) TranslateResult(op operation.Operation) string {
 
 // DefaultRegistry returns a registry with all built-in tools.
 func DefaultRegistry() *Registry {
+	return DefaultRegistryWithStores(nil, nil)
+}
+
+func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Store) *Registry {
 	r := NewRegistry()
 	r.Register(&BashTool{})
 	r.Register(&ReadTool{})
@@ -266,8 +272,30 @@ func DefaultRegistry() *Registry {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
 	r.Register(NewWebSearchTool(apiKey, provider))
+	if memoryStore != nil {
+		r.Register(&MemoryTool{Store: memoryStore})
+	}
+	if skillStore != nil {
+		r.Register(&SkillProposalTool{Store: skillStore})
+	}
 
 	return r
+}
+
+func DefaultRegistryForUser(user string, memoryStore *memory.Store, skillStore *skills.Store) *Registry {
+	lower := strings.ToLower(user)
+	memoryEnabled := strings.Contains(lower, "remember") || strings.Contains(lower, "memory") || strings.Contains(lower, "preference")
+	skillEnabled := strings.Contains(lower, "wrong") || strings.Contains(lower, "incorrect") || strings.Contains(lower, "not right") || strings.Contains(lower, "feedback") || strings.Contains(lower, "skill")
+	switch {
+	case memoryEnabled && skillEnabled:
+		return DefaultRegistryWithStores(memoryStore, skillStore)
+	case memoryEnabled:
+		return DefaultRegistryWithStores(memoryStore, nil)
+	case skillEnabled:
+		return DefaultRegistryWithStores(nil, skillStore)
+	default:
+		return DefaultRegistry()
+	}
 }
 
 // ResolvePath returns the absolute path, following symlinks.

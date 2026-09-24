@@ -20,6 +20,10 @@ type Config struct {
 	ModelCatalogURL          string         `json:"model_catalog_url,omitempty"`
 	ModelCatalogCache        string         `json:"model_catalog_cache,omitempty"`
 	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
+	MemoryFile               string         `json:"memory_file,omitempty"`
+	SkillFile                string         `json:"skill_file,omitempty"`
+	EvaluationFile           string         `json:"evaluation_file,omitempty"`
+	SchedulerFile            string         `json:"scheduler_file,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
@@ -52,6 +56,8 @@ type TelegramConfig struct {
 
 // DefaultConfig returns the base defaults before env/file overrides.
 func DefaultConfig() *Config {
+	home, _ := os.UserHomeDir()
+	base := filepath.Join(home, ".config", "sooraa")
 	return &Config{
 		LLM: LLMProvider{
 			URL:             "https://inference.poolside.ai/v1",
@@ -64,6 +70,10 @@ func DefaultConfig() *Config {
 		MaxToolResultChars:       12000,
 		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
 		ModelCatalogRefreshHours: 24,
+		MemoryFile:               filepath.Join(base, "memory"),
+		SkillFile:                filepath.Join(base, "skills"),
+		EvaluationFile:           filepath.Join(base, "evaluations.json"),
+		SchedulerFile:            filepath.Join(base, "scheduler.json"),
 	}
 }
 
@@ -122,6 +132,18 @@ func Load() (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.ModelCatalogRefreshHours = n
 		}
+	}
+	if v := os.Getenv("SOORAA_MEMORY_FILE"); v != "" {
+		cfg.MemoryFile = v
+	}
+	if v := os.Getenv("SOORAA_SKILL_FILE"); v != "" {
+		cfg.SkillFile = v
+	}
+	if v := os.Getenv("SOORAA_EVALUATION_FILE"); v != "" {
+		cfg.EvaluationFile = v
+	}
+	if v := os.Getenv("SOORAA_SCHEDULER_FILE"); v != "" {
+		cfg.SchedulerFile = v
 	}
 
 	// Poolside provider env override

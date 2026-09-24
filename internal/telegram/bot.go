@@ -17,6 +17,7 @@ import (
 
 	"sooraa/harness/event"
 	"sooraa/harness/permission"
+	"sooraa/harness/scheduler"
 	"sooraa/internal/codexauth"
 	"sooraa/internal/config"
 	"sooraa/internal/logger"
@@ -288,6 +289,26 @@ func Run() error {
 	} else {
 		logger.Info("Telegram command list registered")
 	}
+	schedulerStore, schedulerErr := scheduler.New(cfg.SchedulerFile)
+	if schedulerErr != nil {
+		logger.Warn("Scheduler disabled: " + schedulerErr.Error())
+	} else {
+		_ = schedulerStore.Recover(time.Now())
+		schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
+		defer cancelScheduler()
+		go func() {
+			err := schedulerStore.RunWithInterval(schedulerCtx, 30*time.Second, func(runCtx context.Context, job scheduler.Job) error {
+				return runAgentWithConfigContextAt(runCtx, job.SessionID, job.Prompt, cfg, job.Project, nil, nil, func(answer string) {
+					if job.ChatID != 0 {
+						send(token, job.ChatID, "⏰ "+job.Name+": "+answer)
+					}
+				})
+			})
+			if err != nil && schedulerCtx.Err() == nil {
+				logger.Warn("Scheduler stopped: " + err.Error())
+			}
+		}()
+	}
 	offset := getInitialOffset(token)
 	fmt.Printf("telegram polling start offset=%d\n", offset)
 	for {
@@ -387,6 +408,10 @@ func Run() error {
 				continue
 			}
 			txt := strings.TrimSpace(u.Message.Text)
+			if handlePendingInput(token, u.Message.Chat.ID, txt) {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				continue
+			}
 			// Handle secret commands first
 			if handleSecretCommands(token, u.UpdateID, u.Message.Chat.ID, txt) {
 				continue
@@ -424,6 +449,18 @@ func Run() error {
 			case "/todos":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleTodosCommand(token, u.Message.Chat.ID)
+			case "/memory":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleMemoryCommand(token, u.Message.Chat.ID, txt)
+			case "/skill":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleSkillCommand(token, u.Message.Chat.ID, txt)
+			case "/eval":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleEvalCommand(token, u.Message.Chat.ID)
+			case "/schedule":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleScheduleCommand(token, u.Message.Chat.ID, txt)
 			case "/context", "/context_control":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)
@@ -968,6 +1005,26 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 	if txt == "/mcp_catalog" || txt == "/skills_catalog" || txt == "/command_catalog" {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleCatalogCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/memory" || strings.HasPrefix(txt, "/memory ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleMemoryCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/skill" || strings.HasPrefix(txt, "/skill ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleSkillCommand(token, chatID, txt)
+		return true
+	}
+	if txt == "/eval" {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleEvalCommand(token, chatID)
+		return true
+	}
+	if txt == "/schedule" || strings.HasPrefix(txt, "/schedule ") {
+		GetDefaultInbox().CheckAndRecord(updateID)
+		handleScheduleCommand(token, chatID, txt)
 		return true
 	}
 	return false

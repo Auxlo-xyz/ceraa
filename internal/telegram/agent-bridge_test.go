@@ -58,8 +58,11 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 			ContextLimit:    236000,
 			MaxOutputTokens: 1024,
 		},
-		MaxSteps:    5,
-		SessionFile: dir,
+		MaxSteps:       5,
+		SessionFile:    dir,
+		MemoryFile:     dir + "/memory",
+		SkillFile:      dir + "/skills",
+		EvaluationFile: dir + "/evaluations.json",
 	}
 	var final string
 	err := runAgentWithConfig("long-session", "work for several turns", cfg, nil, nil, func(answer string) { final = answer })

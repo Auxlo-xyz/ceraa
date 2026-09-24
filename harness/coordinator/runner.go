@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"sooraa/harness/compaction"
 	"sooraa/harness/contextbuilder"
+	"sooraa/harness/evaluation"
 	"sooraa/harness/inbox"
 	"sooraa/harness/llm"
 	"sooraa/harness/operation"
@@ -33,6 +35,9 @@ type RunnerConfig struct {
 	ModelCatalogURL     string
 	ModelCatalogCache   string
 	ModelCatalogRefresh time.Duration
+	MemoryContext       string
+	SkillContext        string
+	EvaluationStore     *evaluation.Store
 	Inbox               *inbox.Inbox
 	OperationPool       *operation.LocalManager
 	Compactor           *compaction.Compactor
@@ -66,12 +71,13 @@ type Result struct {
 }
 
 type Runner struct {
-	cfg     RunnerConfig
-	store   *sessionstore.Store
-	reg     *tool.Registry
-	opMgr   *operation.LocalManager
-	catalog *llm.CatalogClient
-	cb      Callbacks
+	cfg        RunnerConfig
+	store      *sessionstore.Store
+	reg        *tool.Registry
+	opMgr      *operation.LocalManager
+	catalog    *llm.CatalogClient
+	evaluation *evaluation.Store
+	cb         Callbacks
 }
 
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
@@ -98,7 +104,7 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 		opMgr = operation.NewWithBuffer(&toolRunner{reg: reg}, 4096)
 	}
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
-	return &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, cb: cfg.Callbacks}
+	return &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
 }
 
 type toolRunner struct {
@@ -142,7 +148,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 	}
 	if len(sess.Messages) == 0 {
-		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.cfg.SystemPrompt})
+		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.systemPrompt()})
 	}
 	if user != "" {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: user})
@@ -204,6 +210,28 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].PricingFetchedAt = pricingMetadata.PricingFetchedAt
 				if runErr != nil {
 					sess.Runs[i].Error = runErr.Error()
+				}
+			}
+		}
+		if r.evaluation != nil {
+			requests := 0
+			for _, run := range sess.Runs {
+				if run.ID == runID {
+					requests = run.Requests
+					break
+				}
+			}
+			_ = r.evaluation.Record(evaluation.RunMetrics{
+				ID:        runID,
+				Success:   status == sessionstore.RunCompleted,
+				Tokens:    runUsage.TotalTokens,
+				Requests:  requests,
+				Cost:      runCost.TotalUSD,
+				CostKnown: runCost.Known,
+			})
+			if runCost.Known {
+				if _, err := r.evaluation.Baseline("default"); errors.Is(err, evaluation.ErrBaselineNotFound) {
+					_ = r.evaluation.SetBaselineFromRuns("default")
 				}
 			}
 		}
@@ -503,7 +531,18 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	if limit <= 0 {
 		limit = 216000
 	}
-	return contextbuilder.New(&history, r.cfg.SystemPrompt).BuildWithLimit(limit).Messages
+	return contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit).Messages
+}
+
+func (r *Runner) systemPrompt() string {
+	parts := []string{r.cfg.SystemPrompt}
+	if strings.TrimSpace(r.cfg.SkillContext) != "" {
+		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
+	}
+	if strings.TrimSpace(r.cfg.MemoryContext) != "" {
+		parts = append(parts, strings.TrimSpace(r.cfg.MemoryContext))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 type preparedTool struct {

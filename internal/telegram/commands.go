@@ -9,10 +9,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"sooraa/harness/evaluation"
+	"sooraa/harness/memory"
+	"sooraa/harness/scheduler"
 	"sooraa/harness/search"
 	"sooraa/harness/sessionstore"
+	"sooraa/harness/skills"
 	"sooraa/harness/snapshot"
 	"sooraa/harness/todo"
 	"sooraa/harness/tool"
@@ -23,6 +28,9 @@ import (
 func commandCatalog() []menus.CommandSpec {
 	return menus.Commands()
 }
+
+var pendingMemory sync.Map
+var pendingSchedule sync.Map
 
 func commandNames() []map[string]string {
 	catalog := commandCatalog()
@@ -718,6 +726,262 @@ func handleWorktree(token string, chatID int64, text string) {
 		return
 	}
 	send(token, chatID, "Usage: /worktree [list]")
+}
+
+func handlePendingInput(token string, chatID int64, text string) bool {
+	if _, ok := pendingMemory.LoadAndDelete(chatID); ok {
+		cfg, err := config.Load()
+		if err != nil {
+			send(token, chatID, "Config error: "+err.Error())
+			return true
+		}
+		store, err := memory.New(cfg.MemoryFile)
+		if err != nil {
+			send(token, chatID, "Memory store error: "+err.Error())
+			return true
+		}
+		entry, err := store.Add(defaultState.project(chatID), currentSessionID(chatID), text)
+		if err != nil {
+			send(token, chatID, "Memory save failed: "+err.Error())
+			return true
+		}
+		send(token, chatID, "Memory saved: "+entry.ID)
+		return true
+	}
+	if value, ok := pendingSchedule.LoadAndDelete(chatID); ok {
+		interval, valid := value.(time.Duration)
+		if !valid || interval < time.Minute {
+			return true
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			send(token, chatID, "Config error: "+err.Error())
+			return true
+		}
+		store, err := scheduler.New(cfg.SchedulerFile)
+		if err != nil {
+			send(token, chatID, "Scheduler store error: "+err.Error())
+			return true
+		}
+		job := scheduler.Job{ID: fmt.Sprintf("job_%d", time.Now().UnixNano()), Name: "scheduled task", Prompt: text, SessionID: currentSessionID(chatID), ChatID: chatID, Project: defaultState.project(chatID), Interval: interval}
+		if err := store.Add(job); err != nil {
+			send(token, chatID, "Schedule add failed: "+err.Error())
+			return true
+		}
+		send(token, chatID, "Scheduled job added: "+job.ID)
+		return true
+	}
+	return false
+}
+
+func handleMemoryCommand(token string, chatID int64, text string) {
+	cfg, err := config.Load()
+	if err != nil {
+		send(token, chatID, "Config error: "+err.Error())
+		return
+	}
+	store, err := memory.New(cfg.MemoryFile)
+	if err != nil {
+		send(token, chatID, "Memory store error: "+err.Error())
+		return
+	}
+	project := defaultState.project(chatID)
+	sessionID := currentSessionID(chatID)
+	parts := strings.Fields(text)
+	if len(parts) == 1 {
+		sendMenuMarkup(token, chatID, "🧠 Compact memory", menus.InlineForChat("memory", 0, chatID, sessionID))
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "add" {
+		content := strings.TrimSpace(strings.TrimPrefix(text, "/memory add"))
+		if content == "" {
+			send(token, chatID, "Usage: /memory add <compact fact>")
+			return
+		}
+		entry, err := store.Add(project, sessionID, content)
+		if err != nil {
+			send(token, chatID, "Memory save failed: "+err.Error())
+			return
+		}
+		send(token, chatID, "Memory saved: "+entry.ID)
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "remove" {
+		if err := store.Remove(parts[2]); err != nil {
+			send(token, chatID, "Memory removal failed: "+err.Error())
+			return
+		}
+		send(token, chatID, "Memory removed")
+		return
+	}
+	entries, err := store.List(project, sessionID)
+	if err != nil {
+		send(token, chatID, "Memory load failed: "+err.Error())
+		return
+	}
+	if len(entries) == 0 {
+		send(token, chatID, "No compact memory saved for this project/session")
+		return
+	}
+	var lines []string
+	for i, entry := range entries {
+		lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, entry.Scope, entry.Content))
+	}
+	send(token, chatID, "Memory:\n"+strings.Join(lines, "\n"))
+}
+
+func handleSkillCommand(token string, chatID int64, text string) {
+	cfg, err := config.Load()
+	if err != nil {
+		send(token, chatID, "Config error: "+err.Error())
+		return
+	}
+	store, err := skills.New(cfg.SkillFile)
+	if err != nil {
+		send(token, chatID, "Skill store error: "+err.Error())
+		return
+	}
+	parts := strings.Fields(text)
+	if len(parts) == 1 {
+		sendMenuMarkup(token, chatID, "🧩 Skill proposals", menus.InlineForChat("skill", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if len(parts) >= 4 && parts[1] == "rollback" {
+		version, err := strconv.Atoi(parts[3])
+		if err != nil {
+			send(token, chatID, "Version must be a number")
+			return
+		}
+		skill, err := store.Rollback(parts[2], version)
+		if err != nil {
+			send(token, chatID, "Skill rollback failed: "+err.Error())
+			return
+		}
+		send(token, chatID, fmt.Sprintf("Skill %s restored to version %d as version %d", skill.Name, version, len(skill.Versions)))
+		return
+	}
+	if len(parts) >= 2 && (parts[1] == "approve" || parts[1] == "reject") {
+		if len(parts) < 3 {
+			send(token, chatID, "Usage: /skill approve|reject <proposal_id>")
+			return
+		}
+		if parts[1] == "approve" {
+			skill, err := store.Approve(parts[2])
+			if err != nil {
+				send(token, chatID, "Skill approval failed: "+err.Error())
+				return
+			}
+			send(token, chatID, fmt.Sprintf("Skill %s approved at version %d", skill.Name, len(skill.Versions)))
+		} else {
+			if err := store.Reject(parts[2]); err != nil {
+				send(token, chatID, "Skill rejection failed: "+err.Error())
+				return
+			}
+			send(token, chatID, "Skill proposal rejected")
+		}
+		return
+	}
+	proposals, err := store.ListProposals()
+	if err != nil {
+		send(token, chatID, "Skill store error: "+err.Error())
+		return
+	}
+	var lines []string
+	for i, proposal := range proposals {
+		lines = append(lines, fmt.Sprintf("%d. %s [%s] %s — %s", i+1, proposal.ID, proposal.Status, proposal.SkillName, proposal.Feedback))
+	}
+	if len(lines) == 0 {
+		send(token, chatID, "No skill proposals. The agent can create one with skill_propose after feedback.")
+		return
+	}
+	send(token, chatID, "Skill proposals:\n"+strings.Join(lines, "\n")+"\n\nApprove with /skill approve <proposal_id>")
+}
+
+func handleEvalCommand(token string, chatID int64) {
+	cfg, err := config.Load()
+	if err != nil {
+		send(token, chatID, "Config error: "+err.Error())
+		return
+	}
+	store, err := evaluation.New(cfg.EvaluationFile)
+	if err != nil {
+		send(token, chatID, "Evaluation store error: "+err.Error())
+		return
+	}
+	summary, err := store.Summary()
+	if err != nil {
+		send(token, chatID, "Evaluation load failed: "+err.Error())
+		return
+	}
+	sendMenuMarkup(token, chatID, fmt.Sprintf("📈 Evaluation baseline\n• Runs: %d\n• Success rate: %.1f%%\n• Average tokens: %.0f\n• Average requests: %.2f\n• Cost per known-cost task: $%.6f\n\nCandidate changes are rejected if quality drops or cost exceeds the configured threshold.", summary.TotalRuns, summary.SuccessRate*100, float64(summary.Tokens)/float64(maxInt(summary.TotalRuns, 1)), float64(summary.Requests)/float64(maxInt(summary.TotalRuns, 1)), summary.CostPerTask), menus.InlineForChat("eval", 0, chatID, currentSessionID(chatID)))
+}
+
+func maxInt(value, minimum int) int {
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func handleScheduleCommand(token string, chatID int64, text string) {
+	cfg, err := config.Load()
+	if err != nil {
+		send(token, chatID, "Config error: "+err.Error())
+		return
+	}
+	store, err := scheduler.New(cfg.SchedulerFile)
+	if err != nil {
+		send(token, chatID, "Scheduler store error: "+err.Error())
+		return
+	}
+	parts := strings.Fields(text)
+	if len(parts) == 1 || parts[1] == "list" {
+		sendMenuMarkup(token, chatID, "⏰ Scheduled jobs", menus.InlineForChat("schedule", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	switch parts[1] {
+	case "add":
+		if len(parts) < 4 {
+			send(token, chatID, "Usage: /schedule add <interval like 30m> <prompt>")
+			return
+		}
+		interval, err := time.ParseDuration(parts[2])
+		if err != nil || interval < time.Minute {
+			send(token, chatID, "Interval must be a duration of at least 1m, for example 30m")
+			return
+		}
+		job := scheduler.Job{
+			ID:        fmt.Sprintf("job_%d", time.Now().UnixNano()),
+			Name:      "scheduled task",
+			Prompt:    strings.Join(parts[3:], " "),
+			SessionID: currentSessionID(chatID),
+			ChatID:    chatID,
+			Project:   defaultState.project(chatID),
+			Interval:  interval,
+		}
+		if err := store.Add(job); err != nil {
+			send(token, chatID, "Schedule add failed: "+err.Error())
+			return
+		}
+		send(token, chatID, "Scheduled job added: "+job.ID)
+	case "remove":
+		if len(parts) < 3 {
+			send(token, chatID, "Usage: /schedule remove <job_id>")
+			return
+		}
+		removed, err := store.Remove(parts[2])
+		if err != nil {
+			send(token, chatID, "Schedule remove failed: "+err.Error())
+			return
+		}
+		if removed {
+			send(token, chatID, "Scheduled job removed")
+		} else {
+			send(token, chatID, "Scheduled job not found")
+		}
+	default:
+		send(token, chatID, "Usage: /schedule [list|add <interval> <prompt>|remove <job_id>]")
+	}
 }
 
 // handleHelp shows full command list -> maps to soraacode bot/commands/definitions.js

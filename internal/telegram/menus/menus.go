@@ -8,7 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"sooraa/harness/memory"
+	"sooraa/harness/scheduler"
 	"sooraa/harness/sessionstore"
+	"sooraa/harness/skills"
 	"sooraa/harness/todo"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
@@ -18,6 +21,7 @@ var All = []string{
 	"status", "session", "model", "agent", "variant", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
+	"memory", "skill", "eval", "schedule",
 }
 
 type runtimeState struct {
@@ -70,6 +74,14 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 		return projectMenu(root)
 	case "file_browser":
 		return fileBrowserMenu(root)
+	case "memory":
+		return memoryMenu(chatID, sessionID)
+	case "skill":
+		return skillMenu()
+	case "eval":
+		return evalMenu()
+	case "schedule":
+		return scheduleMenu()
 	default:
 		return InlineForSession(name, page, sessionID)
 	}
@@ -116,6 +128,14 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return historyMenu()
 	case "worktree":
 		return worktreeMenu()
+	case "memory":
+		return memoryMenu(0, sessionID)
+	case "skill":
+		return skillMenu()
+	case "eval":
+		return evalMenu()
+	case "schedule":
+		return scheduleMenu()
 	default:
 		return closeMenu()
 	}
@@ -385,6 +405,88 @@ func worktreeMenu() map[string]any {
 	}}
 }
 
+func memoryMenu(chatID int64, sessionID string) map[string]any {
+	cfg, _ := config.Load()
+	project := projectForChat(chatID)
+	store, err := memory.New(cfg.MemoryFile)
+	if err != nil {
+		return simpleMenu("Memory", "Memory store unavailable")
+	}
+	entries, _ := store.List(project, sessionID)
+	rows := make([][]map[string]string, 0, len(entries)+2)
+	for i, entry := range entries {
+		if i >= 8 {
+			break
+		}
+		label := entry.Content
+		if len(label) > 36 {
+			label = label[:36] + "..."
+		}
+		rows = append(rows, []map[string]string{{"text": "🗑 " + label, "callback_data": "memory:remove:" + entry.ID}})
+	}
+	rows = append(rows, []map[string]string{{"text": "➕ Add memory", "callback_data": "memory:add"}, {"text": "🔄 Refresh", "callback_data": "memory:view"}})
+	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+func skillMenu() map[string]any {
+	cfg, _ := config.Load()
+	store, err := skills.New(cfg.SkillFile)
+	if err != nil {
+		return simpleMenu("Skills", "Skill store unavailable")
+	}
+	proposals, _ := store.ListProposals()
+	rows := make([][]map[string]string, 0, len(proposals)+2)
+	for _, proposal := range proposals {
+		if proposal.Status != skills.Pending {
+			continue
+		}
+		label := proposal.SkillName
+		if len(label) > 28 {
+			label = label[:28] + "..."
+		}
+		rows = append(rows, []map[string]string{
+			{"text": "✅ " + label, "callback_data": "skill:approve:" + proposal.ID},
+			{"text": "✗", "callback_data": "skill:reject:" + proposal.ID},
+		})
+	}
+	rows = append(rows, []map[string]string{{"text": "🔄 Refresh", "callback_data": "skill:view"}, {"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+func evalMenu() map[string]any {
+	return map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text": "🔄 Refresh baseline", "callback_data": "eval:view"}},
+		{{"text": "✕ Close", "callback_data": "close"}},
+	}}
+}
+
+func scheduleMenu() map[string]any {
+	cfg, _ := config.Load()
+	store, err := scheduler.New(cfg.SchedulerFile)
+	if err != nil {
+		return simpleMenu("Schedule", "Scheduler store unavailable")
+	}
+	jobs, _ := store.List()
+	rows := make([][]map[string]string, 0, len(jobs)+5)
+	for _, job := range jobs {
+		label := job.Name
+		if label == "" {
+			label = job.Prompt
+		}
+		if len(label) > 32 {
+			label = label[:32] + "..."
+		}
+		rows = append(rows, []map[string]string{{"text": "🗑 " + label, "callback_data": "schedule:remove:" + job.ID}})
+	}
+	rows = append(rows,
+		[]map[string]string{{"text": "➕ Every 30m", "callback_data": "schedule:preset:30m"}, {"text": "➕ Every 1h", "callback_data": "schedule:preset:1h"}},
+		[]map[string]string{{"text": "➕ Every 24h", "callback_data": "schedule:preset:24h"}},
+		[]map[string]string{{"text": "🔄 Refresh", "callback_data": "schedule:view"}, {"text": "✕ Close", "callback_data": "close"}},
+	)
+	return map[string]any{"inline_keyboard": rows}
+}
+
 func simpleMenu(name, msg string) map[string]any {
 	_ = name
 	_ = msg
@@ -400,7 +502,7 @@ func Hub() map[string]any {
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
-		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree",
+		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
 	}
 	rows := [][]map[string]string{}
 	for i, name := range All {

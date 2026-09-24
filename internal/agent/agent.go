@@ -7,9 +7,12 @@ import (
 
 	"sooraa/harness/compaction"
 	"sooraa/harness/coordinator"
+	"sooraa/harness/evaluation"
 	"sooraa/harness/llm"
+	"sooraa/harness/memory"
 	"sooraa/harness/operation"
 	"sooraa/harness/sessionstore"
+	"sooraa/harness/skills"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
 	"sooraa/internal/prompt"
@@ -28,13 +31,36 @@ func RunWithConfig(user string, cfg *config.Config) error {
 }
 
 func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) error {
+	if cfg.MemoryFile == "" {
+		cfg.MemoryFile = "memory"
+	}
+	if cfg.SkillFile == "" {
+		cfg.SkillFile = "skills"
+	}
+	if cfg.EvaluationFile == "" {
+		cfg.EvaluationFile = "evaluations.json"
+	}
 	store, err := sessionstore.New(cfg.SessionFile)
 	if err != nil {
 		return fmt.Errorf("session store: %w", err)
 	}
+	memoryStore, err := memory.New(cfg.MemoryFile)
+	if err != nil {
+		return fmt.Errorf("memory store: %w", err)
+	}
+	skillStore, err := skills.New(cfg.SkillFile)
+	if err != nil {
+		return fmt.Errorf("skill store: %w", err)
+	}
+	evaluationStore, err := evaluation.New(cfg.EvaluationFile)
+	if err != nil {
+		return fmt.Errorf("evaluation store: %w", err)
+	}
 	compactor := compaction.New(llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model))
 	compactor.ContextLimit = cfg.LLM.ContextLimit
 	compactor.MaxOutputTokens = cfg.LLM.MaxOutputTokens
+	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
+	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
@@ -47,6 +73,9 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		ModelCatalogURL:     cfg.ModelCatalogURL,
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
+		MemoryContext:       memoryContext,
+		SkillContext:        skillContext,
+		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) { fmt.Print(content) },
@@ -60,7 +89,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			},
 			OnCompactionStart: func() { fmt.Println("⚡ Compacting context...") },
 		},
-	}, store, tool.DefaultRegistry())
+	}, store, tool.DefaultRegistryForUser(user, memoryStore, skillStore))
 	_, err = runner.Run(ctx, user)
 	return err
 }

@@ -33,6 +33,16 @@ func TestTelegramCommandNamesAreValid(t *testing.T) {
 	}
 }
 
+func TestNewFeatureMenusUseInlineButtons(t *testing.T) {
+	for _, name := range []string{"memory", "skill", "eval", "schedule"} {
+		markup := menus.Inline(name, 0)
+		keyboard, ok := markup["inline_keyboard"].([][]map[string]string)
+		if !ok || len(keyboard) == 0 {
+			t.Fatalf("expected inline keyboard for %s", name)
+		}
+	}
+}
+
 func TestDynamicToolMenuUsesRegistry(t *testing.T) {
 	markup := menus.Inline("tools", 0)
 	keyboard, ok := markup["inline_keyboard"].([][]map[string]string)

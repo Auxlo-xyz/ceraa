@@ -8,11 +8,14 @@ import (
 
 	"sooraa/harness/compaction"
 	"sooraa/harness/coordinator"
+	"sooraa/harness/evaluation"
 	"sooraa/harness/event"
 	"sooraa/harness/llm"
+	"sooraa/harness/memory"
 	"sooraa/harness/operation"
 	"sooraa/harness/permission"
 	"sooraa/harness/sessionstore"
+	"sooraa/harness/skills"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
 	"sooraa/internal/prompt"
@@ -35,17 +38,47 @@ func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onRea
 }
 
 func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onReasoning, onTool, onAnswer)
+}
+
+func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	if cfg.MemoryFile == "" {
+		cfg.MemoryFile = "memory"
+	}
+	if cfg.SkillFile == "" {
+		cfg.SkillFile = "skills"
+	}
+	if cfg.EvaluationFile == "" {
+		cfg.EvaluationFile = "evaluations.json"
+	}
 	store, err := sessionstore.New(cfg.SessionFile)
 	if err != nil {
 		return err
 	}
-	projectRoot := defaultState.projectForSession(sessionID)
+	memoryStore, err := memory.New(cfg.MemoryFile)
+	if err != nil {
+		return err
+	}
+	skillStore, err := skills.New(cfg.SkillFile)
+	if err != nil {
+		return err
+	}
+	evaluationStore, err := evaluation.New(cfg.EvaluationFile)
+	if err != nil {
+		return err
+	}
+	projectRoot := workdirOverride
+	if projectRoot == "" {
+		projectRoot = defaultState.projectForSession(sessionID)
+	}
 	userText := user
 	_, agentMode, _, _ := defaultState.values()
 	if agentMode == "plan" {
 		userText = "[PLAN MODE] Do not modify files or execute commands. Produce a concrete implementation plan and ask before any state-changing action.\n\n" + userText
 	}
 	compactor := newCompactor(cfg)
+	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
+	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		SystemPrompt:        prompt.System,
@@ -59,6 +92,9 @@ func runAgentWithConfigContext(parent context.Context, sessionID string, user st
 		ModelCatalogURL:     cfg.ModelCatalogURL,
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
+		MemoryContext:       memoryContext,
+		SkillContext:        skillContext,
+		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,
 		ForcedCompaction:    func() bool { return consumeForcedCompaction(sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
@@ -144,7 +180,7 @@ func runAgentWithConfigContext(parent context.Context, sessionID string, user st
 				}
 			},
 		},
-	}, store, tool.DefaultRegistry())
+	}, store, tool.DefaultRegistryForUser(user, memoryStore, skillStore))
 	_, err = runner.Run(parent, userText)
 	return err
 }

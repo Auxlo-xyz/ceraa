@@ -8,9 +8,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"sooraa/harness/memory"
 	"sooraa/harness/permission"
 	"sooraa/harness/question"
+	"sooraa/harness/scheduler"
+	"sooraa/harness/skills"
 	"sooraa/harness/todo"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
@@ -92,6 +96,93 @@ func handleCallback(token string, q *struct {
 		return
 	}
 	if data == "noop" {
+		return
+	}
+	if data == "memory:view" {
+		editCallback(token, chatID, q.Message.MessageID, "🧠 Compact memory", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "memory:add" {
+		pendingMemory.Store(chatID, true)
+		send(token, chatID, "Send the compact fact or preference to remember. I’ll save it as the next message.")
+		return
+	}
+	if strings.HasPrefix(data, "memory:remove:") {
+		cfg, err := config.Load()
+		if err == nil {
+			store, storeErr := memory.New(cfg.MemoryFile)
+			if storeErr == nil {
+				if err := store.Remove(strings.TrimPrefix(data, "memory:remove:")); err != nil {
+					send(token, chatID, "Memory removal failed: "+err.Error())
+					return
+				}
+			}
+		}
+		editCallback(token, chatID, q.Message.MessageID, "Memory removed", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "skill:view" {
+		editCallback(token, chatID, q.Message.MessageID, "🧩 Skill proposals", menus.InlineForChat("skill", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "skill:approve:") || strings.HasPrefix(data, "skill:reject:") {
+		cfg, err := config.Load()
+		if err != nil {
+			send(token, chatID, "Config error: "+err.Error())
+			return
+		}
+		store, err := skills.New(cfg.SkillFile)
+		if err != nil {
+			send(token, chatID, "Skill store error: "+err.Error())
+			return
+		}
+		action := "approve"
+		id := strings.TrimPrefix(data, "skill:approve:")
+		if strings.HasPrefix(data, "skill:reject:") {
+			action = "reject"
+			id = strings.TrimPrefix(data, "skill:reject:")
+		}
+		result := "approved"
+		if action == "approve" {
+			_, err = store.Approve(id)
+		} else {
+			result = "rejected"
+			err = store.Reject(id)
+		}
+		if err != nil {
+			send(token, chatID, "Skill update failed: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "Skill proposal "+result, menus.InlineForChat("skill", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "eval:view" {
+		handleEvalCommand(token, chatID)
+		return
+	}
+	if data == "schedule:view" {
+		editCallback(token, chatID, q.Message.MessageID, "⏰ Scheduled jobs", menus.InlineForChat("schedule", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "schedule:preset:") {
+		interval, err := time.ParseDuration(strings.TrimPrefix(data, "schedule:preset:"))
+		if err != nil || interval < time.Minute {
+			send(token, chatID, "Invalid schedule interval")
+			return
+		}
+		pendingSchedule.Store(chatID, interval)
+		send(token, chatID, "Send the task to run on that schedule as the next message.")
+		return
+	}
+	if strings.HasPrefix(data, "schedule:remove:") {
+		cfg, err := config.Load()
+		if err == nil {
+			store, storeErr := scheduler.New(cfg.SchedulerFile)
+			if storeErr == nil {
+				_, _ = store.Remove(strings.TrimPrefix(data, "schedule:remove:"))
+			}
+		}
+		editCallback(token, chatID, q.Message.MessageID, "Scheduled job removed", menus.InlineForChat("schedule", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if data == "setting:steps" {
