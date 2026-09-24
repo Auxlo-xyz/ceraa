@@ -139,14 +139,45 @@ func (r *runRenderer) finish(answer string) {
 		return
 	}
 	if answer != "" {
-		if messageID == 0 {
-			sendWithKeyboard(r.token, r.chatID, answer, nil)
-		} else if len([]rune(answer)) <= 4000 {
-			_ = editTelegramMessageMode(r.token, r.chatID, messageID, answer, "Markdown")
+		runes := []rune(answer)
+		if len(runes) <= telegramRichMessageLimit {
+			if messageID == 0 {
+				if _, err := sendRichMessage(r.token, r.chatID, answer); err != nil {
+					sendPlainMessage(r.token, r.chatID, answer)
+				}
+			} else if err := editTelegramRichMessage(r.token, r.chatID, messageID, answer); err != nil {
+				_ = editTelegramMessage(r.token, r.chatID, messageID, answer)
+			}
+		} else if messageID == 0 {
+			for rest := answer; len([]rune(rest)) > 0; {
+				chunkRunes := []rune(rest)
+				size := telegramRichMessageLimit
+				if len(chunkRunes) < size {
+					size = len(chunkRunes)
+				}
+				chunk := string(chunkRunes[:size])
+				rest = string(chunkRunes[size:])
+				if _, err := sendRichMessage(r.token, r.chatID, chunk); err != nil {
+					sendPlainMessage(r.token, r.chatID, chunk)
+				}
+			}
 		} else {
-			runes := []rune(answer)
-			_ = editTelegramMessageMode(r.token, r.chatID, messageID, string(runes[:4000]), "Markdown")
-			sendWithKeyboard(r.token, r.chatID, string(runes[4000:]), nil)
+			first := string(runes[:telegramRichMessageLimit])
+			if err := editTelegramRichMessage(r.token, r.chatID, messageID, first); err != nil {
+				_ = editTelegramMessage(r.token, r.chatID, messageID, first)
+			}
+			for rest := string(runes[telegramRichMessageLimit:]); len([]rune(rest)) > 0; {
+				chunkRunes := []rune(rest)
+				size := telegramRichMessageLimit
+				if len(chunkRunes) < size {
+					size = len(chunkRunes)
+				}
+				chunk := string(chunkRunes[:size])
+				rest = string(chunkRunes[size:])
+				if _, err := sendRichMessage(r.token, r.chatID, chunk); err != nil {
+					sendPlainMessage(r.token, r.chatID, chunk)
+				}
+			}
 		}
 	}
 	r.pinned.Complete()
@@ -182,19 +213,27 @@ func (r *runRenderer) isStopped() bool {
 	return r.stopped
 }
 
-func editTelegramMessage(token string, chatID int64, messageID int, text string) error {
-	return editTelegramMessageMode(token, chatID, messageID, text, "")
-}
+const telegramRichMessageLimit = 32768
 
-func editTelegramMessageMode(token string, chatID int64, messageID int, text, parseMode string) error {
-	payload := map[string]any{
+func editTelegramMessage(token string, chatID int64, messageID int, text string) error {
+	return postTelegramEditMessage(token, map[string]any{
 		"chat_id":    chatID,
 		"message_id": messageID,
 		"text":       text,
-	}
-	if parseMode != "" {
-		payload["parse_mode"] = parseMode
-	}
+	})
+}
+
+func editTelegramRichMessage(token string, chatID int64, messageID int, markdown string) error {
+	return postTelegramEditMessage(token, map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"rich_message": map[string]any{
+			"markdown": markdown,
+		},
+	})
+}
+
+func postTelegramEditMessage(token string, payload map[string]any) error {
 	body, _ := json.Marshal(payload)
 	resp, err := doTelegramPost(api("editMessageText", token), body)
 	if err != nil {
@@ -219,6 +258,42 @@ func editTelegramMessageMode(token string, chatID int64, messageID int, text, pa
 		return fmt.Errorf("editMessageText: %s", result.Description)
 	}
 	return nil
+}
+
+func sendRichMessage(token string, chatID int64, markdown string) (int, error) {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"rich_message": map[string]any{
+			"markdown": markdown,
+		},
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := doTelegramPost(api("sendRichMessage", token), body)
+	if err != nil {
+		return 0, err
+	}
+	if resp == nil {
+		return 0, fmt.Errorf("sendRichMessage: empty response")
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("sendRichMessage: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return 0, fmt.Errorf("sendRichMessage response: %w", err)
+	}
+	if !result.OK {
+		return 0, fmt.Errorf("sendRichMessage: %s", result.Description)
+	}
+	return result.Result.MessageID, nil
 }
 
 func truncateStream(value string) string {

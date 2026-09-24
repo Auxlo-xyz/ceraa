@@ -188,6 +188,24 @@ func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any
 	return out.Result.MessageID
 }
 
+func sendPlainMessage(token string, chatID int64, text string) int {
+	payload := map[string]any{"chat_id": chatID, "text": text}
+	b, _ := json.Marshal(payload)
+	resp, _ := doTelegramPost(api("sendMessage", token), b)
+	if resp == nil {
+		return 0
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var out struct {
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out.Result.MessageID
+}
+
 // promptQueue serializes prompts per chat -> maps to soraacode app/managers/prompt-queue-manager.js
 var promptQueue = struct {
 	mu    sync.Mutex

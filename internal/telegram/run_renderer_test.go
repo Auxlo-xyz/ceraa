@@ -13,7 +13,7 @@ import (
 func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string
-	var finalText string
+	var finalMarkdown string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		methods = append(methods, r.URL.Path)
@@ -23,10 +23,12 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if text, ok := body["text"].(string); ok && text == "Final answer" {
-				mu.Lock()
-				finalText = text
-				mu.Unlock()
+			if richMessage, ok := body["rich_message"].(map[string]any); ok {
+				if markdown, ok := richMessage["markdown"].(string); ok && markdown == "## Heading\n\n1. Step\n\nTelegram Message\n    ↓" {
+					mu.Lock()
+					finalMarkdown = markdown
+					mu.Unlock()
+				}
 			}
 			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
@@ -45,16 +47,16 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	pinned.Init()
 	renderer := newRunRenderer("token", 42, pinned)
 	defer renderer.close()
-	renderer.content("Final ")
-	renderer.content("answer")
-	renderer.finish("Final answer")
+	answer := "## Heading\n\n1. Step\n\nTelegram Message\n    ↓"
+	renderer.content("## Heading\n\n1. Step\n\nTelegram Message\n    ↓")
+	renderer.finish(answer)
 	renderer.close()
 
 	mu.Lock()
-	final := finalText
+	final := finalMarkdown
 	paths := append([]string(nil), methods...)
 	mu.Unlock()
-	if final != "Final answer" {
+	if final != answer {
 		t.Fatalf("final message = %q", final)
 	}
 	for _, path := range paths {
