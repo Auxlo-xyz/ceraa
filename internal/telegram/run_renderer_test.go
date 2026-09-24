@@ -91,6 +91,7 @@ func TestRunRendererPersistsFinalAnswer(t *testing.T) {
 	renderer.content("Final ")
 	renderer.content("answer")
 	renderer.finish("Final answer")
+	renderer.close()
 
 	mu.Lock()
 	final := finalText
