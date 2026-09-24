@@ -65,6 +65,25 @@ func TestTelegramCommandNamesAreValid(t *testing.T) {
 	}
 }
 
+func TestOnboardingMenuUsesInlineProviderChoices(t *testing.T) {
+	markup := menus.Onboarding()
+	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)
+	if !ok || len(keyboardRows) < 3 {
+		t.Fatal("expected onboarding inline keyboard")
+	}
+	found := map[string]bool{}
+	for _, row := range keyboardRows {
+		for _, button := range row {
+			found[button["callback_data"]] = true
+		}
+	}
+	for _, callback := range []string{"onboarding:provider:openrouter", "onboarding:provider:poolside", "onboarding:provider:custom", "onboarding:claim"} {
+		if !found[callback] {
+			t.Fatalf("missing onboarding button %q", callback)
+		}
+	}
+}
+
 func TestModelMenuOffersProviderButtons(t *testing.T) {
 	markup := menus.Inline("model", 0)
 	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)

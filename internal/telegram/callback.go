@@ -98,6 +98,36 @@ func handleCallback(token string, q *struct {
 	if data == "noop" {
 		return
 	}
+	if strings.HasPrefix(data, "onboarding:provider:") {
+		providerID := strings.TrimPrefix(data, "onboarding:provider:")
+		draft := providerDraft{ID: providerID, Stage: "model"}
+		switch providerID {
+		case "openrouter":
+			draft.URL = "https://openrouter.ai/api/v1"
+		case "poolside":
+			draft.URL = "https://inference.poolside.ai/v1"
+		case "custom":
+			draft.Stage = "url"
+		default:
+			send(token, chatID, "Unknown provider choice")
+			return
+		}
+		pendingProvider.Store(chatID, draft)
+		if draft.Stage == "url" {
+			send(token, chatID, "Send the custom provider base URL.")
+		} else {
+			send(token, chatID, "Send the model ID for "+providerID+".")
+		}
+		return
+	}
+	if data == "onboarding:claim" {
+		if err := defaultState.setAllowedUserID(q.From.ID); err != nil {
+			send(token, chatID, "Could not save Telegram allowlist: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "🔒 Bot locked to your Telegram account", nil)
+		return
+	}
 	if data == "memory:view" {
 		editCallback(token, chatID, q.Message.MessageID, "🧠 Compact memory", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
 		return

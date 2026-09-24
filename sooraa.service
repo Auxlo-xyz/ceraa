@@ -7,7 +7,7 @@ Type=simple
 WorkingDirectory=/workspace/sooraa
 # Secrets live in /etc/sooraa/sooraa.env (chmod 600). See sooraa.env.example.
 EnvironmentFile=/etc/sooraa/sooraa.env
-ExecStart=/workspace/sooraa/bin/sooraa telegram
+ExecStart=/workspace/sooraa/bin/sooraa start
 Restart=always
 RestartSec=10
 StandardOutput=append:/tmp/sooraa-service.log

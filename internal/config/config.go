@@ -69,14 +69,8 @@ func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	base := filepath.Join(home, ".config", "sooraa")
 	return &Config{
-		LLM: LLMProvider{
-			URL:             "https://inference.poolside.ai/v1",
-			Model:           "poolside/laguna-xs-2.1",
-			ContextLimit:    236000,
-			MaxOutputTokens: 8192,
-		},
+		LLM:                      LLMProvider{ContextLimit: 236000, MaxOutputTokens: 8192},
 		ProviderProfiles:         map[string]ProviderProfile{},
-		ActiveProvider:           "default",
 		MaxSteps:                 10,
 		SessionFile:              "sessions",
 		MaxToolResultChars:       12000,

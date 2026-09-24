@@ -5,7 +5,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sooraa/internal/config"
 )
+
+func TestDefaultConfigHasNoProviderOrModel(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.LLM.URL != "" || cfg.LLM.Model != "" || cfg.ActiveProvider != "" {
+		t.Fatalf("unexpected provider defaults: %+v", cfg)
+	}
+}
 
 func TestValidProviderURL(t *testing.T) {
 	for _, value := range []string{"https://api.example.test/v1", "http://localhost:1234/v1"} {
@@ -38,7 +47,7 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	t.Setenv("SOORAA_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
-	input := strings.NewReader("https://api.example.test/v1\nprovider/model\nsecret\n123456:telegram\n42\n")
+	input := strings.NewReader("123456:telegram\n")
 	if err := runSetup(input, &strings.Builder{}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,8 +55,11 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "provider/model") || !strings.Contains(string(data), "123456:telegram") {
-		t.Fatalf("saved config is missing setup values: %s", data)
+	if !strings.Contains(string(data), "123456:telegram") {
+		t.Fatalf("saved config is missing the Telegram token: %s", data)
+	}
+	if strings.Contains(string(data), "provider/model") || strings.Contains(string(data), "api.example.test") {
+		t.Fatalf("setup unexpectedly saved provider defaults: %s", data)
 	}
 	info, err := os.Stat(filepath.Join(home, ".config", "sooraa", "config.json"))
 	if err != nil {

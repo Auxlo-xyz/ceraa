@@ -527,6 +527,14 @@ func simpleMenu(name, msg string) map[string]any {
 	}}
 }
 
+func Onboarding() map[string]any {
+	return map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text": "🟣 OpenRouter", "callback_data": "onboarding:provider:openrouter"}, {"text": "🟠 Poolside", "callback_data": "onboarding:provider:poolside"}},
+		{{"text": "➕ Custom provider", "callback_data": "onboarding:provider:custom"}},
+		{{"text": "🔒 Lock bot to this account", "callback_data": "onboarding:claim"}, {"text": "✕ Close", "callback_data": "close"}},
+	}}
+}
+
 func Hub() map[string]any {
 	labels := map[string]string{
 		"status": "📊 Status", "session": "💬 Sessions", "model": "🧠 Model", "agent": "🤖 Agent",

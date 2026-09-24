@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"sooraa/internal/agent"
 	"sooraa/internal/config"
+	"sooraa/internal/telegram"
 )
 
 var root = &cobra.Command{
@@ -23,6 +24,14 @@ var root = &cobra.Command{
 }
 
 var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("sooraa 0.1.0") }}
+
+var startCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the Sooraa Telegram service",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return telegram.Run()
+	},
+}
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
@@ -65,20 +74,13 @@ var configInitCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sample := `{
   "llm": {
-    "url": "https://api.atria-asi.ai/v1",
-    "model": "atria-dawn-preview",
-    "api_key": "atr_..."
-  },
-  "subscriptions": {
-    "providers": {
-      "opencode": { "kind": "opencode" },
-      "hermes": { "kind": "hermes" },
-      "codex": { "kind": "codex" }
-    }
+    "url": "",
+    "model": "",
+    "api_key": ""
   },
   "telegram": {
-    "bot_token": "123:ABC...",
-    "allowed_user_id": 5967460976
+    "bot_token": "",
+    "allowed_user_id": 0
   },
   "max_steps": 10,
   "session_file": "sessions"
@@ -117,6 +119,7 @@ func maskToken(s string) string {
 
 func Execute() {
 	root.AddCommand(verCmd)
+	root.AddCommand(startCmd)
 	root.AddCommand(setupCmd)
 	root.AddCommand(doctorCmd)
 	root.AddCommand(configCmd)

@@ -284,7 +284,14 @@ func Run() error {
 	if allow == "" {
 		allowID = cfg.Telegram.AllowedUserID
 	} else {
-		allowID, _ = strconv.ParseInt(strings.TrimSpace(allow), 10, 64)
+		parsed, err := strconv.ParseInt(strings.TrimSpace(allow), 10, 64)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("TELEGRAM_ALLOWED_USER_ID must be a positive integer")
+		}
+		allowID = parsed
+	}
+	if allowID == 0 {
+		allowID = defaultState.allowedUserID()
 	}
 	applyStateOverrides()
 	if err := registerCommands(token); err != nil {
@@ -427,7 +434,11 @@ func Run() error {
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendMenuMarkup(token, u.Message.Chat.ID, "Sooraa ready. Choose a control or send a task.", menus.Hub())
+				if !providerConfigured(cfg) {
+					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Sooraa. Choose a provider to finish onboarding.", menus.Onboarding())
+				} else {
+					sendMenuMarkup(token, u.Message.Chat.ID, "Sooraa is ready. Choose a control or send a task.", menus.Hub())
+				}
 			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexLogin(token, u.Message.Chat.ID)
@@ -537,6 +548,11 @@ func Run() error {
 			}
 		}
 	}
+}
+
+func providerConfigured(cfg *config.Config) bool {
+	provider := activeProviderConfig(cfg, defaultState.provider())
+	return provider.URL != "" && provider.Model != "" && provider.APIKey != ""
 }
 
 func normalizeCommandText(text string) string {

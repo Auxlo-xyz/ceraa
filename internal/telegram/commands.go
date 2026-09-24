@@ -22,6 +22,7 @@ import (
 	"sooraa/harness/todo"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
+	"sooraa/internal/secret"
 	"sooraa/internal/telegram/menus"
 )
 
@@ -30,7 +31,10 @@ func commandCatalog() []menus.CommandSpec {
 }
 
 type providerDraft struct {
-	URL string
+	URL   string
+	Model string
+	ID    string
+	Stage string
 }
 
 var pendingMemory sync.Map
@@ -737,33 +741,49 @@ func handleWorktree(token string, chatID int64, text string) {
 func handlePendingInput(token string, chatID int64, text string) bool {
 	if value, ok := pendingProvider.Load(chatID); ok {
 		draft := value.(providerDraft)
-		if draft.URL == "" {
+		switch draft.Stage {
+		case "url":
 			if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
 				send(token, chatID, "Provider URL must start with http:// or https://")
 				return true
 			}
 			draft.URL = text
+			draft.Stage = "model"
 			pendingProvider.Store(chatID, draft)
 			send(token, chatID, "Send the model ID for the custom provider.")
 			return true
-		}
-		pendingProvider.Delete(chatID)
-		cfg, err := config.Load()
-		if err != nil {
-			send(token, chatID, "Config error: "+err.Error())
+		case "model":
+			if strings.TrimSpace(text) == "" {
+				send(token, chatID, "Model ID cannot be empty.")
+				return true
+			}
+			draft.Model = text
+			draft.Stage = "key"
+			pendingProvider.Store(chatID, draft)
+			send(token, chatID, "Send the API key for "+draft.ID+".")
+			return true
+		case "key":
+			if strings.TrimSpace(text) == "" {
+				send(token, chatID, "API key cannot be empty.")
+				return true
+			}
+			pendingProvider.Delete(chatID)
+			if err := secret.Set("provider_api_key_"+draft.ID, text); err != nil {
+				send(token, chatID, "Provider key save failed: "+err.Error())
+				return true
+			}
+			profile := config.ProviderProfile{URL: draft.URL, Model: draft.Model}
+			if err := defaultState.setProviderProfile(draft.ID, profile); err != nil {
+				send(token, chatID, "Provider profile save failed: "+err.Error())
+				return true
+			}
+			if err := defaultState.setProvider(draft.ID); err != nil {
+				send(token, chatID, "Provider activation failed: "+err.Error())
+				return true
+			}
+			send(token, chatID, "✅ "+draft.ID+" is configured. Choose another control or send a task.")
 			return true
 		}
-		profile := config.ProviderProfile{URL: draft.URL, Model: text, APIKey: cfg.LLM.APIKey}
-		if err := defaultState.setProviderProfile("custom", profile); err != nil {
-			send(token, chatID, "Custom provider save failed: "+err.Error())
-			return true
-		}
-		if err := defaultState.setProvider("custom"); err != nil {
-			send(token, chatID, "Custom provider activation failed: "+err.Error())
-			return true
-		}
-		send(token, chatID, "✅ Custom provider activated: "+text)
-		return true
 	}
 	if _, ok := pendingMemory.LoadAndDelete(chatID); ok {
 		cfg, err := config.Load()

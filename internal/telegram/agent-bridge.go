@@ -16,6 +16,7 @@ import (
 	"sooraa/harness/permission"
 	"sooraa/harness/sessionstore"
 	"sooraa/harness/skills"
+	"sooraa/internal/secret"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
 	"sooraa/internal/prompt"
@@ -211,6 +212,11 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 	}
 	if profile.MaxOutputTokens > 0 {
 		result.MaxOutputTokens = profile.MaxOutputTokens
+	}
+	if result.APIKey == "" && providerID != "default" {
+		if key, err := secret.Get("provider_api_key_" + providerID); err == nil {
+			result.APIKey = key
+		}
 	}
 	return result
 }

@@ -71,14 +71,8 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	if cfg == nil {
 		return doctorCheck{"config", "FAIL", "configuration is nil"}
 	}
-	if cfg.LLM.URL == "" {
-		return doctorCheck{"config", "FAIL", "provider URL is empty"}
-	}
-	if cfg.LLM.Model == "" {
-		return doctorCheck{"config", "FAIL", "model is empty"}
-	}
-	if cfg.LLM.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
-		return doctorCheck{"config", "FAIL", "provider API key is missing"}
+	if cfg.LLM.URL == "" || cfg.LLM.Model == "" || (cfg.LLM.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "") {
+		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, cfg.LLM.Model)}
 }
@@ -96,6 +90,9 @@ func checkWorkspace() doctorCheck {
 }
 
 func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
+	if cfg.LLM.URL == "" || cfg.LLM.Model == "" {
+		return doctorCheck{"provider", "WARN", "provider is not configured; finish onboarding in Telegram"}
+	}
 	if !validProviderURL(cfg.LLM.URL) {
 		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
 	}
@@ -214,53 +211,22 @@ func runSetup(reader io.Reader, writer io.Writer) error {
 	}
 	input := bufio.NewReader(reader)
 	fmt.Fprintln(writer, "Sooraa setup")
-	fmt.Fprintln(writer, "Press Enter to keep the current value. Credentials already supplied through environment variables will not be written to disk.")
-
-	apiURL := askSetup(input, writer, "Provider API URL", cfg.LLM.URL, func(value string) error {
-		if !validProviderURL(value) {
-			return fmt.Errorf("URL must start with http:// or https://")
-		}
-		return nil
-	})
-	model := askSetup(input, writer, "Model", cfg.LLM.Model, func(value string) error {
+	fmt.Fprintln(writer, "Enter only the Telegram bot token. Provider, model, API key, and allowlist are completed in Telegram onboarding.")
+	telegramToken := askSetup(input, writer, "Telegram bot token", firstNonEmpty(os.Getenv("TELEGRAM_BOT_TOKEN"), cfg.Telegram.BotToken), func(value string) error {
 		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("model cannot be empty")
+			return fmt.Errorf("Telegram bot token is required")
 		}
 		return nil
 	})
-	apiKey := askSetup(input, writer, "API key (environment value is kept)", firstNonEmpty(os.Getenv("SOORAA_API_KEY"), os.Getenv("OPENAI_API_KEY"), cfg.LLM.APIKey), nil)
-	telegramToken := askSetup(input, writer, "Telegram bot token (environment value is kept)", firstNonEmpty(os.Getenv("TELEGRAM_BOT_TOKEN"), cfg.Telegram.BotToken), nil)
-	allowText := askSetup(input, writer, "Telegram allowed user ID", firstNonEmpty(os.Getenv("TELEGRAM_ALLOWED_USER_ID"), strconv.FormatInt(cfg.Telegram.AllowedUserID, 10)), func(value string) error {
-		if value == "" {
-			return fmt.Errorf("user ID is required")
-		}
-		if _, err := strconv.ParseInt(value, 10, 64); err != nil {
-			return fmt.Errorf("user ID must be numeric")
-		}
-		return nil
-	})
-	allowID, err := strconv.ParseInt(allowText, 10, 64)
-	if err != nil {
-		return err
-	}
-	envAPIKey := firstNonEmpty(os.Getenv("SOORAA_API_KEY"), os.Getenv("OPENAI_API_KEY"))
-	if envAPIKey != "" && apiKey == envAPIKey {
-		apiKey = ""
-	}
 	envTelegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if envTelegramToken != "" && telegramToken == envTelegramToken {
 		telegramToken = ""
 	}
-	cfg.LLM.URL = apiURL
-	cfg.LLM.Model = model
-	cfg.LLM.APIKey = apiKey
 	cfg.Telegram.BotToken = telegramToken
-	cfg.Telegram.AllowedUserID = allowID
-	cfg.ActiveProvider = "default"
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Fprintf(writer, "Saved configuration. Run `sooraa doctor` to verify connectivity.\n")
+	fmt.Fprintln(writer, "Telegram token saved. Run `sooraa start`, then finish onboarding in Telegram.")
 	return nil
 }
 

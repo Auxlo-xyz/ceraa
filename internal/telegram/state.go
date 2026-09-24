@@ -18,6 +18,7 @@ type bridgeState struct {
 	path             string
 	Model            string                            `json:"model,omitempty"`
 	Provider         string                            `json:"provider,omitempty"`
+	AllowedUserID    int64                             `json:"allowed_user_id,omitempty"`
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
 	Variant          string                            `json:"variant,omitempty"`
@@ -206,6 +207,22 @@ func (s *bridgeState) provider() string {
 		return "default"
 	}
 	return s.Provider
+}
+
+func (s *bridgeState) allowedUserID() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AllowedUserID
+}
+
+func (s *bridgeState) setAllowedUserID(id int64) error {
+	if id <= 0 {
+		return errors.New("Telegram user ID must be positive")
+	}
+	s.mu.Lock()
+	s.AllowedUserID = id
+	s.mu.Unlock()
+	return s.save()
 }
 
 func (s *bridgeState) providerProfiles() map[string]config.ProviderProfile {

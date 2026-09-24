@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.*
+*.env
+!sooraa.env.example
+bin/
+sessions/
+memory/
+skills/
+*.json
+*.log
+.DS_Store
