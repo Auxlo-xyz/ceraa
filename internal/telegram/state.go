@@ -168,11 +168,11 @@ func (s *bridgeState) project(chatID int64) string {
 	value := s.Projects[key]
 	s.mu.RUnlock()
 	if value == "" {
-		return ""
+		return configuredWorkspaceRoot()
 	}
 	valid, err := validateWorkspaceProject(value)
 	if err != nil {
-		return ""
+		return configuredWorkspaceRoot()
 	}
 	return valid
 }
@@ -199,11 +199,11 @@ func (s *bridgeState) projectForSession(sessionID string) string {
 	root := s.SessionProjects[sessionID]
 	s.mu.RUnlock()
 	if root == "" {
-		return ""
+		return configuredWorkspaceRoot()
 	}
 	valid, err := validateWorkspaceProject(root)
 	if err != nil {
-		return ""
+		return configuredWorkspaceRoot()
 	}
 	return valid
 }

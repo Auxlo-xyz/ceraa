@@ -33,13 +33,15 @@ func TestBridgeStatePersistsSessionAndProject(t *testing.T) {
 	}
 }
 
-func TestBridgeStateDoesNotFallbackToWorkingDirectory(t *testing.T) {
+func TestBridgeStateDefaultsToWorkspaceRoot(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("SOORAA_WORKSPACE_ROOT", workspace)
 	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
-	if state.project(42) != "" {
-		t.Fatalf("unexpected implicit project: %q", state.project(42))
+	if state.project(42) != workspace {
+		t.Fatalf("implicit project = %q", state.project(42))
 	}
-	if state.projectForSession("session-a") != "" {
-		t.Fatalf("unexpected implicit session project: %q", state.projectForSession("session-a"))
+	if state.projectForSession("session-a") != workspace {
+		t.Fatalf("implicit session project = %q", state.projectForSession("session-a"))
 	}
 }
 

@@ -51,13 +51,13 @@ func runtimeValues() runtimeState {
 func projectForChat(chatID int64) string {
 	state := runtimeValues()
 	root := state.Projects[strconv.FormatInt(chatID, 10)]
-	if root == "" {
-		return ""
-	}
 	workspace := workspaceRootPath()
+	if root == "" {
+		return workspace
+	}
 	rel, err := filepath.Rel(workspace, root)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return ""
+		return workspace
 	}
 	return root
 }
