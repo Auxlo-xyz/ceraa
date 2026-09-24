@@ -47,6 +47,12 @@ type update struct {
 			FileID string `json:"file_id"`
 		} `json:"voice"`
 	} `json:"message"`
+	StoppedMessageGeneration *struct {
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+		DraftID int64 `json:"draft_id"`
+	} `json:"stopped_message_generation"`
 	CallbackQuery *struct {
 		ID   string `json:"id"`
 		From struct {
@@ -191,52 +197,6 @@ func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any
 	return out.Result.MessageID
 }
 
-func sendThinking(token string, chatID int64, reasoning string, collapsed bool) int {
-	header := "💭 Thinking..."
-	text := header + "\n" + strings.TrimSpace(reasoning)
-	if len(text) > 4000 {
-		text = text[:4000]
-	}
-	typ := "blockquote"
-	if collapsed {
-		typ = "expandable_blockquote"
-	}
-	entities := []map[string]any{{"type": typ, "offset": len(header) + 1, "length": len(text) - len(header) - 1}}
-	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "entities": entities})
-	resp, _ := doTelegramPost(api("sendMessage", token), b)
-	if resp == nil {
-		return 0
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	var out struct {
-		Result struct {
-			MessageID int `json:"message_id"`
-		} `json:"result"`
-	}
-	_ = json.Unmarshal(raw, &out)
-	return out.Result.MessageID
-}
-
-func editThinking(token string, chatID int64, msgID int, reasoning string, collapsed bool) {
-	header := "💭 Thinking..."
-	text := header + "\n" + strings.TrimSpace(reasoning)
-	if strings.TrimSpace(reasoning) == "" {
-		text = header
-	}
-	if len(text) > 4000 {
-		text = text[:4000]
-	}
-	typ := "blockquote"
-	if collapsed {
-		typ = "expandable_blockquote"
-	}
-	entities := []map[string]any{{"type": typ, "offset": len(header) + 1, "length": len(text) - len(header) - 1}}
-	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": text, "entities": entities})
-	resp, _ := doTelegramPost(api("editMessageText", token), b)
-	discardTelegramResponse(resp)
-}
-
 // promptQueue serializes prompts per chat -> maps to soraacode app/managers/prompt-queue-manager.js
 var promptQueue = struct {
 	mu    sync.Mutex
@@ -308,7 +268,7 @@ func Run() error {
 		defer cancelScheduler()
 		go func() {
 			err := schedulerStore.RunWithInterval(schedulerCtx, 30*time.Second, func(runCtx context.Context, job scheduler.Job) error {
-				return runAgentWithConfigContextAt(runCtx, job.SessionID, job.Prompt, cfg, job.Project, nil, nil, func(answer string) {
+				return runAgentWithConfigContextAt(runCtx, job.SessionID, job.Prompt, cfg, job.Project, nil, nil, nil, func(answer string) {
 					if job.ChatID != 0 {
 						send(token, job.ChatID, "⏰ "+job.Name+": "+answer)
 					}
@@ -322,7 +282,7 @@ func Run() error {
 	offset := getInitialOffset(token)
 	fmt.Printf("telegram polling start offset=%d\n", offset)
 	for {
-		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
+		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%2C%22stopped_message_generation%22%5D"), token))
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
@@ -356,6 +316,16 @@ func Run() error {
 				continue
 			}
 
+			if u.StoppedMessageGeneration != nil {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				stopped := u.StoppedMessageGeneration
+				if value, ok := activeDrafts.Load(stopped.DraftID); ok {
+					if renderer, ok := value.(*runRenderer); ok && renderer.chatID == stopped.Chat.ID {
+						renderer.stop()
+					}
+				}
+				continue
+			}
 			if u.CallbackQuery != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				chatID := int64(0)
@@ -580,11 +550,12 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	sessionID := currentSessionID(chatID)
 	pinned := getPinnedManager(token, chatID)
 	pinned.Init()
-	thinkingID := sendThinking(token, chatID, "", false)
-	toolID := 0
-	var toolLines []string
-	var reasoning string
-	lastEdit := time.Now()
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	activeRuns.Store(chatID, cancelRun)
+	defer activeRuns.Delete(chatID)
+	renderer := newRunRenderer(token, chatID, pinned)
+	renderer.setCancel(cancelRun)
+	defer renderer.close()
 
 	// SSE-like event subscription -> maps to soraacode soraacode/events.js subscribeToEvents + event-subscription-service.js
 	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff, 30s idle
@@ -620,13 +591,6 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 					consecutiveTimeouts = 0
 					backoff = time.Second
 					switch e.Type {
-					case event.TypeThinking:
-						if full, ok := e.Data["full"].(string); ok && full != "" {
-							if time.Since(lastEdit) > 1200*time.Millisecond {
-								editThinking(token, chatID, thinkingID, full, false)
-								lastEdit = time.Now()
-							}
-						}
 					case event.TypePermission:
 						tool, _ := e.Data["tool"].(string)
 						reqID, _ := e.Data["request_id"].(string)
@@ -680,32 +644,6 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						if tok, ok := e.Data["tokens"].(int); ok {
 							pinned.UpdateTokens(tok)
 						}
-						pinned.UpdateContext("Session active")
-					case event.TypeCompact:
-						send(token, chatID, "🗜️ Compacted context")
-					case event.TypeCompactProgress:
-						if prog, ok := e.Data["progress"].(string); ok {
-							send(token, chatID, "🗜️ Compact "+prog)
-						}
-					case event.TypeSubagent:
-						if tool, ok := e.Data["tool"].(string); ok {
-							send(token, chatID, "🤖 Subagent: "+tool+" running")
-						}
-					case event.TypeToolStart:
-						if tool, ok := e.Data["tool"].(string); ok {
-							if elapsed, ok := e.Data["elapsed"].(string); ok {
-								send(token, chatID, elapsed)
-							} else {
-								send(token, chatID, "🔧 Tool start: "+tool)
-							}
-						}
-					case event.TypeToolEnd:
-						if out, ok := e.Data["output"].(string); ok {
-							if len(out) > 200 {
-								out = out[:200] + "..."
-							}
-							send(token, chatID, "✓ Tool done: "+out)
-						}
 					}
 				case <-idleTimer.C:
 					consecutiveTimeouts++
@@ -746,25 +684,8 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	}()
 	<-eventReady
 	doneCh := make(chan string, 1)
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	activeRuns.Store(chatID, cancelRun)
-	defer activeRuns.Delete(chatID)
 	go func() {
-		err := runWithThinkingContext(runCtx, sessionID, prompt, func(r string) {
-			reasoning = r
-			if time.Since(lastEdit) > 1200*time.Millisecond {
-				editThinking(token, chatID, thinkingID, reasoning, false)
-				lastEdit = time.Now()
-			}
-		}, func(t string) {
-			toolLines = append(toolLines, t)
-			text := strings.Join(toolLines, "\n")
-			if toolID == 0 {
-				toolID = send(token, chatID, "```\n"+text+"\n```")
-			} else {
-				editTool(token, chatID, toolID, text)
-			}
-		}, func(answer string) {
+		err := runWithThinkingContext(runCtx, sessionID, prompt, renderer.content, renderer.reasoning, renderer.tool, func(answer string) {
 			doneCh <- answer
 		})
 		if err != nil {
@@ -779,15 +700,18 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	case ans := <-doneCh:
 		cancelRun()
 		close(eventDone)
-		editThinking(token, chatID, thinkingID, reasoning, true)
-		if ans != "" {
-			// Rendering pipeline chunk via send() already handles 4096 -> soraacode pipeline chunker
-			send(token, chatID, ans)
+		if renderer.isStopped() {
+			renderer.fail()
+		} else if ans != "" {
+			renderer.finish(ans)
+		} else {
+			renderer.fail()
 		}
 	case <-time.After(10 * time.Minute):
 		cancelRun()
 		<-doneCh
 		close(eventDone)
+		renderer.fail()
 		send(token, chatID, "Cancelled after timeout.")
 	}
 	scheduleSessionTitle(sessionID)
@@ -818,17 +742,8 @@ func enqueuePrompt(token string, chatID int64, prompt string, updateID int) {
 	go handlePrompt(token, chatID, prompt, updateID)
 }
 
-func editTool(token string, chatID int64, msgID int, text string) {
-	if len(text) > 3500 {
-		text = text[len(text)-3500:]
-	}
-	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": msgID, "text": "```\n" + text + "\n```", "parse_mode": "Markdown"})
-	resp, _ := doTelegramPost(api("editMessageText", token), b)
-	discardTelegramResponse(resp)
-}
-
 func getInitialOffset(token string) int {
-	resp, err := telegramClient.Get(api("getUpdates?timeout=0&offset=-1&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D", token))
+	resp, err := telegramClient.Get(api("getUpdates?timeout=0&offset=-1&allowed_updates=%5B%22message%22%2C%22callback_query%22%2C%22stopped_message_generation%22%5D", token))
 	if err != nil {
 		return 0
 	}
@@ -892,8 +807,8 @@ func runWithThinking(sessionID string, prompt string, onReasoning func(string), 
 	return runAgent(sessionID, prompt, onReasoning, onTool, onAnswer)
 }
 
-func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
-	return runAgentContext(ctx, sessionID, prompt, onReasoning, onTool, onAnswer)
+func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgentContext(ctx, sessionID, prompt, onContent, onReasoning, onTool, onAnswer)
 }
 
 func handleSetSecret(token string, chatID int64, text string) {

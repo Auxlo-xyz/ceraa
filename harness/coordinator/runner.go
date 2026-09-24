@@ -53,8 +53,8 @@ type Config = RunnerConfig
 type Callbacks struct {
 	OnContent         func(string)
 	OnReasoning       func(string)
-	OnToolStart       func(tool.Tool, map[string]any)
-	OnToolDone        func(operation.ResultEvent)
+	OnToolStart       func(string, string, map[string]any)
+	OnToolDone        func(string, string, operation.ResultEvent)
 	OnCompactionStart func()
 	OnCompactionDone  func(bool, error)
 	OnUsage           func(llm.UsageInfo)
@@ -425,9 +425,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
-				if r.cb.OnToolDone != nil {
-					r.cb.OnToolDone(result)
-				}
+				r.notifyToolDone(sess, result)
 			case <-ctx.Done():
 				r.opMgr.CancelAll()
 				for id := range pending {
@@ -617,7 +615,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 	dispatched := make([]preparedTool, 0, len(prepared))
 	start := func(item preparedTool) error {
 		if r.cb.OnToolStart != nil {
-			r.cb.OnToolStart(item.tool, map[string]any{"tool": item.call.Name, "args": item.call.Arguments})
+			r.cb.OnToolStart(item.call.ID, item.call.Name, map[string]any{"tool": item.call.Name, "args": item.call.Arguments})
 		}
 		for i := range sess.Operations {
 			if sess.Operations[i].ID == item.call.ID {
@@ -678,6 +676,20 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 	return dispatched, results, nil
 }
 
+func (r *Runner) notifyToolDone(sess *sessionstore.Session, result operation.ResultEvent) {
+	if r.cb.OnToolDone == nil {
+		return
+	}
+	name := ""
+	for _, op := range sess.Operations {
+		if op.ID == result.OpID {
+			name = op.Tool
+			break
+		}
+	}
+	r.cb.OnToolDone(result.OpID, name, result)
+}
+
 func (r *Runner) persistPreparedFailure(sess *sessionstore.Session, runID, id, output, errorText string) error {
 	for i := range sess.Operations {
 		if sess.Operations[i].ID == id {
@@ -685,7 +697,11 @@ func (r *Runner) persistPreparedFailure(sess *sessionstore.Session, runID, id, o
 			sess.Operations[i].Output = output
 			sess.Operations[i].Error = errorText
 			sess.Operations[i].ResultPresent = true
-			return r.store.Save(sess)
+			if err := r.store.Save(sess); err != nil {
+				return err
+			}
+			r.notifyToolDone(sess, operation.ResultEvent{OpID: id, Status: operation.StatusFailed, Output: output, Error: errorText})
+			return nil
 		}
 	}
 	return fmt.Errorf("operation %s not found", id)
@@ -721,7 +737,15 @@ func (r *Runner) persistUnknown(sess *sessionstore.Session, runID, id string, ca
 		sess.Operations[i].Error = cause.Error()
 		sess.Operations[i].Output = "Error: operation outcome is unknown after interruption"
 		sess.Operations[i].ResultPresent = true
-		return r.store.Save(sess)
+		if err := r.store.Save(sess); err != nil {
+			return err
+		}
+		status := operation.StatusFailed
+		if errors.Is(cause, context.Canceled) {
+			status = operation.StatusCanceled
+		}
+		r.notifyToolDone(sess, operation.ResultEvent{OpID: id, Status: status, Output: sess.Operations[i].Output, Error: cause.Error()})
+		return nil
 	}
 	return fmt.Errorf("operation %s not found", id)
 }

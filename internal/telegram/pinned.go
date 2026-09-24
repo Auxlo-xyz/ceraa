@@ -3,6 +3,7 @@ package telegram
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -15,12 +16,21 @@ type PinnedManager struct {
 	cost      string
 	context   string
 	files     []string
+	state     string
+	reasoning string
+	content   string
+	tools     []string
+	updates   chan string
+	closeOnce sync.Once
+	done      chan struct{}
 }
 
 var pinnedByChat sync.Map
 
 func NewPinnedManager(token string, chatID int64) *PinnedManager {
-	return &PinnedManager{token: token, chatID: chatID}
+	manager := &PinnedManager{token: token, chatID: chatID, updates: make(chan string, 1), done: make(chan struct{})}
+	go manager.runUpdates()
+	return manager
 }
 
 func getPinnedManager(token string, chatID int64) *PinnedManager {
@@ -31,6 +41,28 @@ func getPinnedManager(token string, chatID int64) *PinnedManager {
 	manager := NewPinnedManager(token, chatID)
 	actual, _ := pinnedByChat.LoadOrStore(key, manager)
 	return actual.(*PinnedManager)
+}
+
+func (p *PinnedManager) runUpdates() {
+	defer close(p.done)
+	for text := range p.updates {
+		p.mu.Lock()
+		messageID := p.messageID
+		p.mu.Unlock()
+		if messageID == 0 {
+			continue
+		}
+		body, _ := json.Marshal(map[string]any{"chat_id": p.chatID, "message_id": messageID, "text": text})
+		resp, _ := doTelegramPost(api("editMessageText", p.token), body)
+		discardTelegramResponse(resp)
+	}
+}
+
+func (p *PinnedManager) close() {
+	p.closeOnce.Do(func() {
+		close(p.updates)
+	})
+	<-p.done
 }
 
 func (p *PinnedManager) Init() {
@@ -78,6 +110,70 @@ func (p *PinnedManager) UpdateContext(context string) {
 	})
 }
 
+func (p *PinnedManager) BeginRun() {
+	p.update(func() {
+		p.state = "Working"
+		p.context = ""
+		p.reasoning = ""
+		p.content = ""
+		p.tools = nil
+	})
+}
+
+func (p *PinnedManager) UpdateReasoning(reasoning string) {
+	p.update(func() {
+		p.reasoning = reasoning
+	})
+}
+
+func (p *PinnedManager) UpdateContent(content string) {
+	p.update(func() {
+		p.content = content
+	})
+}
+
+func (p *PinnedManager) ClearContent() {
+	p.update(func() {
+		p.content = ""
+	})
+}
+
+func (p *PinnedManager) UpdateTool(status string) {
+	p.update(func() {
+		p.tools = append(p.tools, status)
+		if len(p.tools) > 8 {
+			p.tools = p.tools[len(p.tools)-8:]
+		}
+	})
+}
+
+func (p *PinnedManager) Complete() {
+	p.update(func() {
+		p.state = "Completed"
+		p.context = "Run completed"
+		p.reasoning = ""
+		p.content = ""
+	})
+}
+
+func (p *PinnedManager) Fail() {
+	p.update(func() {
+		p.state = "Failed"
+		p.context = "Run failed"
+		p.reasoning = ""
+		p.content = ""
+	})
+}
+
+func (p *PinnedManager) Stop() {
+	p.update(func() {
+		p.state = "Stopped"
+		p.context = "Generation stopped"
+		p.reasoning = ""
+		p.content = ""
+	})
+}
+
 func (p *PinnedManager) AddFile(path string) {
 	p.update(func() {
 		p.files = append(p.files, path)
@@ -90,21 +186,58 @@ func (p *PinnedManager) AddFile(path string) {
 func (p *PinnedManager) update(change func()) {
 	p.mu.Lock()
 	change()
-	text := p.formatLocked()
-	messageID := p.messageID
-	p.mu.Unlock()
-	if messageID == 0 {
+	if p.messageID == 0 {
+		p.mu.Unlock()
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"chat_id": p.chatID, "message_id": messageID, "text": text})
-	resp, _ := doTelegramPost(api("editMessageText", p.token), body)
-	discardTelegramResponse(resp)
+	text := p.formatLocked()
+	updates := p.updates
+	p.mu.Unlock()
+	if updates == nil {
+		return
+	}
+	select {
+	case updates <- text:
+	default:
+		select {
+		case <-updates:
+		default:
+		}
+		select {
+		case updates <- text:
+		default:
+		}
+	}
 }
 
 func (p *PinnedManager) formatLocked() string {
-	files := ""
-	if len(p.files) > 0 {
-		files = "\nFiles: " + fmt.Sprint(p.files)
+	state := p.state
+	if state == "" {
+		state = "Idle"
 	}
-	return fmt.Sprintf("📌 Live status\nTokens: %d\nCost: %s\n%s%s", p.tokens, p.cost, p.context, files)
+	sections := []string{"📌 " + state, fmt.Sprintf("Tokens: %d", p.tokens), "Cost: " + p.cost}
+	if p.context != "" {
+		sections = append(sections, p.context)
+	}
+	if reasoning := strings.TrimSpace(p.reasoning); reasoning != "" {
+		sections = append(sections, "🧠 "+truncateStatus(reasoning, 700))
+	}
+	if content := strings.TrimSpace(p.content); content != "" {
+		sections = append(sections, "💬 "+truncateStatus(content, 1200))
+	}
+	if len(p.tools) > 0 {
+		sections = append(sections, strings.Join(p.tools, "\n"))
+	}
+	if len(p.files) > 0 {
+		sections = append(sections, "Files: "+fmt.Sprint(p.files))
+	}
+	return strings.Join(sections, "\n")
+}
+
+func truncateStatus(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-3]) + "..."
 }

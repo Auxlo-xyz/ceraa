@@ -25,26 +25,26 @@ import (
 )
 
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
-	return runAgentContext(context.Background(), sessionID, user, onReasoning, onTool, onAnswer)
+	return runAgentContext(context.Background(), sessionID, user, nil, onReasoning, onTool, onAnswer)
 }
 
-func runAgentContext(parent context.Context, sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	return runAgentWithConfigContext(parent, sessionID, user, cfg, onReasoning, onTool, onAnswer)
+	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer)
 }
 
 func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
-	return runAgentWithConfigContext(context.Background(), sessionID, user, cfg, onReasoning, onTool, onAnswer)
+	return runAgentWithConfigContext(context.Background(), sessionID, user, cfg, nil, onReasoning, onTool, onAnswer)
 }
 
-func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
-	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onReasoning, onTool, onAnswer)
+func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer)
 }
 
-func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
 	if err := parent.Err(); err != nil {
 		return err
 	}
@@ -128,54 +128,43 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		},
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) {
-				event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"content": content}})
+				if onContent != nil {
+					onContent(content)
+				}
 			},
 			OnReasoning: func(reasoning string) {
 				if onReasoning != nil {
 					onReasoning(reasoning)
 				}
-				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"full": reasoning}})
 			},
-			OnToolStart: func(t tool.Tool, args map[string]any) {
-				name, _ := args["tool"].(string)
-				argText, _ := args["args"].(string)
-				if len(argText) > 200 {
-					argText = argText[:200] + "..."
-				}
+			OnToolStart: func(callID, name string, args map[string]any) {
 				if onTool != nil {
-					onTool("🔧 " + name + " " + argText)
+					onTool("🔄 " + toolDisplayName(name))
 				}
-				event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: args})
 			},
-			OnToolDone: func(result operation.ResultEvent) {
-				status := "✓"
+			OnToolDone: func(callID, name string, result operation.ResultEvent) {
+				status := "✅"
+				label := toolDisplayName(name)
 				if result.Status != operation.StatusCompleted {
-					status = "✗"
-				}
-				preview := result.Output
-				if len(preview) > 300 {
-					preview = preview[:300] + "..."
+					status = "⚠️"
 				}
 				if onTool != nil {
-					onTool(fmt.Sprintf("%s %s → %s", status, result.OpID, preview))
+					onTool(fmt.Sprintf("%s %s %s", status, label, toolResultLabel(result)))
 				}
-				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{"op_id": result.OpID, "output": result.Output, "status": string(result.Status)}})
 			},
 			OnCompactionStart: func() {
 				if onTool != nil {
 					onTool("⚡ Compacting context...")
 				}
-				event.Default.Publish(event.Event{Type: event.TypeCompactProgress, SessionID: sessionID, Data: map[string]any{"progress": "start"}})
 			},
 			OnCompactionDone: func(ok bool, err error) {
 				if onTool != nil {
 					if ok {
-						onTool("✓ Compaction done, recent preserved")
+						onTool("✅ Compaction completed")
 					} else if err != nil {
-						onTool("⚠️ Compaction skipped: " + err.Error())
+						onTool("⚠️ Compaction skipped")
 					}
 				}
-				event.Default.Publish(event.Event{Type: event.TypeCompact, SessionID: sessionID, Data: map[string]any{"done": ok}})
 			},
 			OnUsage: func(usage llm.UsageInfo) {
 				tokens := usage.InputTokens + usage.OutputTokens
@@ -191,7 +180,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 				event.Default.Publish(event.Event{Type: event.TypeCost, SessionID: sessionID, Data: map[string]any{"cost": text, "status": status}})
 			},
 			OnDone: func(answer string) {
-				event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"content": answer}})
 				if onAnswer != nil && answer != "" {
 					onAnswer(answer)
 				}

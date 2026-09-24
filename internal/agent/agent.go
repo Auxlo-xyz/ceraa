@@ -80,13 +80,11 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		Compactor:           compactor,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) { fmt.Print(content) },
-			OnToolStart: func(_ tool.Tool, args map[string]any) {
-				if name, ok := args["tool"].(string); ok {
-					fmt.Printf("\n» %s\n", name)
-				}
+			OnToolStart: func(_, name string, _ map[string]any) {
+				fmt.Printf("\n» %s\n", name)
 			},
-			OnToolDone: func(result operation.ResultEvent) {
-				fmt.Printf("%s %s → %d chars\n", result.Status, result.OpID, len(result.Output))
+			OnToolDone: func(_, name string, result operation.ResultEvent) {
+				fmt.Printf("%s %s → %d chars\n", result.Status, name, len(result.Output))
 			},
 			OnCompactionStart: func() { fmt.Println("⚡ Compacting context...") },
 		},
