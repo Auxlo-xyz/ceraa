@@ -195,7 +195,7 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	if !strings.Contains(live, "🛠 Tools") || !strings.Contains(live, "⏳ Read file") {
 		t.Fatalf("live assistant message = %q", live)
 	}
-	if !strings.Contains(final, "🛠 Tools used") || !strings.Contains(final, "✓ Read file completed") {
+	if final != "Done" {
 		t.Fatalf("final assistant message = %q", final)
 	}
 	if strings.Contains(pinnedStatus, "🛠 Tools") {

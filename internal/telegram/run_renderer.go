@@ -69,7 +69,7 @@ func (r *runRenderer) signalStream() {
 func (r *runRenderer) streamTextLocked() string {
 	parts := make([]string, 0, 2)
 	if len(r.tools) > 0 {
-		parts = append(parts, formatToolActivity(r.tools, false))
+		parts = append(parts, formatToolActivity(r.tools))
 	}
 	if content := strings.TrimSpace(r.streamContent); content != "" {
 		parts = append(parts, truncateStream(content+" ▌"))
@@ -151,27 +151,22 @@ func (r *runRenderer) finish(answer string) {
 	r.mu.Lock()
 	stopped := r.stopped
 	messageID := r.messageID
-	tools := append([]string(nil), r.tools...)
 	r.mu.Unlock()
 	if stopped {
 		return
 	}
 	if answer != "" {
-		displayAnswer := answer
-		if len(tools) > 0 {
-			displayAnswer += "\n\n" + formatToolActivity(tools, true)
-		}
-		runes := []rune(displayAnswer)
+		runes := []rune(answer)
 		if len(runes) <= telegramRichMessageLimit {
-			if !r.publishRichMessage(displayAnswer, messageID) {
+			if !r.publishRichMessage(answer, messageID) {
 				if messageID == 0 {
-					sendPlainMessage(r.token, r.chatID, displayAnswer)
+					sendPlainMessage(r.token, r.chatID, answer)
 				} else {
-					_ = editTelegramMessage(r.token, r.chatID, messageID, displayAnswer)
+					_ = editTelegramMessage(r.token, r.chatID, messageID, answer)
 				}
 			}
 		} else if messageID == 0 {
-			for rest := displayAnswer; len([]rune(rest)) > 0; {
+			for rest := answer; len([]rune(rest)) > 0; {
 				chunkRunes := []rune(rest)
 				size := telegramRichMessageLimit
 				if len(chunkRunes) < size {
@@ -428,18 +423,12 @@ func toolDisplayName(name string) string {
 	}
 }
 
-func formatToolActivity(tools []string, final bool) string {
+func formatToolActivity(tools []string) string {
 	lines := make([]string, 0, len(tools))
-	prefix := "• "
-	title := "🛠 Tools"
-	if final {
-		prefix = "- "
-		title = "🛠 Tools used"
-	}
 	for _, status := range tools {
-		lines = append(lines, prefix+formatToolStatus(status))
+		lines = append(lines, "• "+formatToolStatus(status))
 	}
-	return title + "\n" + strings.Join(lines, "\n")
+	return "🛠 Tools\n" + strings.Join(lines, "\n")
 }
 
 func toolResultLabel(result operation.ResultEvent) string {
