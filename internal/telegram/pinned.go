@@ -226,12 +226,29 @@ func (p *PinnedManager) formatLocked() string {
 		sections = append(sections, "💬 "+truncateStatus(content, 1200))
 	}
 	if len(p.tools) > 0 {
-		sections = append(sections, strings.Join(p.tools, "\n"))
+		toolLines := make([]string, 0, len(p.tools))
+		for _, status := range p.tools {
+			toolLines = append(toolLines, "  "+formatToolStatus(status))
+		}
+		sections = append(sections, "🛠 Tools\n"+strings.Join(toolLines, "\n"))
 	}
 	if len(p.files) > 0 {
 		sections = append(sections, "Files: "+fmt.Sprint(p.files))
 	}
 	return strings.Join(sections, "\n")
+}
+
+func formatToolStatus(status string) string {
+	switch {
+	case strings.HasPrefix(status, "🔄 "):
+		return "⏳ " + strings.TrimPrefix(status, "🔄 ")
+	case strings.HasPrefix(status, "✅ "):
+		return "✓ " + strings.TrimPrefix(status, "✅ ")
+	case strings.HasPrefix(status, "⚠️ "):
+		return "⚠ " + strings.TrimPrefix(status, "⚠️ ")
+	default:
+		return "• " + status
+	}
 }
 
 func truncateStatus(value string, limit int) string {

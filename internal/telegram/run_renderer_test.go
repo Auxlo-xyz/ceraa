@@ -90,6 +90,19 @@ func TestRunRendererStopCancelsTheRun(t *testing.T) {
 	}
 }
 
+func TestToolActivityIsReadableAndRedacted(t *testing.T) {
+	summary := toolArgsSummary("read", map[string]any{"args": `{"path":"/workspace/sooraa/.env"}`})
+	if summary != " · /workspace/sooraa/.env" {
+		t.Fatalf("tool argument summary = %q", summary)
+	}
+	if got := formatToolStatus("🔄 Read file · /workspace/sooraa"); got != "⏳ Read file · /workspace/sooraa" {
+		t.Fatalf("running tool status = %q", got)
+	}
+	if got := formatToolStatus("✅ Read file completed"); got != "✓ Read file completed" {
+		t.Fatalf("completed tool status = %q", got)
+	}
+}
+
 func TestToolDisplayNamesAreHumanReadable(t *testing.T) {
 	if got := toolDisplayName("read"); got != "Read file" {
 		t.Fatalf("read label = %q", got)

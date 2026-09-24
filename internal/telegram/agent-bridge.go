@@ -139,7 +139,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 			},
 			OnToolStart: func(callID, name string, args map[string]any) {
 				if onTool != nil {
-					onTool("🔄 " + toolDisplayName(name))
+					onTool("🔄 " + toolDisplayName(name) + toolArgsSummary(name, args))
 				}
 			},
 			OnToolDone: func(callID, name string, result operation.ResultEvent) {

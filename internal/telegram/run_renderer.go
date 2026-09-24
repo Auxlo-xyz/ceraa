@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sooraa/harness/operation"
+	"sooraa/harness/redact"
 )
 
 type runRenderer struct {
@@ -226,6 +227,39 @@ func truncateStream(value string) string {
 		return value
 	}
 	return string(runes[len(runes)-3997:]) + "..."
+}
+
+func toolArgsSummary(name string, args map[string]any) string {
+	raw, _ := args["args"].(string)
+	if raw == "" {
+		return ""
+	}
+	values := make(map[string]any)
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return ""
+	}
+	key := "value"
+	switch name {
+	case "read", "write", "edit", "move", "copy":
+		key = "path"
+	case "bash":
+		key = "command"
+	case "glob":
+		key = "pattern"
+	case "grep":
+		key = "pattern"
+	case "fts_search":
+		key = "query"
+	}
+	value, ok := values[key]
+	if !ok {
+		return ""
+	}
+	text := strings.Join(strings.Fields(redact.SecretsInText(fmt.Sprint(value))), " ")
+	if text == "" {
+		return ""
+	}
+	return " · " + truncateStatus(text, 96)
 }
 
 func toolDisplayName(name string) string {
