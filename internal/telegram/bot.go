@@ -47,12 +47,6 @@ type update struct {
 			FileID string `json:"file_id"`
 		} `json:"voice"`
 	} `json:"message"`
-	StoppedMessageGeneration *struct {
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-		DraftID int64 `json:"draft_id"`
-	} `json:"stopped_message_generation"`
 	CallbackQuery *struct {
 		ID   string `json:"id"`
 		From struct {
@@ -285,7 +279,7 @@ func Run() error {
 	offset := getInitialOffset(token)
 	fmt.Printf("telegram polling start offset=%d\n", offset)
 	for {
-		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%2C%22stopped_message_generation%22%5D"), token))
+		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
@@ -319,16 +313,6 @@ func Run() error {
 				continue
 			}
 
-			if u.StoppedMessageGeneration != nil {
-				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				stopped := u.StoppedMessageGeneration
-				if value, ok := activeDrafts.Load(stopped.DraftID); ok {
-					if renderer, ok := value.(*runRenderer); ok && renderer.chatID == stopped.Chat.ID {
-						renderer.stop()
-					}
-				}
-				continue
-			}
 			if u.CallbackQuery != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				chatID := int64(0)
@@ -754,7 +738,7 @@ func enqueuePrompt(token string, chatID int64, prompt string, updateID int) {
 }
 
 func getInitialOffset(token string) int {
-	resp, err := telegramClient.Get(api("getUpdates?timeout=0&offset=-1&allowed_updates=%5B%22message%22%2C%22callback_query%22%2C%22stopped_message_generation%22%5D", token))
+	resp, err := telegramClient.Get(api("getUpdates?timeout=0&offset=-1&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D", token))
 	if err != nil {
 		return 0
 	}
