@@ -67,6 +67,24 @@ type TelegramConfig struct {
 	AllowedUserID int64  `json:"allowed_user_id,omitempty"`
 }
 
+func defaultWorkspaceRoot() string {
+	if executable, err := os.Executable(); err == nil {
+		if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+			executable = resolved
+		}
+		directory := filepath.Dir(executable)
+		if filepath.Base(directory) == "bin" {
+			directory = filepath.Dir(directory)
+		}
+		return filepath.Join(directory, "workspace")
+	}
+	if workingDirectory, err := os.Getwd(); err == nil {
+		return filepath.Join(workingDirectory, "workspace")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "sooraa", "workspace")
+}
+
 // DefaultConfig returns the base defaults before env/file overrides.
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
@@ -76,7 +94,7 @@ func DefaultConfig() *Config {
 		ProviderProfiles:         map[string]ProviderProfile{},
 		MaxSteps:                 10,
 		SessionFile:              "sessions",
-		WorkspaceRoot:            filepath.Join(home, "sooraa", "workspace"),
+		WorkspaceRoot:            defaultWorkspaceRoot(),
 		MaxToolResultChars:       12000,
 		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
 		ModelCatalogRefreshHours: 24,
@@ -92,8 +110,7 @@ func DefaultConfig() *Config {
 func (c *Config) WorkspaceRootPath() string {
 	root := c.WorkspaceRoot
 	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, "sooraa", "workspace")
+		root = defaultWorkspaceRoot()
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {

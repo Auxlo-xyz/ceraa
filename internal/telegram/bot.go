@@ -215,6 +215,9 @@ func Run() error {
 	if cfgErr != nil {
 		return fmt.Errorf("load config: %w", cfgErr)
 	}
+	if err := os.MkdirAll(cfg.WorkspaceRootPath(), 0o755); err != nil {
+		return fmt.Errorf("create workspace root: %w", err)
+	}
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
 		token = cfg.Telegram.BotToken

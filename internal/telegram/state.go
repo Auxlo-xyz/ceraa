@@ -129,8 +129,7 @@ func (s *bridgeState) setSession(chatID int64, sessionID string) error {
 func configuredWorkspaceRoot() string {
 	cfg, err := config.Load()
 	if err != nil || cfg == nil {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "sooraa", "workspace")
+		return config.DefaultConfig().WorkspaceRootPath()
 	}
 	return cfg.WorkspaceRootPath()
 }

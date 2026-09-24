@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestDefaultTitleSettingsUseGeminiFlashLite(t *testing.T) {
 	cfg := DefaultConfig()
@@ -16,6 +19,9 @@ func TestDefaultWorkspaceRootIsExplicit(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.WorkspaceRoot == "" || cfg.WorkspaceRootPath() == "" {
 		t.Fatal("workspace root is empty")
+	}
+	if filepath.Base(cfg.WorkspaceRootPath()) != "workspace" {
+		t.Fatalf("workspace root = %q", cfg.WorkspaceRootPath())
 	}
 }
 
