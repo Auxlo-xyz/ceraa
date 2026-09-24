@@ -136,6 +136,24 @@ func TestNewFeatureMenusUseInlineButtons(t *testing.T) {
 	}
 }
 
+func TestClearPromptQueueReleasesChat(t *testing.T) {
+	promptQueue.mu.Lock()
+	promptQueue.busy[42] = true
+	promptQueue.queue[42] = []string{"first", "second"}
+	promptQueue.mu.Unlock()
+
+	clearPromptQueue(42)
+
+	promptQueue.mu.Lock()
+	defer promptQueue.mu.Unlock()
+	if promptQueue.busy[42] {
+		t.Fatal("prompt queue remained busy")
+	}
+	if len(promptQueue.queue[42]) != 0 {
+		t.Fatalf("prompt queue was not cleared: %v", promptQueue.queue[42])
+	}
+}
+
 func TestDynamicToolMenuUsesRegistry(t *testing.T) {
 	markup := menus.Inline("tools", 0)
 	keyboard, ok := markup["inline_keyboard"].([][]map[string]string)

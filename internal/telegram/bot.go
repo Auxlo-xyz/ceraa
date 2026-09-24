@@ -544,7 +544,8 @@ func authorized(allowID, userID, chatID int64) bool {
 
 func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	if defaultState.project(chatID) == "" {
-		sendMenuMarkup(token, chatID, "Choose a project before sending a task.", menus.InlineForChat("project", 0, chatID, currentSessionID(chatID)))
+		clearPromptQueue(chatID)
+		sendMenuMarkup(token, chatID, "Choose a project before sending a task. Previous queued prompts were discarded.", menus.InlineForChat("project", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	sessionID := currentSessionID(chatID)
@@ -726,6 +727,13 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 		promptQueue.busy[chatID] = false
 		promptQueue.mu.Unlock()
 	}
+}
+
+func clearPromptQueue(chatID int64) {
+	promptQueue.mu.Lock()
+	delete(promptQueue.queue, chatID)
+	promptQueue.busy[chatID] = false
+	promptQueue.mu.Unlock()
 }
 
 func enqueuePrompt(token string, chatID int64, prompt string, updateID int) {
