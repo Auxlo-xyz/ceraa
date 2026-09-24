@@ -10,11 +10,13 @@ import (
 
 // Config holds all sooraa settings.
 type Config struct {
-	LLM           LLMProvider    `json:"llm"`
-	Subscriptions Subscriptions  `json:"subscriptions,omitempty"`
-	Telegram      TelegramConfig `json:"telegram,omitempty"`
-	MaxSteps      int            `json:"max_steps,omitempty"`
-	SessionFile   string         `json:"session_file,omitempty"`
+	LLM                LLMProvider    `json:"llm"`
+	Subscriptions      Subscriptions  `json:"subscriptions,omitempty"`
+	Telegram           TelegramConfig `json:"telegram,omitempty"`
+	MaxSteps           int            `json:"max_steps,omitempty"`
+	SessionFile        string         `json:"session_file,omitempty"`
+	ToolOutputDir      string         `json:"tool_output_dir,omitempty"`
+	MaxToolResultChars int            `json:"max_tool_result_chars,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
@@ -54,8 +56,9 @@ func DefaultConfig() *Config {
 			ContextLimit:    236000,
 			MaxOutputTokens: 8192,
 		},
-		MaxSteps:    10,
-		SessionFile: "sessions",
+		MaxSteps:           10,
+		SessionFile:        "sessions",
+		MaxToolResultChars: 12000,
 	}
 }
 
@@ -95,6 +98,14 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {
 		cfg.SessionFile = v
+	}
+	if v := os.Getenv("SOORAA_TOOL_OUTPUT_DIR"); v != "" {
+		cfg.ToolOutputDir = v
+	}
+	if v := os.Getenv("SOORAA_MAX_TOOL_RESULT_CHARS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxToolResultChars = n
+		}
 	}
 
 	// Poolside provider env override

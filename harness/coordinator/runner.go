@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,6 +28,8 @@ type RunnerConfig struct {
 	ContextLimit       int
 	MaxOutputTokens    int
 	WorkDir            string
+	ToolOutputDir      string
+	MaxToolResultChars int
 	Inbox              *inbox.Inbox
 	OperationPool      *operation.LocalManager
 	Compactor          *compaction.Compactor
@@ -75,6 +79,12 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	}
 	if cfg.MaxOutputTokens <= 0 {
 		cfg.MaxOutputTokens = 8192
+	}
+	if cfg.MaxToolResultChars <= 0 {
+		cfg.MaxToolResultChars = 12000
+	}
+	if cfg.ToolOutputDir == "" {
+		cfg.ToolOutputDir = filepath.Join(os.TempDir(), "sooraa-tool-outputs")
 	}
 	opMgr := cfg.OperationPool
 	if opMgr == nil {
@@ -135,12 +145,24 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	if err := r.store.Save(sess); err != nil {
 		return Result{}, fmt.Errorf("save run: %w", err)
 	}
+	var runUsage llm.UsageInfo
+	var runBreakdown llm.TokenBreakdown
+	if r.cfg.Compactor != nil {
+		r.cfg.Compactor.OnUsage = func(delta llm.UsageInfo) {
+			runUsage.Add(delta)
+			if r.cb.OnUsage != nil {
+				r.cb.OnUsage(runUsage)
+			}
+		}
+	}
 
 	finish := func(status sessionstore.RunStatus, runErr error) error {
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
 				sess.Runs[i].Status = status
 				sess.Runs[i].UpdatedAt = time.Now()
+				sess.Runs[i].Usage = runUsage
+				sess.Runs[i].InputBreakdown = runBreakdown
 				if runErr != nil {
 					sess.Runs[i].Error = runErr.Error()
 				}
@@ -159,6 +181,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
 				sess.Runs[i].Step = step
+				sess.Runs[i].Requests++
+				sess.Runs[i].Usage = runUsage
+				sess.Runs[i].InputBreakdown = runBreakdown
 				sess.Runs[i].UpdatedAt = time.Now()
 			}
 		}
@@ -175,6 +200,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					r.cb.OnCompactionStart()
 				}
 				ok, err := r.cfg.Compactor.Compact(ctx, sess)
+				runBreakdown.Compaction += r.cfg.Compactor.LastPromptTokens
 				if r.cb.OnCompactionDone != nil {
 					r.cb.OnCompactionDone(ok, err)
 				}
@@ -183,6 +209,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						return Result{}, finish(sessionstore.RunFailed, fmt.Errorf("compaction: %w", err))
 					}
 				} else if ok {
+					for i := range sess.Runs {
+						if sess.Runs[i].ID == runID {
+							sess.Runs[i].Usage = runUsage
+							sess.Runs[i].InputBreakdown = runBreakdown
+						}
+					}
 					if err := r.store.Save(sess); err != nil {
 						return Result{}, finish(sessionstore.RunFailed, err)
 					}
@@ -196,12 +228,14 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 
 		client := llm.New(r.cfg.Model)
+		toolDefs := r.toolDefs()
 		request := llm.StreamRequest{
-			Messages:  r.messages(sess),
-			Tools:     r.toolDefs(),
+			Messages:  r.messages(sess, toolDefs),
+			Tools:     toolDefs,
 			Reason:    r.cfg.Reasoning,
 			MaxTokens: r.cfg.MaxOutputTokens,
 		}
+		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		var content strings.Builder
 		var reasoning strings.Builder
 		var calls []llm.StreamedToolCall
@@ -223,23 +257,40 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				calls = llm.MergeStreamedToolCalls(calls, delta.ToolCalls)
 			}
 			if delta.Usage != nil {
-				usage.InputTokens += delta.Usage.InputTokens
-				usage.OutputTokens += delta.Usage.OutputTokens
+				usage.Add(*delta.Usage)
+				runUsage.Add(*delta.Usage)
 				if r.cb.OnUsage != nil {
-					r.cb.OnUsage(*delta.Usage)
+					r.cb.OnUsage(runUsage)
 				}
 			}
 		})
+		runBreakdown.Add(breakdown)
+		for i := range sess.Runs {
+			if sess.Runs[i].ID == runID {
+				sess.Runs[i].Usage = runUsage
+				sess.Runs[i].InputBreakdown = runBreakdown
+			}
+		}
+		if saveErr := r.store.Save(sess); saveErr != nil {
+			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, saveErr)
+		}
 		if err != nil {
 			if r.cfg.Compactor != nil && (r.cfg.Compactor.IsOverflow(sess) || strings.Contains(strings.ToLower(err.Error()), "context") || strings.Contains(strings.ToLower(err.Error()), "token")) {
 				if r.cb.OnCompactionStart != nil {
 					r.cb.OnCompactionStart()
 				}
 				ok, compactErr := r.cfg.Compactor.Compact(ctx, sess)
+				runBreakdown.Compaction += r.cfg.Compactor.LastPromptTokens
 				if r.cb.OnCompactionDone != nil {
 					r.cb.OnCompactionDone(ok, compactErr)
 				}
 				if compactErr == nil && ok {
+					for i := range sess.Runs {
+						if sess.Runs[i].ID == runID {
+							sess.Runs[i].Usage = runUsage
+							sess.Runs[i].InputBreakdown = runBreakdown
+						}
+					}
 					if saveErr := r.store.Save(sess); saveErr != nil {
 						return Result{}, finish(sessionstore.RunFailed, saveErr)
 					}
@@ -251,7 +302,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			if ctx.Err() != nil {
 				status = sessionstore.RunCanceled
 			}
-			return Result{Usage: usage}, finish(status, err)
+			return Result{Usage: runUsage}, finish(status, err)
 		}
 
 		calls = llm.EnsureToolCallIDs(calls, fmt.Sprintf("%s_%d", runID, step))
@@ -260,12 +311,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			answer := content.String()
 			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: reasoning.String()})
 			if err := r.store.Save(sess); err != nil {
-				return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+				return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 			}
 			if r.cb.OnDone != nil {
 				r.cb.OnDone(answer)
 			}
-			return Result{Final: answer, Usage: usage}, finish(sessionstore.RunCompleted, nil)
+			return Result{Final: answer, Usage: runUsage}, finish(sessionstore.RunCompleted, nil)
 		}
 
 		assistant := sessionstore.Message{Role: llm.RoleAssistant, Content: content.String(), Reasoning: reasoning.String(), ToolCalls: make([]sessionstore.ToolCallRef, 0, len(calls))}
@@ -274,12 +325,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		sess.Messages = append(sess.Messages, assistant)
 		if err := r.store.Save(sess); err != nil {
-			return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 		}
 
 		prepared, results, err := r.prepareTools(ctx, sess, runID, calls)
 		if err != nil {
-			return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 		}
 		pending := make(map[string]struct{}, len(prepared))
 		for _, item := range prepared {
@@ -293,9 +344,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					continue
 				}
 				delete(pending, result.OpID)
-				results[result.OpID] = resultText(result)
+				results[result.OpID] = r.resultText(runID, result)
 				if err := r.persistResult(sess, runID, result); err != nil {
-					return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+					return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 				}
 				if r.cb.OnToolDone != nil {
 					r.cb.OnToolDone(result)
@@ -305,27 +356,27 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				for id := range pending {
 					results[id] = "Error: operation canceled before a durable result was recorded"
 					if err := r.persistUnknown(sess, runID, id, ctx.Err()); err != nil {
-						return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+						return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 					}
 				}
 				r.appendResults(sess, calls, results)
 				if saveErr := r.store.Save(sess); saveErr != nil {
-					return Result{Usage: usage}, finish(sessionstore.RunFailed, saveErr)
+					return Result{Usage: runUsage}, finish(sessionstore.RunFailed, saveErr)
 				}
-				return Result{Usage: usage}, finish(sessionstore.RunCanceled, ctx.Err())
+				return Result{Usage: runUsage}, finish(sessionstore.RunCanceled, ctx.Err())
 			case <-timeout.C:
 				r.opMgr.CancelAll()
 				for id := range pending {
 					results[id] = "Error: operation outcome is unknown after timeout"
 					if err := r.persistUnknown(sess, runID, id, fmt.Errorf("operation timeout")); err != nil {
-						return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+						return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 					}
 				}
 				r.appendResults(sess, calls, results)
 				if saveErr := r.store.Save(sess); saveErr != nil {
-					return Result{Usage: usage}, finish(sessionstore.RunFailed, saveErr)
+					return Result{Usage: runUsage}, finish(sessionstore.RunFailed, saveErr)
 				}
-				return Result{Usage: usage}, finish(sessionstore.RunFailed, fmt.Errorf("tool execution timeout"))
+				return Result{Usage: runUsage}, finish(sessionstore.RunFailed, fmt.Errorf("tool execution timeout"))
 			}
 		}
 		if !timeout.Stop() {
@@ -336,11 +387,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		r.appendResults(sess, calls, results)
 		if err := r.store.Save(sess); err != nil {
-			return Result{Usage: usage}, finish(sessionstore.RunFailed, err)
+			return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 		}
 	}
 	err = fmt.Errorf("maximum steps reached without a final answer")
-	return Result{}, finish(sessionstore.RunFailed, err)
+	return Result{Usage: runUsage}, finish(sessionstore.RunFailed, err)
 }
 
 func (r *Runner) handleInbox(ctx context.Context) error {
@@ -391,12 +442,15 @@ func (r *Runner) uniqueToolCallIDs(calls []llm.StreamedToolCall, sess *sessionst
 	return calls
 }
 
-func (r *Runner) messages(sess *sessionstore.Session) []llm.Item {
+func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm.Item {
 	history := *sess
 	if len(history.Messages) > 0 && history.Messages[0].Role == llm.RoleSystem && history.Messages[0].Compaction == nil {
 		history.Messages = history.Messages[1:]
 	}
-	limit := r.cfg.ContextLimit - r.cfg.MaxOutputTokens
+	limit := r.cfg.ContextLimit - r.cfg.MaxOutputTokens - llm.EstimateToolDefinitionTokens(tools)
+	if limit <= 0 {
+		limit = r.cfg.ContextLimit - r.cfg.MaxOutputTokens
+	}
 	if limit <= 0 {
 		limit = 216000
 	}
@@ -554,7 +608,7 @@ func (r *Runner) persistResult(sess *sessionstore.Session, runID string, result 
 		if sess.Operations[i].ID != result.OpID {
 			continue
 		}
-		sess.Operations[i].Output = resultText(result)
+		sess.Operations[i].Output = r.resultText(runID, result)
 		sess.Operations[i].Error = result.Error
 		sess.Operations[i].ResultPresent = true
 		switch result.Status {
@@ -605,9 +659,40 @@ func (r *Runner) statusFor(sess *sessionstore.Session, id string) sessionstore.O
 	return sessionstore.StatusUnknown
 }
 
-func resultText(result operation.ResultEvent) string {
+func (r *Runner) resultText(runID string, result operation.ResultEvent) string {
 	if result.Error != "" {
 		return "Error: " + result.Error
 	}
-	return result.Output
+	return r.formatOutput(runID, result.OpID, result.Output)
+}
+
+func (r *Runner) formatOutput(runID, operationID, output string) string {
+	limit := r.cfg.MaxToolResultChars
+	if limit <= 0 || len(output) <= limit {
+		return output
+	}
+	dir := r.cfg.ToolOutputDir
+	if dir == "" {
+		dir = filepath.Join(os.TempDir(), "sooraa-tool-outputs")
+	}
+	safeID := filepath.Base(operationID)
+	if safeID == "." || safeID == string(filepath.Separator) || safeID == "" {
+		safeID = "result"
+	}
+	path := filepath.Join(dir, runID, safeID+".txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
+		if err := os.WriteFile(path, []byte(output), 0o600); err == nil {
+			tailLength := limit / 3
+			if tailLength < 1024 {
+				tailLength = 1024
+			}
+			tail := output[len(output)-tailLength:]
+			return fmt.Sprintf("Large tool output saved to %s (%d bytes).\nTail:\n%s", path, len(output), tail)
+		}
+	}
+	tailLength := limit / 3
+	if tailLength < 1024 {
+		tailLength = 1024
+	}
+	return fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), output[len(output)-tailLength:])
 }

@@ -55,6 +55,8 @@ func (w *WebSearchTool) Translate(args map[string]any) (operation.Spec, error) {
 	numResults := 8
 	if n, ok := args["numResults"].(float64); ok {
 		numResults = int(n)
+	} else if n, ok := args["numResults"].(int); ok {
+		numResults = n
 	}
 	if numResults <= 0 {
 		numResults = 8
@@ -68,8 +70,24 @@ func (w *WebSearchTool) Translate(args map[string]any) (operation.Spec, error) {
 		"numResults":           numResults,
 		"livecrawl":            args["livecrawl"],
 		"type":                 args["type"],
-		"contextMaxCharacters": args["contextMaxCharacters"],
+		"contextMaxCharacters": contextMaxCharacters(args["contextMaxCharacters"]),
 	}}, nil
+}
+
+func contextMaxCharacters(value any) int {
+	max := 10000
+	if n, ok := value.(float64); ok {
+		max = int(n)
+	} else if n, ok := value.(int); ok {
+		max = n
+	}
+	if max <= 0 {
+		return 10000
+	}
+	if max > maxContextChars {
+		return maxContextChars
+	}
+	return max
 }
 
 func (w *WebSearchTool) TranslateResult(op operation.Operation) string {
@@ -85,14 +103,17 @@ func (w *WebSearchTool) RunContext(ctx context.Context, spec operation.Spec) (st
 	numResults := 8
 	if n, ok := spec.Args["numResults"].(float64); ok {
 		numResults = int(n)
+	} else if n, ok := spec.Args["numResults"].(int); ok {
+		numResults = n
 	}
 	provider := w.provider
 	if provider == "" {
 		provider = "exa" // default to exa, could implement parallel
 	}
+	maxContext := contextMaxCharacters(spec.Args["contextMaxCharacters"])
 
 	if provider == "exa" {
-		return w.searchExa(ctx, query, numResults)
+		return w.searchExa(ctx, query, numResults, maxContext)
 	}
 	return w.searchParallel(ctx, query, numResults, spec.Args["session_id"])
 }
@@ -121,17 +142,18 @@ type mcpResult struct {
 	} `json:"result"`
 }
 
-func (w *WebSearchTool) searchExa(ctx context.Context, query string, numResults int) (string, error) {
+func (w *WebSearchTool) searchExa(ctx context.Context, query string, numResults, maxContext int) (string, error) {
 	url := exaURL
 	if w.apiKey != "" {
 		url = fmt.Sprintf("%s?exaApiKey=%s", exaURL, w.apiKey)
 	}
 
 	args := exaArgs{
-		Query:      query,
-		Type:       "auto",
-		NumResults: numResults,
-		Livecrawl:  "fallback",
+		Query:           query,
+		Type:            "auto",
+		NumResults:      numResults,
+		Livecrawl:       "fallback",
+		ContextMaxChars: &maxContext,
 	}
 
 	payload := mcpRequest{

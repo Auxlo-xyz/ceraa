@@ -61,6 +61,40 @@ func TestMergeStreamedToolCalls(t *testing.T) {
 	}
 }
 
+func TestUsageInfoParsesProviderAliases(t *testing.T) {
+	var usage UsageInfo
+	err := usage.UnmarshalJSON([]byte(`{"prompt_tokens":120,"completion_tokens":8,"total_tokens":128,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens_details":{"reasoning_tokens":3}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 120 || usage.OutputTokens != 8 || usage.TotalTokens != 128 {
+		t.Fatalf("unexpected usage totals: %+v", usage)
+	}
+	if usage.CachedInputTokens != 40 || usage.UncachedInputTokens() != 80 {
+		t.Fatalf("unexpected cache usage: %+v", usage)
+	}
+	if usage.ReasoningTokens != 3 {
+		t.Fatalf("unexpected reasoning usage: %+v", usage)
+	}
+}
+
+func TestEstimateTokenBreakdown(t *testing.T) {
+	tools := []ToolDef{{Name: "read", Description: "read a file", Parameters: map[string]any{"type": "object"}}}
+	messages := []Item{
+		{Kind: "text", Role: RoleSystem, Text: "system instructions"},
+		{Kind: "text", Role: RoleUser, Text: "read the file"},
+		{Kind: "text", Role: RoleTool, Output: "file contents"},
+		{Kind: "reasoning", Reason: "reasoning"},
+	}
+	breakdown := EstimateTokenBreakdown(messages, tools)
+	if breakdown.System == 0 || breakdown.Tools == 0 || breakdown.User == 0 || breakdown.ToolOutput == 0 || breakdown.Reasoning == 0 {
+		t.Fatalf("missing source breakdown: %+v", breakdown)
+	}
+	if breakdown.Total() == 0 {
+		t.Fatal("expected non-zero breakdown")
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {

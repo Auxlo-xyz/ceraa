@@ -83,8 +83,182 @@ type ProviderResponse struct {
 }
 
 type UsageInfo struct {
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
+	InputTokens       int `json:"input_tokens,omitempty"`
+	OutputTokens      int `json:"output_tokens,omitempty"`
+	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens   int `json:"reasoning_tokens,omitempty"`
+	TotalTokens       int `json:"total_tokens,omitempty"`
+}
+
+type TokenBreakdown struct {
+	System       int `json:"system,omitempty"`
+	Tools        int `json:"tools,omitempty"`
+	User         int `json:"user,omitempty"`
+	Conversation int `json:"conversation,omitempty"`
+	ToolOutput   int `json:"tool_output,omitempty"`
+	Reasoning    int `json:"reasoning,omitempty"`
+	Compaction   int `json:"compaction,omitempty"`
+	Other        int `json:"other,omitempty"`
+}
+
+func (u UsageInfo) normalized() UsageInfo {
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 {
+		return u
+	}
+	if u.InputTokens == 0 {
+		u.InputTokens = u.TotalTokens - u.OutputTokens
+		if u.InputTokens < 0 {
+			u.InputTokens = 0
+		}
+	}
+	if u.OutputTokens == 0 {
+		u.OutputTokens = u.TotalTokens - u.InputTokens
+		if u.OutputTokens < 0 {
+			u.OutputTokens = 0
+		}
+	}
+	if u.TotalTokens == 0 {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	return u
+}
+
+func (u UsageInfo) UncachedInputTokens() int {
+	value := u.normalized().InputTokens - u.CachedInputTokens
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func (u *UsageInfo) Add(delta UsageInfo) {
+	delta = delta.normalized()
+	u.InputTokens += delta.InputTokens
+	u.OutputTokens += delta.OutputTokens
+	u.CachedInputTokens += delta.CachedInputTokens
+	u.CacheWriteTokens += delta.CacheWriteTokens
+	u.ReasoningTokens += delta.ReasoningTokens
+	u.TotalTokens += delta.TotalTokens
+}
+
+func (u *UsageInfo) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		PromptTokens             int `json:"prompt_tokens"`
+		CompletionTokens         int `json:"completion_tokens"`
+		TotalTokens              int `json:"total_tokens"`
+		CachedInputTokens        int `json:"cached_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheWriteTokens         int `json:"cache_write_tokens"`
+		ReasoningTokens          int `json:"reasoning_tokens"`
+		PromptTokensDetails      struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		InputTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	u.InputTokens = raw.InputTokens
+	if u.InputTokens == 0 {
+		u.InputTokens = raw.PromptTokens
+	}
+	u.OutputTokens = raw.OutputTokens
+	if u.OutputTokens == 0 {
+		u.OutputTokens = raw.CompletionTokens
+	}
+	u.TotalTokens = raw.TotalTokens
+	if u.TotalTokens == 0 {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	u.CachedInputTokens = raw.PromptTokensDetails.CachedTokens
+	if u.CachedInputTokens == 0 {
+		u.CachedInputTokens = raw.InputTokensDetails.CachedTokens
+	}
+	if u.CachedInputTokens == 0 {
+		u.CachedInputTokens = raw.CachedInputTokens
+	}
+	if u.CachedInputTokens == 0 {
+		u.CachedInputTokens = raw.CacheReadInputTokens
+	}
+	u.CacheWriteTokens = raw.CacheWriteTokens
+	if u.CacheWriteTokens == 0 {
+		u.CacheWriteTokens = raw.CacheCreationInputTokens
+	}
+	u.ReasoningTokens = raw.ReasoningTokens
+	if u.ReasoningTokens == 0 {
+		u.ReasoningTokens = raw.CompletionTokensDetails.ReasoningTokens
+	}
+	return nil
+}
+
+func (b TokenBreakdown) Total() int {
+	return b.System + b.Tools + b.User + b.Conversation + b.ToolOutput + b.Reasoning + b.Compaction + b.Other
+}
+
+func (b *TokenBreakdown) Add(other TokenBreakdown) {
+	b.System += other.System
+	b.Tools += other.Tools
+	b.User += other.User
+	b.Conversation += other.Conversation
+	b.ToolOutput += other.ToolOutput
+	b.Reasoning += other.Reasoning
+	b.Compaction += other.Compaction
+	b.Other += other.Other
+}
+
+func EstimateToolDefinitionTokens(tools []ToolDef) int {
+	total := 0
+	for _, item := range tools {
+		data, _ := json.Marshal(item)
+		total += estimateTokens(string(data))
+	}
+	return total
+}
+
+func EstimateTokenBreakdown(messages []Item, tools []ToolDef) TokenBreakdown {
+	var breakdown TokenBreakdown
+	breakdown.Tools = EstimateToolDefinitionTokens(tools)
+	for _, item := range messages {
+		tokens := estimateTokens(item.Text) + estimateTokens(item.Args) + estimateTokens(item.Output) + estimateTokens(item.Reason)
+		tokens += estimateTokens(item.CallID) + estimateTokens(item.Name)
+		for _, call := range item.ToolCalls {
+			tokens += estimateTokens(call.ID) + estimateTokens(call.Name) + estimateTokens(call.Args)
+		}
+		tokens += 10
+		switch {
+		case strings.Contains(item.Text, "<conversation-checkpoint>"):
+			breakdown.Compaction += tokens
+		case item.Role == RoleSystem:
+			breakdown.System += tokens
+		case item.Kind == "reasoning" || item.Reason != "":
+			breakdown.Reasoning += tokens
+		case item.Role == RoleTool:
+			breakdown.ToolOutput += tokens
+		case item.Role == RoleUser:
+			breakdown.User += tokens
+		case item.Kind == "tool_call" || item.Kind == "tool_calls" || item.Role == RoleAssistant:
+			breakdown.Conversation += tokens
+		default:
+			breakdown.Other += tokens
+		}
+	}
+	return breakdown
+}
+
+func estimateTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	return len(s) / 4
 }
 
 type StreamRequest struct {

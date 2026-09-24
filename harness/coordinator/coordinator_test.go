@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +83,62 @@ func TestRunnerPersistsOperationLedger(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("durable operation has no tool result message")
+	}
+}
+
+func TestFormatOutputStoresLargeResults(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	output := strings.Repeat("large output\n", 1000)
+	result := runner.formatOutput("run1", "call1", output)
+	if !strings.Contains(result, filepath.Join(dir, "run1", "call1.txt")) {
+		t.Fatalf("expected saved output path, got %q", result)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, "run1", "call1.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != output {
+		t.Fatal("saved output does not match original")
+	}
+	if !strings.Contains(result, "Tail:") {
+		t.Fatal("expected a bounded tail in the model-visible result")
+	}
+}
+
+func TestRunnerPersistsCumulativeUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload := map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{"content": "done"}}},
+			"usage":   map[string]any{"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105, "prompt_tokens_details": map[string]any{"cached_tokens": 20}},
+		}
+		encoded, _ := json.Marshal(payload)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := New(RunnerConfig{SessionID: "usage", SystemPrompt: "system", MaxSteps: 1, Model: llm.FromProvider(server.URL, "test", "test")}, store, tool.NewRegistry())
+	result, err := runner.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Usage.InputTokens != 100 || result.Usage.OutputTokens != 5 || result.Usage.CachedInputTokens != 20 {
+		t.Fatalf("unexpected result usage: %+v", result.Usage)
+	}
+	sess, err := store.Load("usage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Runs) != 1 || sess.Runs[0].Requests != 1 || sess.Runs[0].Usage.InputTokens != 100 {
+		t.Fatalf("usage was not persisted: %+v", sess.Runs)
+	}
+	if sess.Runs[0].InputBreakdown.System == 0 {
+		t.Fatal("expected request source breakdown")
 	}
 }
 

@@ -93,13 +93,16 @@ func (m Message) AllToolCalls() []ToolCallRef {
 }
 
 type Run struct {
-	ID        string    `json:"id"`
-	User      string    `json:"user,omitempty"`
-	Status    RunStatus `json:"status"`
-	Step      int       `json:"step"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Error     string    `json:"error,omitempty"`
+	ID             string             `json:"id"`
+	User           string             `json:"user,omitempty"`
+	Status         RunStatus          `json:"status"`
+	Step           int                `json:"step"`
+	Requests       int                `json:"requests"`
+	Usage          llm.UsageInfo      `json:"usage,omitempty"`
+	InputBreakdown llm.TokenBreakdown `json:"input_breakdown,omitempty"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	Error          string             `json:"error,omitempty"`
 }
 
 type Session struct {

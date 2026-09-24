@@ -35,13 +35,15 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	compactor.ContextLimit = cfg.LLM.ContextLimit
 	compactor.MaxOutputTokens = cfg.LLM.MaxOutputTokens
 	runner := coordinator.New(coordinator.RunnerConfig{
-		SessionID:       "cli",
-		SystemPrompt:    prompt.System,
-		MaxSteps:        cfg.MaxSteps,
-		Model:           llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
-		ContextLimit:    cfg.LLM.ContextLimit,
-		MaxOutputTokens: cfg.LLM.MaxOutputTokens,
-		Compactor:       compactor,
+		SessionID:          "cli",
+		SystemPrompt:       prompt.System,
+		MaxSteps:           cfg.MaxSteps,
+		Model:              llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
+		ContextLimit:       cfg.LLM.ContextLimit,
+		MaxOutputTokens:    cfg.LLM.MaxOutputTokens,
+		ToolOutputDir:      cfg.ToolOutputDir,
+		MaxToolResultChars: cfg.MaxToolResultChars,
+		Compactor:          compactor,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) { fmt.Print(content) },
 			OnToolStart: func(_ tool.Tool, args map[string]any) {

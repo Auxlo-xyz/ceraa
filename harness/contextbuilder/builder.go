@@ -189,6 +189,10 @@ func EstimateMessages(items []llm.Item) int {
 	total := 0
 	for _, item := range items {
 		total += EstimateTokens(item.Text) + EstimateTokens(item.Args) + EstimateTokens(item.Output) + EstimateTokens(item.Reason)
+		total += EstimateTokens(item.CallID) + EstimateTokens(item.Name)
+		for _, call := range item.ToolCalls {
+			total += EstimateTokens(call.ID) + EstimateTokens(call.Name) + EstimateTokens(call.Args)
+		}
 		total += 10 // overhead per item
 	}
 	return total

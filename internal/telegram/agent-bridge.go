@@ -47,15 +47,17 @@ func runAgentWithConfigContext(parent context.Context, sessionID string, user st
 	}
 	compactor := newCompactor(cfg)
 	runner := coordinator.New(coordinator.RunnerConfig{
-		SessionID:        sessionID,
-		SystemPrompt:     prompt.System,
-		MaxSteps:         cfg.MaxSteps,
-		Model:            llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
-		ContextLimit:     cfg.LLM.ContextLimit,
-		MaxOutputTokens:  cfg.LLM.MaxOutputTokens,
-		WorkDir:          projectRoot,
-		Compactor:        compactor,
-		ForcedCompaction: func() bool { return consumeForcedCompaction(sessionID) },
+		SessionID:          sessionID,
+		SystemPrompt:       prompt.System,
+		MaxSteps:           cfg.MaxSteps,
+		Model:              llm.FromProvider(cfg.LLM.URL, cfg.LLM.APIKey, cfg.LLM.Model),
+		ContextLimit:       cfg.LLM.ContextLimit,
+		MaxOutputTokens:    cfg.LLM.MaxOutputTokens,
+		WorkDir:            projectRoot,
+		ToolOutputDir:      cfg.ToolOutputDir,
+		MaxToolResultChars: cfg.MaxToolResultChars,
+		Compactor:          compactor,
+		ForcedCompaction:   func() bool { return consumeForcedCompaction(sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
 			return needsPermission(name, fmt.Sprint(args))
 		},

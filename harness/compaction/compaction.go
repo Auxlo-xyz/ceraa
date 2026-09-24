@@ -231,10 +231,12 @@ func buildPrompt(previousSummary string, head string, recent string) string {
 
 // Compactor performs LLM-based summarization.
 type Compactor struct {
-	LLM             llm.ProviderConfig
-	Settings        Settings
-	ContextLimit    int
-	MaxOutputTokens int
+	LLM              llm.ProviderConfig
+	Settings         Settings
+	ContextLimit     int
+	MaxOutputTokens  int
+	LastPromptTokens int
+	OnUsage          func(llm.UsageInfo)
 }
 
 // New creates a compactor with default settings.
@@ -284,6 +286,7 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 
 // CompactAfterOverflow performs summarization and rewrites session
 func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
+	c.LastPromptTokens = 0
 	keepTokens := c.Settings.Keep.Tokens
 	if keepTokens == 0 {
 		keepTokens = DefaultKeepTokens
@@ -319,6 +322,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	if EstimateTokens(prompt) > c.contextLimit()-summaryOutput {
 		return false, fmt.Errorf("prompt too large for compaction")
 	}
+	c.LastPromptTokens = EstimateTokens(prompt)
 	client := llm.New(c.LLM)
 	req := llm.StreamRequest{
 		Messages:  []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: prompt}},
@@ -329,6 +333,9 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	err := client.Stream(ctx, req, func(delta llm.ProviderResponse) {
 		if delta.Content != "" {
 			summary.WriteString(delta.Content)
+		}
+		if delta.Usage != nil && c.OnUsage != nil {
+			c.OnUsage(*delta.Usage)
 		}
 	})
 	if err != nil {

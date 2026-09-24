@@ -17,15 +17,25 @@ const ToolHeartbeatInterval = 10 * time.Minute
 
 func RunAsync(ctx context.Context, cfg Config, store *sessionstore.Store, reg *tool.Registry, opMgr *operation.LocalManager, ib *inbox.Inbox, cb Callbacks) error {
 	_, err := New(RunnerConfig{
-		SessionID:     cfg.SessionID,
-		SystemPrompt:  cfg.SystemPrompt,
-		MaxSteps:      cfg.MaxSteps,
-		Reasoning:     cfg.Reasoning,
-		StopWhenIdle:  cfg.StopWhenIdle,
-		Model:         llm.DefaultConfig(),
-		Inbox:         ib,
-		OperationPool: opMgr,
-		Callbacks:     cb,
+		SessionID:          cfg.SessionID,
+		SystemPrompt:       cfg.SystemPrompt,
+		MaxSteps:           cfg.MaxSteps,
+		Reasoning:          cfg.Reasoning,
+		StopWhenIdle:       cfg.StopWhenIdle,
+		Model:              cfg.Model,
+		ContextLimit:       cfg.ContextLimit,
+		MaxOutputTokens:    cfg.MaxOutputTokens,
+		WorkDir:            cfg.WorkDir,
+		ToolOutputDir:      cfg.ToolOutputDir,
+		MaxToolResultChars: cfg.MaxToolResultChars,
+		Inbox:              ib,
+		OperationPool:      opMgr,
+		Compactor:          cfg.Compactor,
+		ForcedCompaction:   cfg.ForcedCompaction,
+		AuthorizeTool:      cfg.AuthorizeTool,
+		NeedsAuthorization: cfg.NeedsAuthorization,
+		AdjustSpec:         cfg.AdjustSpec,
+		Callbacks:          cb,
 	}, store, reg).Run(ctx, "")
 	if err != nil {
 		if cb.OnError != nil {
