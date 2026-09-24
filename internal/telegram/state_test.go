@@ -1,17 +1,24 @@
 package telegram
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestBridgeStatePersistsSessionAndProject(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bridge-state.json")
+	workspace := t.TempDir()
+	t.Setenv("SOORAA_WORKSPACE_ROOT", workspace)
+	project := filepath.Join(workspace, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	state := loadBridgeStateFromFile(path)
 	if err := state.setSession(42, "session-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.setProject(42, t.TempDir()); err != nil {
+	if err := state.setProject(42, project); err != nil {
 		t.Fatal(err)
 	}
 	loaded := loadBridgeStateFromFile(path)
@@ -23,6 +30,16 @@ func TestBridgeStatePersistsSessionAndProject(t *testing.T) {
 	}
 	if loaded.projectForSession("session-a") == "" {
 		t.Fatal("expected session project")
+	}
+}
+
+func TestBridgeStateDoesNotFallbackToWorkingDirectory(t *testing.T) {
+	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
+	if state.project(42) != "" {
+		t.Fatalf("unexpected implicit project: %q", state.project(42))
+	}
+	if state.projectForSession("session-a") != "" {
+		t.Fatalf("unexpected implicit session project: %q", state.projectForSession("session-a"))
 	}
 }
 

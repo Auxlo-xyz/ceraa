@@ -3,6 +3,7 @@ package telegram
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -125,29 +126,71 @@ func (s *bridgeState) setSession(chatID int64, sessionID string) error {
 	return s.save()
 }
 
+func configuredWorkspaceRoot() string {
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "sooraa", "workspace")
+	}
+	return cfg.WorkspaceRootPath()
+}
+
+func validateWorkspaceProject(root string) (string, error) {
+	workspace := configuredWorkspaceRoot()
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return "", fmt.Errorf("create workspace root: %w", err)
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("project must be an existing directory")
+	}
+	workspaceReal, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace root: %w", err)
+	}
+	projectReal, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve project: %w", err)
+	}
+	rel, err := filepath.Rel(workspaceReal, projectReal)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("project must be inside workspace root %s", workspace)
+	}
+	return abs, nil
+}
+
 func (s *bridgeState) project(chatID int64) string {
 	key := strconv.FormatInt(chatID, 10)
 	s.mu.RLock()
 	value := s.Projects[key]
 	s.mu.RUnlock()
-	if value != "" {
-		return value
+	if value == "" {
+		return ""
 	}
-	wd, _ := os.Getwd()
-	return wd
+	valid, err := validateWorkspaceProject(value)
+	if err != nil {
+		return ""
+	}
+	return valid
 }
 
 func (s *bridgeState) setProject(chatID int64, root string) error {
-	abs, err := filepath.Abs(root)
+	abs, err := validateWorkspaceProject(root)
 	if err != nil {
 		return err
 	}
 	key := strconv.FormatInt(chatID, 10)
 	s.mu.Lock()
 	s.Projects[key] = abs
-	if sessionID := s.ActiveSessions[key]; sessionID != "" {
-		s.SessionProjects[sessionID] = abs
+	sessionID := s.ActiveSessions[key]
+	if sessionID == "" {
+		sessionID = key
 	}
+	s.SessionProjects[sessionID] = abs
 	s.mu.Unlock()
 	return s.save()
 }
@@ -156,11 +199,14 @@ func (s *bridgeState) projectForSession(sessionID string) string {
 	s.mu.RLock()
 	root := s.SessionProjects[sessionID]
 	s.mu.RUnlock()
-	if root != "" {
-		return root
+	if root == "" {
+		return ""
 	}
-	wd, _ := os.Getwd()
-	return wd
+	valid, err := validateWorkspaceProject(root)
+	if err != nil {
+		return ""
+	}
+	return valid
 }
 
 func (s *bridgeState) setAutoCompaction(enabled bool) error {

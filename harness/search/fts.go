@@ -1,7 +1,9 @@
 package search
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,7 +28,7 @@ type Result struct {
 // Open opens or creates an FTS5 index at dbPath.
 func Open(dbPath string) (*Index, error) {
 	if dir := filepath.Dir(dbPath); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -39,6 +41,7 @@ func Open(dbPath string) (*Index, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	_ = os.Chmod(dbPath, 0o600)
 	idx := &Index{db: db, path: dbPath}
 	if err := idx.init(); err != nil {
 		_ = db.Close()
@@ -78,6 +81,19 @@ func DefaultPath() string {
 		return ".sooraa-index.db"
 	}
 	return filepath.Join(home, ".cache", "sooraa", "index.db")
+}
+
+func ProjectIndexPath(workspaceRoot, projectRoot string) string {
+	workspace, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		workspace = workspaceRoot
+	}
+	project, err := filepath.Abs(projectRoot)
+	if err != nil {
+		project = projectRoot
+	}
+	hash := sha256.Sum256([]byte(project))
+	return filepath.Join(workspace, ".sooraa", "index", hex.EncodeToString(hash[:])+".db")
 }
 
 // IndexFile indexes a single file. Content is the full file text.
@@ -134,50 +150,108 @@ func (idx *Index) RemoveFile(path string) error {
 
 // IndexDir walks root and indexes text files incrementally.
 func (idx *Index) IndexDir(root string) (int, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return 0, err
+	}
 	count := 0
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
+	seen := make(map[string]bool)
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if d.IsDir() {
-			name := d.Name()
-			if name == ".git" || name == ".cache" || name == "node_modules" || name == "bin" || name == ".sooraa" {
+			if ignoredDirectory(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		// Only index text-like files, skip binaries by extension and size
+		if ignoredFile(d.Name()) {
+			return nil
+		}
 		ext := strings.ToLower(filepath.Ext(path))
 		switch ext {
 		case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".tar", ".gz", ".bin", ".exe", ".so", ".db", ".sqlite":
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > 5*1024*1024 {
+		info, infoErr := d.Info()
+		if infoErr != nil || info.Size() > 5*1024*1024 {
 			return nil
 		}
-		// Check if already indexed and unchanged
+		seen[path] = true
 		var storedMtime int64
 		var storedSize int64
 		err = idx.db.QueryRow(`SELECT mtime, size FROM files WHERE path = ?`, path).Scan(&storedMtime, &storedSize)
 		if err == nil && storedMtime == info.ModTime().Unix() && storedSize == info.Size() {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
 			return nil
 		}
-		// Skip binary files with null bytes
 		if isBinary(data) {
+			_ = idx.RemoveFile(path)
 			return nil
 		}
-		if err := idx.IndexFile(path, string(data)); err != nil {
+		if indexErr := idx.IndexFile(path, string(data)); indexErr != nil {
 			return nil
 		}
 		count++
 		return nil
 	})
-	return count, err
+	if err != nil {
+		return count, err
+	}
+	if err := idx.prune(seen); err != nil {
+		return count, err
+	}
+	return count, nil
+}
+
+func ignoredDirectory(name string) bool {
+	switch name {
+	case ".git", ".cache", "node_modules", "bin", ".sooraa", ".venv", "vendor", "dist", "build":
+		return true
+	default:
+		return false
+	}
+}
+
+func ignoredFile(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == ".env" || strings.HasPrefix(lower, ".env.") || lower == "credentials" || lower == "secrets.json"
+}
+
+func (idx *Index) prune(seen map[string]bool) error {
+	rows, err := idx.db.Query(`SELECT path FROM files`)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err == nil {
+			paths = append(paths, path)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if !seen[path] {
+			if err := idx.RemoveFile(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func isBinary(data []byte) bool {

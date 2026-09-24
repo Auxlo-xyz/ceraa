@@ -12,6 +12,13 @@ func TestDefaultTitleSettingsUseGeminiFlashLite(t *testing.T) {
 	}
 }
 
+func TestDefaultWorkspaceRootIsExplicit(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.WorkspaceRoot == "" || cfg.WorkspaceRootPath() == "" {
+		t.Fatal("workspace root is empty")
+	}
+}
+
 func TestActiveLLMUsesSelectedProviderProfile(t *testing.T) {
 	cfg := Config{
 		LLM:            LLMProvider{URL: "default-url", APIKey: "default-key", Model: "default-model", ContextLimit: 100, MaxOutputTokens: 10},

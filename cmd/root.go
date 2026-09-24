@@ -64,6 +64,7 @@ var configCmd = &cobra.Command{
 		fmt.Printf("User ID:      %d\n", cfg.Telegram.AllowedUserID)
 		fmt.Printf("Max Steps:    %d\n", cfg.MaxSteps)
 		fmt.Printf("Session File: %s\n", cfg.SessionFile)
+		fmt.Printf("Workspace:    %s\n", cfg.WorkspaceRootPath())
 		return nil
 	},
 }
@@ -83,7 +84,8 @@ var configInitCmd = &cobra.Command{
     "allowed_user_id": 0
   },
   "max_steps": 10,
-  "session_file": "sessions"
+  "session_file": "sessions",
+  "workspace_root": "/absolute/path/to/sooraa/workspace"
 }
 `
 		home, err := os.UserHomeDir()

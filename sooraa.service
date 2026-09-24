@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/workspace/sooraa
+Environment=SOORAA_WORKSPACE_ROOT=/workspace/sooraa/workspace
 # Secrets live in /etc/sooraa/sooraa.env (chmod 600). See sooraa.env.example.
 EnvironmentFile=/etc/sooraa/sooraa.env
 ExecStart=/workspace/sooraa/bin/sooraa start

@@ -573,6 +573,10 @@ func authorized(allowID, userID, chatID int64) bool {
 }
 
 func handlePrompt(token string, chatID int64, prompt string, updateID int) {
+	if defaultState.project(chatID) == "" {
+		sendMenuMarkup(token, chatID, "Choose a project before sending a task.", menus.InlineForChat("project", 0, chatID, currentSessionID(chatID)))
+		return
+	}
 	sessionID := currentSessionID(chatID)
 	pinned := getPinnedManager(token, chatID)
 	pinned.Init()

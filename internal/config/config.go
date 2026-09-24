@@ -17,6 +17,7 @@ type Config struct {
 	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
 	MaxSteps                 int                        `json:"max_steps,omitempty"`
 	SessionFile              string                     `json:"session_file,omitempty"`
+	WorkspaceRoot            string                     `json:"workspace_root,omitempty"`
 	ToolOutputDir            string                     `json:"tool_output_dir,omitempty"`
 	MaxToolResultChars       int                        `json:"max_tool_result_chars,omitempty"`
 	ModelCatalogURL          string                     `json:"model_catalog_url,omitempty"`
@@ -75,6 +76,7 @@ func DefaultConfig() *Config {
 		ProviderProfiles:         map[string]ProviderProfile{},
 		MaxSteps:                 10,
 		SessionFile:              "sessions",
+		WorkspaceRoot:            filepath.Join(home, "sooraa", "workspace"),
 		MaxToolResultChars:       12000,
 		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
 		ModelCatalogRefreshHours: 24,
@@ -85,6 +87,19 @@ func DefaultConfig() *Config {
 		EvaluationFile:           filepath.Join(base, "evaluations.json"),
 		SchedulerFile:            filepath.Join(base, "scheduler.json"),
 	}
+}
+
+func (c *Config) WorkspaceRootPath() string {
+	root := c.WorkspaceRoot
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = filepath.Join(home, "sooraa", "workspace")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return root
+	}
+	return abs
 }
 
 func (c *Config) ActiveLLM() LLMProvider {
@@ -175,6 +190,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {
 		cfg.SessionFile = v
+	}
+	if v := os.Getenv("SOORAA_WORKSPACE_ROOT"); v != "" {
+		cfg.WorkspaceRoot = v
 	}
 	if v := os.Getenv("SOORAA_TOOL_OUTPUT_DIR"); v != "" {
 		cfg.ToolOutputDir = v

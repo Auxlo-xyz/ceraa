@@ -18,7 +18,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid "${SOORAA_GID}" sooraa \
     && useradd --uid "${SOORAA_UID}" --gid "${SOORAA_GID}" --home-dir /data/sooraa --create-home --shell /usr/sbin/nologin sooraa \
-    && mkdir -p /workspace /data/sooraa \
+    && mkdir -p /workspace /data/sooraa /data/sooraa/workspace \
     && chown -R sooraa:sooraa /workspace /data/sooraa
 
 COPY --from=builder /out/sooraa /usr/local/bin/sooraa
@@ -26,6 +26,7 @@ COPY --from=builder /out/sooraa /usr/local/bin/sooraa
 ENV HOME=/data/sooraa \
     XDG_CONFIG_HOME=/data/sooraa/.config \
     SOORAA_SESSION_FILE=/data/sooraa/sessions \
+    SOORAA_WORKSPACE_ROOT=/data/sooraa/workspace \
     SOORAA_MEMORY_FILE=/data/sooraa/memory \
     SOORAA_SKILL_FILE=/data/sooraa/skills \
     SOORAA_EVALUATION_FILE=/data/sooraa/evaluations.json \

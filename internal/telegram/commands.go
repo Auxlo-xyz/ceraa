@@ -164,6 +164,9 @@ func handleProjectCommand(token string, chatID int64, text string) {
 		sendMenuMarkup(token, chatID, "Select a project", menus.InlineForChat("project", 0, chatID, currentSessionID(chatID)))
 		return
 	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(configuredWorkspaceRoot(), path)
+	}
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
 		send(token, chatID, "Project must be an existing directory")
@@ -252,16 +255,26 @@ func handleContextCommand(token string, chatID int64) {
 func handleSearchCommand(token string, chatID int64, text string) {
 	query := strings.TrimSpace(strings.TrimPrefix(text, "/search"))
 	if query == "" {
-		sendMenuMarkup(token, chatID, "Search workspace", menusInline("search"))
+		sendMenuMarkup(token, chatID, "Search project", menusInline("search"))
 		return
 	}
-	idx, err := search.Open(search.DefaultPath())
+	project := defaultState.project(chatID)
+	if project == "" {
+		send(token, chatID, "Choose a project before searching")
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		send(token, chatID, "Config error: "+err.Error())
+		return
+	}
+	idx, err := search.Open(search.ProjectIndexPath(cfg.WorkspaceRootPath(), project))
 	if err != nil {
 		send(token, chatID, "Search index error: "+err.Error())
 		return
 	}
 	defer idx.Close()
-	if _, err := idx.IndexDir(defaultState.project(chatID)); err != nil {
+	if _, err := idx.IndexDir(project); err != nil {
 		send(token, chatID, "Index error: "+err.Error())
 		return
 	}
@@ -282,27 +295,28 @@ func handleSearchCommand(token string, chatID int64, text string) {
 }
 
 func handleIndexCommand(token string, chatID int64, text string) {
-	path := strings.TrimSpace(strings.TrimPrefix(text, "/index"))
-	if path == "" {
-		path = defaultState.project(chatID)
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		send(token, chatID, "Index path must be an existing directory")
+	project := defaultState.project(chatID)
+	if project == "" {
+		send(token, chatID, "Choose a project before indexing")
 		return
 	}
-	idx, err := search.Open(search.DefaultPath())
+	cfg, err := config.Load()
+	if err != nil {
+		send(token, chatID, "Config error: "+err.Error())
+		return
+	}
+	idx, err := search.Open(search.ProjectIndexPath(cfg.WorkspaceRootPath(), project))
 	if err != nil {
 		send(token, chatID, "Index error: "+err.Error())
 		return
 	}
 	defer idx.Close()
-	count, err := idx.IndexDir(path)
+	count, err := idx.IndexDir(project)
 	if err != nil {
 		send(token, chatID, "Index error: "+err.Error())
 		return
 	}
-	send(token, chatID, fmt.Sprintf("🗃️ Indexed %d files from %s", count, path))
+	send(token, chatID, fmt.Sprintf("🗃️ Indexed %d files from %s", count, project))
 }
 
 func handleCatalogCommand(token string, chatID int64, text string) {
@@ -578,8 +592,8 @@ func handleStatus(token string, chatID int64) {
 	if steps == 0 {
 		steps = cfg.MaxSteps
 	}
-	text := fmt.Sprintf("Sooraa status:\n• Session: %s\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d\n• Max steps: %d",
-		sessionTitle, defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount, steps)
+	text := fmt.Sprintf("Sooraa status:\n• Session: %s\n• Workspace: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d\n• Max steps: %d",
+		sessionTitle, cfg.WorkspaceRootPath(), defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount, steps)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 

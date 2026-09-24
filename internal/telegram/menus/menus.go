@@ -50,11 +50,25 @@ func runtimeValues() runtimeState {
 
 func projectForChat(chatID int64) string {
 	state := runtimeValues()
-	if root := state.Projects[strconv.FormatInt(chatID, 10)]; root != "" {
-		return root
+	root := state.Projects[strconv.FormatInt(chatID, 10)]
+	if root == "" {
+		return ""
 	}
-	wd, _ := os.Getwd()
-	return wd
+	workspace := workspaceRootPath()
+	rel, err := filepath.Rel(workspace, root)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return root
+}
+
+func workspaceRootPath() string {
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "sooraa", "workspace")
+	}
+	return cfg.WorkspaceRootPath()
 }
 
 func configuredStore() (*sessionstore.Store, error) {
@@ -77,8 +91,11 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 	root := projectForChat(chatID)
 	switch name {
 	case "project":
-		return projectMenu(root)
+		return projectMenu(workspaceRootPath())
 	case "file_browser":
+		if root == "" {
+			return simpleMenu("Files", "Choose a project before browsing files")
+		}
 		return fileBrowserMenu(root)
 	case "model":
 		return modelMenu(chatID)
@@ -339,6 +356,9 @@ func sessionMenu(active string) map[string]any {
 }
 
 func fileBrowserMenu(path string) map[string]any {
+	if strings.TrimSpace(path) == "" {
+		return simpleMenu("Files", "Choose a project before browsing files")
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return simpleMenu("Files", "Cannot read "+path)
@@ -362,9 +382,12 @@ func fileBrowserMenu(path string) map[string]any {
 }
 
 func projectMenu(roots ...string) map[string]any {
-	root := "."
+	root := workspaceRootPath()
 	if len(roots) > 0 && roots[0] != "" {
 		root = roots[0]
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return simpleMenu("Projects", "Workspace root unavailable: "+err.Error())
 	}
 	rows := [][]map[string]string{}
 	entries, _ := os.ReadDir(root)
@@ -377,9 +400,9 @@ func projectMenu(roots ...string) map[string]any {
 		shown++
 	}
 	if len(rows) == 0 {
-		return simpleMenu("Project", "Current: "+root)
+		return simpleMenu("Projects", "Workspace root: "+root)
 	}
-	rows = append(rows, []map[string]string{{"text": "📍 Current", "callback_data": "project:" + root}, {"text": "✕ Close", "callback_data": "close"}})
+	rows = append(rows, []map[string]string{{"text": "📍 Workspace root", "callback_data": "project:" + root}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }
 

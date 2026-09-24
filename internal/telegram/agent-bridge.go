@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,12 +15,13 @@ import (
 	"sooraa/harness/memory"
 	"sooraa/harness/operation"
 	"sooraa/harness/permission"
+	"sooraa/harness/search"
 	"sooraa/harness/sessionstore"
 	"sooraa/harness/skills"
-	"sooraa/internal/secret"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
 	"sooraa/internal/prompt"
+	"sooraa/internal/secret"
 )
 
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
@@ -43,6 +45,9 @@ func runAgentWithConfigContext(parent context.Context, sessionID string, user st
 }
 
 func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
 	if cfg.MemoryFile == "" {
 		cfg.MemoryFile = "memory"
 	}
@@ -72,6 +77,9 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	if projectRoot == "" {
 		projectRoot = defaultState.projectForSession(sessionID)
 	}
+	if projectRoot == "" {
+		return errors.New("no project selected")
+	}
 	userText := user
 	_, agentMode, _, _ := defaultState.values()
 	if agentMode == "plan" {
@@ -99,7 +107,13 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,
-		ForcedCompaction:    func() bool { return consumeForcedCompaction(sessionID) },
+		AdjustSpec: func(spec *operation.Spec) {
+			if spec.Type == "fts_search" {
+				spec.Args["path"] = projectRoot
+				spec.Args["db_path"] = search.ProjectIndexPath(cfg.WorkspaceRootPath(), projectRoot)
+			}
+		},
+		ForcedCompaction: func() bool { return consumeForcedCompaction(sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
 			return needsPermission(name, fmt.Sprint(args))
 		},
@@ -244,7 +258,7 @@ func needsPermission(toolName, args string) bool {
 		return true
 	case "bash":
 		lower := strings.ToLower(args)
-		risky := []string{"rm -rf", "sudo ", "chmod 777", "mkfs", "dd if=", ":(){:|:&};:", "curl ", "wget ", "git push"}
+		risky := []string{"rm ", "rm\t", "unlink ", "shred ", "mv ", "cp ", "truncate ", "tee ", "git clean", "git reset --hard", "git checkout --", "git restore", "mkfs", "dd if=", "chmod ", "chown ", "kill ", "pkill ", "shutdown", "reboot", "systemctl ", "docker ", "kubectl ", "sudo ", "curl ", "wget ", "git push", " -delete", ":(){:|:&};:"}
 		for _, r := range risky {
 			if strings.Contains(lower, r) {
 				return true

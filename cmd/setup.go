@@ -60,7 +60,7 @@ func collectDoctorReport(timeout time.Duration) doctorReport {
 	}
 	report.Checks = append(report.Checks, doctorCheck{"runtime", "OK", runtime.Version() + " on " + runtime.GOOS + "/" + runtime.GOARCH})
 	report.Checks = append(report.Checks, checkConfig(cfg))
-	report.Checks = append(report.Checks, checkWorkspace())
+	report.Checks = append(report.Checks, checkWorkspace(cfg))
 	report.Checks = append(report.Checks, checkProvider(cfg, timeout))
 	report.Checks = append(report.Checks, checkTelegram(cfg, timeout))
 	report.Checks = append(report.Checks, checkStorage(cfg)...)
@@ -77,16 +77,16 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, cfg.LLM.Model)}
 }
 
-func checkWorkspace() doctorCheck {
-	wd, err := os.Getwd()
-	if err != nil {
+func checkWorkspace(cfg *config.Config) doctorCheck {
+	root := cfg.WorkspaceRootPath()
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return doctorCheck{"workspace", "FAIL", err.Error()}
 	}
-	info, err := os.Stat(wd)
+	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
-		return doctorCheck{"workspace", "FAIL", "current directory is unavailable"}
+		return doctorCheck{"workspace", "FAIL", "workspace root is unavailable"}
 	}
-	return doctorCheck{"workspace", "OK", wd}
+	return doctorCheck{"workspace", "OK", root}
 }
 
 func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {

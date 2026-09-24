@@ -65,7 +65,7 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 		EvaluationFile: dir + "/evaluations.json",
 	}
 	var final string
-	err := runAgentWithConfig("long-session", "work for several turns", cfg, nil, nil, func(answer string) { final = answer })
+	err := runAgentWithConfigContextAt(context.Background(), "long-session", "work for several turns", cfg, dir, nil, nil, func(answer string) { final = answer })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +97,15 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 	}
 	if calls != 3 || results != 3 {
 		t.Fatalf("expected 3 calls and 3 results, got %d and %d", calls, results)
+	}
+}
+
+func TestNeedsPermissionProtectsDestructiveBashButAllowsSystemReads(t *testing.T) {
+	if !needsPermission("bash", "rm -rf /tmp/example") {
+		t.Fatal("destructive bash command should require approval")
+	}
+	if needsPermission("bash", "cat /etc/hosts") {
+		t.Fatal("system read should not require approval")
 	}
 }
 
