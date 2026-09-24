@@ -120,6 +120,49 @@ func TestRecoverMarksRunningOperationUnknown(t *testing.T) {
 	}
 }
 
+func TestSessionDisplayTitleAndPersistence(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{ID: "titled", Messages: []Message{{Role: llm.RoleUser, Content: "Migrate the API"}}}
+	if got := sess.DisplayTitle(); got != "Migrate the API" {
+		t.Fatalf("fallback title = %q", got)
+	}
+	if err := store.Update("titled", func(current *Session) error {
+		current.Title = "API migration"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load("titled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != "API migration" || loaded.DisplayTitle() != "API migration" {
+		t.Fatalf("unexpected title: %+v", loaded)
+	}
+}
+
+func TestDeleteRemovesSession(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(&Session{ID: "delete-me"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("delete-me"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load("delete-me"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, "delete-me.json")); !os.IsNotExist(err) {
+		t.Fatalf("session file still exists: %v", err)
+	}
+}
+
 func TestUpdatePersistsClear(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {

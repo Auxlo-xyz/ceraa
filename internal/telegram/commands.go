@@ -78,7 +78,7 @@ func startNewSession(token string, chatID int64) {
 		send(token, chatID, "Session created, but state save failed: "+err.Error())
 		return
 	}
-	send(token, chatID, "🆕 New session started: "+id)
+	send(token, chatID, "🆕 New session started. Send a task to name it automatically.")
 }
 
 func sendMenuMarkup(token string, chatID int64, text string, markup map[string]any) {
@@ -233,8 +233,10 @@ func handleContextCommand(token string, chatID int64) {
 		return
 	}
 	tokens, messages := 0, 0
+	sessionTitle := "Untitled session"
 	if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 		messages = len(sess.Messages)
+		sessionTitle = sess.DisplayTitle()
 		for _, message := range sess.Messages {
 			tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
 		}
@@ -243,7 +245,7 @@ func handleContextCommand(token string, chatID int64) {
 	if cfg.LLM.ContextLimit > 0 {
 		percent = tokens * 100 / cfg.LLM.ContextLimit
 	}
-	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nSession: `%s`\nProject: `%s`\nMessages: %d\nModel: %s", tokens, cfg.LLM.ContextLimit, percent, currentSessionID(chatID), defaultState.project(chatID), messages, cfg.LLM.Model)
+	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nSession: %s\nProject: `%s`\nMessages: %d\nModel: %s", tokens, cfg.LLM.ContextLimit, percent, sessionTitle, defaultState.project(chatID), messages, cfg.LLM.Model)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 
@@ -414,11 +416,14 @@ func handleSessions(token string, chatID int64) {
 		if err != nil || sess.ID != id || id == "inbox" {
 			continue
 		}
+		if len(sess.Messages) > 0 && (sess.Title == "" || (sess.TitleSource == "fallback" && sess.TitleAttempts < 3)) {
+			scheduleSessionTitle(id)
+		}
 		if i >= 10 {
 			lines = append(lines, fmt.Sprintf("... and %d more", len(ids)-10))
 			break
 		}
-		lines = append(lines, fmt.Sprintf("• `%s` (%d messages)", id, len(sess.Messages)))
+		lines = append(lines, fmt.Sprintf("• %s (%d messages)", sess.DisplayTitle(), len(sess.Messages)))
 	}
 	text := "Sessions:\n" + strings.Join(lines, "\n")
 	sendMenuMarkup(token, chatID, text, menus.InlineForChat("session", 0, chatID, currentSessionID(chatID)))
@@ -446,7 +451,7 @@ func handleOpenSession(token string, chatID int64, text string) {
 		send(token, chatID, "Session opened, but state save failed: "+err.Error())
 		return
 	}
-	send(token, chatID, fmt.Sprintf("Opened session `%s` (%d messages)", sess.ID, len(sess.Messages)))
+	send(token, chatID, fmt.Sprintf("Opened session %s (%d messages)", sess.DisplayTitle(), len(sess.Messages)))
 }
 
 // handleMessages shows recent messages -> maps to soraacode session/history.ts
@@ -550,12 +555,14 @@ func handleStatus(token string, chatID int64) {
 	store, _ := configuredStore()
 	var sessCount int
 	var msgCount int
+	sessionTitle := "Untitled session"
 	if store != nil {
 		if ids, err := store.List(); err == nil {
 			sessCount = len(ids)
 		}
 		if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 			msgCount = len(sess.Messages)
+			sessionTitle = sess.DisplayTitle()
 		}
 	}
 	model, agent, variant, steps := defaultState.values()
@@ -571,8 +578,8 @@ func handleStatus(token string, chatID int64) {
 	if steps == 0 {
 		steps = cfg.MaxSteps
 	}
-	text := fmt.Sprintf("Sooraa status:\n• Session: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d\n• Max steps: %d",
-		currentSessionID(chatID), defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount, steps)
+	text := fmt.Sprintf("Sooraa status:\n• Session: %s\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d\n• Max steps: %d",
+		sessionTitle, defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount, steps)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 
@@ -740,6 +747,17 @@ func handleWorktree(token string, chatID int64, text string) {
 }
 
 func handlePendingInput(token string, chatID int64, text string) bool {
+	if value, ok := pendingSessionAction.LoadAndDelete(chatID); ok {
+		action := value.(sessionAction)
+		if action.Action == "rename" {
+			if err := renameSession(action.ID, text); err != nil {
+				send(token, chatID, "Rename failed: "+err.Error())
+				return true
+			}
+			sendMenuMarkup(token, chatID, "✏️ Session renamed", menus.InlineForChat("session", 0, chatID, currentSessionID(chatID)))
+		}
+		return true
+	}
 	if _, ok := pendingModelSearch.LoadAndDelete(chatID); ok {
 		sendMenuMarkup(token, chatID, "🔎 Model search", menus.ModelCatalogForChat(chatID, text))
 		return true

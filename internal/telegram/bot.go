@@ -676,7 +676,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						if tok, ok := e.Data["tokens"].(int); ok {
 							pinned.UpdateTokens(tok)
 						}
-						pinned.UpdateContext("Session: " + sessionID)
+						pinned.UpdateContext("Session active")
 					case event.TypeCompact:
 						send(token, chatID, "🗜️ Compacted context")
 					case event.TypeCompactProgress:
@@ -786,6 +786,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 		close(eventDone)
 		send(token, chatID, "Cancelled after timeout.")
 	}
+	scheduleSessionTitle(sessionID)
 	// Drain prompt queue -> soraacode prompt-queue-manager dispatchNextQueuedPrompt
 	promptQueue.mu.Lock()
 	if len(promptQueue.queue[chatID]) > 0 {

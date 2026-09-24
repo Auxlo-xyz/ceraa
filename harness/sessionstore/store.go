@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"sooraa/harness/flock"
 	"sooraa/harness/llm"
+	"sooraa/harness/redact"
 )
 
 const schemaVersion = 3
@@ -113,12 +115,54 @@ type Run struct {
 }
 
 type Session struct {
-	ID         string      `json:"id"`
-	Messages   []Message   `json:"messages"`
-	Operations []Operation `json:"operations"`
-	Runs       []Run       `json:"runs,omitempty"`
-	Version    int         `json:"version"`
-	ParentID   string      `json:"parent_id,omitempty"`
+	ID               string      `json:"id"`
+	Title            string      `json:"title,omitempty"`
+	TitleSource      string      `json:"title_source,omitempty"`
+	TitleGeneratedAt time.Time   `json:"title_generated_at,omitempty"`
+	TitleAttempts    int         `json:"title_attempts,omitempty"`
+	TitleLastAttempt time.Time   `json:"title_last_attempt,omitempty"`
+	Messages         []Message   `json:"messages"`
+	Operations       []Operation `json:"operations"`
+	Runs             []Run       `json:"runs,omitempty"`
+	Version          int         `json:"version"`
+	ParentID         string      `json:"parent_id,omitempty"`
+}
+
+func (s *Session) DisplayTitle() string {
+	if title := strings.TrimSpace(s.Title); title != "" {
+		return truncateTitle(title)
+	}
+	for _, message := range s.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		if text := strings.TrimSpace(redact.SecretsInText(message.Content)); text != "" {
+			return truncateTitle(text)
+		}
+	}
+	return "Untitled session"
+}
+
+func truncateTitle(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > 56 {
+		return string(runes[:53]) + "..."
+	}
+	return value
+}
+
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.lock(); err != nil {
+		return err
+	}
+	defer s.unlock()
+	if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	return nil
 }
 
 func (s *Session) Clear() error {

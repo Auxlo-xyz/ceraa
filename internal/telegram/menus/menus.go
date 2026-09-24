@@ -315,11 +315,16 @@ func sessionMenu(active string) map[string]any {
 		if shown >= 10 {
 			break
 		}
-		label := fmt.Sprintf("%s · %d msgs", id, len(sess.Messages))
+		label := fmt.Sprintf("%s · %d msgs", sess.DisplayTitle(), len(sess.Messages))
 		if id == active {
 			label = "✅ " + label
 		}
 		rows = append(rows, []map[string]string{{"text": label, "callback_data": "attach_session:" + id}})
+		rows = append(rows, []map[string]string{
+			{"text": "✏️ Rename", "callback_data": "session_rename:" + id},
+			{"text": "🔁 Regenerate title", "callback_data": "session_regenerate:" + id},
+			{"text": "🗑 Delete", "callback_data": "session_delete:" + id},
+		})
 		shown++
 	}
 	if len(rows) == 0 {

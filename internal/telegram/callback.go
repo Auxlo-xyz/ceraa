@@ -313,6 +313,64 @@ func handleCallback(token string, q *struct {
 		editCallback(token, chatID, q.Message.MessageID, "✅ Variant set to "+variant, nil)
 		return
 	}
+	if strings.HasPrefix(data, "session_rename:") {
+		id := strings.TrimPrefix(data, "session_rename:")
+		pendingSessionAction.Store(chatID, sessionAction{ID: id, Action: "rename"})
+		markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel", "callback_data": "session_action_cancel"}}}}
+		sendMenuMarkup(token, chatID, "Send the new session title.", markup)
+		return
+	}
+	if data == "session_action_cancel" {
+		pendingSessionAction.Delete(chatID)
+		editCallback(token, chatID, q.Message.MessageID, "Rename cancelled", menus.InlineForChat("session", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "session_regenerate:") {
+		id := strings.TrimPrefix(data, "session_regenerate:")
+		title, err := generateSessionTitle(id, true)
+		if err != nil {
+			send(token, chatID, "Title regeneration failed: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "🔁 Session title: "+title, menus.InlineForChat("session", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "session_delete:") {
+		id := strings.TrimPrefix(data, "session_delete:")
+		store, err := configuredStore()
+		if err != nil {
+			send(token, chatID, "Session store error: "+err.Error())
+			return
+		}
+		sess, err := store.Load(id)
+		if err != nil || sess.ID != id {
+			send(token, chatID, "Session not found")
+			return
+		}
+		markup := map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🗑 Delete " + sess.DisplayTitle(), "callback_data": "session_delete_confirm:" + id}},
+			{{"text": "Cancel", "callback_data": "session_delete_cancel"}},
+		}}
+		editCallback(token, chatID, q.Message.MessageID, "Delete this session? This cannot be undone.", markup)
+		return
+	}
+	if data == "session_delete_cancel" {
+		editCallback(token, chatID, q.Message.MessageID, "Delete cancelled", menus.InlineForChat("session", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "session_delete_confirm:") {
+		id := strings.TrimPrefix(data, "session_delete_confirm:")
+		if err := deleteSession(id); err != nil {
+			send(token, chatID, "Delete failed: "+err.Error())
+			return
+		}
+		if currentSessionID(chatID) == id {
+			startNewSession(token, chatID)
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "🗑 Session deleted", menus.InlineForChat("session", 0, chatID, currentSessionID(chatID)))
+		return
+	}
 	if strings.HasPrefix(data, "attach_session:") || strings.HasPrefix(data, "open_session:") {
 		id := strings.TrimPrefix(data, "attach_session:")
 		if strings.HasPrefix(data, "open_session:") {
@@ -332,7 +390,7 @@ func handleCallback(token string, q *struct {
 			send(token, chatID, "Failed to save active session: "+err.Error())
 			return
 		}
-		editCallback(token, chatID, q.Message.MessageID, fmt.Sprintf("✅ Attached to `%s` (%d messages)", id, len(sess.Messages)), menus.InlineForChat("session", 0, chatID, id))
+		editCallback(token, chatID, q.Message.MessageID, fmt.Sprintf("✅ Opened %s (%d messages)", sess.DisplayTitle(), len(sess.Messages)), menus.InlineForChat("session", 0, chatID, id))
 		return
 	}
 	if data == "new_session" {
