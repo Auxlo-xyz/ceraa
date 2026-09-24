@@ -407,7 +407,7 @@ func Run() error {
 				send(token, u.Message.Chat.ID, "Unauthorized.")
 				continue
 			}
-			txt := strings.TrimSpace(u.Message.Text)
+			txt := normalizeCommandText(strings.TrimSpace(u.Message.Text))
 			if handlePendingInput(token, u.Message.Chat.ID, txt) {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				continue
@@ -424,7 +424,7 @@ func Run() error {
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendWithKeyboard(token, u.Message.Chat.ID, "Sooraa ready. Send a task. Use /menu for live controls.", keyboard.Main())
+				sendMenuMarkup(token, u.Message.Chat.ID, "Sooraa ready. Choose a control or send a task.", menus.Hub())
 			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexLogin(token, u.Message.Chat.ID)
@@ -493,6 +493,9 @@ func Run() error {
 			case "/agent", "🤖 Agent":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleAgentCommand(token, u.Message.Chat.ID, "/agent")
+			case "📋 Menu":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Hub())
 			case "📊 Context":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)
@@ -531,6 +534,19 @@ func Run() error {
 			}
 		}
 	}
+}
+
+func normalizeCommandText(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return text
+	}
+	command := strings.TrimPrefix(fields[0], "/")
+	if at := strings.IndexByte(command, '@'); at >= 0 {
+		command = command[:at]
+	}
+	fields[0] = "/" + command
+	return strings.Join(fields, " ")
 }
 
 func authorized(allowID, userID, chatID int64) bool {
