@@ -39,7 +39,11 @@ func newRunRenderer(token string, chatID int64, pinned *PinnedManager) *runRende
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
 	}
-	renderer.messageID = sendWithKeyboard(token, chatID, "💬", nil)
+	if messageID, err := sendRichMessage(token, chatID, "▌"); err == nil {
+		renderer.messageID = messageID
+	} else {
+		renderer.messageID = sendWithKeyboard(token, chatID, "💬", nil)
+	}
 	pinned.BeginRun()
 	go renderer.runStream()
 	return renderer
@@ -55,7 +59,9 @@ func (r *runRenderer) runStream() {
 		if messageID == 0 {
 			continue
 		}
-		_ = editTelegramMessage(r.token, r.chatID, messageID, text)
+		if err := editTelegramRichMessage(r.token, r.chatID, messageID, text); err != nil {
+			_ = editTelegramMessage(r.token, r.chatID, messageID, text)
+		}
 	}
 }
 

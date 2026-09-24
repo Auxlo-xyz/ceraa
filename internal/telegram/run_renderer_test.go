@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +14,7 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string
 	var finalMarkdown string
+	var streamMarkdown string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		methods = append(methods, r.URL.Path)
@@ -25,13 +25,22 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if richMessage, ok := body["rich_message"].(map[string]any); ok {
-				if markdown, ok := richMessage["markdown"].(string); ok && markdown == "## Heading\n\n1. Step\n\nTelegram Message\n    ↓" {
-					mu.Lock()
-					finalMarkdown = markdown
-					mu.Unlock()
+				if markdown, ok := richMessage["markdown"].(string); ok {
+					if strings.Contains(markdown, "▌") {
+						mu.Lock()
+						streamMarkdown = markdown
+						mu.Unlock()
+					}
+					if markdown == "## Heading\n\n1. Step\n\nTelegram Message\n    ↓" {
+						mu.Lock()
+						finalMarkdown = markdown
+						mu.Unlock()
+					}
 				}
 			}
 			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":14}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":12}}`))
 		default:
@@ -55,10 +64,14 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 
 	mu.Lock()
 	final := finalMarkdown
+	stream := streamMarkdown
 	paths := append([]string(nil), methods...)
 	mu.Unlock()
 	if final != answer {
 		t.Fatalf("final message = %q", final)
+	}
+	if !strings.Contains(stream, "## Heading") || !strings.Contains(stream, "▌") {
+		t.Fatalf("stream message = %q", stream)
 	}
 	for _, path := range paths {
 		if strings.HasSuffix(path, "/sendMessageDraft") {
@@ -144,29 +157,32 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":14}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
-			messageID := 12
 			if text, ok := body["text"].(string); ok {
 				mu.Lock()
 				pinnedText = text
 				mu.Unlock()
-				if text == "💬" {
-					messageID = 13
-				}
 			}
-			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":` + strconv.Itoa(messageID) + `}}`))
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":12}}`))
 		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
-			if messageID, ok := body["message_id"].(float64); ok && messageID == 13 {
+			if messageID, ok := body["message_id"].(float64); ok && messageID == 14 {
 				if text, ok := body["text"].(string); ok {
 					mu.Lock()
 					liveText = text
 					mu.Unlock()
 				}
-			}
-			if richMessage, ok := body["rich_message"].(map[string]any); ok {
-				mu.Lock()
-				finalMarkdown, _ = richMessage["markdown"].(string)
-				mu.Unlock()
+				if richMessage, ok := body["rich_message"].(map[string]any); ok {
+					markdown, _ := richMessage["markdown"].(string)
+					mu.Lock()
+					if strings.Contains(markdown, "🛠 Tools") {
+						liveText = markdown
+					} else {
+						finalMarkdown = markdown
+					}
+					mu.Unlock()
+				}
 			}
 			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
 		default:
