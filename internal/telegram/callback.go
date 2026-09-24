@@ -98,6 +98,40 @@ func handleCallback(token string, q *struct {
 	if data == "noop" {
 		return
 	}
+	if data == "title_model:default" {
+		if err := saveTitleModel("gemini-3.5-flash-lite"); err != nil {
+			send(token, chatID, "Model save failed: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "✅ Title model set to gemini-3.5-flash-lite", menus.InlineForChat("title_settings", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "title_model:custom" {
+		pendingTitleSetting.Store(chatID, "model")
+		markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel", "callback_data": "title_setting_cancel"}}}}
+		sendMenuMarkup(token, chatID, "Send the model ID for automatic session titles.", markup)
+		return
+	}
+	if data == "title_key:set" {
+		pendingTitleSetting.Store(chatID, "key")
+		markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel", "callback_data": "title_setting_cancel"}}}}
+		sendMenuMarkup(token, chatID, "Send the Gemini API key. It will be stored encrypted and never echoed.", markup)
+		return
+	}
+	if data == "title_setting_cancel" {
+		pendingTitleSetting.Delete(chatID)
+		editCallback(token, chatID, q.Message.MessageID, "Title setting cancelled", menus.InlineForChat("title_settings", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "title_test" {
+		title, err := testTitleModel()
+		if err != nil {
+			send(token, chatID, "Title model test failed: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "🧪 Title model works: "+title, menus.InlineForChat("title_settings", 0, chatID, currentSessionID(chatID)))
+		return
+	}
 	if strings.HasPrefix(data, "onboarding:provider:") {
 		providerID := strings.TrimPrefix(data, "onboarding:provider:")
 		draft := providerDraft{ID: providerID, Stage: "model"}

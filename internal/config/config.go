@@ -22,6 +22,8 @@ type Config struct {
 	ModelCatalogURL          string                     `json:"model_catalog_url,omitempty"`
 	ModelCatalogCache        string                     `json:"model_catalog_cache,omitempty"`
 	ModelCatalogRefreshHours int                        `json:"model_catalog_refresh_hours,omitempty"`
+	TitleAPIURL              string                     `json:"title_api_url,omitempty"`
+	TitleModel               string                     `json:"title_model,omitempty"`
 	MemoryFile               string                     `json:"memory_file,omitempty"`
 	SkillFile                string                     `json:"skill_file,omitempty"`
 	EvaluationFile           string                     `json:"evaluation_file,omitempty"`
@@ -76,6 +78,8 @@ func DefaultConfig() *Config {
 		MaxToolResultChars:       12000,
 		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
 		ModelCatalogRefreshHours: 24,
+		TitleAPIURL:              "https://generativelanguage.googleapis.com/v1beta/openai",
+		TitleModel:               "gemini-3.5-flash-lite",
 		MemoryFile:               filepath.Join(base, "memory"),
 		SkillFile:                filepath.Join(base, "skills"),
 		EvaluationFile:           filepath.Join(base, "evaluations.json"),
@@ -190,6 +194,12 @@ func Load() (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.ModelCatalogRefreshHours = n
 		}
+	}
+	if v := os.Getenv("SOORAA_TITLE_API_URL"); v != "" {
+		cfg.TitleAPIURL = v
+	}
+	if v := os.Getenv("SOORAA_TITLE_MODEL"); v != "" {
+		cfg.TitleModel = v
 	}
 	if v := os.Getenv("SOORAA_MEMORY_FILE"); v != "" {
 		cfg.MemoryFile = v

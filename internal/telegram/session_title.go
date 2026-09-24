@@ -9,11 +9,13 @@ import (
 
 	"sooraa/harness/sessionnamer"
 	"sooraa/harness/sessionstore"
+	"sooraa/internal/config"
 	"sooraa/internal/secret"
 )
 
 var titleJobs sync.Map
 var pendingSessionAction sync.Map
+var pendingTitleSetting sync.Map
 
 type sessionAction struct {
 	ID     string
@@ -53,15 +55,7 @@ func generateSessionTitle(sessionID string, force bool) (string, error) {
 			return sess.Title, nil
 		}
 	}
-	cfg := sessionnamer.DefaultConfig()
-	if cfg.APIKey == "" {
-		for _, name := range []string{"gemini_title", "gemini"} {
-			if value, secretErr := secret.Get(name); secretErr == nil && value != "" {
-				cfg.APIKey = value
-				break
-			}
-		}
-	}
+	cfg := titleConfig()
 	title, generateErr := sessionnamer.Generate(context.Background(), cfg, sess)
 	source := "gemini"
 	if generateErr != nil {
@@ -93,6 +87,56 @@ func generateSessionTitle(sessionID string, force bool) (string, error) {
 		return "", err
 	}
 	return title, nil
+}
+
+func titleConfig() sessionnamer.Config {
+	cfg := sessionnamer.DefaultConfig()
+	if appConfig, err := config.Load(); err == nil && appConfig != nil {
+		if appConfig.TitleAPIURL != "" {
+			cfg.APIURL = appConfig.TitleAPIURL
+		}
+		if appConfig.TitleModel != "" {
+			cfg.Model = appConfig.TitleModel
+		}
+	}
+	if cfg.APIKey == "" {
+		for _, name := range []string{"gemini_title", "gemini"} {
+			if value, err := secret.Get(name); err == nil && value != "" {
+				cfg.APIKey = value
+				break
+			}
+		}
+	}
+	return cfg
+}
+
+func saveTitleModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("model cannot be empty")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	cfg.TitleModel = model
+	return config.Save(cfg)
+}
+
+func saveTitleKey(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("API key cannot be empty")
+	}
+	return secret.Set("gemini_title", value)
+}
+
+func testTitleModel() (string, error) {
+	cfg := titleConfig()
+	return sessionnamer.Generate(context.Background(), cfg, &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: "user", Content: "Plan a small API migration"},
+		{Role: "assistant", Content: "I will inspect the project first."},
+	}})
 }
 
 func renameSession(sessionID, title string) error {

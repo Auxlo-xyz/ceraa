@@ -2,6 +2,16 @@ package config
 
 import "testing"
 
+func TestDefaultTitleSettingsUseGeminiFlashLite(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.TitleModel != "gemini-3.5-flash-lite" {
+		t.Fatalf("title model = %q", cfg.TitleModel)
+	}
+	if cfg.TitleAPIURL == "" {
+		t.Fatal("title API URL is empty")
+	}
+}
+
 func TestActiveLLMUsesSelectedProviderProfile(t *testing.T) {
 	cfg := Config{
 		LLM:            LLMProvider{URL: "default-url", APIKey: "default-key", Model: "default-model", ContextLimit: 100, MaxOutputTokens: 10},

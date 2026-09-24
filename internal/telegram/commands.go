@@ -747,6 +747,22 @@ func handleWorktree(token string, chatID int64, text string) {
 }
 
 func handlePendingInput(token string, chatID int64, text string) bool {
+	if value, ok := pendingTitleSetting.LoadAndDelete(chatID); ok {
+		if value.(string) == "model" {
+			if err := saveTitleModel(text); err != nil {
+				send(token, chatID, "Model save failed: "+err.Error())
+				return true
+			}
+			sendMenuMarkup(token, chatID, "✅ Title model updated", menus.InlineForChat("title_settings", 0, chatID, currentSessionID(chatID)))
+		} else {
+			if err := saveTitleKey(text); err != nil {
+				send(token, chatID, "API key save failed: "+err.Error())
+				return true
+			}
+			sendMenuMarkup(token, chatID, "🔑 Gemini API key saved securely", menus.InlineForChat("title_settings", 0, chatID, currentSessionID(chatID)))
+		}
+		return true
+	}
 	if value, ok := pendingSessionAction.LoadAndDelete(chatID); ok {
 		action := value.(sessionAction)
 		if action.Action == "rename" {

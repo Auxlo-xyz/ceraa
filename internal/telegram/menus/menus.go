@@ -86,6 +86,8 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 		return ModelCatalogForChat(chatID, "")
 	case "memory":
 		return memoryMenu(chatID, sessionID)
+	case "title_settings":
+		return titleSettingsMenu()
 	case "skill":
 		return skillMenu()
 	case "eval":
@@ -120,6 +122,8 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return todosMenu(sessionID)
 	case "settings":
 		return settingsMenu()
+	case "title_settings":
+		return titleSettingsMenu()
 	case "permission":
 		return permissionMenu()
 	case "compaction_level":
@@ -387,12 +391,36 @@ func settingsMenu() map[string]any {
 	}
 	rows := [][]map[string]string{
 		{{"text": "🧠 " + model, "callback_data": "menu:model"}},
+		{{"text": "🏷️ Session title settings", "callback_data": "menu:title_settings"}},
 		{{"text": "🔁 Steps: " + strconv.Itoa(steps), "callback_data": "setting:steps"}},
 		{{"text": "🧮 Context: " + strconv.Itoa(limit), "callback_data": "menu:context"}},
 		{{"text": "🌐 " + url, "callback_data": "noop"}},
 		{{"text": "✕ Close", "callback_data": "close"}},
 	}
 	return map[string]any{"inline_keyboard": rows}
+}
+
+func titleSettingsMenu() map[string]any {
+	cfg, _ := config.Load()
+	model := "gemini-3.5-flash-lite"
+	if cfg != nil && cfg.TitleModel != "" {
+		model = cfg.TitleModel
+	}
+	defaultLabel := "Gemini 3.5 Flash Lite"
+	if model == "gemini-3.5-flash-lite" {
+		defaultLabel = "✅ " + defaultLabel
+	}
+	customLabel := "✏️ Custom model: " + model
+	if model == "gemini-3.5-flash-lite" {
+		customLabel = "✏️ Enter custom model ID"
+	}
+	return map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text": "🏷️ Current: " + model, "callback_data": "noop"}},
+		{{"text": defaultLabel, "callback_data": "title_model:default"}},
+		{{"text": customLabel, "callback_data": "title_model:custom"}},
+		{{"text": "🔑 Set Gemini API key", "callback_data": "title_key:set"}, {"text": "🧪 Test title model", "callback_data": "title_test"}},
+		{{"text": "⬅️ Settings", "callback_data": "menu:settings"}, {"text": "✕ Close", "callback_data": "close"}},
+	}}
 }
 
 func statusMenu(sessionID string) map[string]any {
