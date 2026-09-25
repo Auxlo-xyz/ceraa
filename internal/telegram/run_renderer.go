@@ -518,7 +518,7 @@ func formatToolActivity(tools []toolActivity) string {
 		}
 		lines = append(lines, line)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "  \n")
 }
 
 func toolResultLabel(result operation.ResultEvent) string {

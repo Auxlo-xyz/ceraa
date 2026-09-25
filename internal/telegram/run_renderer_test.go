@@ -265,6 +265,9 @@ func TestToolActivityKeepsOneLinePerCallAndLastSix(t *testing.T) {
 	if len(lines) != 6 {
 		t.Fatalf("tool lines = %d, want 6: %q", len(lines), activity)
 	}
+	if !strings.Contains(activity, "file-2  \n• ✓ 📚 Read file · file-3") {
+		t.Fatalf("tool entries lack Markdown hard breaks: %q", activity)
+	}
 	if strings.Contains(activity, "file-1") || !strings.Contains(activity, "file-2") || !strings.Contains(activity, "file-7") {
 		t.Fatalf("tool window = %q", activity)
 	}
