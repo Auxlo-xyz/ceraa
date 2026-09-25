@@ -21,6 +21,7 @@ import (
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
+	"ceraa/internal/logger"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/menus"
 )
@@ -815,12 +816,15 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 		switch draft.Stage {
 		case "url":
 			if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
+				logger.Warn("provider onboarding rejected a URL that is not http(s)")
 				send(token, chatID, "Provider URL must start with http:// or https://")
 				return true
 			}
+			logger.Info("provider onboarding: url accepted")
 			draft.URL = text
 			draft.Stage = "model"
 			pendingProvider.Store(chatID, draft)
+			logger.Info("provider onboarding: awaiting model id")
 			send(token, chatID, "Send the model ID for the custom provider.")
 			return true
 		case "model":
@@ -845,6 +849,7 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			}
 			draft.Stage = "key"
 			pendingProvider.Store(chatID, draft)
+			logger.Info("provider onboarding: model accepted, awaiting api key")
 			send(token, chatID, "Send the API key for "+draft.ID+".")
 			return true
 		case "key":
@@ -853,6 +858,15 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				return true
 			}
 			pendingProvider.Delete(chatID)
+			// Prove the base URL, model, and key work together before storing
+			// them, so a bad combination is reported here rather than on the
+			// user's first real task.
+			if verifyErr := verifyProvider(context.Background(), draft.URL, text, draft.Model); verifyErr != nil {
+				logger.Warn("provider onboarding verification failed for " + draft.ID + ": " + verifyErr.Error())
+				send(token, chatID, "❌ That provider did not answer: "+verifyErr.Error()+"\n\nNothing was saved. Check the base URL, model ID, and API key, then start over.")
+				return true
+			}
+			logger.Info("provider onboarding: verified " + draft.ID)
 			if err := secret.Set("provider_api_key_"+draft.ID, text); err != nil {
 				send(token, chatID, "Provider key save failed: "+err.Error())
 				return true
