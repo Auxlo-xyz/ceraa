@@ -455,6 +455,13 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 	// Resolve tool-call names up front so a tool result can always name the call
 	// it answers, even when the stored message lost the name.
 	callNames := toolCallNames(items)
+	// A function call must be answered by exactly one tool message. History
+	// recorded across an interrupted run can hold two results for the same call
+	// id, which every OpenAI-compatible provider treats as malformed; Gemini
+	// reports it as a missing thought_signature. Collapse to one here so an
+	// already-broken session recovers without rewriting its history.
+	canonicalResult := canonicalToolResults(items)
+	emittedResult := map[string]bool{}
 	msgs := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		switch item.Kind {
@@ -468,6 +475,16 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 			}
 			msg := map[string]any{"role": role}
 			if item.Role == RoleTool {
+				if item.CallID != "" {
+					chosen, ok := canonicalResult[item.CallID]
+					if ok {
+						// Emit only the canonical result for this call id.
+						if emittedResult[item.CallID] || item.Output != chosen {
+							continue
+						}
+						emittedResult[item.CallID] = true
+					}
+				}
 				msg["tool_call_id"] = item.CallID
 				output := item.Output
 				if strings.TrimSpace(output) == "" {
@@ -998,6 +1015,28 @@ func toolCallNames(items []Item) map[string]string {
 		}
 	}
 	return names
+}
+
+// canonicalToolResults picks the single result to send for each tool call id.
+// A non-empty result always wins over an empty one, because an empty result is
+// the placeholder the encoder would otherwise substitute and carries no
+// information; otherwise the first recorded result is kept.
+func canonicalToolResults(items []Item) map[string]string {
+	chosen := map[string]string{}
+	for _, item := range items {
+		if item.Kind != "text" || item.Role != RoleTool || item.CallID == "" {
+			continue
+		}
+		existing, seen := chosen[item.CallID]
+		if !seen {
+			chosen[item.CallID] = item.Output
+			continue
+		}
+		if strings.TrimSpace(existing) == "" && strings.TrimSpace(item.Output) != "" {
+			chosen[item.CallID] = item.Output
+		}
+	}
+	return chosen
 }
 
 // fallbackToolResultName produces a stable, non-empty function name for a tool

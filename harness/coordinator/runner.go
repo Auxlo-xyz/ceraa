@@ -1134,11 +1134,19 @@ func (r *Runner) persistUnknown(sess *sessionstore.Session, runID, id string, ca
 
 func (r *Runner) appendResults(sess *sessionstore.Session, calls []llm.StreamedToolCall, results map[string]string) {
 	for _, call := range calls {
+		result, recorded := results[call.ID]
+		if !recorded {
+			// Every function call must be answered by exactly one tool message.
+			// prepareTools can decline a call, and appending an empty result for it
+			// produced a second message for the same call id, which providers
+			// reject and which left the call permanently unanswered.
+			continue
+		}
 		sess.Messages = append(sess.Messages, sessionstore.Message{
 			Role:              llm.RoleTool,
 			ToolCallID:        call.ID,
 			ToolName:          call.Name,
-			ToolResult:        results[call.ID],
+			ToolResult:        result,
 			ToolResultPresent: true,
 			ResultStatus:      r.statusFor(sess, call.ID),
 		})

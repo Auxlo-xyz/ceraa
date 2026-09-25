@@ -372,3 +372,66 @@ func TestNoSentinelWhenSignaturesDisabled(t *testing.T) {
 		t.Fatal("extra_content must be absent when signatures are disabled")
 	}
 }
+
+// TestOneToolMessagePerCallID pins the contract every OpenAI-compatible provider
+// expects and Gemini enforces: a function call is answered by exactly one tool
+// message. History written across an interrupted run can hold two results for
+// one call id, and sending both is malformed.
+func TestOneToolMessagePerCallID(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "go"},
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{"command":"rm -rf /tmp/test"}`, ThoughtSignature: "sig"},
+		// The informative result, then a duplicate empty one.
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "Error: operation outcome is unknown after timeout"},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: ""},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	results := 0
+	for _, msg := range msgs {
+		if msg["role"] == string(RoleTool) {
+			results++
+			if msg["content"] != "Error: operation outcome is unknown after timeout" {
+				t.Fatalf("kept the wrong result: %v", msg["content"])
+			}
+		}
+	}
+	if results != 1 {
+		t.Fatalf("encoded %d tool messages for one call, want 1", results)
+	}
+}
+
+// TestEmptyResultYieldsToNonEmptyDuplicate pins that an empty placeholder never
+// wins over a real result, regardless of the order they were recorded in.
+func TestEmptyResultYieldsToNonEmptyDuplicate(t *testing.T) {
+	for _, order := range [][]Item{
+		{
+			{Kind: "text", Role: RoleTool, CallID: "c1", Output: ""},
+			{Kind: "text", Role: RoleTool, CallID: "c1", Output: "real output"},
+		},
+		{
+			{Kind: "text", Role: RoleTool, CallID: "c1", Output: "real output"},
+			{Kind: "text", Role: RoleTool, CallID: "c1", Output: ""},
+		},
+	} {
+		msgs := encodeMessagesWithCompatibility(order, true, defaultCompatibility())
+		if len(msgs) != 1 {
+			t.Fatalf("encoded %d tool messages, want 1", len(msgs))
+		}
+		if msgs[0]["content"] != "real output" {
+			t.Fatalf("content = %v, want the non-empty result", msgs[0]["content"])
+		}
+	}
+}
+
+// TestToolMessageWithoutCallIDIsKept pins that results lacking a call id are
+// left alone rather than collapsed together.
+func TestToolMessageWithoutCallIDIsKept(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleTool, Output: "one"},
+		{Kind: "text", Role: RoleTool, Output: "two"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	if len(msgs) != 2 {
+		t.Fatalf("encoded %d messages, want 2", len(msgs))
+	}
+}
