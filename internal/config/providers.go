@@ -8,7 +8,7 @@ import (
 )
 
 // ResolveProvider resolves a provider's settings with env var overrides.
-// Env format: CERAA_<KEY>_API_KEY, CERAA_<KEY>_CLI (SOORAA_<KEY>_* still read)
+// Env format: CERAA_<KEY>_API_KEY, CERAA_<KEY>_CLI
 // Supported keys: "opencode", "hermes", "codex", "poolside", "freebuff"
 //
 // Freebuff has no CLI binary, so no CLIPath is resolved for it. Its hosted API

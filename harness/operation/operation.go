@@ -1,6 +1,7 @@
 package operation
 
 import (
+	"ceraa/internal/envs"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -616,7 +617,7 @@ func operationPath(path, workDir string) string {
 }
 
 func newSnapshotStore() (*snapshot.Store, error) {
-	dir := os.Getenv("SOORAA_SESSION_FILE")
+	dir := envs.Get("SESSION_FILE")
 	if dir == "" {
 		dir = "sessions"
 	}

@@ -24,7 +24,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	apiKey := envs.GetWith("CERAA_TITLE_API_KEY", "SOORAA_TITLE_API_KEY", "GEMINI_API_KEY")
+	apiKey := envs.GetWith("CERAA_TITLE_API_KEY", "GEMINI_API_KEY")
 	apiURL := envs.Get("TITLE_API_URL")
 	if apiURL == "" {
 		apiURL = DefaultAPIURL

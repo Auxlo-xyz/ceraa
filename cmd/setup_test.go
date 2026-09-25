@@ -45,7 +45,6 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("CERAA_API_KEY", "")
-	t.Setenv("SOORAA_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
 	input := strings.NewReader("123456:telegram\n")

@@ -11,10 +11,8 @@ import (
 	"ceraa/internal/paths"
 )
 
-// env reads a Ceraa setting from the environment.
-//
-// CERAA_* is canonical and SOORAA_* is still honoured as a fallback; see
-// internal/envs for the single definition of that rule.
+// env reads a Ceraa setting from the environment; see internal/envs for the
+// single definition of the prefix.
 func env(name string) string {
 	return envs.Get(name)
 }

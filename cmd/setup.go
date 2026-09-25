@@ -79,7 +79,7 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	// Subscription providers carry no API key in the profile; their credential
 	// is resolved from the encrypted native store at request time.
 	subscription := provider.Subscription == "hermes" || provider.Subscription == "freebuff"
-	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "SOORAA_API_KEY", "OPENAI_API_KEY") == "") {
+	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, provider.Model)}

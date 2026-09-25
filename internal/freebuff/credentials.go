@@ -15,11 +15,8 @@ import (
 // CLI "default" profile. Storing the entire profile (rather than just the
 // token) means logout is one secret.Delete and fingerprintId/fingerprintHash
 // round-trip unchanged.
-// nativeSecretName keeps its pre-rename key on purpose. It is the name this
-// entry already has inside every existing secrets.json, and renaming it would
-// orphan a live bearer token and force the user to sign in again. Internal key
-// names are not branding; changing them buys nothing and costs a re-login.
-const nativeSecretName = "sooraa_native_freebuff_default"
+// nativeSecretName is the encrypted-store key for the single Freebuff profile.
+const nativeSecretName = "ceraa_native_freebuff_default"
 
 // ErrNoCredential is returned when no Freebuff credential is available.
 var ErrNoCredential = errors.New("freebuff credential not found")

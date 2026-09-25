@@ -11,10 +11,10 @@ import (
 )
 
 func TestDefaultConfigUsesGeminiFlashLite(t *testing.T) {
-	t.Setenv("SOORAA_TITLE_API_KEY", "")
+	t.Setenv("CERAA_TITLE_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
-	t.Setenv("SOORAA_TITLE_API_URL", "")
-	t.Setenv("SOORAA_TITLE_MODEL", "")
+	t.Setenv("CERAA_TITLE_API_URL", "")
+	t.Setenv("CERAA_TITLE_MODEL", "")
 	cfg := DefaultConfig()
 	if cfg.APIURL != DefaultAPIURL || cfg.Model != DefaultModel {
 		t.Fatalf("unexpected defaults: %+v", cfg)

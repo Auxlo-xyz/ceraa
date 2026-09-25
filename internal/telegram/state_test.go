@@ -9,7 +9,7 @@ import (
 func TestBridgeStatePersistsSessionAndProject(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bridge-state.json")
 	workspace := t.TempDir()
-	t.Setenv("SOORAA_WORKSPACE_ROOT", workspace)
+	t.Setenv("CERAA_WORKSPACE_ROOT", workspace)
 	project := filepath.Join(workspace, "project")
 	if err := os.Mkdir(project, 0o755); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestBridgeStatePersistsSessionAndProject(t *testing.T) {
 
 func TestBridgeStateDefaultsToWorkspaceRoot(t *testing.T) {
 	workspace := t.TempDir()
-	t.Setenv("SOORAA_WORKSPACE_ROOT", workspace)
+	t.Setenv("CERAA_WORKSPACE_ROOT", workspace)
 	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
 	if state.project(42) != workspace {
 		t.Fatalf("implicit project = %q", state.project(42))
@@ -79,7 +79,7 @@ func TestBridgeStateClaimIsSingleOwner(t *testing.T) {
 }
 
 func TestBridgeStateRuntimeValues(t *testing.T) {
-	t.Setenv("SOORAA_MODEL", "test/model")
+	t.Setenv("CERAA_MODEL", "test/model")
 	path := filepath.Join(t.TempDir(), "bridge-state.json")
 	state := loadBridgeStateFromFile(path)
 	if err := state.setModel("test/model"); err != nil {

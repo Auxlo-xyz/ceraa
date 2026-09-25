@@ -1,0 +1,18 @@
+[Unit]
+Description=Ceraa Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/workspace/ceraa
+Environment=CERAA_WORKSPACE_ROOT=/workspace/ceraa/workspace
+# Secrets live in /etc/ceraa/ceraa.env (chmod 600). See ceraa.env.example.
+EnvironmentFile=/etc/ceraa/ceraa.env
+ExecStart=/workspace/ceraa/bin/ceraa start
+Restart=always
+RestartSec=10
+StandardOutput=append:/tmp/ceraa-service.log
+StandardError=append:/tmp/ceraa-service.log
+
+[Install]
+WantedBy=multi-user.target

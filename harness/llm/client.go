@@ -75,7 +75,7 @@ func DefaultConfig() ProviderConfig {
 // FromEnv reads provider config from environment.
 func FromEnv() ProviderConfig {
 	api := envs.Get("API_URL")
-	key := envs.GetWith("CERAA_API_KEY", "SOORAA_API_KEY", "OPENAI_API_KEY")
+	key := envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY")
 	model := envs.Get("MODEL")
 	return ProviderConfig{
 		BaseURL:    api,

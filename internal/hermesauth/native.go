@@ -9,11 +9,8 @@ import (
 	"ceraa/internal/secret"
 )
 
-// nativeSecretPrefix keeps its pre-rename prefix on purpose: these keys already
-// exist in every installed secrets.json and hold live access and refresh
-// tokens. Renaming them would strand those tokens and force a re-login, so the
-// legacy name is carried forward deliberately.
-const nativeSecretPrefix = "sooraa_native_hermes_"
+// nativeSecretPrefix namespaces native Hermes credentials in the encrypted store.
+const nativeSecretPrefix = "ceraa_native_hermes_"
 
 func nativeSecretName(providerID string) string {
 	return nativeSecretPrefix + normalizeProvider(providerID)
