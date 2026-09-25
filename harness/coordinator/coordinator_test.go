@@ -279,6 +279,58 @@ func TestCoordinatorConvertsTextToolCallToDispatcherCall(t *testing.T) {
 	}
 }
 
+func TestCoordinatorHardStopsToolsAndRecoversLingFinalValue(t *testing.T) {
+	var requests atomic.Int32
+	var retryWithoutTools atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if requests.Add(1) == 2 {
+			tools, _ := body["tools"].([]any)
+			retryWithoutTools.Store(len(tools) == 0)
+		}
+		var payload map[string]any
+		if requests.Load() == 1 {
+			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"reasoning_content": "thinking"}}}}
+		} else {
+			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+				"reasoning_content": "<arg_value>recovered final</arg_value>",
+				"tool_calls":        []any{map[string]any{"index": 0, "id": "ignored", "function": map[string]any{"name": "run", "arguments": `{"tool":"bash","arguments":{"command":"pwd"}}`}}},
+			}}}}
+		}
+		encoded, _ := json.Marshal(payload)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	t.Setenv("SOORAA_API_URL", server.URL)
+	t.Setenv("SOORAA_API_KEY", "test")
+	t.Setenv("SOORAA_MODEL", "test")
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ib, err := inbox.New(context.Background(), nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ib.Stop()
+	done := make(chan string, 1)
+	err = RunAsync(context.Background(), Config{SessionID: "hard-final", SystemPrompt: "test", ModelCatalogURL: "http://127.0.0.1:1"}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{OnDone: func(answer string) { done <- answer }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case answer := <-done:
+		if answer != "recovered final" || requests.Load() != 2 || !retryWithoutTools.Load() {
+			t.Fatalf("answer=%q requests=%d without_tools=%t", answer, requests.Load(), retryWithoutTools.Load())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("coordinator did not hard-stop finalization tools")
+	}
+}
+
 func TestRunnerPersistsOperationLedger(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

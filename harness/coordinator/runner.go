@@ -385,7 +385,13 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(status, err)
 		}
 
-		if len(calls) == 0 {
+		if forceFinalResponse {
+			calls = nil
+			if llm.ContainsTextToolCall(content.String()) {
+				content.Reset()
+			}
+		}
+		if len(calls) == 0 && !forceFinalResponse {
 			if textCall, ok := llm.ParseTextToolCall(content.String()); ok {
 				calls = []llm.StreamedToolCall{textCall}
 				content.Reset()
@@ -411,6 +417,13 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		if len(calls) == 0 {
 			answer := content.String()
+			rescued := false
+			if strings.TrimSpace(answer) == "" && finalContentRetryUsed && forceFinalResponse {
+				if extracted, ok := llm.ExtractSingleArgValue(reasoning.String()); ok {
+					answer = extracted
+					rescued = true
+				}
+			}
 			if strings.TrimSpace(answer) == "" {
 				if !finalContentRetryUsed {
 					finalContentRetryUsed = true
@@ -425,7 +438,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				answer = "The model completed without producing a final response."
 			}
 			forceFinalResponse = false
-			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: reasoning.String()})
+			messageReasoning := reasoning.String()
+			if rescued {
+				messageReasoning = ""
+			}
+			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: messageReasoning})
 			if err := r.store.Save(sess); err != nil {
 				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 			}

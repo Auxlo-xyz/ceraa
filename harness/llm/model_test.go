@@ -103,6 +103,16 @@ func TestParseTextToolCall(t *testing.T) {
 	}
 }
 
+func TestExtractSingleArgValue(t *testing.T) {
+	value, ok := ExtractSingleArgValue(`prefix <arg_value>final answer</arg_value> suffix`)
+	if !ok || value != "final answer" {
+		t.Fatalf("extracted=%q ok=%t", value, ok)
+	}
+	if _, ok := ExtractSingleArgValue(`<arg_value>one</arg_value><arg_value>two</arg_value>`); ok {
+		t.Fatal("accepted multiple arg values")
+	}
+}
+
 func TestEnsureToolCallIDs(t *testing.T) {
 	calls := EnsureToolCallIDs([]StreamedToolCall{{}, {ID: "same"}, {ID: "same"}}, "call_1")
 	if calls[0].ID != "call_1_0" || calls[1].ID != "same" || calls[2].ID != "call_1_2" {

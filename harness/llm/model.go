@@ -44,6 +44,7 @@ type ToolCall struct {
 
 var textToolCallPattern = regexp.MustCompile(`(?is)<?tool_call>\s*([a-zA-Z0-9_.-]+)(.*?)</?tool_call>`)
 var textToolArgumentPattern = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>`)
+var textArgValuePattern = regexp.MustCompile(`(?is)<arg_value>\s*(.*?)\s*</arg_value>`)
 
 func normalizeTextToolCall(value string) string {
 	return strings.NewReplacer("\u200b", "", "\u2060", "").Replace(value)
@@ -79,6 +80,15 @@ func ParseTextToolCall(text string) (StreamedToolCall, bool) {
 
 func ContainsTextToolCall(text string) bool {
 	return textToolCallPattern.MatchString(normalizeTextToolCall(text))
+}
+
+func ExtractSingleArgValue(text string) (string, bool) {
+	matches := textArgValuePattern.FindAllStringSubmatch(normalizeTextToolCall(text), -1)
+	if len(matches) != 1 || len(matches[0]) != 2 {
+		return "", false
+	}
+	value := strings.TrimSpace(matches[0][1])
+	return value, value != ""
 }
 
 type Item struct {
