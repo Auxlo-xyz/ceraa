@@ -84,6 +84,10 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			}
 			modelConfig.BaseURL = credential.BaseURL
 			modelConfig.APIKey = credential.AccessToken
+			// The transport depends on the resolved host, which the native Hermes
+			// adapter may have changed.
+			modelConfig.GeminiNative = llm.UsesGeminiNative(modelConfig.Model, modelConfig.BaseURL)
+			modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(modelConfig.Model, modelConfig.BaseURL)
 			return modelConfig, nil
 		default:
 			return modelConfig, nil

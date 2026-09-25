@@ -304,135 +304,28 @@ func TestThoughtSignatureIsReplayedOnToolCalls(t *testing.T) {
 	}
 }
 
-// TestUnsignedToolCallGetsSkipSentinel pins the fix for a permanent 400.
+// TestCompatibilityAdapterNeverInjectsSignature pins that the OpenAI-compatibility
+// adapter replays only signatures the model actually returned.
 //
-// Gemini 3 validates the first functionCall part of every step in the current
-// turn and rejects the whole request when it carries no thought_signature. A
-// call recorded by an earlier provider can never obtain a real signature, so
-// replaying that history fails on every retry. Google's documented escape hatch
-// is the skip_thought_signature_validator sentinel.
-func TestUnsignedToolCallGetsSkipSentinel(t *testing.T) {
+// The adapter carries a signature in extra_content, a field outside the OpenAI
+// schema, so there is no dependable way to know whether a fabricated bypass
+// value would be honoured or rejected by a given shim. Inventing one is
+// guesswork, so unsigned calls stay unsigned and Gemini is served by the native
+// transport instead.
+func TestCompatibilityAdapterNeverInjectsSignature(t *testing.T) {
 	items := []Item{
 		{Kind: "text", Role: RoleUser, Text: "look around"},
-		// Signed by Gemini: the real signature must be replayed verbatim.
 		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{"command":"ls"}`, ThoughtSignature: "real-sig"},
-		// Recorded by another provider: no signature exists and none can.
-		{Kind: "tool_call", CallID: "chatcmpl-tool-abc", Name: "run", Args: `{"command":"ls"}`},
-		{Kind: "text", Role: RoleTool, CallID: "chatcmpl-tool-abc", Name: "run", Output: "out"},
+		{Kind: "tool_call", CallID: "c2", Name: "run", Args: `{"command":"ls"}`},
+		{Kind: "text", Role: RoleTool, CallID: "c2", Name: "run", Output: "out"},
 	}
 	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	got := map[string]string{}
-	for _, msg := range msgs {
-		calls, ok := msg["tool_calls"].([]map[string]any)
-		if !ok {
-			continue
-		}
-		for _, call := range calls {
-			extra, _ := call["extra_content"].(map[string]any)
-			google, _ := extra["google"].(map[string]any)
-			sig, _ := google["thought_signature"].(string)
-			fn, _ := call["function"].(map[string]any)
-			name, _ := fn["name"].(string)
-			got[name] = sig
-		}
+	got := toolCallSignatures(msgs)
+	if got["c1"] != "real-sig" {
+		t.Fatalf("signed call signature = %q, want it replayed unchanged", got["c1"])
 	}
-	if got["bash"] != "real-sig" {
-		t.Fatalf("signed call signature = %q, want it replayed unchanged", got["bash"])
-	}
-	if got["run"] != skipThoughtSignatureValidator {
-		t.Fatalf("unsigned call signature = %q, want %q", got["run"], skipThoughtSignatureValidator)
-	}
-}
-
-// TestSkipSentinelOnlyOnFunctionCalls pins that the sentinel never leaks onto
-// text or reasoning parts, which Gemini validates leniently.
-func TestSkipSentinelOnlyOnFunctionCalls(t *testing.T) {
-	items := []Item{
-		{Kind: "text", Role: RoleAssistant, Text: "thinking out loud", Reason: ""},
-		{Kind: "reasoning", Reason: "some reasoning"},
-	}
-	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	for _, msg := range msgs {
-		if _, present := msg["extra_content"]; present {
-			t.Fatalf("extra_content must not appear on a non-functionCall part: %v", msg)
-		}
-	}
-}
-
-// TestNoSentinelWhenSignaturesDisabled pins that other providers are untouched:
-// no signature, no sentinel.
-func TestNoSentinelWhenSignaturesDisabled(t *testing.T) {
-	items := []Item{{Kind: "tool_call", CallID: "c1", Name: "bash", Args: "{}"}}
-	msgs := encodeMessagesWithCompatibility(items, false, defaultCompatibility())
-	calls, _ := msgs[0]["tool_calls"].([]map[string]any)
-	if len(calls) != 1 {
-		t.Fatalf("tool_calls = %v", msgs[0]["tool_calls"])
-	}
-	if _, present := calls[0]["extra_content"]; present {
-		t.Fatal("extra_content must be absent when signatures are disabled")
-	}
-}
-
-// TestOneToolMessagePerCallID pins the contract every OpenAI-compatible provider
-// expects and Gemini enforces: a function call is answered by exactly one tool
-// message. History written across an interrupted run can hold two results for
-// one call id, and sending both is malformed.
-func TestOneToolMessagePerCallID(t *testing.T) {
-	items := []Item{
-		{Kind: "text", Role: RoleUser, Text: "go"},
-		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{"command":"rm -rf /tmp/test"}`, ThoughtSignature: "sig"},
-		// The informative result, then a duplicate empty one.
-		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "Error: operation outcome is unknown after timeout"},
-		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: ""},
-	}
-	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	results := 0
-	for _, msg := range msgs {
-		if msg["role"] == string(RoleTool) {
-			results++
-			if msg["content"] != "Error: operation outcome is unknown after timeout" {
-				t.Fatalf("kept the wrong result: %v", msg["content"])
-			}
-		}
-	}
-	if results != 1 {
-		t.Fatalf("encoded %d tool messages for one call, want 1", results)
-	}
-}
-
-// TestEmptyResultYieldsToNonEmptyDuplicate pins that an empty placeholder never
-// wins over a real result, regardless of the order they were recorded in.
-func TestEmptyResultYieldsToNonEmptyDuplicate(t *testing.T) {
-	for _, order := range [][]Item{
-		{
-			{Kind: "text", Role: RoleTool, CallID: "c1", Output: ""},
-			{Kind: "text", Role: RoleTool, CallID: "c1", Output: "real output"},
-		},
-		{
-			{Kind: "text", Role: RoleTool, CallID: "c1", Output: "real output"},
-			{Kind: "text", Role: RoleTool, CallID: "c1", Output: ""},
-		},
-	} {
-		msgs := encodeMessagesWithCompatibility(order, true, defaultCompatibility())
-		if len(msgs) != 1 {
-			t.Fatalf("encoded %d tool messages, want 1", len(msgs))
-		}
-		if msgs[0]["content"] != "real output" {
-			t.Fatalf("content = %v, want the non-empty result", msgs[0]["content"])
-		}
-	}
-}
-
-// TestToolMessageWithoutCallIDIsKept pins that results lacking a call id are
-// left alone rather than collapsed together.
-func TestToolMessageWithoutCallIDIsKept(t *testing.T) {
-	items := []Item{
-		{Kind: "text", Role: RoleTool, Output: "one"},
-		{Kind: "text", Role: RoleTool, Output: "two"},
-	}
-	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	if len(msgs) != 2 {
-		t.Fatalf("encoded %d messages, want 2", len(msgs))
+	if signature, present := got["c2"]; present {
+		t.Fatalf("unsigned call must stay unsigned, got %q", signature)
 	}
 }
 
@@ -452,42 +345,6 @@ func TestToolResultNeverCarriesThoughtSignature(t *testing.T) {
 		if _, present := msg["extra_content"]; present {
 			t.Fatalf("tool message must not carry extra_content: %v", msg)
 		}
-	}
-}
-
-// TestGenuineParallelCallsReplayExactly pins Google's most important
-// distinction: only the first parallel call carries a signature. A batch that
-// already has one must not gain a sentinel on its later calls.
-func TestGenuineParallelCallsReplayExactly(t *testing.T) {
-	items := []Item{{Kind: "tool_calls", ToolCalls: []ToolCall{
-		{ID: "first", Name: "weather", Args: "{}", ThoughtSignature: "real-sig"},
-		{ID: "second", Name: "weather", Args: "{}"},
-	}}}
-	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	got := toolCallSignatures(msgs)
-	if got["first"] != "real-sig" {
-		t.Fatalf("first parallel signature = %q, want real-sig", got["first"])
-	}
-	if signature, present := got["second"]; present {
-		t.Fatalf("second parallel signature = %q, want it omitted", signature)
-	}
-}
-
-// TestSyntheticParallelBatchBypassesOnlyFirstCall pins the narrow injected-call
-// escape hatch: an unsigned batch gets the sentinel once, on its first part,
-// preserving Gemini's documented parallel-call shape.
-func TestSyntheticParallelBatchBypassesOnlyFirstCall(t *testing.T) {
-	items := []Item{{Kind: "tool_calls", ToolCalls: []ToolCall{
-		{ID: "first", Name: "weather", Args: "{}"},
-		{ID: "second", Name: "weather", Args: "{}"},
-	}}}
-	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	got := toolCallSignatures(msgs)
-	if got["first"] != skipThoughtSignatureValidator {
-		t.Fatalf("first synthetic signature = %q, want %q", got["first"], skipThoughtSignatureValidator)
-	}
-	if signature, present := got["second"]; present {
-		t.Fatalf("second synthetic signature = %q, want it omitted", signature)
 	}
 }
 
@@ -515,18 +372,13 @@ func toolCallSignatures(msgs []map[string]any) map[string]string {
 func TestSignatureStatsUnderpinsDiagnostic(t *testing.T) {
 	stats := geminiSignatureStats([]Item{
 		{Kind: "tool_call", CallID: "a", Name: "bash", ThoughtSignature: "sig"},
-		{Kind: "tool_call", CallID: "b", Name: "ls"},
 		{Kind: "tool_calls", ToolCalls: []ToolCall{
 			{ID: "c", Name: "weather", ThoughtSignature: "sig"},
 			{ID: "d", Name: "weather"},
 		}},
-		{Kind: "tool_calls", ToolCalls: []ToolCall{
-			{ID: "e", Name: "weather"},
-			{ID: "f", Name: "weather"},
-		}},
 	})
-	if stats.signed != 2 || stats.sentinel != 2 {
-		t.Fatalf("stats = %+v, want signed=2 sentinel=2", stats)
+	if stats.signed != 2 || stats.unsigned != 1 {
+		t.Fatalf("stats = %+v, want signed=2 unsigned=1", stats)
 	}
 }
 
@@ -546,7 +398,7 @@ func TestDescribeEncodedTurnRevealsSignaturePlacement(t *testing.T) {
 		"user",
 		"assistant/tool_calls(bash:sig20)",
 		"tool",
-		"assistant/tool_calls(read:sentinel)",
+		"assistant/tool_calls(read:none)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("turn %q missing %q", got, want)

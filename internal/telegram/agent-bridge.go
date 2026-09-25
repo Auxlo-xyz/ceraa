@@ -278,6 +278,10 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 			}
 			model.BaseURL = credential.BaseURL
 			model.APIKey = credential.AccessToken
+			// The transport depends on the resolved host, which the native Hermes
+			// adapter may have changed.
+			model.GeminiNative = llm.UsesGeminiNative(model.Model, model.BaseURL)
+			model.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(model.Model, model.BaseURL)
 			return model, nil
 		default:
 			return model, nil

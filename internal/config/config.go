@@ -113,7 +113,7 @@ func DefaultConfig() *Config {
 		MaxConcurrentTools:       8,
 		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
 		ModelCatalogRefreshHours: 24,
-		TitleAPIURL:              "https://generativelanguage.googleapis.com/v1beta/openai",
+		TitleAPIURL:              "https://generativelanguage.googleapis.com/v1beta",
 		TitleModel:               "gemini-3.5-flash-lite",
 		MemoryFile:               filepath.Join(base, "memory"),
 		SkillFile:                filepath.Join(base, "skills"),

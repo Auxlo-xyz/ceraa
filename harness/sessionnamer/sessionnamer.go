@@ -13,7 +13,10 @@ import (
 )
 
 const (
-	DefaultAPIURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+	// The native API is the default surface: a thought signature is a
+	// first-class field there, while the OpenAI-compatibility path carries it in a
+	// non-standard field that has to be reshaped as Google changes it.
+	DefaultAPIURL = "https://generativelanguage.googleapis.com/v1beta"
 	DefaultModel  = "gemini-3.5-flash-lite"
 )
 
