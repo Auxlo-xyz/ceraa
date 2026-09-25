@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/internal/freebuff"
 	"github.com/spf13/cobra"
-	"sooraa/internal/freebuff"
 )
 
 var freebuffCmd = &cobra.Command{
@@ -90,7 +90,7 @@ func init() {
 func freebuffSummary() string {
 	credential, err := freebuff.NewStore().Resolve(context.Background())
 	if err != nil {
-		return "freebuff: not authenticated (run: sooraa freebuff login)"
+		return "freebuff: not authenticated (run: ceraa freebuff login)"
 	}
 	identity := strings.TrimSpace(credential.User.Email)
 	if identity == "" {

@@ -2,6 +2,19 @@ package telegram
 
 import (
 	"bytes"
+	"ceraa/harness/event"
+	"ceraa/harness/permission"
+	"ceraa/harness/scheduler"
+	"ceraa/internal/codexauth"
+	"ceraa/internal/config"
+	"ceraa/internal/envs"
+	"ceraa/internal/freebuff"
+	"ceraa/internal/hermesauth"
+	"ceraa/internal/logger"
+	"ceraa/internal/paths"
+	"ceraa/internal/secret"
+	"ceraa/internal/telegram/keyboard"
+	"ceraa/internal/telegram/menus"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,18 +28,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"sooraa/harness/event"
-	"sooraa/harness/permission"
-	"sooraa/harness/scheduler"
-	"sooraa/internal/codexauth"
-	"sooraa/internal/config"
-	"sooraa/internal/freebuff"
-	"sooraa/internal/hermesauth"
-	"sooraa/internal/logger"
-	"sooraa/internal/secret"
-	"sooraa/internal/telegram/keyboard"
-	"sooraa/internal/telegram/menus"
 )
 
 type update struct {
@@ -106,10 +107,10 @@ func registerCommands(token string) error {
 func applyStateOverrides() {
 	model, _, _ := defaultState.values()
 	if model != "" {
-		_ = os.Setenv("SOORAA_MODEL", model)
+		_ = envs.Set("MODEL", model)
 	}
 	if provider := defaultState.provider(); provider != "" {
-		_ = os.Setenv("SOORAA_PROVIDER", provider)
+		_ = envs.Set("PROVIDER", provider)
 	}
 	defaultState.mu.RLock()
 	alwaysAllow := make(map[string]bool, len(defaultState.AlwaysAllow))
@@ -178,7 +179,7 @@ func send(token string, chatID int64, text string) int {
 	return sendWithKeyboard(token, chatID, text, keyboard.Main())
 }
 func sendHub(token string, chatID int64) {
-	sendMenuMarkup(token, chatID, "📋 Sooraa hub", menus.Hub())
+	sendMenuMarkup(token, chatID, "📋 Ceraa hub", menus.Hub())
 }
 
 func sendMessagePayload(token string, chatID int64, text string, parseMode string, kb map[string]any) (int, error) {
@@ -322,7 +323,7 @@ func Run() error {
 	if _, err := logger.Initialize(""); err != nil {
 		fmt.Printf("logger init failed: %v\n", err)
 	} else {
-		logger.Info("Sooraa bridge starting")
+		logger.Info("Ceraa bridge starting")
 		if !startup.providerReady {
 			logger.Info("Telegram token-only startup: provider onboarding required")
 		}
@@ -330,9 +331,8 @@ func Run() error {
 	}
 
 	// Initialize encrypted secret store
-	home, _ := os.UserHomeDir()
-	keyFile := filepath.Join(home, ".config", "sooraa", "secret.key")
-	secretFile := filepath.Join(home, ".config", "sooraa", "secrets.json")
+	keyFile := filepath.Join(paths.DataDir(), "secret.key")
+	secretFile := filepath.Join(paths.DataDir(), "secrets.json")
 	if err := secret.Init(keyFile, secretFile); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
@@ -530,7 +530,7 @@ func Run() error {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				if !providerConfigured(cfg) {
-					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Sooraa. Choose a provider to finish onboarding.", menus.Onboarding())
+					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Ceraa. Choose a provider to finish onboarding.", menus.Onboarding())
 				} else {
 					sendHub(token, u.Message.Chat.ID)
 				}
@@ -947,8 +947,8 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 	}
 	defer resp2.Body.Close()
 	data, _ := io.ReadAll(resp2.Body)
-	// Save to /tmp/sooraa-uploads
-	dir := filepath.Join(os.TempDir(), "sooraa-uploads")
+	// Save to /tmp/ceraa-uploads
+	dir := filepath.Join(os.TempDir(), "ceraa-uploads")
 	_ = os.MkdirAll(dir, 0o755)
 	dst := filepath.Join(dir, filepath.Base(out.Result.FilePath))
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
@@ -1211,7 +1211,7 @@ var freebuffQuotaChatID atomic.Int64
 
 // ensureFreebuffSession admits (or adopts) a hosted session for the model, and
 // keeps the keep-alive loop running. Freebuff grants quota per session, so this
-// is what actually lets Sooraa spend the daily allowance.
+// is what actually lets Ceraa spend the daily allowance.
 func ensureFreebuffSession(ctx context.Context, credential freebuff.Credential, model string) error {
 	if model == "" {
 		return errors.New("freebuff session needs a model id")
@@ -1249,7 +1249,7 @@ func freebuffSessionMessage(session freebuff.SessionResponse) string {
 	return ""
 }
 
-// defaultFreebuffModel is the hosted model Sooraa activates after a Freebuff
+// defaultFreebuffModel is the hosted model Ceraa activates after a Freebuff
 // login when the user has not picked one. Freebuff model ids are plain
 // OpenRouter-style slugs.
 const defaultFreebuffModel = "deepseek/deepseek-v4-flash"
@@ -1371,7 +1371,7 @@ func handleFreebuffLogout(token string, chatID int64) {
 		freebuffSessions.Stop(context.Background(), credential.AccessToken)
 	}
 	freebuffQuotaChatID.Store(0)
-	send(token, chatID, "✅ Freebuff credential cleared from Sooraa. Use /freebuff-login to sign in again.")
+	send(token, chatID, "✅ Freebuff credential cleared from Ceraa. Use /freebuff-login to sign in again.")
 }
 
 func activateFreebuffProvider(token string, chatID int64, flowID string) {

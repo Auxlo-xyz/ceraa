@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"ceraa/internal/paths"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ var initOnce sync.Once
 func Initialize(path string) (*Logger, error) {
 	if path == "" {
 		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".config", "sooraa", "logs", "bridge.log")
+		path = filepath.Join(paths.DataDir(), "logs", "bridge.log")
 		// Also try soraacode path for compat
 		if _, err := os.Stat(filepath.Join(home, ".soraacode", "logs", "bridge.log")); err == nil {
 			path = filepath.Join(home, ".soraacode", "logs", "bridge.log")

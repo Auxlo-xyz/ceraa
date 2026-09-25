@@ -11,18 +11,18 @@ import (
 	"sync"
 	"time"
 
-	"sooraa/harness/evaluation"
-	"sooraa/harness/memory"
-	"sooraa/harness/scheduler"
-	"sooraa/harness/search"
-	"sooraa/harness/sessionstore"
-	"sooraa/harness/skills"
-	"sooraa/harness/snapshot"
-	"sooraa/harness/todo"
-	"sooraa/harness/tool"
-	"sooraa/internal/config"
-	"sooraa/internal/secret"
-	"sooraa/internal/telegram/menus"
+	"ceraa/harness/evaluation"
+	"ceraa/harness/memory"
+	"ceraa/harness/scheduler"
+	"ceraa/harness/search"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/skills"
+	"ceraa/harness/snapshot"
+	"ceraa/harness/todo"
+	"ceraa/harness/tool"
+	"ceraa/internal/config"
+	"ceraa/internal/secret"
+	"ceraa/internal/telegram/menus"
 )
 
 func commandCatalog() []menus.CommandSpec {
@@ -612,7 +612,7 @@ func handleStatus(token string, chatID int64) {
 	if variant == "" {
 		variant = "default"
 	}
-	text := fmt.Sprintf("Sooraa status:\n• Session: %s\n• Workspace: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d",
+	text := fmt.Sprintf("Ceraa status:\n• Session: %s\n• Workspace: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d",
 		sessionTitle, cfg.WorkspaceRootPath(), defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
@@ -1129,7 +1129,7 @@ func handleScheduleCommand(token string, chatID int64, text string) {
 func handleFullHelp(token string, chatID int64) {
 	catalog := commandCatalog()
 	lines := make([]string, 0, len(catalog)+2)
-	lines = append(lines, "Sooraa commands:")
+	lines = append(lines, "Ceraa commands:")
 	for _, command := range catalog {
 		lines = append(lines, "/"+command.Command+" - "+command.Description)
 	}

@@ -3,7 +3,7 @@
 .env
 .env.*
 *.env
-!sooraa.env.example
+!ceraa.env.example
 bin/
 sessions/
 memory/

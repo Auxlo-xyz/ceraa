@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"sooraa/harness/operation"
-	"sooraa/harness/redact"
-	"sooraa/internal/logger"
+	"ceraa/harness/operation"
+	"ceraa/harness/redact"
+	"ceraa/internal/logger"
 )
 
 type toolActivity struct {

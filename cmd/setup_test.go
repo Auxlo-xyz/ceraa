@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"sooraa/internal/config"
+	"ceraa/internal/config"
 )
 
 func TestDefaultConfigHasNoProviderOrModel(t *testing.T) {
@@ -44,6 +44,7 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("CERAA_API_KEY", "")
 	t.Setenv("SOORAA_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
@@ -51,7 +52,9 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	if err := runSetup(input, &strings.Builder{}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".config", "sooraa", "config.json"))
+	// Writes always go to $HOME/.config/ceraa; XDG is a read candidate only.
+	configPath := filepath.Join(home, ".config", "ceraa", "config.json")
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +64,7 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	if strings.Contains(string(data), "provider/model") || strings.Contains(string(data), "api.example.test") {
 		t.Fatalf("setup unexpectedly saved provider defaults: %s", data)
 	}
-	info, err := os.Stat(filepath.Join(home, ".config", "sooraa", "config.json"))
+	info, err := os.Stat(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}

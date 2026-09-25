@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"sooraa/harness/goal"
-	"sooraa/harness/operation"
+	"ceraa/harness/goal"
+	"ceraa/harness/operation"
 )
 
 type CreateGoalTool struct{}

@@ -5,19 +5,19 @@ import (
 	"fmt"
 	"time"
 
-	"sooraa/harness/compaction"
-	"sooraa/harness/coordinator"
-	"sooraa/harness/evaluation"
-	"sooraa/harness/llm"
-	"sooraa/harness/memory"
-	"sooraa/harness/operation"
-	"sooraa/harness/sessionstore"
-	"sooraa/harness/skills"
-	"sooraa/harness/tool"
-	"sooraa/internal/config"
-	"sooraa/internal/freebuff"
-	"sooraa/internal/hermesauth"
-	"sooraa/internal/prompt"
+	"ceraa/harness/compaction"
+	"ceraa/harness/coordinator"
+	"ceraa/harness/evaluation"
+	"ceraa/harness/llm"
+	"ceraa/harness/memory"
+	"ceraa/harness/operation"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/skills"
+	"ceraa/harness/tool"
+	"ceraa/internal/config"
+	"ceraa/internal/freebuff"
+	"ceraa/internal/hermesauth"
+	"ceraa/internal/prompt"
 )
 
 func Run(user string) error {
@@ -65,7 +65,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
-	compactor.CacheKey = "sooraa-compaction-cli"
+	compactor.CacheKey = "ceraa-compaction-cli"
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
@@ -87,7 +87,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		case "freebuff":
 			credential, err := freebuff.NewStore().Resolve(ctx)
 			if err != nil {
-				return llm.ProviderConfig{}, fmt.Errorf("freebuff is not authenticated: %w; run: sooraa freebuff-login", err)
+				return llm.ProviderConfig{}, fmt.Errorf("freebuff is not authenticated: %w; run: ceraa freebuff-login", err)
 			}
 			modelConfig.BaseURL = credential.BaseURL
 			modelConfig.APIKey = credential.AccessToken

@@ -9,14 +9,14 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"ceraa/harness/llm"
+	"ceraa/internal/freebuff"
+	"ceraa/internal/secret"
 	"path/filepath"
-	"sooraa/harness/llm"
-	"sooraa/internal/freebuff"
-	"sooraa/internal/secret"
 )
 
 // TestHostedCompletionsRecoversFromSessionGate drives a real request through
-// Sooraa's LLM transport: the hosted metadata must be on the wire, a
+// Ceraa's LLM transport: the hosted metadata must be on the wire, a
 // session-ending gate must trigger exactly one re-admission, and the retry must
 // succeed without the user seeing the gate.
 func TestHostedCompletionsRecoversFromSessionGate(t *testing.T) {

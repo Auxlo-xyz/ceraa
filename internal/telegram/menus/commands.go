@@ -7,7 +7,7 @@ type CommandSpec struct {
 
 func Commands() []CommandSpec {
 	return []CommandSpec{
-		{"start", "Open Sooraa"},
+		{"start", "Open Ceraa"},
 		{"help", "Show available commands"},
 		{"hub", "Open the control hub"},
 		{"new", "Start a fresh session"},

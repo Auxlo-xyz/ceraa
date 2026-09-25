@@ -76,7 +76,7 @@ func LookupGate(code string, status int) (GateCode, bool) {
 	return gate, true
 }
 
-// SessionResponse is the subset of the server's session union that Sooraa
+// SessionResponse is the subset of the server's session union that Ceraa
 // branches on. Everything else is ignored rather than ported.
 type SessionResponse struct {
 	Status      string `json:"status"`

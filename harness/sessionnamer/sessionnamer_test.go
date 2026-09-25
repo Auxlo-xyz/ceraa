@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"sooraa/harness/sessionstore"
+	"ceraa/harness/sessionstore"
 )
 
 func TestDefaultConfigUsesGeminiFlashLite(t *testing.T) {

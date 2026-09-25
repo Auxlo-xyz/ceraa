@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sooraa/harness/operation"
-	"sooraa/harness/search"
+	"ceraa/harness/operation"
+	"ceraa/harness/search"
 )
 
 // FTSSearchTool provides indexed full-text search via SQLite FTS5.

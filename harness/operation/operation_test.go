@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"sooraa/harness/event"
-	"sooraa/harness/question"
+	"ceraa/harness/event"
+	"ceraa/harness/question"
 )
 
 func TestShellOperation(t *testing.T) {

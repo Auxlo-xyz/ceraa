@@ -306,7 +306,7 @@ func DefaultModelCatalogCachePath() string {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "sooraa", "model-catalog.json")
+	return filepath.Join(base, "ceraa", "model-catalog.json")
 }
 
 func NewCatalogClient(url, cachePath string, refreshInterval time.Duration) *CatalogClient {

@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"sooraa/harness/flock"
-	"sooraa/harness/llm"
-	"sooraa/harness/redact"
+	"ceraa/harness/flock"
+	"ceraa/harness/llm"
+	"ceraa/harness/redact"
 )
 
 const schemaVersion = 3

@@ -58,5 +58,5 @@ jobs:
 
       - name: Build and test Docker image
         run: |
-          docker build -t sooraa-ci .
-          docker run --rm sooraa-ci version
+          docker build -t ceraa-ci .
+          docker run --rm ceraa-ci version

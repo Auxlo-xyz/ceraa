@@ -8,13 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sooraa/internal/secret"
+	"ceraa/internal/secret"
 )
 
 // nativeSecretName is the single encrypted entry holding the whole Freebuff
 // CLI "default" profile. Storing the entire profile (rather than just the
 // token) means logout is one secret.Delete and fingerprintId/fingerprintHash
 // round-trip unchanged.
+// nativeSecretName keeps its pre-rename key on purpose. It is the name this
+// entry already has inside every existing secrets.json, and renaming it would
+// orphan a live bearer token and force the user to sign in again. Internal key
+// names are not branding; changing them buys nothing and costs a re-login.
 const nativeSecretName = "sooraa_native_freebuff_default"
 
 // ErrNoCredential is returned when no Freebuff credential is available.
@@ -63,7 +67,7 @@ func cliConfigDir() string {
 
 // importFromCLI is a best-effort, read-only read of the Freebuff CLI
 // credentials file. It never writes that file: two writers on one file is a
-// guaranteed clobber, and Sooraa's whole value proposition is the encrypted
+// guaranteed clobber, and Ceraa's whole value proposition is the encrypted
 // store. Returns (nil, nil) when no CLI credentials exist.
 func importFromCLI() (*User, error) {
 	path := filepath.Join(cliConfigDir(), "credentials.json")
@@ -100,7 +104,7 @@ func importFromCLI() (*User, error) {
 	}, nil
 }
 
-// saveUser encrypts and stores the Freebuff profile in Sooraa's secret store.
+// saveUser encrypts and stores the Freebuff profile in Ceraa's secret store.
 func saveUser(user User) error {
 	if strings.TrimSpace(user.AuthToken) == "" {
 		return errors.New("freebuff user has empty authToken")
@@ -118,7 +122,7 @@ func saveUser(user User) error {
 	return nil
 }
 
-// loadUser resolves the Freebuff profile: Sooraa's encrypted store first, then
+// loadUser resolves the Freebuff profile: Ceraa's encrypted store first, then
 // a read-only import from the Freebuff CLI. The returned User is always safe to
 // persist (an imported fingerprintID, if present, is kept verbatim so the
 // server sees one device rather than two).

@@ -82,7 +82,7 @@ func TestStoreLogoutIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestStoreResolveUsesHostedInferenceBase pins the inference base: Sooraa's
+// TestStoreResolveUsesHostedInferenceBase pins the inference base: Ceraa's
 // transport appends /chat/completions, so the base must include /api/v1.
 func TestStoreResolveUsesHostedInferenceBase(t *testing.T) {
 	initTestSecret(t)

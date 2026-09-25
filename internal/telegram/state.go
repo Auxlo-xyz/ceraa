@@ -1,6 +1,9 @@
 package telegram
 
 import (
+	"ceraa/internal/config"
+	"ceraa/internal/envs"
+	"ceraa/internal/paths"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"sooraa/internal/config"
 )
 
 type bridgeState struct {
@@ -36,8 +37,7 @@ var defaultState = loadBridgeState()
 var forcedCompactions sync.Map
 
 func loadBridgeState() *bridgeState {
-	home, _ := os.UserHomeDir()
-	return loadBridgeStateFromFile(filepath.Join(home, ".config", "sooraa", "bridge-state.json"))
+	return loadBridgeStateFromFile(filepath.Join(paths.DataDir(), "bridge-state.json"))
 }
 
 func loadBridgeStateFromFile(path string) *bridgeState {
@@ -319,7 +319,7 @@ func (s *bridgeState) setModel(model string) error {
 	s.mu.Lock()
 	s.Model = model
 	s.mu.Unlock()
-	if err := os.Setenv("SOORAA_MODEL", model); err != nil {
+	if err := envs.Set("MODEL", model); err != nil {
 		return err
 	}
 	return s.save()

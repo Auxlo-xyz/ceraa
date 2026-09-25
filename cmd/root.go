@@ -1,20 +1,21 @@
 package cmd
 
 import (
+	"ceraa/internal/agent"
+	"ceraa/internal/config"
+	"ceraa/internal/paths"
+	"ceraa/internal/telegram"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"sooraa/internal/agent"
-	"sooraa/internal/config"
-	"sooraa/internal/telegram"
 )
 
 var root = &cobra.Command{
-	Use:   "sooraa [prompt]",
-	Short: "Sooraa - coding harness",
+	Use:   "ceraa [prompt]",
+	Short: "Ceraa - coding harness",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()
@@ -23,11 +24,11 @@ var root = &cobra.Command{
 	},
 }
 
-var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("sooraa 0.1.0") }}
+var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("ceraa 0.1.0") }}
 
 var startCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Start the Sooraa Telegram service",
+	Short: "Start the Ceraa Telegram service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return telegram.Run()
 	},
@@ -35,7 +36,7 @@ var startCmd = &cobra.Command{
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Configure Sooraa interactively",
+	Short: "Configure Ceraa interactively",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSetup(os.Stdin, os.Stdout)
 	},
@@ -70,7 +71,7 @@ var configCmd = &cobra.Command{
 
 var configInitCmd = &cobra.Command{
 	Use:   "config-init",
-	Short: "Write a sample config file to ~/.config/sooraa/config.json",
+	Short: "Write a sample config file to ~/.config/ceraa/config.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sample := `{
   "llm": {
@@ -83,14 +84,10 @@ var configInitCmd = &cobra.Command{
     "allowed_user_id": 0
   },
   "session_file": "sessions",
-  "workspace_root": "/absolute/path/to/sooraa/workspace"
+  "workspace_root": "/absolute/path/to/ceraa/workspace"
 }
 `
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		dir := filepath.Join(home, ".config", "sooraa")
+		dir := paths.DataDir()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

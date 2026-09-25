@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"sooraa/harness/operation"
+	"ceraa/harness/operation"
 )
 
 const (
@@ -191,7 +191,7 @@ func (w *WebSearchTool) searchParallel(ctx context.Context, query string, numRes
 	}
 
 	headers := map[string]string{
-		"User-Agent": "sooraa/0.1.0",
+		"User-Agent": "ceraa/0.1.0",
 	}
 	if w.apiKey != "" {
 		headers["Authorization"] = fmt.Sprintf("Bearer %s", w.apiKey)

@@ -1,5 +1,5 @@
 build:
-	go build -trimpath -o bin/sooraa .
+	go build -trimpath -o bin/ceraa .
 
 test:
 	go test -race ./...

@@ -27,7 +27,7 @@ type Store struct {
 
 func NewStore() *Store { return &Store{} }
 
-// Resolve returns the current Freebuff credential. Precedence: the Sooraa
+// Resolve returns the current Freebuff credential. Precedence: the Ceraa
 // encrypted store, then a read-only import from the Freebuff CLI.
 func (s *Store) Resolve(ctx context.Context) (Credential, error) {
 	user, err := loadUser()

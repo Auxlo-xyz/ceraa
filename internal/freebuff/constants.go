@@ -1,4 +1,4 @@
-// Package freebuff implements native Freebuff authentication for Sooraa.
+// Package freebuff implements native Freebuff authentication for Ceraa.
 //
 // The public Freebuff client is a device-code login against freebuff.com that
 // yields an opaque bearer session token. That token authenticates a user
@@ -25,7 +25,7 @@ const (
 	// host for the same reason. See also the redirect guard in newSecureClient.
 	DefaultAPIBaseURL = "https://www.codebuff.com"
 	// DefaultInferenceBaseURL is the OpenAI-compatible root. The Freebuff
-	// completions endpoint is /api/v1/chat/completions and Sooraa's transport
+	// completions endpoint is /api/v1/chat/completions and Ceraa's transport
 	// appends "/chat/completions" to whatever base it is given, so the
 	// inference base must already include the /api/v1 prefix.
 	DefaultInferenceBaseURL = DefaultAPIBaseURL + "/api/v1"

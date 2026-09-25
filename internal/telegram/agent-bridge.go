@@ -8,23 +8,23 @@ import (
 	"strings"
 	"time"
 
-	"sooraa/harness/compaction"
-	"sooraa/harness/coordinator"
-	"sooraa/harness/evaluation"
-	"sooraa/harness/event"
-	"sooraa/harness/llm"
-	"sooraa/harness/memory"
-	"sooraa/harness/operation"
-	"sooraa/harness/permission"
-	"sooraa/harness/search"
-	"sooraa/harness/sessionstore"
-	"sooraa/harness/skills"
-	"sooraa/harness/tool"
-	"sooraa/internal/config"
-	"sooraa/internal/freebuff"
-	"sooraa/internal/hermesauth"
-	"sooraa/internal/prompt"
-	"sooraa/internal/secret"
+	"ceraa/harness/compaction"
+	"ceraa/harness/coordinator"
+	"ceraa/harness/evaluation"
+	"ceraa/harness/event"
+	"ceraa/harness/llm"
+	"ceraa/harness/memory"
+	"ceraa/harness/operation"
+	"ceraa/harness/permission"
+	"ceraa/harness/search"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/skills"
+	"ceraa/harness/tool"
+	"ceraa/internal/config"
+	"ceraa/internal/freebuff"
+	"ceraa/internal/hermesauth"
+	"ceraa/internal/prompt"
+	"ceraa/internal/secret"
 )
 
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
@@ -314,7 +314,7 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 
 func compactionCacheKey(providerURL, model, sessionID string) string {
 	digest := sha256.Sum256([]byte(providerURL + "\x00" + model + "\x00" + sessionID))
-	return fmt.Sprintf("sooraa-compaction-%x", digest)
+	return fmt.Sprintf("ceraa-compaction-%x", digest)
 }
 
 func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.Compactor {

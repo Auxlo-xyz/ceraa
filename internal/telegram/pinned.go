@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"sooraa/internal/logger"
+	"ceraa/internal/logger"
 )
 
 type PinnedManager struct {

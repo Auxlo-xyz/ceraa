@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"testing"
 
-	"sooraa/harness/inbox"
-	"sooraa/harness/llm"
-	"sooraa/harness/operation"
-	"sooraa/harness/sessionstore"
-	"sooraa/harness/tool"
+	"ceraa/harness/inbox"
+	"ceraa/harness/llm"
+	"ceraa/harness/operation"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/tool"
 )
 
 // Fuzz the inbox control message decoder with arbitrary payloads.

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"sooraa/harness/flock"
+	"ceraa/harness/flock"
 )
 
 const (
@@ -255,7 +255,7 @@ func expiryOr(explicit time.Time, token string) time.Time {
 }
 
 func (s *Store) persistRefresh(before, after Credential) error {
-	if before.Source == "sooraa-native" {
+	if before.Source == "ceraa-native" {
 		return s.saveNative(after)
 	}
 	path := s.AuthPath()

@@ -53,7 +53,7 @@ func TestImportFromCLIHandlesNullName(t *testing.T) {
 	}
 }
 
-// TestImportFromCLIIsReadOnly ensures Sooraa never writes the Freebuff CLI
+// TestImportFromCLIIsReadOnly ensures Ceraa never writes the Freebuff CLI
 // credentials file: two writers on one file is a guaranteed clobber.
 func TestImportFromCLIIsReadOnly(t *testing.T) {
 	dir := t.TempDir()
@@ -84,7 +84,7 @@ func TestImportFromCLIIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(before) != string(after) {
-		t.Fatal("freebuff CLI credentials.json was modified by Sooraa")
+		t.Fatal("freebuff CLI credentials.json was modified by Ceraa")
 	}
 	if !beforeInfo.ModTime().Equal(afterInfo.ModTime()) {
 		t.Fatal("freebuff CLI credentials.json mtime changed")
@@ -117,14 +117,14 @@ func TestEncryptedStoreWinsOverCLIImport(t *testing.T) {
 	if err := writeCLICredentials(dir, "fp", "cli-token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveUser(User{AuthToken: "sooraa-token", FingerprintID: "fp", Email: "dev@example.com"}); err != nil {
+	if err := saveUser(User{AuthToken: "ceraa-token", FingerprintID: "fp", Email: "dev@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	user, err := loadUser()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.AuthToken != "sooraa-token" {
+	if user.AuthToken != "ceraa-token" {
 		t.Fatalf("token = %q, want the encrypted store to win", user.AuthToken)
 	}
 }

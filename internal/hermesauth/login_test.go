@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"sooraa/internal/secret"
+	"ceraa/internal/secret"
 )
 
 func TestNousDeviceLoginStoresNativeCredential(t *testing.T) {
@@ -66,7 +66,7 @@ func TestNousDeviceLoginStoresNativeCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.AccessToken != "access-1" || credential.RefreshToken != "refresh-1" || credential.Source != "sooraa-native" {
+	if credential.AccessToken != "access-1" || credential.RefreshToken != "refresh-1" || credential.Source != "ceraa-native" {
 		t.Fatalf("credential = %+v", credential)
 	}
 }

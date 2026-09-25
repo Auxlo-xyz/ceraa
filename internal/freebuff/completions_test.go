@@ -69,7 +69,7 @@ func TestMetadataClientIDIsFreshPerRequest(t *testing.T) {
 	}
 }
 
-// TestMetadataClientIDAvoidsReservedPrefix pins that Sooraa's ids cannot be
+// TestMetadataClientIDAvoidsReservedPrefix pins that Ceraa's ids cannot be
 // confused with the reference's own published proxy generator.
 func TestMetadataClientIDAvoidsReservedPrefix(t *testing.T) {
 	builder := NewMetadataBuilder()
@@ -83,7 +83,7 @@ func TestMetadataClientIDAvoidsReservedPrefix(t *testing.T) {
 
 // TestUserAgentMatchesOfficialCLI pins the exact RFC 7231 form the server's
 // normalizer expects: product/version, with a version-shaped second half. The
-// operator chose to identify as the official CLI so Sooraa is not treated as an
+// operator chose to identify as the official CLI so Ceraa is not treated as an
 // unrecognized client.
 func TestUserAgentMatchesOfficialCLI(t *testing.T) {
 	ua := NewMetadataBuilder().Headers()["user-agent"]
@@ -109,17 +109,26 @@ func TestUserAgentMatchesOfficialCLI(t *testing.T) {
 // TestUserAgentVersionIsOverridable pins that the advertised version is a
 // deliberate, version-shaped value rather than a hardcoded constant.
 func TestUserAgentVersionIsOverridable(t *testing.T) {
-	t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "1.2.3")
+	t.Setenv("CERAA_FREEBUFF_CLI_VERSION", "1.2.3")
+	t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "")
 	if got := cliUserAgentVersion(); got != "1.2.3" {
 		t.Fatalf("version = %q, want the override", got)
 	}
+	// The pre-rename variable is still honoured.
+	t.Setenv("CERAA_FREEBUFF_CLI_VERSION", "")
+	t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "2.0.0")
+	if got := cliUserAgentVersion(); got != "2.0.0" {
+		t.Fatalf("version = %q, want the legacy override", got)
+	}
 	// A value the server would discard falls back rather than being sent.
 	for _, bad := range []string{"dev-branch-name-that-is-long", "notaversion", "12345678901234567890"} {
-		t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", bad)
+		t.Setenv("CERAA_FREEBUFF_CLI_VERSION", bad)
+		t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "")
 		if got := cliUserAgentVersion(); got != DefaultCLIVersion {
 			t.Fatalf("version for %q = %q, want the default fallback", bad, got)
 		}
 	}
+	t.Setenv("CERAA_FREEBUFF_CLI_VERSION", "")
 	t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "")
 	if got := cliUserAgentVersion(); got != DefaultCLIVersion {
 		t.Fatalf("empty override = %q, want the default", got)

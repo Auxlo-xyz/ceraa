@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"sooraa/harness/llm"
-	"sooraa/harness/sessionstore"
+	"ceraa/harness/llm"
+	"ceraa/harness/sessionstore"
 )
 
 func TestNewBuilder(t *testing.T) {

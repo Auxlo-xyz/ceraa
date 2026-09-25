@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"sooraa/harness/event"
-	"sooraa/harness/primitives"
-	"sooraa/harness/question"
-	"sooraa/harness/redact"
-	"sooraa/harness/search"
-	"sooraa/harness/snapshot"
-	"sooraa/harness/todo"
+	"ceraa/harness/event"
+	"ceraa/harness/primitives"
+	"ceraa/harness/question"
+	"ceraa/harness/redact"
+	"ceraa/harness/search"
+	"ceraa/harness/snapshot"
+	"ceraa/harness/todo"
 )
 
 // Spec describes work to be done.
@@ -368,9 +368,9 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			if dbPath == "" {
 				home, _ := os.UserHomeDir()
 				if home != "" {
-					dbPath = filepath.Join(home, ".cache", "sooraa", "index.db")
+					dbPath = filepath.Join(home, ".cache", "ceraa", "index.db")
 				} else {
-					dbPath = ".sooraa-index.db"
+					dbPath = ".ceraa-index.db"
 				}
 			}
 			out, err := runFTSSearch(ctx, dbPath, query, limit, op.Spec.Args)

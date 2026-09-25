@@ -6,10 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
-	"strings"
 	"sync"
+
+	"ceraa/internal/envs"
 )
 
 // cliUserAgentProduct is the product token the official Freebuff CLI sends, in
@@ -17,7 +17,7 @@ import (
 // The server lowercases the product and keeps the version only when it looks
 // like a version, so both halves are shaped deliberately.
 //
-// The operator has chosen to identify as the official CLI so Sooraa's traffic is
+// The operator has chosen to identify as the official CLI so Ceraa's traffic is
 // not treated as an unrecognized client. That is a deliberate trade: it means a
 // version string here is a claim about which client is talking, so keep
 // cliUserAgentVersion honest and overridable rather than hardcoded to a value
@@ -25,7 +25,7 @@ import (
 const cliUserAgentProduct = "Freebuff-CLI"
 
 // DefaultCLIVersion is the Freebuff CLI release this integration tracks. It is
-// overridable with SOORAA_FREEBUFF_CLI_VERSION.
+// overridable with CERAA_FREEBUFF_CLI_VERSION.
 const DefaultCLIVersion = "0.0.197"
 
 // cliUserAgentVersion resolves the version to advertise. The server drops a
@@ -33,7 +33,7 @@ const DefaultCLIVersion = "0.0.197"
 // unparseable override falls back to the tracked default rather than sending a
 // value that would be discarded.
 func cliUserAgentVersion() string {
-	override := strings.TrimSpace(os.Getenv("SOORAA_FREEBUFF_CLI_VERSION"))
+	override := envs.Get("FREEBUFF_CLI_VERSION")
 	if override == "" {
 		return DefaultCLIVersion
 	}
@@ -52,10 +52,10 @@ func completionsUserAgent() string {
 	return cliUserAgentProduct + "/" + cliUserAgentVersion()
 }
 
-// idPrefix namespaces Sooraa's correlation ids. The reference reserves the
+// idPrefix namespaces Ceraa's correlation ids. The reference reserves the
 // "wf-" prefix for its own published proxy generator, so a distinct prefix keeps
-// Sooraa's traffic unambiguous.
-const idPrefix = "sooraa-"
+// Ceraa's traffic unambiguous.
+const idPrefix = "ceraa-"
 
 // capacityDeferredCode is a 429 that means "try later", not "you are blocked".
 const capacityDeferredCode = "free_mode_capacity_deferred"
@@ -110,7 +110,7 @@ func (b *MetadataBuilder) Body(instanceID string) map[string]any {
 		"run_id":               b.currentRunID(),
 		"client_id":            newCorrelationID(),
 		// Free mode: the whole free-tier enforcement regime applies, which is
-		// what Sooraa wants. Declaring any other mode with a Freebuff agent is
+		// what Ceraa wants. Declaring any other mode with a Freebuff agent is
 		// the documented escalation shape.
 		"cost_mode": "free",
 	}
@@ -145,7 +145,7 @@ func MakeRecoverError(sessions *SessionManager) func(ctx context.Context, status
 			return false, gateMessage(code)
 		}
 		if sessions == nil {
-			return false, "Freebuff session ended and Sooraa cannot re-admit it."
+			return false, "Freebuff session ended and Ceraa cannot re-admit it."
 		}
 		if err := sessions.ReAdmit(ctx); err != nil {
 			return false, "Freebuff session ended and could not be re-admitted: " + err.Error()
@@ -204,11 +204,11 @@ func DescribeError(status int, body []byte) string {
 		case "waiting_room_required":
 			return "Freebuff wants this request to wait for a session slot."
 		case "session_expired":
-			return "The Freebuff session expired. Sooraa will re-admit on the next message."
+			return "The Freebuff session expired. Ceraa will re-admit on the next message."
 		case "session_superseded":
 			return "Another client took over the Freebuff session."
 		case "session_model_mismatch":
-			return "The Freebuff session is on a different model. Sooraa will re-admit."
+			return "The Freebuff session is on a different model. Ceraa will re-admit."
 		case "session_limit_reached":
 			return gateMessage(code)
 		case "waiting_room_queued":

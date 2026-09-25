@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"sooraa/harness/memory"
-	"sooraa/harness/operation"
-	"sooraa/harness/skills"
+	"ceraa/harness/memory"
+	"ceraa/harness/operation"
+	"ceraa/harness/skills"
 )
 
 type MemoryTool struct {

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"sooraa/harness/operation"
-	"sooraa/harness/todo"
+	"ceraa/harness/operation"
+	"ceraa/harness/todo"
 )
 
 // TodoWriteTool maps to soraacode tool/todowrite.ts persisted TodoWrite

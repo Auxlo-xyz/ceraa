@@ -1,15 +1,15 @@
 package sessionnamer
 
 import (
+	"ceraa/internal/envs"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
-	"sooraa/harness/llm"
-	"sooraa/harness/redact"
-	"sooraa/harness/sessionstore"
+	"ceraa/harness/llm"
+	"ceraa/harness/redact"
+	"ceraa/harness/sessionstore"
 )
 
 const (
@@ -24,15 +24,12 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	apiKey := os.Getenv("SOORAA_TITLE_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("GEMINI_API_KEY")
-	}
-	apiURL := os.Getenv("SOORAA_TITLE_API_URL")
+	apiKey := envs.GetWith("CERAA_TITLE_API_KEY", "SOORAA_TITLE_API_KEY", "GEMINI_API_KEY")
+	apiURL := envs.Get("TITLE_API_URL")
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
 	}
-	model := os.Getenv("SOORAA_TITLE_MODEL")
+	model := envs.Get("TITLE_MODEL")
 	if model == "" {
 		model = DefaultModel
 	}

@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"sooraa/harness/sessionnamer"
-	"sooraa/harness/sessionstore"
-	"sooraa/internal/config"
-	"sooraa/internal/secret"
+	"ceraa/harness/sessionnamer"
+	"ceraa/harness/sessionstore"
+	"ceraa/internal/config"
+	"ceraa/internal/secret"
 )
 
 var titleJobs sync.Map

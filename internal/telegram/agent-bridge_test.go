@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"sooraa/harness/llm"
-	"sooraa/harness/sessionstore"
-	"sooraa/internal/config"
+	"ceraa/harness/llm"
+	"ceraa/harness/sessionstore"
+	"ceraa/internal/config"
 )
 
 func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"sooraa/internal/secret"
+	"ceraa/internal/secret"
 )
 
 func initTestSecret(t *testing.T) {

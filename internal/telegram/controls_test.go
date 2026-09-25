@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"sooraa/internal/config"
-	"sooraa/internal/telegram/keyboard"
-	"sooraa/internal/telegram/menus"
+	"ceraa/internal/config"
+	"ceraa/internal/telegram/keyboard"
+	"ceraa/internal/telegram/menus"
 )
 
 func TestPersistentKeyboardUsesMenuButton(t *testing.T) {
@@ -42,10 +42,10 @@ func TestPersistentKeyboardUsesMenuButton(t *testing.T) {
 }
 
 func TestNormalizeCommandTextSupportsGroupBotMentions(t *testing.T) {
-	if got := normalizeCommandText("/menu@SooraaBot"); got != "/menu" {
+	if got := normalizeCommandText("/menu@CeraaBot"); got != "/menu" {
 		t.Fatalf("normalizeCommandText() = %q", got)
 	}
-	if got := normalizeCommandText("/schedule@SooraaBot add 30m task"); got != "/schedule add 30m task" {
+	if got := normalizeCommandText("/schedule@CeraaBot add 30m task"); got != "/schedule add 30m task" {
 		t.Fatalf("normalizeCommandText() with args = %q", got)
 	}
 }

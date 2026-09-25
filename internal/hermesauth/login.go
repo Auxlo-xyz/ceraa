@@ -135,7 +135,7 @@ func (m *LoginManager) poll(ctx context.Context, flow *LoginFlow) {
 				ClientID:      flow.clientID,
 				TokenType:     firstNonEmpty(tokenType, "Bearer"),
 				ExpiresAt:     expiryFromPayload(payload),
-				Source:        "sooraa-native",
+				Source:        "ceraa-native",
 			}
 			if credential.AccessToken == "" {
 				flow.setFailed("Token response did not include access_token")
@@ -203,7 +203,7 @@ func (f *LoginFlow) ResultMessage() string {
 	defer f.mu.RUnlock()
 	switch f.Status {
 	case "succeeded":
-		return "✅ Hermes/Nous login successful. The Sooraa Hermes provider is ready."
+		return "✅ Hermes/Nous login successful. The Ceraa Hermes provider is ready."
 	case "failed":
 		return "❌ Hermes login failed: " + f.Message
 	default:

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"sooraa/internal/secret"
+	"ceraa/internal/secret"
 )
 
 const (

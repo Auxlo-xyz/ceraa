@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"ceraa/internal/envs"
 	"context"
 	"fmt"
 	"io"
@@ -14,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"sooraa/internal/config"
-	"sooraa/internal/freebuff"
-	"sooraa/internal/hermesauth"
+	"ceraa/internal/config"
+	"ceraa/internal/freebuff"
+	"ceraa/internal/hermesauth"
 )
 
 type doctorCheck struct {
@@ -78,7 +79,7 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	// Subscription providers carry no API key in the profile; their credential
 	// is resolved from the encrypted native store at request time.
 	subscription := provider.Subscription == "hermes" || provider.Subscription == "freebuff"
-	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "") {
+	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "SOORAA_API_KEY", "OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, provider.Model)}
@@ -118,7 +119,7 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 		// so a valid token is distinguishable from an unreachable host.
 		credential, err := freebuff.NewStore().Resolve(ctx)
 		if err != nil {
-			return doctorCheck{"provider", "FAIL", "Freebuff credential: " + err.Error() + " (run: sooraa freebuff login)"}
+			return doctorCheck{"provider", "FAIL", "Freebuff credential: " + err.Error() + " (run: ceraa freebuff login)"}
 		}
 		apiKey = credential.AccessToken
 		baseURL = freebuff.DefaultAPIBaseURL
@@ -238,7 +239,7 @@ func runSetup(reader io.Reader, writer io.Writer) error {
 		reader = os.Stdin
 	}
 	input := bufio.NewReader(reader)
-	fmt.Fprintln(writer, "Sooraa setup")
+	fmt.Fprintln(writer, "Ceraa setup")
 	fmt.Fprintln(writer, "Enter only the Telegram bot token. Provider, model, API key, and allowlist are completed in Telegram onboarding.")
 	telegramToken := askSetup(input, writer, "Telegram bot token", firstNonEmpty(os.Getenv("TELEGRAM_BOT_TOKEN"), cfg.Telegram.BotToken), func(value string) error {
 		if strings.TrimSpace(value) == "" {
@@ -254,7 +255,7 @@ func runSetup(reader io.Reader, writer io.Writer) error {
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Fprintln(writer, "Telegram token saved. Run `sooraa start`, then finish onboarding in Telegram.")
+	fmt.Fprintln(writer, "Telegram token saved. Run `ceraa start`, then finish onboarding in Telegram.")
 	return nil
 }
 

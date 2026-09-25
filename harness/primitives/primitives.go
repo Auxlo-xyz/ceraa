@@ -32,7 +32,7 @@ func RunShellContext(parent context.Context, command string, workDir string, tim
 	output := newBoundedOutput(4096, 4096)
 	var file *os.File
 	var fileErr error
-	file, fileErr = os.CreateTemp("", "sooraa-shell-*.log")
+	file, fileErr = os.CreateTemp("", "ceraa-shell-*.log")
 	if fileErr == nil {
 		defer file.Close()
 	}

@@ -265,7 +265,7 @@ func resolveFromSnapshot(snapshot Snapshot, providerID string) (Credential, erro
 			}
 		}
 		if token != "" {
-			return Credential{Provider: providerID, ID: "native", AccessToken: token, RefreshToken: state.RefreshToken, BaseURL: firstNonEmpty(state.InferenceBaseURL, state.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(state.TokenType, "Bearer"), Transport: transportForProvider(providerID), PortalBaseURL: firstNonEmpty(state.PortalBaseURL, defaultNousPortalURL), ClientID: state.ClientID, TokenEndpoint: state.TokenEndpoint, ExpiresAt: expiryOr(expiresAt, token), Source: "sooraa-native"}, nil
+			return Credential{Provider: providerID, ID: "native", AccessToken: token, RefreshToken: state.RefreshToken, BaseURL: firstNonEmpty(state.InferenceBaseURL, state.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(state.TokenType, "Bearer"), Transport: transportForProvider(providerID), PortalBaseURL: firstNonEmpty(state.PortalBaseURL, defaultNousPortalURL), ClientID: state.ClientID, TokenEndpoint: state.TokenEndpoint, ExpiresAt: expiryOr(expiresAt, token), Source: "ceraa-native"}, nil
 		}
 	}
 	for _, entry := range snapshot.Pool[providerID] {

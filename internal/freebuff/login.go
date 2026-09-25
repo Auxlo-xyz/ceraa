@@ -166,7 +166,7 @@ func (f *LoginFlow) ResultMessage() string {
 	defer f.mu.RUnlock()
 	switch f.Status {
 	case "succeeded":
-		return "✅ Freebuff login successful. The Sooraa Freebuff provider is ready."
+		return "✅ Freebuff login successful. The Ceraa Freebuff provider is ready."
 	case "failed":
 		return "❌ Freebuff login failed: " + f.Message
 	default:

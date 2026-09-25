@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"sooraa/harness/compaction"
-	"sooraa/harness/contextbuilder"
-	"sooraa/harness/evaluation"
-	"sooraa/harness/goal"
-	"sooraa/harness/inbox"
-	"sooraa/harness/llm"
-	"sooraa/harness/operation"
-	"sooraa/harness/sessionstore"
-	"sooraa/harness/tool"
+	"ceraa/harness/compaction"
+	"ceraa/harness/contextbuilder"
+	"ceraa/harness/evaluation"
+	"ceraa/harness/goal"
+	"ceraa/harness/inbox"
+	"ceraa/harness/llm"
+	"ceraa/harness/operation"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/tool"
 )
 
 type RunnerConfig struct {
@@ -87,7 +87,7 @@ type Runner struct {
 
 func promptCacheKey(model llm.ProviderConfig, sessionID string) string {
 	digest := sha256.Sum256([]byte(model.BaseURL + "\x00" + model.Model + "\x00" + sessionID))
-	return fmt.Sprintf("sooraa-%x", digest)
+	return fmt.Sprintf("ceraa-%x", digest)
 }
 
 func (r *Runner) promptCacheKey() string {
@@ -114,7 +114,7 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 		cfg.GoalDir = "sessions"
 	}
 	if cfg.ToolOutputDir == "" {
-		cfg.ToolOutputDir = filepath.Join(os.TempDir(), "sooraa-tool-outputs")
+		cfg.ToolOutputDir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
 	}
 	opMgr := cfg.OperationPool
 	if opMgr == nil {
@@ -1179,7 +1179,7 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 	}
 	dir := r.cfg.ToolOutputDir
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "sooraa-tool-outputs")
+		dir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
 	}
 	safeID := filepath.Base(operationID)
 	if safeID == "." || safeID == string(filepath.Separator) || safeID == "" {

@@ -10,7 +10,7 @@ import (
 // Tracks elapsed time for running tools, tick every 10s, max 2h
 
 const (
-	Threshold = 10 * time.Second
+	Threshold   = 10 * time.Second
 	MaxDuration = 2 * time.Hour
 )
 

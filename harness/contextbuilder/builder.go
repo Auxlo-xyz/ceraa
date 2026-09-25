@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"sooraa/harness/llm"
-	"sooraa/harness/sessionstore"
+	"ceraa/harness/llm"
+	"ceraa/harness/sessionstore"
 )
 
 const maxTotalTokens = 236000 // 256k - safety margin

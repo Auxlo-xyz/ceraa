@@ -1,5 +1,5 @@
 package main
 
-import "sooraa/cmd"
+import "ceraa/cmd"
 
 func main() { cmd.Execute() }

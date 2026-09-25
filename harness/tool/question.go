@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"sooraa/harness/operation"
-	"sooraa/harness/question"
+	"ceraa/harness/operation"
+	"ceraa/harness/question"
 )
 
 // QuestionTool asks user a question with buttons, maps to soraacode tool/question.ts + question-manager

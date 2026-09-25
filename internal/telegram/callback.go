@@ -10,16 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"sooraa/harness/memory"
-	"sooraa/harness/permission"
-	"sooraa/harness/question"
-	"sooraa/harness/scheduler"
-	"sooraa/harness/skills"
-	"sooraa/harness/todo"
-	"sooraa/harness/tool"
-	"sooraa/internal/config"
-	"sooraa/internal/logger"
-	"sooraa/internal/telegram/menus"
+	"ceraa/harness/memory"
+	"ceraa/harness/permission"
+	"ceraa/harness/question"
+	"ceraa/harness/scheduler"
+	"ceraa/harness/skills"
+	"ceraa/harness/todo"
+	"ceraa/harness/tool"
+	"ceraa/internal/config"
+	"ceraa/internal/logger"
+	"ceraa/internal/telegram/menus"
 )
 
 func answerCallback(token, id string) {

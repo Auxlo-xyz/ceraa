@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// SessionManager owns Sooraa's single hosted Freebuff session: the thing that
+// SessionManager owns Ceraa's single hosted Freebuff session: the thing that
 // actually grants quota.
 //
-// Sooraa is one long-lived process for one Telegram account, so it uses the CLI's
+// Ceraa is one long-lived process for one Telegram account, so it uses the CLI's
 // single-session profile rather than Desktop's multi-session protocol: no
 // cli:-prefixed instance ids, no purchase continuity, no attempt ids, and no
 // takeover. It still sends a plain instance id on GET/DELETE so the server can
@@ -69,7 +69,7 @@ func newInstanceID() string {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		// Fall back to a time-based id; uniqueness within one host is enough.
-		return fmt.Sprintf("sooraa-%x", time.Now().UnixNano())
+		return fmt.Sprintf("ceraa-%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
 }

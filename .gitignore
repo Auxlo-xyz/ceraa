@@ -2,7 +2,7 @@
 .env
 .env.*
 *.env
-!sooraa.env.example
+!ceraa.env.example
 *.local
 
 # Build/local artifacts

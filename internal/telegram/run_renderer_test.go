@@ -348,7 +348,7 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	defer pinned.close()
 	pinned.Init()
 	renderer := newRunRenderer("token", 42, pinned)
-	renderer.tool("read-1", "🔄 📚 Read file · /workspace/sooraa")
+	renderer.tool("read-1", "🔄 📚 Read file · /workspace/ceraa")
 	renderer.tool("read-1", "✅ 📚 Read file completed")
 	renderer.finish("Done")
 	renderer.close()
@@ -387,11 +387,11 @@ func TestRunRendererStopCancelsTheRun(t *testing.T) {
 }
 
 func TestToolActivityIsReadableAndRedacted(t *testing.T) {
-	summary := toolArgsSummary("read", map[string]any{"args": `{"path":"/workspace/sooraa/.env"}`})
-	if summary != " · /workspace/sooraa/.env" {
+	summary := toolArgsSummary("read", map[string]any{"args": `{"path":"/workspace/ceraa/.env"}`})
+	if summary != " · /workspace/ceraa/.env" {
 		t.Fatalf("tool argument summary = %q", summary)
 	}
-	if got := formatToolStatus("🔄 📚 Read file · /workspace/sooraa"); got != "📚 Read file · /workspace/sooraa" {
+	if got := formatToolStatus("🔄 📚 Read file · /workspace/ceraa"); got != "📚 Read file · /workspace/ceraa" {
 		t.Fatalf("running tool status = %q", got)
 	}
 	if got := formatToolStatus("🔄 >_ Run command · ls"); got != ">_ Run command · ls" {

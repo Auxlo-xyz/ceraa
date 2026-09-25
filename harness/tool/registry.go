@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"ceraa/internal/envs"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"sooraa/harness/memory"
-	"sooraa/harness/operation"
-	"sooraa/harness/skills"
+	"ceraa/harness/memory"
+	"ceraa/harness/operation"
+	"ceraa/harness/skills"
 )
 
 // Tool is a capability with a schema and translator.
@@ -341,7 +342,7 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&UpdateGoalTool{})
 
 	// WebSearch with config from env
-	provider := os.Getenv("SOORAA_WEBSEARCH_PROVIDER")
+	provider := envs.Get("WEBSEARCH_PROVIDER")
 	apiKey := os.Getenv("EXA_API_KEY")
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")

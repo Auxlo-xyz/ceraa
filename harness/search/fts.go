@@ -78,9 +78,9 @@ func (idx *Index) DB() *sql.DB { return idx.db }
 func DefaultPath() string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
-		return ".sooraa-index.db"
+		return ".ceraa-index.db"
 	}
-	return filepath.Join(home, ".cache", "sooraa", "index.db")
+	return filepath.Join(home, ".cache", "ceraa", "index.db")
 }
 
 func ProjectIndexPath(workspaceRoot, projectRoot string) string {
@@ -93,7 +93,7 @@ func ProjectIndexPath(workspaceRoot, projectRoot string) string {
 		project = projectRoot
 	}
 	hash := sha256.Sum256([]byte(project))
-	return filepath.Join(workspace, ".sooraa", "index", hex.EncodeToString(hash[:])+".db")
+	return filepath.Join(workspace, ".ceraa", "index", hex.EncodeToString(hash[:])+".db")
 }
 
 // IndexFile indexes a single file. Content is the full file text.
@@ -213,7 +213,7 @@ func (idx *Index) IndexDir(root string) (int, error) {
 
 func ignoredDirectory(name string) bool {
 	switch name {
-	case ".git", ".cache", "node_modules", "bin", ".sooraa", ".venv", "vendor", "dist", "build":
+	case ".git", ".cache", "node_modules", "bin", ".ceraa", ".venv", "vendor", "dist", "build":
 		return true
 	default:
 		return false

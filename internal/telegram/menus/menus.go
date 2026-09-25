@@ -1,6 +1,15 @@
 package menus
 
 import (
+	"ceraa/harness/llm"
+	"ceraa/harness/memory"
+	"ceraa/harness/scheduler"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/skills"
+	"ceraa/harness/todo"
+	"ceraa/harness/tool"
+	"ceraa/internal/config"
+	"ceraa/internal/paths"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,15 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"sooraa/harness/llm"
-	"sooraa/harness/memory"
-	"sooraa/harness/scheduler"
-	"sooraa/harness/sessionstore"
-	"sooraa/harness/skills"
-	"sooraa/harness/todo"
-	"sooraa/harness/tool"
-	"sooraa/internal/config"
 )
 
 var All = []string{
@@ -40,8 +40,7 @@ type runtimeState struct {
 }
 
 func runtimeValues() runtimeState {
-	home, _ := os.UserHomeDir()
-	data, _ := os.ReadFile(filepath.Join(home, ".config", "sooraa", "bridge-state.json"))
+	data, _ := os.ReadFile(filepath.Join(paths.DataDir(), "bridge-state.json"))
 	var state runtimeState
 	_ = json.Unmarshal(data, &state)
 	return state

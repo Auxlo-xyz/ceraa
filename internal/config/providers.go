@@ -1,13 +1,14 @@
 package config
 
 import (
+	"ceraa/internal/envs"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
 
 // ResolveProvider resolves a provider's settings with env var overrides.
-// Env format: SOORAA_<KEY>_API_KEY, SOORAA_<KEY>_CLI
+// Env format: CERAA_<KEY>_API_KEY, CERAA_<KEY>_CLI (SOORAA_<KEY>_* still read)
 // Supported keys: "opencode", "hermes", "codex", "poolside", "freebuff"
 //
 // Freebuff has no CLI binary, so no CLIPath is resolved for it. Its hosted API
@@ -26,14 +27,14 @@ func ResolveProvider(key string) (SubProvider, bool) {
 		p = SubProvider{Kind: key}
 	}
 
-	// Env prefix: SOORAA_OPENCODE_, SOORAA_HERMES_, SOORAA_CODEX_
-	envPrefix := "SOORAA_" + upper(key) + "_"
-
-	if k := os.Getenv(envPrefix + "API_KEY"); k != "" {
+	// Env prefix: CERAA_OPENCODE_, CERAA_HERMES_, CERAA_CODEX_
+	// The legacy prefix is still honoured so an existing deployment keeps
+	// working after the rename.
+	if k := envs.Get(upper(key) + "_API_KEY"); k != "" {
 		p.APIKey = k
 	}
 
-	if c := os.Getenv(envPrefix + "CLI"); c != "" {
+	if c := envs.Get(upper(key) + "_CLI"); c != "" {
 		p.CLIPath = c
 	}
 

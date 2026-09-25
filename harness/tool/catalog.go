@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"sooraa/harness/operation"
+	"ceraa/harness/operation"
 )
 
 // SkillsCatalogTool lists available skills, maps to soraacode skill/discovery.ts + skill/guidance.ts
@@ -126,7 +126,7 @@ func (r *CatalogRunner) Run(spec operation.Spec) (string, error) {
 		}
 		return out.String(), nil
 	case "mcp_catalog":
-		// Sooraa has no MCP servers yet, maps to soraacode config/mcp.ts
+		// Ceraa has no MCP servers yet, maps to soraacode config/mcp.ts
 		return "No MCP servers configured. Add to config.json mcp section. (soraacode has mcp-websearch, etc.)", nil
 	}
 	return "", fmt.Errorf("unknown catalog type: %s", spec.Type)

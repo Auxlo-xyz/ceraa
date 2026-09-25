@@ -9,26 +9,26 @@ import (
 type Type string
 
 const (
-	TypeThinking   Type = "thinking"
-	TypePermission Type = "permission"
-	TypeQuestion   Type = "question"
-	TypeCost       Type = "cost"
-	TypeTokens     Type = "tokens"
-	TypeToolStart  Type = "tool_start"
-	TypeToolEnd    Type = "tool_end"
-	TypeComplete   Type = "complete"
-	TypeError      Type = "error"
-	TypeCompact    Type = "compact"
-	TypeSubagent   Type = "subagent"
+	TypeThinking        Type = "thinking"
+	TypePermission      Type = "permission"
+	TypeQuestion        Type = "question"
+	TypeCost            Type = "cost"
+	TypeTokens          Type = "tokens"
+	TypeToolStart       Type = "tool_start"
+	TypeToolEnd         Type = "tool_end"
+	TypeComplete        Type = "complete"
+	TypeError           Type = "error"
+	TypeCompact         Type = "compact"
+	TypeSubagent        Type = "subagent"
 	TypeCompactProgress Type = "compact_progress"
 )
 
 // Event is a harness event streamed to bridge, mirrors soraacode event-subscription-service
 type Event struct {
-	Type      Type            `json:"type"`
-	SessionID string          `json:"session_id"`
-	Data      map[string]any  `json:"data"`
-	Time      time.Time       `json:"time"`
+	Type      Type           `json:"type"`
+	SessionID string         `json:"session_id"`
+	Data      map[string]any `json:"data"`
+	Time      time.Time      `json:"time"`
 }
 
 // Bus is an SSE-like in-memory event bus with reconnect support

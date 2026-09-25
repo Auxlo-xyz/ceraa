@@ -1,14 +1,25 @@
 package config
 
 import (
+	"ceraa/internal/envs"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"ceraa/internal/paths"
 )
 
-// Config holds all sooraa settings.
+// env reads a Ceraa setting from the environment.
+//
+// CERAA_* is canonical and SOORAA_* is still honoured as a fallback; see
+// internal/envs for the single definition of that rule.
+func env(name string) string {
+	return envs.Get(name)
+}
+
+// Config holds all Ceraa settings.
 type Config struct {
 	LLM                      LLMProvider                `json:"llm"`
 	ProviderProfiles         map[string]ProviderProfile `json:"provider_profiles,omitempty"`
@@ -89,14 +100,12 @@ func defaultWorkspaceRoot() string {
 	if workingDirectory, err := os.Getwd(); err == nil {
 		return filepath.Join(workingDirectory, "workspace")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "sooraa", "workspace")
+	return paths.DefaultWorkspaceRoot()
 }
 
 // DefaultConfig returns the base defaults before env/file overrides.
 func DefaultConfig() *Config {
-	home, _ := os.UserHomeDir()
-	base := filepath.Join(home, ".config", "sooraa")
+	base := paths.DataDir()
 	return &Config{
 		LLM:                      LLMProvider{ContextLimit: 236000, MaxOutputTokens: 8192, PromptCacheMode: "auto"},
 		ProviderProfiles:         map[string]ProviderProfile{},
@@ -198,86 +207,86 @@ func Load() (*Config, error) {
 	}
 
 	// Env overrides
-	if v := os.Getenv("SOORAA_PROVIDER"); v != "" {
+	if v := env("PROVIDER"); v != "" {
 		cfg.ActiveProvider = v
 	}
-	if v := os.Getenv("SOORAA_API_URL"); v != "" {
+	if v := env("API_URL"); v != "" {
 		cfg.LLM.URL = v
 	}
-	if v := os.Getenv("SOORAA_MODEL"); v != "" {
+	if v := env("MODEL"); v != "" {
 		cfg.LLM.Model = v
 	}
-	if v := os.Getenv("SOORAA_API_KEY"); v != "" {
+	if v := env("API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
-	if v := os.Getenv("SOORAA_CONTEXT_LIMIT"); v != "" {
+	if v := env("CONTEXT_LIMIT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.LLM.ContextLimit = n
 		}
 	}
-	if v := os.Getenv("SOORAA_MAX_OUTPUT_TOKENS"); v != "" {
+	if v := env("MAX_OUTPUT_TOKENS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.LLM.MaxOutputTokens = n
 		}
 	}
-	if v := os.Getenv("SOORAA_PROMPT_CACHE_MODE"); v != "" {
+	if v := env("PROMPT_CACHE_MODE"); v != "" {
 		cfg.LLM.PromptCacheMode = v
 	}
-	if v := os.Getenv("SOORAA_PROMPT_CACHE_TTL"); v != "" {
+	if v := env("PROMPT_CACHE_TTL"); v != "" {
 		cfg.LLM.PromptCacheTTL = v
 	}
-	if v := os.Getenv("SOORAA_SUBSCRIPTION"); v != "" {
+	if v := env("SUBSCRIPTION"); v != "" {
 		cfg.LLM.Subscription = v
 	}
-	if v := os.Getenv("SOORAA_HERMES_PROVIDER"); v != "" {
+	if v := env("HERMES_PROVIDER"); v != "" {
 		cfg.LLM.HermesProvider = v
 	}
-	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {
+	if v := env("SESSION_FILE"); v != "" {
 		cfg.SessionFile = v
 	}
-	if v := os.Getenv("SOORAA_WORKSPACE_ROOT"); v != "" {
+	if v := env("WORKSPACE_ROOT"); v != "" {
 		cfg.WorkspaceRoot = v
 	}
-	if v := os.Getenv("SOORAA_TOOL_OUTPUT_DIR"); v != "" {
+	if v := env("TOOL_OUTPUT_DIR"); v != "" {
 		cfg.ToolOutputDir = v
 	}
-	if v := os.Getenv("SOORAA_MAX_TOOL_RESULT_CHARS"); v != "" {
+	if v := env("MAX_TOOL_RESULT_CHARS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxToolResultChars = n
 		}
 	}
-	if v := os.Getenv("SOORAA_MAX_CONCURRENT_TOOLS"); v != "" {
+	if v := env("MAX_CONCURRENT_TOOLS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxConcurrentTools = n
 		}
 	}
-	if v := os.Getenv("SOORAA_MODEL_CATALOG_URL"); v != "" {
+	if v := env("MODEL_CATALOG_URL"); v != "" {
 		cfg.ModelCatalogURL = v
 	}
-	if v := os.Getenv("SOORAA_MODEL_CATALOG_CACHE"); v != "" {
+	if v := env("MODEL_CATALOG_CACHE"); v != "" {
 		cfg.ModelCatalogCache = v
 	}
-	if v := os.Getenv("SOORAA_MODEL_CATALOG_REFRESH_HOURS"); v != "" {
+	if v := env("MODEL_CATALOG_REFRESH_HOURS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.ModelCatalogRefreshHours = n
 		}
 	}
-	if v := os.Getenv("SOORAA_TITLE_API_URL"); v != "" {
+	if v := env("TITLE_API_URL"); v != "" {
 		cfg.TitleAPIURL = v
 	}
-	if v := os.Getenv("SOORAA_TITLE_MODEL"); v != "" {
+	if v := env("TITLE_MODEL"); v != "" {
 		cfg.TitleModel = v
 	}
-	if v := os.Getenv("SOORAA_MEMORY_FILE"); v != "" {
+	if v := env("MEMORY_FILE"); v != "" {
 		cfg.MemoryFile = v
 	}
-	if v := os.Getenv("SOORAA_SKILL_FILE"); v != "" {
+	if v := env("SKILL_FILE"); v != "" {
 		cfg.SkillFile = v
 	}
-	if v := os.Getenv("SOORAA_EVALUATION_FILE"); v != "" {
+	if v := env("EVALUATION_FILE"); v != "" {
 		cfg.EvaluationFile = v
 	}
-	if v := os.Getenv("SOORAA_SCHEDULER_FILE"); v != "" {
+	if v := env("SCHEDULER_FILE"); v != "" {
 		cfg.SchedulerFile = v
 	}
 
@@ -311,11 +320,7 @@ func Save(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve home: %w", err)
-	}
-	path := filepath.Join(home, ".config", "sooraa", "config.json")
+	path := filepath.Join(paths.DataDir(), "config.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
@@ -356,11 +361,9 @@ func Save(cfg *Config) error {
 	return nil
 }
 
+// candidatePaths lists config.json locations in precedence order. The legacy
+// locations are appended so an install that has not been moved still finds its
+// config, and a Ceraa config always takes precedence over a pre-rename one.
 func candidatePaths() []string {
-	home, _ := os.UserHomeDir()
-	return []string{
-		filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "sooraa", "config.json"),
-		filepath.Join(home, ".config", "sooraa", "config.json"),
-		"./sooraa.json",
-	}
+	return paths.ConfigCandidates()
 }

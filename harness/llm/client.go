@@ -5,13 +5,13 @@ package llm
 import (
 	"bufio"
 	"bytes"
+	"ceraa/internal/envs"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +34,7 @@ type ProviderConfig struct {
 	ExtraBody map[string]any
 	// ExtraBodyFunc is evaluated per request, for metadata that must carry a
 	// fresh correlation id on every call. Its result is merged after ExtraBody
-	// and is likewise never allowed to shadow a field Sooraa owns.
+	// and is likewise never allowed to shadow a field Ceraa owns.
 	ExtraBodyFunc func() map[string]any
 	// ExtraHeaders are added to every request. Used for provider-required
 	// client identification.
@@ -74,12 +74,9 @@ func DefaultConfig() ProviderConfig {
 
 // FromEnv reads provider config from environment.
 func FromEnv() ProviderConfig {
-	api := os.Getenv("SOORAA_API_URL")
-	key := os.Getenv("SOORAA_API_KEY")
-	if key == "" {
-		key = os.Getenv("OPENAI_API_KEY")
-	}
-	model := os.Getenv("SOORAA_MODEL")
+	api := envs.Get("API_URL")
+	key := envs.GetWith("CERAA_API_KEY", "SOORAA_API_KEY", "OPENAI_API_KEY")
+	model := envs.Get("MODEL")
 	return ProviderConfig{
 		BaseURL:    api,
 		APIKey:     key,
@@ -646,7 +643,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 	for key, value := range extras {
 		if _, reserved := body[key]; reserved {
-			// Never let a provider extra shadow a field Sooraa owns.
+			// Never let a provider extra shadow a field Ceraa owns.
 			continue
 		}
 		body[key] = value
