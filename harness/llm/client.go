@@ -13,9 +13,12 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"ceraa/internal/paths"
 )
 
 type ProviderConfig struct {
@@ -722,9 +725,13 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// error alone, so record what this request actually carried.
 	if c.cfg.GeminiThoughtSignatures {
 		stats := geminiSignatureStats(req.Messages)
-		fmt.Fprintf(os.Stderr,
-			"ceraa: gemini-thought-signatures model=%s items=%d signed_calls=%d sentinel_calls=%d tool_messages_marked=%d\n",
+		note := fmt.Sprintf("gemini-thought-signatures model=%s items=%d signed_calls=%d sentinel_calls=%d tool_messages_marked=%d\n",
 			c.cfg.Model, len(req.Messages), stats.signed, stats.sentinel, stats.toolMarked)
+		// Written to the data log as well as stderr: a CLI run's stderr belongs to
+		// whatever terminal launched it, so a file is the only place a diagnostic
+		// can be read from afterwards.
+		fmt.Fprint(os.Stderr, "ceraa: "+note)
+		writeDebugNote("gemini.log", note)
 	}
 
 	encoded, err := json.Marshal(body)
@@ -1035,6 +1042,21 @@ func toolCallNames(items []Item) map[string]string {
 		}
 	}
 	return names
+}
+
+// writeDebugNote appends a diagnostic line to the data directory's log folder.
+// Failures are ignored: a diagnostic must never break a request.
+func writeDebugNote(name, line string) {
+	dir := filepath.Join(paths.DataDir(), "logs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprint(f, time.Now().Format(time.RFC3339)+" "+line)
 }
 
 // geminiSignatureStats summarises how signatures were applied to a request, for
