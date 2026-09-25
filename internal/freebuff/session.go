@@ -32,6 +32,11 @@ type SessionManager struct {
 	// thread the credential back in.
 	token string
 	model string
+	// runID is the id the hosted completions route resolves against, obtained
+	// from the run-registration endpoint. It is cached per model and cleared
+	// whenever the session is invalidated, because a new session needs a new run.
+	runID    string
+	runModel string
 	// generation invalidates in-flight ticks after a model change.
 	generation int
 	cancel     context.CancelFunc
@@ -258,7 +263,35 @@ func (m *SessionManager) Stop(ctx context.Context, token string) {
 func (m *SessionManager) Invalidate() {
 	m.mu.Lock()
 	m.session = SessionResponse{Status: "invalidated"}
+	// The cached run belongs to the dead session, so it must not be reused.
+	m.runID = ""
+	m.runModel = ""
 	m.mu.Unlock()
+}
+
+// EnsureRun returns the hosted run id for a model, registering one on first use.
+//
+// The completions route looks run_id up server-side and rejects an unknown one
+// with 400 "runId Not Found", so a client cannot mint its own. The id is cached
+// for the life of the session and re-registered when the session changes.
+func (m *SessionManager) EnsureRun(ctx context.Context, token, model string) (string, error) {
+	m.mu.Lock()
+	if m.runID != "" && m.runModel == model {
+		runID := m.runID
+		m.mu.Unlock()
+		return runID, nil
+	}
+	m.mu.Unlock()
+
+	runID, err := m.client.StartRun(ctx, token, AgentIDForModel(model))
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	m.runID = runID
+	m.runModel = model
+	m.mu.Unlock()
+	return runID, nil
 }
 
 func (m *SessionManager) adopt(session SessionResponse) {

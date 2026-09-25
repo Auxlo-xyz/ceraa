@@ -61,31 +61,42 @@ const idPrefix = "ceraa-"
 const capacityDeferredCode = "free_mode_capacity_deferred"
 
 // MetadataBuilder produces the codebuff_metadata block hosted completions
-// require. run_id identifies a run and stays stable for the life of the builder;
-// client_id is fresh per request.
+// require. run_id must be a run the server has actually registered, so it is
+// supplied by SetRunID rather than minted locally; client_id is fresh per
+// request. A builder with no registered run emits an empty run_id, which the
+// completions route rejects, so callers must set one before streaming.
 type MetadataBuilder struct {
 	mu    sync.Mutex
 	runID string
 }
 
-// NewMetadataBuilder starts a builder with a fresh run id.
-func NewMetadataBuilder() *MetadataBuilder {
-	return &MetadataBuilder{runID: newCorrelationID()}
+// NewMetadataBuilder returns a builder with no registered run yet.
+func NewMetadataBuilder() *MetadataBuilder { return &MetadataBuilder{} }
+
+// SetRunID installs the run id returned by the run-registration endpoint.
+func (b *MetadataBuilder) SetRunID(runID string) {
+	b.mu.Lock()
+	b.runID = runID
+	b.mu.Unlock()
 }
 
-// ResetRun rotates the run id, used when a run ends.
+// HasRun reports whether a server-registered run id is installed.
+func (b *MetadataBuilder) HasRun() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.runID != ""
+}
+
+// ResetRun clears the run id, used when a session ends and a new one is admitted.
 func (b *MetadataBuilder) ResetRun() {
 	b.mu.Lock()
-	b.runID = newCorrelationID()
+	b.runID = ""
 	b.mu.Unlock()
 }
 
 func (b *MetadataBuilder) currentRunID() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.runID == "" {
-		b.runID = newCorrelationID()
-	}
 	return b.runID
 }
 

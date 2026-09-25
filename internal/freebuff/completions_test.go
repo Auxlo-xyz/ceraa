@@ -14,6 +14,7 @@ import (
 // free.
 func TestMetadataBodyShape(t *testing.T) {
 	builder := NewMetadataBuilder()
+	builder.SetRunID("run-registered-1")
 	body := builder.Body("inst-1")
 	raw, ok := body["codebuff_metadata"]
 	if !ok {
@@ -29,14 +30,11 @@ func TestMetadataBodyShape(t *testing.T) {
 	if metadata["cost_mode"] != "free" {
 		t.Fatalf("cost_mode = %v, want free", metadata["cost_mode"])
 	}
-	for _, key := range []string{"run_id", "client_id"} {
-		value, _ := metadata[key].(string)
-		if value == "" {
-			t.Fatalf("%s is missing", key)
-		}
-		if !strings.HasPrefix(value, idPrefix) {
-			t.Fatalf("%s = %q, want the %q prefix", key, value, idPrefix)
-		}
+	if metadata["run_id"] != "run-registered-1" {
+		t.Fatalf("run_id = %v, want the registered run", metadata["run_id"])
+	}
+	if value, _ := metadata["client_id"].(string); !strings.HasPrefix(value, idPrefix) {
+		t.Fatalf("client_id = %q, want the %q prefix", value, idPrefix)
 	}
 }
 
@@ -44,6 +42,7 @@ func TestMetadataBodyShape(t *testing.T) {
 // is never reused, while the run id stays stable for the life of a run.
 func TestMetadataClientIDIsFreshPerRequest(t *testing.T) {
 	builder := NewMetadataBuilder()
+	builder.SetRunID("run-registered-1")
 	seen := map[string]bool{}
 	var runID string
 	for i := 0; i < 5; i++ {
@@ -63,9 +62,20 @@ func TestMetadataClientIDIsFreshPerRequest(t *testing.T) {
 		}
 	}
 	builder.ResetRun()
-	metadata := builder.Body("inst-1")["codebuff_metadata"].(map[string]any)
-	if metadata["run_id"] == runID {
-		t.Fatal("ResetRun must rotate the run id")
+	if builder.HasRun() {
+		t.Fatal("ResetRun must clear the run id")
+	}
+	if got := builder.Body("inst-1")["codebuff_metadata"].(map[string]any)["run_id"]; got != "" {
+		t.Fatalf("run_id after reset = %v, want empty so a stale run is never sent", got)
+	}
+}
+
+// TestBuilderStartsWithoutARun pins that a run id must be registered, never
+// minted locally: the completions route rejects an unknown run.
+func TestBuilderStartsWithoutARun(t *testing.T) {
+	builder := NewMetadataBuilder()
+	if builder.HasRun() {
+		t.Fatal("a fresh builder must not carry a run id")
 	}
 }
 
@@ -73,6 +83,7 @@ func TestMetadataClientIDIsFreshPerRequest(t *testing.T) {
 // confused with the reference's own published proxy generator.
 func TestMetadataClientIDAvoidsReservedPrefix(t *testing.T) {
 	builder := NewMetadataBuilder()
+	builder.SetRunID("run-registered-1")
 	for i := 0; i < 20; i++ {
 		clientID := builder.Body("i")["codebuff_metadata"].(map[string]any)["client_id"].(string)
 		if strings.HasPrefix(clientID, "wf-") {
