@@ -6,13 +6,51 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 )
 
-// completionsUserAgent mirrors the UA the Freebuff SDK sends on hosted
-// completions. It identifies the client stack, not the Freebuff CLI: the
-// official CLI's own "Freebuff-CLI/<version>" UA is deliberately NOT sent.
-const completionsUserAgent = "ai-sdk/openai-compatible/1.0/sooraa"
+// cliUserAgentProduct is the product token the official Freebuff CLI sends, in
+// the exact RFC 7231 form the server's normalizer expects: product/version.
+// The server lowercases the product and keeps the version only when it looks
+// like a version, so both halves are shaped deliberately.
+//
+// The operator has chosen to identify as the official CLI so Sooraa's traffic is
+// not treated as an unrecognized client. That is a deliberate trade: it means a
+// version string here is a claim about which client is talking, so keep
+// cliUserAgentVersion honest and overridable rather than hardcoded to a value
+// that silently rots.
+const cliUserAgentProduct = "Freebuff-CLI"
+
+// DefaultCLIVersion is the Freebuff CLI release this integration tracks. It is
+// overridable with SOORAA_FREEBUFF_CLI_VERSION.
+const DefaultCLIVersion = "0.0.197"
+
+// cliUserAgentVersion resolves the version to advertise. The server drops a
+// version that is not version-shaped or is longer than 16 characters, so an
+// unparseable override falls back to the tracked default rather than sending a
+// value that would be discarded.
+func cliUserAgentVersion() string {
+	override := strings.TrimSpace(os.Getenv("SOORAA_FREEBUFF_CLI_VERSION"))
+	if override == "" {
+		return DefaultCLIVersion
+	}
+	if len(override) > 16 || !versionPattern.MatchString(override) {
+		return DefaultCLIVersion
+	}
+	return override
+}
+
+// versionPattern mirrors the server's VERSION_RE: a leading digit followed by
+// dotted/alphanumeric parts.
+var versionPattern = regexp.MustCompile(`^\d[0-9A-Za-z.+-]*$`)
+
+// completionsUserAgent is the User-Agent sent on hosted completions.
+func completionsUserAgent() string {
+	return cliUserAgentProduct + "/" + cliUserAgentVersion()
+}
 
 // idPrefix namespaces Sooraa's correlation ids. The reference reserves the
 // "wf-" prefix for its own published proxy generator, so a distinct prefix keeps
@@ -81,7 +119,7 @@ func (b *MetadataBuilder) Body(instanceID string) map[string]any {
 
 // Headers returns the provider-required request headers.
 func (b *MetadataBuilder) Headers() map[string]string {
-	return map[string]string{"user-agent": completionsUserAgent}
+	return map[string]string{"user-agent": completionsUserAgent()}
 }
 
 // MakeRecoverError returns a hook for ProviderConfig.RecoverError that turns a

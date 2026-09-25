@@ -81,16 +81,48 @@ func TestMetadataClientIDAvoidsReservedPrefix(t *testing.T) {
 	}
 }
 
-// TestUserAgentDoesNotImpersonateCLI pins that the official CLI's user agent is
-// never forged.
-func TestUserAgentDoesNotImpersonateCLI(t *testing.T) {
-	headers := NewMetadataBuilder().Headers()
-	ua := headers["user-agent"]
-	if strings.Contains(strings.ToLower(ua), "freebuff-cli") {
-		t.Fatalf("user agent %q impersonates the Freebuff CLI", ua)
+// TestUserAgentMatchesOfficialCLI pins the exact RFC 7231 form the server's
+// normalizer expects: product/version, with a version-shaped second half. The
+// operator chose to identify as the official CLI so Sooraa is not treated as an
+// unrecognized client.
+func TestUserAgentMatchesOfficialCLI(t *testing.T) {
+	ua := NewMetadataBuilder().Headers()["user-agent"]
+	if !strings.HasPrefix(ua, cliUserAgentProduct+"/") {
+		t.Fatalf("user agent %q must start with %q", ua, cliUserAgentProduct+"/")
 	}
-	if !strings.Contains(ua, "sooraa") {
-		t.Fatalf("user agent %q should identify Sooraa", ua)
+	product, version, found := strings.Cut(ua, "/")
+	if !found {
+		t.Fatalf("user agent %q has no version", ua)
+	}
+	// The server lowercases the product before recording it, so only
+	// [a-z0-9._-] may appear.
+	if got := strings.ToLower(product); strings.Trim(got, "abcdefghijklmnopqrstuvwxyz0123456789._-") != "" {
+		t.Fatalf("product %q has characters the server strips", product)
+	}
+	// A version is only kept when it is version-shaped and <=16 chars, so an
+	// over-long value would be silently discarded and read as "unknown version".
+	if len(version) > 16 || !versionPattern.MatchString(version) {
+		t.Fatalf("version %q would be discarded by the server normalizer", version)
+	}
+}
+
+// TestUserAgentVersionIsOverridable pins that the advertised version is a
+// deliberate, version-shaped value rather than a hardcoded constant.
+func TestUserAgentVersionIsOverridable(t *testing.T) {
+	t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "1.2.3")
+	if got := cliUserAgentVersion(); got != "1.2.3" {
+		t.Fatalf("version = %q, want the override", got)
+	}
+	// A value the server would discard falls back rather than being sent.
+	for _, bad := range []string{"dev-branch-name-that-is-long", "notaversion", "12345678901234567890"} {
+		t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", bad)
+		if got := cliUserAgentVersion(); got != DefaultCLIVersion {
+			t.Fatalf("version for %q = %q, want the default fallback", bad, got)
+		}
+	}
+	t.Setenv("SOORAA_FREEBUFF_CLI_VERSION", "")
+	if got := cliUserAgentVersion(); got != DefaultCLIVersion {
+		t.Fatalf("empty override = %q, want the default", got)
 	}
 }
 
