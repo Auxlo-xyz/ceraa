@@ -164,3 +164,76 @@ func TestReadStreamRejectsMalformedOrUnterminatedData(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", got)
 	}
 }
+
+// TestToolResultNameIsAlwaysSent pins the fix for a provider that rejects a
+// tool result with no name. Gemini translates a tool message into a
+// function_response part and fails the whole request with
+// "function_response.name: Name cannot be empty", so an omitted name is not a
+// cosmetic difference: it costs the entire run.
+func TestToolResultNameIsAlwaysSent(t *testing.T) {
+	compatibility := defaultCompatibility()
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "run it"},
+		{Kind: "tool_calls", ToolCalls: []ToolCall{{ID: "call-1", Name: "bash", Args: "{}"}}},
+		// The stored result lost its name; it must be recovered from the call.
+		{Kind: "text", Role: RoleTool, CallID: "call-1", Output: "done"},
+		// Neither the item nor a matching call knows the name.
+		{Kind: "text", Role: RoleTool, CallID: "call-2", Output: "done"},
+		{Kind: "text", Role: RoleTool, CallID: "###", Output: "done"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, false, compatibility)
+	var toolNames []string
+	for _, msg := range msgs {
+		if msg["role"] == string(RoleTool) {
+			name, _ := msg["name"].(string)
+			toolNames = append(toolNames, name)
+		}
+	}
+	if len(toolNames) != 3 {
+		t.Fatalf("encoded %d tool messages, want 3", len(toolNames))
+	}
+	if toolNames[0] != "bash" {
+		t.Fatalf("name recovered from the call = %q, want bash", toolNames[0])
+	}
+	for i, name := range toolNames {
+		if strings.TrimSpace(name) == "" {
+			t.Fatalf("tool message %d has an empty name: %q", i, name)
+		}
+	}
+	// Distinct calls must not collapse to the same placeholder.
+	if toolNames[1] == toolNames[2] {
+		t.Fatalf("distinct calls produced the same fallback name %q", toolNames[1])
+	}
+}
+
+// TestToolResultNameOmittedWhenNotRequired pins that a provider which does not
+// need the field still gets no name, so this does not change other providers.
+func TestToolResultNameOmittedWhenNotRequired(t *testing.T) {
+	compatibility := defaultCompatibility()
+	compatibility.RequiresToolResultName = false
+	msgs := encodeMessagesWithCompatibility([]Item{
+		{Kind: "text", Role: RoleTool, CallID: "call-1", Name: "bash", Output: "ok"},
+	}, false, compatibility)
+	if _, present := msgs[0]["name"]; present {
+		t.Fatalf("name should be omitted when not required: %v", msgs[0])
+	}
+}
+
+// TestFallbackToolResultName pins the placeholder shape: non-empty, and limited
+// to characters providers accept in a function name.
+func TestFallbackToolResultName(t *testing.T) {
+	if got := fallbackToolResultName(""); got != "tool" {
+		t.Fatalf("empty call id = %q, want tool", got)
+	}
+	if got := fallbackToolResultName("###"); got != "tool" {
+		t.Fatalf("no usable characters = %q, want tool", got)
+	}
+	got := fallbackToolResultName("call-abc_123")
+	if got != "tool_callabc_123" {
+		t.Fatalf("got %q, want the call id with unsafe characters dropped", got)
+	}
+	long := strings.Repeat("a", 200)
+	if len(fallbackToolResultName(long)) > 45 {
+		t.Fatal("fallback name must be bounded")
+	}
+}

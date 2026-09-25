@@ -425,6 +425,9 @@ func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any
 
 func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool, compatibility Compatibility) []map[string]any {
 	items = normalizeItemsForChat(items)
+	// Resolve tool-call names up front so a tool result can always name the call
+	// it answers, even when the stored message lost the name.
+	callNames := toolCallNames(items)
 	msgs := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		switch item.Kind {
@@ -444,8 +447,19 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 					output = "No output was produced."
 				}
 				msg["content"] = output
-				if item.Name != "" && compatibility.RequiresToolResultName {
-					msg["name"] = item.Name
+				if compatibility.RequiresToolResultName {
+					// Some providers reject the whole request when a tool result
+					// has no name. Gemini reports it as
+					// "function_response.name: Name cannot be empty", so the
+					// name is guaranteed non-empty rather than omitted.
+					name := strings.TrimSpace(item.Name)
+					if name == "" {
+						name = strings.TrimSpace(callNames[item.CallID])
+					}
+					if name == "" {
+						name = fallbackToolResultName(item.CallID)
+					}
+					msg["name"] = name
 				}
 			} else {
 				msg["content"] = item.Text
@@ -914,6 +928,48 @@ func mergeStreamedArguments(current, incoming string) string {
 		return incoming
 	}
 	return current + incoming
+}
+
+// toolCallNames maps a tool call id to the function name that produced it, from
+// both single and batched tool-call items in the same request.
+func toolCallNames(items []Item) map[string]string {
+	names := make(map[string]string)
+	for _, item := range items {
+		switch item.Kind {
+		case "tool_call":
+			if item.CallID != "" && item.Name != "" {
+				names[item.CallID] = item.Name
+			}
+		case "tool_calls":
+			for _, call := range item.ToolCalls {
+				if call.ID != "" && call.Name != "" {
+					names[call.ID] = call.Name
+				}
+			}
+		}
+	}
+	return names
+}
+
+// fallbackToolResultName produces a stable, non-empty function name for a tool
+// result whose original name cannot be recovered. The call id is preferred
+// because it keeps distinct results distinguishable; the charset is reduced to
+// what providers accept in a function name.
+func fallbackToolResultName(callID string) string {
+	sanitized := make([]rune, 0, len(callID))
+	for _, r := range callID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			sanitized = append(sanitized, r)
+		}
+		if len(sanitized) == 40 {
+			break
+		}
+	}
+	if len(sanitized) == 0 {
+		return "tool"
+	}
+	return "tool_" + string(sanitized)
 }
 
 // isTransient returns true for status codes that should be retried.
