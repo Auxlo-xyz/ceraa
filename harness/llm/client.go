@@ -302,8 +302,12 @@ func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any
 			}
 			msgs = append(msgs, msg)
 		case "tool_call":
+			args := item.Args
+			if repaired, changed := RepairToolArgumentsJSON(args); changed {
+				args = repaired
+			}
 			call := map[string]any{
-				"id": item.CallID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": item.Args},
+				"id": item.CallID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": args},
 			}
 			if extra := geminiExtraContent(item.ThoughtSignature, geminiThoughtSignatures); extra != nil {
 				call["extra_content"] = extra
@@ -316,8 +320,12 @@ func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any
 		case "tool_calls":
 			calls := make([]map[string]any, 0, len(item.ToolCalls))
 			for _, call := range item.ToolCalls {
+				args := call.Args
+				if repaired, changed := RepairToolArgumentsJSON(args); changed {
+					args = repaired
+				}
 				encoded := map[string]any{
-					"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": call.Args},
+					"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": args},
 				}
 				if extra := geminiExtraContent(call.ThoughtSignature, geminiThoughtSignatures); extra != nil {
 					encoded["extra_content"] = extra

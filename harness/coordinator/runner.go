@@ -145,7 +145,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 	}
 	if len(sess.Messages) == 0 {
-		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.systemPrompt()})
+		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.systemPrompt(true)})
 	}
 	if user != "" {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: user})
@@ -242,6 +242,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 
 	step := 0
+	correctiveToolRetryUsed := false
+	finalContentRetryUsed := false
+	forceFinalResponse := false
 	for {
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
@@ -295,6 +298,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 
 		client := llm.New(r.cfg.Model)
 		toolDefs := r.toolDefs()
+		if forceFinalResponse {
+			toolDefs = nil
+		}
 		request := llm.StreamRequest{
 			Messages:  r.messages(sess, toolDefs),
 			Tools:     toolDefs,
@@ -381,11 +387,27 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 
 		calls = llm.EnsureToolCallIDs(calls, fmt.Sprintf("%s_%d", runID, step))
 		calls = r.uniqueToolCallIDs(calls, sess)
+		for i := range calls {
+			if repaired, changed := llm.RepairToolArgumentsJSON(calls[i].Arguments); changed {
+				calls[i].Arguments = repaired
+			}
+		}
 		if len(calls) == 0 {
 			answer := content.String()
 			if strings.TrimSpace(answer) == "" {
+				if !finalContentRetryUsed {
+					finalContentRetryUsed = true
+					forceFinalResponse = true
+					sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Your previous response contained reasoning but no final answer. Return the final answer only. Do not call tools or include reasoning."})
+					if err := r.store.Save(sess); err != nil {
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+					}
+					step++
+					continue
+				}
 				answer = "The model completed without producing a final response."
 			}
+			forceFinalResponse = false
 			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: reasoning.String()})
 			if err := r.store.Save(sess); err != nil {
 				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
@@ -405,9 +427,16 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 
-		prepared, results, err := r.prepareTools(ctx, sess, runID, calls)
+		prepared, results, corrective, err := r.prepareTools(ctx, sess, runID, calls)
 		if err != nil {
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+		}
+		if corrective {
+			if correctiveToolRetryUsed {
+				forceFinalResponse = true
+			} else {
+				correctiveToolRetryUsed = true
+			}
 		}
 		pending := make(map[string]struct{}, len(prepared))
 		for _, item := range prepared {
@@ -551,7 +580,7 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	if limit <= 0 {
 		limit = 216000
 	}
-	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
+	request := contextbuilder.New(&history, r.systemPrompt(len(tools) > 0)).BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
 	return request.Messages
 }
@@ -604,8 +633,11 @@ func normalizeDispatcherToolCall(name, args string, item llm.Item) llm.Item {
 	return item
 }
 
-func (r *Runner) systemPrompt() string {
-	parts := []string{r.cfg.SystemPrompt, r.compactToolCatalog()}
+func (r *Runner) systemPrompt(includeTools bool) string {
+	parts := []string{r.cfg.SystemPrompt}
+	if includeTools {
+		parts = append(parts, r.compactToolCatalog())
+	}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
 	}
@@ -740,24 +772,27 @@ func activeToolNames(reg *tool.Registry) string {
 	return strings.Join(names, ", ")
 }
 
-func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, runID string, calls []llm.StreamedToolCall) ([]preparedTool, map[string]string, error) {
+func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, runID string, calls []llm.StreamedToolCall) ([]preparedTool, map[string]string, bool, error) {
 	prepared := make([]preparedTool, 0, len(calls))
 	results := make(map[string]string, len(calls))
+	corrective := false
 	for _, call := range calls {
 		op := sessionstore.Operation{ID: call.ID, Tool: call.Name, Status: sessionstore.StatusPending, RunID: runID, ToolCallID: call.ID}
 		sess.Operations = append(sess.Operations, op)
 		results[call.ID] = ""
 		if call.Name != "run" {
+			corrective = true
 			results[call.ID] = "Error: tool calls must use run"
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "tool calls must use run"); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
 		if !json.Valid([]byte(call.Arguments)) {
-			results[call.ID] = "Error: invalid JSON arguments for run"
+			corrective = true
+			results[call.ID] = "Error: invalid JSON arguments for run; use the run schema and canonical tool catalog"
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "invalid JSON arguments"); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
@@ -766,9 +801,10 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal([]byte(call.Arguments), &envelope); err != nil || strings.TrimSpace(envelope.Tool) == "" || envelope.Arguments == nil {
-			results[call.ID] = "Error: run requires tool and arguments"
+			corrective = true
+			results[call.ID] = "Error: run requires tool and arguments; use a canonical tool from the tool catalog with its listed argument keys"
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "run requires tool and arguments"); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
@@ -777,27 +813,30 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		repairToolArguments(toolName, args)
 		rawArgs, err := json.Marshal(args)
 		if err != nil {
+			corrective = true
 			results[call.ID] = "Error: invalid arguments for " + toolName + ": " + err.Error()
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], err.Error()); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
 		t, ok := r.reg.Get(toolName)
 		if !ok {
+			corrective = true
 			message := "Error: unknown tool " + toolName + "; use canonical tools: " + activeToolNames(r.reg)
 			results[call.ID] = message
 			if err := r.persistPreparedFailure(sess, runID, call.ID, message, "unknown tool"); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
 		spec, err := t.Translate(args)
 		if err != nil {
+			corrective = true
 			message := "Error: " + err.Error() + "; use arguments " + toolCatalogArguments(t.Schema())
 			results[call.ID] = message
 			if err := r.persistPreparedFailure(sess, runID, call.ID, message, err.Error()); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
@@ -824,7 +863,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		prepared = append(prepared, preparedTool{call: call, spec: spec, tool: t, args: args, rawArgs: string(rawArgs)})
 	}
 	if err := r.store.Save(sess); err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	dispatched := make([]preparedTool, 0, len(prepared))
@@ -855,7 +894,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		needsAuth := r.cfg.AuthorizeTool != nil && (r.cfg.NeedsAuthorization == nil || r.cfg.NeedsAuthorization(item.tool.Name(), item.args))
 		if !needsAuth {
 			if err := start(item); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
@@ -878,15 +917,15 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			}
 			results[decision.item.call.ID] = message
 			if err := r.persistPreparedFailure(sess, runID, decision.item.call.ID, message, message); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
 		if err := start(decision.item); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 	}
-	return dispatched, results, nil
+	return dispatched, results, corrective, nil
 }
 
 func (r *Runner) notifyToolDone(sess *sessionstore.Session, result operation.ResultEvent) {

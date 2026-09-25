@@ -74,6 +74,20 @@ func TestReadStreamPreservesGeminiThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestRepairToolArgumentsJSON(t *testing.T) {
+	malformed := `{"arguments": {"command": "ls -la /dev}, "tool": "bash"}`
+	repaired, changed := RepairToolArgumentsJSON(malformed)
+	if !changed || repaired != `{"arguments": {"command": "ls -la /dev"}, "tool": "bash"}` {
+		t.Fatalf("repaired=%q changed=%t", repaired, changed)
+	}
+	if unchanged, changed := RepairToolArgumentsJSON(repaired); changed || unchanged != repaired {
+		t.Fatalf("valid arguments changed: %q", unchanged)
+	}
+	if unchanged, changed := RepairToolArgumentsJSON(`{"arguments":`); changed || unchanged != `{"arguments":` {
+		t.Fatalf("unrecoverable arguments changed: %q", unchanged)
+	}
+}
+
 func TestEnsureToolCallIDs(t *testing.T) {
 	calls := EnsureToolCallIDs([]StreamedToolCall{{}, {ID: "same"}, {ID: "same"}}, "call_1")
 	if calls[0].ID != "call_1_0" || calls[1].ID != "same" || calls[2].ID != "call_1_2" {

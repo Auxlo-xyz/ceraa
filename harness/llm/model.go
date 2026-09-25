@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -51,6 +52,72 @@ type Item struct {
 	Output           string     `json:"output,omitempty"`
 	Reason           string     `json:"reasoning,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+}
+
+func RepairToolArgumentsJSON(value string) (string, bool) {
+	if json.Valid([]byte(value)) {
+		return value, false
+	}
+	var repaired strings.Builder
+	repaired.Grow(len(value) + 8)
+	inString := false
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		char := value[i]
+		if inString {
+			if escaped {
+				repaired.WriteByte(char)
+				escaped = false
+				continue
+			}
+			switch char {
+			case '\\':
+				repaired.WriteByte(char)
+				escaped = true
+			case '"':
+				next := nextJSONDelimiter(value, i+1)
+				if next != 0 {
+					repaired.WriteByte('"')
+					inString = false
+				} else {
+					repaired.WriteString("\\\"")
+				}
+			case '}', ']':
+				repaired.WriteByte('"')
+				repaired.WriteByte(char)
+				inString = false
+			default:
+				repaired.WriteByte(char)
+			}
+			continue
+		}
+		repaired.WriteByte(char)
+		if char == '"' {
+			inString = true
+		}
+	}
+	if inString && !escaped {
+		repaired.WriteByte('"')
+	}
+	result := repaired.String()
+	if !json.Valid([]byte(result)) {
+		return value, false
+	}
+	return result, result != value
+}
+
+func nextJSONDelimiter(value string, start int) byte {
+	for i := start; i < len(value); i++ {
+		switch value[i] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case ',', '}', ']', ':':
+			return value[i]
+		default:
+			return 0
+		}
+	}
+	return 0
 }
 
 func (i Item) String() string {
