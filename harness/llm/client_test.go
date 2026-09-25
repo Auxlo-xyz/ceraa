@@ -58,6 +58,27 @@ func TestStreamUsesOpenAICompatibilityAndReplaysReasoning(t *testing.T) {
 	}
 }
 
+func TestEncodeMessagesAttachesReasoningToAssistantText(t *testing.T) {
+	messages := encodeMessages([]Item{{Kind: "text", Role: RoleAssistant, Text: "answer", Reason: "thinking", ReasoningDetails: json.RawMessage(`{"type":"summary"}`)}}, false)
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	message := messages[0]
+	if message["content"] != "answer" || message["reasoning_content"] != "thinking" {
+		t.Fatalf("assistant message = %#v", message)
+	}
+	if message["reasoning_details"] == nil {
+		t.Fatalf("reasoning details missing: %#v", message)
+	}
+}
+
+func TestEncodeMessagesSkipsEmptyReasoningOnlyAssistant(t *testing.T) {
+	messages := encodeMessages([]Item{{Kind: "text", Role: RoleAssistant, Reason: "thinking"}}, false)
+	if len(messages) != 0 {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
 func TestReadStreamRejectsMalformedOrUnterminatedData(t *testing.T) {
 	client := &StreamingClient{}
 	var got ProviderResponse

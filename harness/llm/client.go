@@ -381,6 +381,9 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 			if item.Role == RoleSystem && compatibility.SupportsDeveloperRole {
 				role = "developer"
 			}
+			if item.Role == RoleAssistant && strings.TrimSpace(item.Text) == "" {
+				continue
+			}
 			msg := map[string]any{"role": role}
 			if item.Role == RoleTool {
 				msg["tool_call_id"] = item.CallID
@@ -390,6 +393,9 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 				}
 			} else {
 				msg["content"] = item.Text
+				if item.Role == RoleAssistant {
+					addReasoningFields(msg, item, compatibility)
+				}
 			}
 			msgs = append(msgs, msg)
 		case "reasoning":
@@ -418,6 +424,7 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 			if item.Text != "" {
 				assistant["content"] = item.Text
 			}
+			addReasoningFields(assistant, item, compatibility)
 			msgs = append(msgs, assistant)
 		case "tool_calls":
 			calls := make([]map[string]any, 0, len(item.ToolCalls))
@@ -438,10 +445,20 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 			if item.Text != "" {
 				assistant["content"] = item.Text
 			}
+			addReasoningFields(assistant, item, compatibility)
 			msgs = append(msgs, assistant)
 		}
 	}
 	return msgs
+}
+
+func addReasoningFields(message map[string]any, item Item, compatibility Compatibility) {
+	if item.Reason != "" {
+		message[compatibility.ReasoningField] = item.Reason
+	}
+	if len(item.ReasoningDetails) > 0 {
+		message["reasoning_details"] = item.ReasoningDetails
+	}
 }
 
 func normalizeItemsForChat(items []Item) []Item {

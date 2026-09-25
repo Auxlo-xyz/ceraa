@@ -123,12 +123,9 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 			}
 			item.Output = m.ToolResult
 		}
-		if m.Reasoning != "" || len(m.ReasoningDetails) > 0 {
-			req.Messages = append(req.Messages, llm.Item{
-				Kind:             "reasoning",
-				Reason:           m.Reasoning,
-				ReasoningDetails: m.ReasoningDetails,
-			})
+		if item.Role == llm.RoleAssistant && (m.Reasoning != "" || len(m.ReasoningDetails) > 0) {
+			item.Reason = m.Reasoning
+			item.ReasoningDetails = m.ReasoningDetails
 		}
 		req.Messages = append(req.Messages, item)
 	}

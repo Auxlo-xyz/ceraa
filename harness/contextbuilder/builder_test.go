@@ -53,6 +53,28 @@ func TestBuildIncludesConversation(t *testing.T) {
 	}
 }
 
+func TestBuildAttachesReasoningToAssistantMessage(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleAssistant, Content: "The answer is ready.", Reasoning: "I checked the files."},
+	}}
+	messages := New(sess, "system").Build().Messages
+	found := false
+	for _, item := range messages {
+		if item.Kind == "reasoning" {
+			t.Fatalf("reasoning was emitted as a standalone item: %+v", messages)
+		}
+		if item.Role == llm.RoleAssistant && item.Text == "The answer is ready." {
+			found = true
+			if item.Reason != "I checked the files." {
+				t.Fatalf("reasoning was not attached: %+v", item)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("assistant message missing: %+v", messages)
+	}
+}
+
 func TestBuildHandlesToolCalls(t *testing.T) {
 	sess := &sessionstore.Session{
 		ID: "test",
