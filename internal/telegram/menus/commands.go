@@ -9,7 +9,7 @@ func Commands() []CommandSpec {
 	return []CommandSpec{
 		{"start", "Open Sooraa"},
 		{"help", "Show available commands"},
-		{"menu", "Open the control hub"},
+		{"hub", "Open the control hub"},
 		{"new", "Start a fresh session"},
 		{"sessions", "List stored sessions"},
 		{"session", "Open session controls"},

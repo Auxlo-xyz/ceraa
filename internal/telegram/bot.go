@@ -174,8 +174,8 @@ func discardTelegramResponse(resp *http.Response) {
 func send(token string, chatID int64, text string) int {
 	return sendWithKeyboard(token, chatID, text, keyboard.Main())
 }
-func sendRootKeyboard(token string, chatID int64) {
-	send(token, chatID, "📋 Sooraa menu")
+func sendHub(token string, chatID int64) {
+	sendMenuMarkup(token, chatID, "📋 Sooraa hub", menus.Hub())
 }
 
 func sendMessagePayload(token string, chatID int64, text string, parseMode string, kb map[string]any) (int, error) {
@@ -483,7 +483,7 @@ func Run() error {
 				if !providerConfigured(cfg) {
 					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Sooraa. Choose a provider to finish onboarding.", menus.Onboarding())
 				} else {
-					sendRootKeyboard(token, u.Message.Chat.ID)
+					sendHub(token, u.Message.Chat.ID)
 				}
 			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -541,21 +541,21 @@ func Run() error {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				detachedChats.Delete(u.Message.Chat.ID)
 				send(token, u.Message.Chat.ID, "🔗 Attached to session "+currentSessionID(u.Message.Chat.ID))
-			case "/menu":
+			case "/hub", "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendRootKeyboard(token, u.Message.Chat.ID)
+				sendHub(token, u.Message.Chat.ID)
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				startNewSession(token, u.Message.Chat.ID)
 			case "/model", "🧠 Model":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleModelCommand(token, u.Message.Chat.ID, "/model")
-			case "/agent", "🤖 Agent":
+			case "/agent", "🤖 Agent", "🤖 Mode":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleAgentCommand(token, u.Message.Chat.ID, "/agent")
-			case "📋 Menu":
+			case "📋 Hub", "📋 Menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendRootKeyboard(token, u.Message.Chat.ID)
+				sendHub(token, u.Message.Chat.ID)
 			case "📊 Context":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)
@@ -573,7 +573,7 @@ func Run() error {
 						}
 					}
 					GetDefaultInbox().CheckAndRecord(u.UpdateID)
-					send(token, u.Message.Chat.ID, "Unknown command. Try /menu")
+					send(token, u.Message.Chat.ID, "Unknown command. Try /hub")
 					continue
 				next:
 				} else {

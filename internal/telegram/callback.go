@@ -788,8 +788,8 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 		handleCodexLogin(token, chatID)
 	case "/codex-status", "/codex_status":
 		handleCodexStatus(token, chatID)
-	case "/menu":
-		sendRootKeyboard(token, chatID)
+	case "/hub", "/menu":
+		sendHub(token, chatID)
 	case "/search":
 		handleSearchCommand(token, chatID, command)
 	default:

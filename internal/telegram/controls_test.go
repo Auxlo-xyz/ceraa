@@ -20,19 +20,23 @@ func TestPersistentKeyboardUsesMenuButton(t *testing.T) {
 	if len(keyboardRows) != 2 || len(keyboardRows[0]) != 2 || len(keyboardRows[1]) != 2 {
 		t.Fatalf("expected 2x2 reply keyboard, got %#v", keyboardRows)
 	}
-	foundMenu := false
+	foundHub := false
+	foundMode := false
 	for _, row := range keyboardRows {
 		for _, button := range row {
-			if button["text"] == "📋 Menu" {
-				foundMenu = true
+			if button["text"] == "📋 Hub" {
+				foundHub = true
 			}
-			if button["text"] == "🧠 Model" {
-				t.Fatal("model should be replaced by menu")
+			if button["text"] == "🤖 Mode" {
+				foundMode = true
+			}
+			if button["text"] == "🤖 Agent" || button["text"] == "📋 Menu" {
+				t.Fatal("old keyboard labels should be replaced")
 			}
 		}
 	}
-	if !foundMenu {
-		t.Fatal("menu button not found")
+	if !foundHub || !foundMode {
+		t.Fatal("hub and mode buttons not found")
 	}
 }
 
@@ -49,7 +53,7 @@ func TestCommandCatalogCoversBridgeControls(t *testing.T) {
 	wanted := map[string]bool{
 		"status": false, "settings": false, "model": false, "tools": false,
 		"todos": false, "context": false, "search": false, "index": false,
-		"snapshots": false, "revert": false, "permission": false,
+		"snapshots": false, "revert": false, "permission": false, "hub": false,
 	}
 	for _, command := range commandCatalog() {
 		if _, ok := wanted[command.Command]; ok {
