@@ -80,6 +80,11 @@ func TestRepairToolArgumentsJSON(t *testing.T) {
 	if !changed || repaired != `{"arguments": {"command": "ls -la /dev"}, "tool": "bash"}` {
 		t.Fatalf("repaired=%q changed=%t", repaired, changed)
 	}
+	truncated := `{"path":"/index.html"`
+	repaired, changed = RepairToolArgumentsJSON(truncated)
+	if !changed || repaired != `{"path":"/index.html"}` {
+		t.Fatalf("truncated repaired=%q changed=%t", repaired, changed)
+	}
 	if unchanged, changed := RepairToolArgumentsJSON(repaired); changed || unchanged != repaired {
 		t.Fatalf("valid arguments changed: %q", unchanged)
 	}

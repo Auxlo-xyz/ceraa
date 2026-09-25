@@ -110,6 +110,7 @@ func RepairToolArgumentsJSON(value string) (string, bool) {
 	}
 	var repaired strings.Builder
 	repaired.Grow(len(value) + 8)
+	stack := make([]byte, 0, 4)
 	inString := false
 	escaped := false
 	for i := 0; i < len(value); i++ {
@@ -125,8 +126,7 @@ func RepairToolArgumentsJSON(value string) (string, bool) {
 				repaired.WriteByte(char)
 				escaped = true
 			case '"':
-				next := nextJSONDelimiter(value, i+1)
-				if next != 0 {
+				if i+1 == len(value) || nextJSONDelimiter(value, i+1) != 0 {
 					repaired.WriteByte('"')
 					inString = false
 				} else {
@@ -134,20 +134,42 @@ func RepairToolArgumentsJSON(value string) (string, bool) {
 				}
 			case '}', ']':
 				repaired.WriteByte('"')
-				repaired.WriteByte(char)
 				inString = false
+				if len(stack) > 0 {
+					repaired.WriteByte(char)
+					stack = stack[:len(stack)-1]
+					continue
+				}
+				repaired.WriteByte(char)
 			default:
 				repaired.WriteByte(char)
 			}
 			continue
 		}
 		repaired.WriteByte(char)
-		if char == '"' {
+		switch char {
+		case '"':
 			inString = true
+		case '{', '[':
+			stack = append(stack, char)
+		case '}', ']':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
 		}
 	}
-	if inString && !escaped {
+	if inString {
+		if escaped {
+			repaired.WriteByte('\\')
+		}
 		repaired.WriteByte('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			repaired.WriteByte('}')
+		} else {
+			repaired.WriteByte(']')
+		}
 	}
 	result := repaired.String()
 	if !json.Valid([]byte(result)) {
