@@ -72,6 +72,16 @@ func TestEncodeMessagesAttachesReasoningToAssistantText(t *testing.T) {
 	}
 }
 
+func TestEncodeMessagesProvidesContentForEmptyToolResult(t *testing.T) {
+	messages := encodeMessages([]Item{{Kind: "text", Role: RoleTool, CallID: "call1", Name: "read", Output: ""}}, false)
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if messages[0]["content"] != "No output was produced." {
+		t.Fatalf("empty tool result = %#v", messages[0])
+	}
+}
+
 func TestEncodeMessagesSkipsEmptyReasoningOnlyAssistant(t *testing.T) {
 	messages := encodeMessages([]Item{{Kind: "text", Role: RoleAssistant, Reason: "thinking"}}, false)
 	if len(messages) != 0 {

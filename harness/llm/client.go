@@ -387,7 +387,11 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 			msg := map[string]any{"role": role}
 			if item.Role == RoleTool {
 				msg["tool_call_id"] = item.CallID
-				msg["content"] = item.Output
+				output := item.Output
+				if strings.TrimSpace(output) == "" {
+					output = "No output was produced."
+				}
+				msg["content"] = output
 				if item.Name != "" && compatibility.RequiresToolResultName {
 					msg["name"] = item.Name
 				}
