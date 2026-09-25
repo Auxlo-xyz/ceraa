@@ -50,7 +50,7 @@ func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRendere
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
 	}
-	if messageID, err := sendRichMessage(token, chatID, "▌"); err == nil {
+	if messageID, err := sendRichMessage(token, chatID, " "); err == nil {
 		renderer.messageID = messageID
 	} else {
 		renderer.messageID = sendWithKeyboard(token, chatID, "💬", nil)
@@ -104,9 +104,9 @@ func (r *runRenderer) streamTextLocked() string {
 		parts = append(parts, formatToolActivity(r.tools))
 	}
 	if content := strings.TrimSpace(r.streamContent); content != "" {
-		parts = append(parts, truncateStream(content+" ▌"))
+		parts = append(parts, truncateStream(content))
 	} else if len(parts) == 0 {
-		parts = append(parts, "▌")
+		parts = append(parts, " ")
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -115,16 +115,13 @@ func (r *runRenderer) thoughtTextLocked() string {
 	if strings.TrimSpace(r.thought) == "" {
 		return ""
 	}
-	return formatThought(r.thought, true)
+	return formatThought(r.thought)
 }
 
-func formatThought(value string, streaming bool) string {
+func formatThought(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
-	}
-	if streaming {
-		value += " ▌"
 	}
 	return "<blockquote expandable><b>Thought</b>\n\n" + html.EscapeString(truncateStream(value)) + "</blockquote>"
 }
@@ -173,9 +170,9 @@ func (r *runRenderer) reasoning(value string) {
 		return
 	}
 	if thoughtID == 0 {
-		thoughtMessageID, err := sendHTMLMessage(r.token, r.chatID, formatThought(value, true))
+		thoughtMessageID, err := sendHTMLMessage(r.token, r.chatID, formatThought(value))
 		if err != nil {
-			thoughtMessageID = sendPlainMessage(r.token, r.chatID, thoughtFallbackText(formatThought(value, true)))
+			thoughtMessageID = sendPlainMessage(r.token, r.chatID, thoughtFallbackText(formatThought(value)))
 		}
 		if thoughtMessageID == 0 {
 			return
@@ -279,7 +276,7 @@ func (r *runRenderer) finish(answer string) {
 		return
 	}
 	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
-		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
+		if !r.publishThoughtMessage(formatThought(thought), thoughtID) {
 			logger.Warn("Telegram final thought publication failed")
 		}
 	}
@@ -342,7 +339,7 @@ func (r *runRenderer) fail() {
 		return
 	}
 	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
-		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
+		if !r.publishThoughtMessage(formatThought(thought), thoughtID) {
 			logger.Warn("Telegram failed thought publication failed")
 		}
 	}
