@@ -163,6 +163,8 @@ func (r *runRenderer) reasoning(value string) {
 	}
 	r.thought = value
 	thoughtID := r.thoughtID
+	oldMessageID := r.messageID
+	assistantPreview := r.streamTextLocked()
 	shouldStream := now.Sub(r.lastThought) >= 300*time.Millisecond
 	if shouldStream {
 		r.lastThought = now
@@ -174,15 +176,28 @@ func (r *runRenderer) reasoning(value string) {
 		return
 	}
 	if thoughtID == 0 {
-		messageID, err := sendRichMessage(r.token, r.chatID, formatThought(value, true))
+		thoughtMessageID, err := sendRichMessage(r.token, r.chatID, formatThought(value, true))
 		if err != nil {
-			messageID = sendWithKeyboard(r.token, r.chatID, formatThought(value, true), nil)
+			thoughtMessageID = sendWithKeyboard(r.token, r.chatID, formatThought(value, true), nil)
 		}
-		if messageID == 0 {
+		if thoughtMessageID == 0 {
 			return
 		}
+		assistantMessageID, assistantErr := sendRichMessage(r.token, r.chatID, assistantPreview)
+		if assistantErr != nil {
+			assistantMessageID = sendWithKeyboard(r.token, r.chatID, assistantPreview, nil)
+		}
+		if assistantMessageID == 0 {
+			return
+		}
+		if oldMessageID != 0 && oldMessageID != assistantMessageID {
+			if deleteErr := deleteTelegramMessage(r.token, r.chatID, oldMessageID); deleteErr != nil {
+				logger.Warn("Telegram assistant preview replacement cleanup failed: " + deleteErr.Error())
+			}
+		}
 		r.mu.Lock()
-		r.thoughtID = messageID
+		r.thoughtID = thoughtMessageID
+		r.messageID = assistantMessageID
 		r.mu.Unlock()
 	}
 	r.signalStream()

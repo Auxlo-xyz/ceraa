@@ -213,6 +213,7 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	var mu sync.Mutex
 	edits := make(map[int][]string)
+	richSends := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/sendRichMessage") {
@@ -220,9 +221,16 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			rich, _ := body["rich_message"].(map[string]any)
 			markdown, _ := rich["markdown"].(string)
+			mu.Lock()
+			richSends++
+			sendNumber := richSends
+			mu.Unlock()
 			messageID := 15
 			if markdown == "▌" {
 				messageID = 14
+				if sendNumber > 1 {
+					messageID = 16
+				}
 			}
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, messageID)))
 			return
@@ -257,8 +265,12 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 
 	mu.Lock()
 	thoughtEdits := append([]string(nil), edits[15]...)
-	assistantEdits := append([]string(nil), edits[14]...)
+	assistantEdits := append([]string(nil), edits[16]...)
+	sendCount := richSends
 	mu.Unlock()
+	if sendCount < 3 {
+		t.Fatalf("rich message sends = %d, want initial, thought, replacement", sendCount)
+	}
 	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "💭 **Thought**") || !strings.Contains(thoughtEdits[0], "first step") {
 		t.Fatalf("thought edits = %#v", thoughtEdits)
 	}
