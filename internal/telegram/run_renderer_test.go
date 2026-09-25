@@ -27,7 +27,7 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if richMessage, ok := body["rich_message"].(map[string]any); ok {
 				if markdown, ok := richMessage["markdown"].(string); ok {
-					if strings.Contains(markdown, "## Heading") && markdown != "## Heading\n\n1. Step\n\nTelegram Message\n    ↓" {
+					if strings.Contains(markdown, "▌") {
 						mu.Lock()
 						streamMarkdown = markdown
 						mu.Unlock()
@@ -59,7 +59,7 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	renderer := newRunRenderer("token", 42, pinned)
 	defer renderer.close()
 	answer := "## Heading\n\n1. Step\n\nTelegram Message\n    ↓"
-	renderer.content("## Heading\n\n1. Step")
+	renderer.content("## Heading\n\n1. Step\n\nTelegram Message\n    ↓")
 	renderer.finish(answer)
 	renderer.close()
 
@@ -71,7 +71,7 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	if final != answer {
 		t.Fatalf("final message = %q", final)
 	}
-	if !strings.Contains(stream, "## Heading") || strings.Contains(stream, "▌") {
+	if !strings.Contains(stream, "## Heading") || !strings.Contains(stream, "▌") {
 		t.Fatalf("stream message = %q", stream)
 	}
 	for _, path := range paths {
@@ -109,7 +109,7 @@ func TestFinishDrainsPreviewBeforeFinalEdit(t *testing.T) {
 				mu.Lock()
 				edits = append(edits, markdown)
 				mu.Unlock()
-				if markdown == "Complete" {
+				if strings.Contains(markdown, "▌") {
 					previewOnce.Do(func() { close(previewStarted) })
 					<-releasePreview
 				}
