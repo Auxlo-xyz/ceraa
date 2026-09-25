@@ -1310,29 +1310,32 @@ func freebuffQuotaLine(session freebuff.SessionResponse) string {
 	default:
 		b.WriteString("⚪ Freebuff session: " + session.Status + ".")
 	}
-	if hours, ok, unlimited := freebuffRemainingHours(session); ok {
-		if unlimited {
-			b.WriteString("\nThis model does not use the daily allowance.")
-		} else {
-			b.WriteString(fmt.Sprintf("\nFree hours left today: %.1f", hours))
-		}
+	if hours, ok := freebuffRemainingHours(session); ok {
+		b.WriteString(fmt.Sprintf("\nSession hours left today: %.1f", hours))
+	} else {
+		b.WriteString("\nThis model has no hourly pool on your plan.")
 	}
-	if session.Freebucks != nil {
+	if session.Freebucks != nil && session.Freebucks.Daily != nil {
+		daily := session.Freebucks.Daily
+		b.WriteString(fmt.Sprintf("\nFreebucks today: %.0f of %.0f left (resets %s %s)",
+			daily.Remaining, daily.Limit, daily.ResetAt, daily.ResetTimeZone))
+	} else if session.Freebucks != nil {
 		b.WriteString(fmt.Sprintf("\nFreebucks balance: %.0f", session.Freebucks.Balance))
+	}
+	if session.CountryBlockReason != "" {
+		b.WriteString(fmt.Sprintf("\nRegion note: %s (detected %s)", session.CountryBlockReason, session.CountryCode))
 	}
 	return b.String()
 }
 
-func freebuffRemainingHours(session freebuff.SessionResponse) (float64, bool, bool) {
-	for _, entry := range session.RateLimitsByModel {
-		if entry.Model == session.Model {
-			return entry.RemainingHours, true, entry.Unlimited
-		}
+func freebuffRemainingHours(session freebuff.SessionResponse) (float64, bool) {
+	if entry, ok := session.RateLimitsByModel[session.Model]; ok {
+		return entry.RemainingHours(), true
 	}
 	if session.RateLimit != nil && session.RateLimit.Model == session.Model {
-		return session.RateLimit.RemainingHours, true, session.RateLimit.Unlimited
+		return session.RateLimit.RemainingHours(), true
 	}
-	return 0, false, false
+	return 0, false
 }
 
 // freebuffMustToken returns the stored bearer token, or "" when absent. Used for

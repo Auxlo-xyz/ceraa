@@ -91,19 +91,42 @@ func (m *SessionManager) Current() SessionResponse {
 	return m.session
 }
 
-// QuotaRemainingHours returns the remaining free hours for the active model, and
-// whether the model is unmetered.
-func (m *SessionManager) QuotaRemainingHours() (float64, bool, bool) {
+// QuotaRemainingHours returns the remaining session hours for the active model
+// and whether the model is in an entitlement pool at all. A model the account
+// has no pool for is reported as unknown rather than as zero, because zero would
+// read as "exhausted" and trigger the wrong advice.
+func (m *SessionManager) QuotaRemainingHours() (float64, bool) {
 	session := m.Current()
-	for _, entry := range session.RateLimitsByModel {
-		if entry.Model == session.Model {
-			return entry.RemainingHours, true, entry.Unlimited
-		}
+	if entry, ok := session.RateLimitsByModel[session.Model]; ok {
+		return entry.RemainingHours(), true
 	}
 	if session.RateLimit != nil && session.RateLimit.Model == session.Model {
-		return session.RateLimit.RemainingHours, true, session.RateLimit.Unlimited
+		return session.RateLimit.RemainingHours(), true
 	}
-	return 0, false, false
+	return 0, false
+}
+
+// Probe performs the read-only session GET without holding any state, so an
+// operator can inspect the current tier, quota, and balance without admitting a
+// session. Exported because it is the only way to see what an account is
+// entitled to before spending a slot.
+func (m *SessionManager) Probe(ctx context.Context, token string) (SessionResponse, error) {
+	return m.probe(ctx, token)
+}
+
+// ProbeModel attempts an admission for a model and returns the server's
+// response without recording it, so a model can be tested against the account's
+// tier before making it the default. A refusal such as session_model_mismatch
+// comes back as data in the response, not as an error.
+func (m *SessionManager) ProbeModel(ctx context.Context, token, model string) (SessionResponse, error) {
+	instance := m.InstanceID()
+	return m.client.callSession(ctx, sessionRequest{
+		method:           "POST",
+		token:            token,
+		instanceID:       instance,
+		model:            model,
+		walletSpendLimit: "0",
+	})
 }
 
 // Ensure admits a session for the given model, reusing a live one when the model
@@ -343,7 +366,7 @@ func mergeCompactSession(current, next SessionResponse) SessionResponse {
 	if next.RateLimit == nil {
 		next.RateLimit = current.RateLimit
 	}
-	if next.RateLimitsByModel == nil {
+	if len(next.RateLimitsByModel) == 0 {
 		next.RateLimitsByModel = current.RateLimitsByModel
 	}
 	// The Freebucks block is the whole meter for a metered account, so losing

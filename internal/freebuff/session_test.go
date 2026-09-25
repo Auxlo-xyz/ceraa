@@ -327,7 +327,7 @@ func TestGateCodeRequiresBothHalves(t *testing.T) {
 // allowance meter mid-run.
 func TestMergeCompactSessionKeepsQuota(t *testing.T) {
 	quota := &FreebucksInfo{Balance: 42}
-	rates := []RateLimitInfo{{Model: "m1", RemainingHours: 5}}
+	rates := map[string]RateLimitInfo{"m1": {Model: "m1", Limit: 6, RecentCount: 1}}
 	current := SessionResponse{Status: "active", InstanceID: "i1", Model: "m1", Freebucks: quota, RateLimitsByModel: rates}
 	next := SessionResponse{Status: "active", InstanceID: "i1", Model: "m1"}
 	merged := mergeCompactSession(current, next)
@@ -518,25 +518,93 @@ func TestTerminalStatusCoverage(t *testing.T) {
 func TestQuotaReadout(t *testing.T) {
 	manager := NewSessionManager(NewClient())
 	manager.adopt(SessionResponse{
-		Status:            "active",
-		Model:             "m1",
-		RateLimitsByModel: []RateLimitInfo{{Model: "m1", RemainingHours: 5.5}},
-		Freebucks:         &FreebucksInfo{Balance: 120},
+		Status: "active",
+		Model:  "m1",
+		RateLimitsByModel: map[string]RateLimitInfo{
+			"m1": {Model: "m1", Limit: 6, RecentCount: 1.5, Pool: "limited"},
+		},
+		Freebucks: &FreebucksInfo{Balance: 20, Daily: &DailyPool{Limit: 25, Remaining: 20, ResetTimeZone: "Africa/Lagos"}},
 	})
-	hours, ok, unlimited := manager.QuotaRemainingHours()
-	if !ok || hours != 5.5 || unlimited {
-		t.Fatalf("hours=%v ok=%v unlimited=%v", hours, ok, unlimited)
+	hours, ok := manager.QuotaRemainingHours()
+	if !ok || hours != 4.5 {
+		t.Fatalf("hours=%v ok=%v, want 4.5 remaining of a 6h pool", hours, ok)
 	}
-	manager.adopt(SessionResponse{
-		Status:            "active",
-		Model:             "m2",
-		RateLimitsByModel: []RateLimitInfo{{Model: "m2", Unlimited: true}},
-	})
-	if _, _, unlimited := manager.QuotaRemainingHours(); !unlimited {
-		t.Fatal("an unmetered model should report unlimited")
+	// The single-model form is the fallback when the map is absent.
+	manager.adopt(SessionResponse{Status: "active", Model: "m1", RateLimit: &RateLimitInfo{Model: "m1", Limit: 6, RecentCount: 0}})
+	if hours, ok := manager.QuotaRemainingHours(); !ok || hours != 6 {
+		t.Fatalf("hours=%v ok=%v, want the single-model fallback", hours, ok)
 	}
+	// A model with no pool is unknown, not zero: zero would read as exhausted.
 	manager.adopt(SessionResponse{Status: "active", Model: "m3"})
-	if _, ok, _ := manager.QuotaRemainingHours(); ok {
-		t.Fatal("a model with no meter must report unknown, not zero")
+	if hours, ok := manager.QuotaRemainingHours(); ok {
+		t.Fatalf("hours=%v ok=%v, want unknown for a model with no pool", hours, ok)
+	}
+}
+
+// TestRemainingHoursNeverGoesNegative pins the floor: a server that reports more
+// hours consumed than the limit must not surface as negative headroom.
+func TestRemainingHoursNeverGoesNegative(t *testing.T) {
+	if got := (RateLimitInfo{Limit: 6, RecentCount: 9}).RemainingHours(); got != 0 {
+		t.Fatalf("RemainingHours = %v, want 0", got)
+	}
+}
+
+// TestParsesRealLimitedTierSessionResponse is a regression test built from an
+// actual production response for a region-limited account. The earlier struct
+// guessed that rateLimitsByModel was an array of meters with remainingHours, so
+// every real response failed to decode: the keep-alive loop silently stopped
+// updating and the quota readout showed nothing.
+func TestParsesRealLimitedTierSessionResponse(t *testing.T) {
+	body := `{"status":"none","accessTier":"limited",
+	  "freebucks":{"balance":25,"daily":{"limit":25,"spent":5,"remaining":20,
+	    "resetAt":"2026-09-25T23:00:00.000Z","resetTimeZone":"Africa/Lagos"},
+	    "wallet":{"balance":0,"monthlyBonus":0},"planId":null,
+	    "prices":{"deepseek/deepseek-v4-flash":15,"stealth/space-bunny-alpha":0},
+	    "priceNotices":{"deepseek/deepseek-v4-flash":"Peak pricing"},
+	    "offPeak":{"deepseek/deepseek-v4-flash":{"startHourUtc":22,"endHourUtc":6,"price":10,"regularPrice":15}},
+	    "priceChanges":[{"at":"2026-09-25T22:00:00.000Z","modelId":"deepseek/deepseek-v4-flash","price":10,"tagline":"Off-peak"}]},
+	  "rateLimit":{"model":"deepseek/deepseek-v4-flash",
+	    "entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,
+	    "pool":"limited","poolLabel":"Daily","period":"pacific_day",
+	    "resetTimeZone":"America/Los_Angeles","resetAt":"2026-09-26T07:00:00.000Z",
+	    "windowHours":24,"recentCount":1},
+	  "rateLimitsByModel":{
+	    "deepseek/deepseek-v4-flash":{"model":"deepseek/deepseek-v4-flash",
+	      "entitlementBreakdown":{"base":6,"referral":0,"streak":0},"limit":6,
+	      "pool":"limited","poolLabel":"Daily","period":"pacific_day",
+	      "resetTimeZone":"America/Los_Angeles","resetAt":"2026-09-26T07:00:00.000Z",
+	      "windowHours":24,"recentCount":1},
+	    "mimo/mimo-v2.5":{"model":"mimo/mimo-v2.5","entitlementBreakdown":{"base":6},
+	      "limit":6,"pool":"limited","period":"pacific_day","windowHours":24,"recentCount":1}},
+	  "countryCode":"US","countryBlockReason":"recent_limited_country",
+	  "ipPrivacySignals":["hosting"]}`
+	var session SessionResponse
+	if err := json.Unmarshal([]byte(body), &session); err != nil {
+		t.Fatalf("a real limited-tier response must decode: %v", err)
+	}
+	if session.AccessTier != "limited" {
+		t.Fatalf("accessTier = %q", session.AccessTier)
+	}
+	if len(session.RateLimitsByModel) != 2 {
+		t.Fatalf("rateLimitsByModel has %d entries, want 2", len(session.RateLimitsByModel))
+	}
+	entry := session.RateLimitsByModel["deepseek/deepseek-v4-flash"]
+	if entry.Limit != 6 || entry.RecentCount != 1 || entry.RemainingHours() != 5 {
+		t.Fatalf("entry = %+v", entry)
+	}
+	if session.RateLimit == nil || session.RateLimit.Pool != "limited" {
+		t.Fatalf("rateLimit = %+v", session.RateLimit)
+	}
+	if session.Freebucks == nil || session.Freebucks.Daily == nil || session.Freebucks.Daily.Remaining != 20 {
+		t.Fatalf("freebucks = %+v", session.Freebucks)
+	}
+	if session.Freebucks.Daily.ResetTimeZone != "Africa/Lagos" {
+		t.Fatalf("reset timezone = %q", session.Freebucks.Daily.ResetTimeZone)
+	}
+	if session.Freebucks.Prices["stealth/space-bunny-alpha"] != 0 {
+		t.Fatal("expected a zero-priced model in the price map")
+	}
+	if session.CountryBlockReason != "recent_limited_country" || len(session.IPPrivacySignals) != 1 {
+		t.Fatalf("region signals = %+v", session)
 	}
 }

@@ -89,41 +89,105 @@ type SessionResponse struct {
 	Error       string `json:"error"`
 	Message     string `json:"message"`
 
-	RateLimit           *RateLimitInfo  `json:"rateLimit"`
-	RateLimitsByModel   []RateLimitInfo `json:"rateLimitsByModel"`
-	Freebucks           *FreebucksInfo  `json:"freebucks"`
-	CountryCode         string          `json:"countryCode"`
-	RetryAfterMs        int64           `json:"retryAfterMs"`
-	CurrentInstanceID   string          `json:"currentInstanceId"`
-	HoldReason          string          `json:"holdReason"`
-	WaitUntilMs         int64           `json:"waitUntilMs"`
-	QueuePosition       int64           `json:"queuePosition"`
-	AvailableModels     []string        `json:"availableModels"`
-	SpendLimitCents     int64           `json:"spendLimitCents"`
-	TotalSpentCents     int64           `json:"totalSpentCents"`
-	SessionLimitReached bool            `json:"sessionLimitReached"`
-	Premium             *PremiumInfo    `json:"premium"`
+	RateLimit           *RateLimitInfo           `json:"rateLimit"`
+	RateLimitsByModel   map[string]RateLimitInfo `json:"rateLimitsByModel"`
+	Freebucks           *FreebucksInfo           `json:"freebucks"`
+	CountryCode         string                   `json:"countryCode"`
+	CountryBlockReason  string                   `json:"countryBlockReason"`
+	IPPrivacySignals    []string                 `json:"ipPrivacySignals"`
+	RetryAfterMs        int64                    `json:"retryAfterMs"`
+	CurrentInstanceID   string                   `json:"currentInstanceId"`
+	HoldReason          string                   `json:"holdReason"`
+	WaitUntilMs         int64                    `json:"waitUntilMs"`
+	QueuePosition       int64                    `json:"queuePosition"`
+	AvailableModels     []string                 `json:"availableModels"`
+	SpendLimitCents     int64                    `json:"spendLimitCents"`
+	TotalSpentCents     int64                    `json:"totalSpentCents"`
+	SessionLimitReached bool                     `json:"sessionLimitReached"`
+	Premium             *PremiumInfo             `json:"premium"`
 }
 
-// RateLimitInfo is the per-model free-hours meter shown on the site.
+// RateLimitInfo is the per-model session-hours entitlement.
+//
+// The shape is taken from a live response, not from the TypeScript types: a
+// limited-tier account gets a `limit` in hours and a `recentCount` of hours
+// already consumed, so remaining is the difference. `pool` is "limited" for a
+// region-limited account and the daily pool resets in the server's stated
+// timezone, which is not the caller's.
 type RateLimitInfo struct {
-	Model            string  `json:"model"`
-	RemainingHours   float64 `json:"remainingHours"`
-	LimitHours       float64 `json:"limitHours"`
-	RemainingMs      int64   `json:"remainingMs"`
-	ResetsAtMs       int64   `json:"resetsAtMs"`
-	Unlimited        bool    `json:"unlimited"`
-	SessionRemaining int64   `json:"sessionRemaining"`
+	Model                string               `json:"model"`
+	EntitlementBreakdown EntitlementBreakdown `json:"entitlementBreakdown"`
+	Limit                float64              `json:"limit"`
+	Pool                 string               `json:"pool"`
+	PoolLabel            string               `json:"poolLabel"`
+	Period               string               `json:"period"`
+	ResetTimeZone        string               `json:"resetTimeZone"`
+	ResetAt              string               `json:"resetAt"`
+	WindowHours          float64              `json:"windowHours"`
+	RecentCount          float64              `json:"recentCount"`
+}
+
+// EntitlementBreakdown splits an entitlement into its sources. Streak and
+// referral hours are earned over time, so a base-only account is a new one.
+type EntitlementBreakdown struct {
+	Base     float64 `json:"base"`
+	Referral float64 `json:"referral"`
+	Streak   float64 `json:"streak"`
+}
+
+// RemainingHours is the unconsumed part of the entitlement.
+func (r RateLimitInfo) RemainingHours() float64 {
+	remaining := r.Limit - r.RecentCount
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // FreebucksInfo is the daily-wallet meter. A metered account's whole allowance
 // lives here, which is why a compact poll must carry it forward.
 type FreebucksInfo struct {
 	Balance          float64            `json:"balance"`
-	Currency         string             `json:"currency"`
-	RefillsAtMs      int64              `json:"refillsAtMs"`
+	Daily            *DailyPool         `json:"daily"`
+	Wallet           *WalletBalance     `json:"wallet"`
+	PlanID           *string            `json:"planId"`
 	Prices           map[string]float64 `json:"prices"`
+	PriceNotices     map[string]string  `json:"priceNotices"`
+	OffPeak          map[string]OffPeak `json:"offPeak"`
+	PriceChanges     []PriceChange      `json:"priceChanges"`
 	FirstTabDiscount *FirstTabDiscount  `json:"firstTabDiscount"`
+}
+
+// DailyPool is the daily Freebucks allowance. ResetTimeZone echoes the timezone
+// the client advertised in x-fb-timezone, so the meter can reset at the user's
+// local midnight rather than at a fixed UTC boundary.
+type DailyPool struct {
+	Limit         float64 `json:"limit"`
+	Spent         float64 `json:"spent"`
+	Remaining     float64 `json:"remaining"`
+	ResetAt       string  `json:"resetAt"`
+	ResetTimeZone string  `json:"resetTimeZone"`
+}
+
+type WalletBalance struct {
+	Balance      float64 `json:"balance"`
+	MonthlyBonus float64 `json:"monthlyBonus"`
+}
+
+// OffPeak is a cheaper window for one model, expressed in UTC hours.
+type OffPeak struct {
+	StartHourUTC int     `json:"startHourUtc"`
+	EndHourUTC   int     `json:"endHourUtc"`
+	Price        float64 `json:"price"`
+	RegularPrice float64 `json:"regularPrice"`
+}
+
+// PriceChange is a scheduled price move, so a client can warn before it bites.
+type PriceChange struct {
+	At      string  `json:"at"`
+	ModelID string  `json:"modelId"`
+	Price   float64 `json:"price"`
+	Tagline string  `json:"tagline"`
 }
 
 type FirstTabDiscount struct {
