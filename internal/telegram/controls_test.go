@@ -15,6 +15,9 @@ func TestPersistentKeyboardUsesMenuButton(t *testing.T) {
 	if !ok {
 		t.Fatal("expected reply keyboard")
 	}
+	if len(keyboardRows) != 2 || len(keyboardRows[0]) != 2 || len(keyboardRows[1]) != 2 {
+		t.Fatalf("expected 2x2 reply keyboard, got %#v", keyboardRows)
+	}
 	foundMenu := false
 	for _, row := range keyboardRows {
 		for _, button := range row {

@@ -163,6 +163,10 @@ func discardTelegramResponse(resp *http.Response) {
 func send(token string, chatID int64, text string) int {
 	return sendWithKeyboard(token, chatID, text, keyboard.Main())
 }
+func sendRootKeyboard(token string, chatID int64) {
+	send(token, chatID, "📋 Sooraa menu")
+}
+
 func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any) int {
 	// Rendering pipeline -> maps to soraacode bot/render/limits.js 4096 chunking + markdown fallback
 	if len(text) > 4000 {
@@ -415,7 +419,7 @@ func Run() error {
 				if !providerConfigured(cfg) {
 					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Sooraa. Choose a provider to finish onboarding.", menus.Onboarding())
 				} else {
-					sendMenuMarkup(token, u.Message.Chat.ID, "Sooraa is ready. Choose a control or send a task.", menus.Root())
+					sendRootKeyboard(token, u.Message.Chat.ID)
 				}
 			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -475,7 +479,7 @@ func Run() error {
 				send(token, u.Message.Chat.ID, "🔗 Attached to session "+currentSessionID(u.Message.Chat.ID))
 			case "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Root())
+				sendRootKeyboard(token, u.Message.Chat.ID)
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				startNewSession(token, u.Message.Chat.ID)
@@ -487,7 +491,7 @@ func Run() error {
 				handleAgentCommand(token, u.Message.Chat.ID, "/agent")
 			case "📋 Menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Root())
+				sendRootKeyboard(token, u.Message.Chat.ID)
 			case "📊 Context":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)

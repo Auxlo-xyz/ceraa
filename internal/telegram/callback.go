@@ -770,7 +770,7 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 	case "/codex-status", "/codex_status":
 		handleCodexStatus(token, chatID)
 	case "/menu":
-		sendMenuMarkup(token, chatID, "📋 Sooraa control hub", menus.Root())
+		sendRootKeyboard(token, chatID)
 	case "/search":
 		handleSearchCommand(token, chatID, command)
 	default:
