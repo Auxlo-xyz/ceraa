@@ -70,8 +70,12 @@ var telegramPollClient = &http.Client{Timeout: 45 * time.Second}
 
 func api(method, token string) string { return telegramAPIBase + token + "/" + method }
 
+func setMyCommandsBody() ([]byte, error) {
+	return json.Marshal(map[string]any{"commands": commandNames()})
+}
+
 func registerCommands(token string) error {
-	body, err := json.Marshal(commandNames())
+	body, err := setMyCommandsBody()
 	if err != nil {
 		return err
 	}

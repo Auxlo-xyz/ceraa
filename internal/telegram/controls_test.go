@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -62,6 +63,25 @@ func TestTelegramCommandNamesAreValid(t *testing.T) {
 		if strings.ContainsAny(command["command"], "-.") {
 			t.Fatalf("invalid Telegram command name %q", command["command"])
 		}
+	}
+}
+
+func TestSetMyCommandsPayloadUsesCommandsObject(t *testing.T) {
+	body, err := setMyCommandsBody()
+	if err != nil {
+		t.Fatalf("setMyCommandsBody() error = %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("setMyCommands payload is not an object: %v", err)
+	}
+	commands, ok := payload["commands"]
+	if !ok {
+		t.Fatal("setMyCommands payload is missing commands")
+	}
+	var decoded []map[string]string
+	if err := json.Unmarshal(commands, &decoded); err != nil || len(decoded) == 0 {
+		t.Fatal("setMyCommands commands must be a non-empty array")
 	}
 }
 
