@@ -28,9 +28,12 @@ type runRenderer struct {
 
 	mu            sync.Mutex
 	messageID     int
+	thoughtID     int
 	streamContent string
+	thought       string
 	tools         []toolActivity
 	lastStream    time.Time
+	lastThought   time.Time
 	lastStatus    time.Time
 	stopped       bool
 	cancel        context.CancelFunc
@@ -64,7 +67,16 @@ func (r *runRenderer) runStream() {
 		r.mu.Lock()
 		messageID := r.messageID
 		text := r.streamTextLocked()
+		thoughtID := r.thoughtID
+		thoughtText := r.thoughtTextLocked()
 		r.mu.Unlock()
+		if thoughtID != 0 && thoughtText != "" {
+			if err := editTelegramRichMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
+				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtText); fallbackErr != nil {
+					logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
+				}
+			}
+		}
 		if messageID == 0 {
 			continue
 		}
@@ -101,6 +113,24 @@ func (r *runRenderer) streamTextLocked() string {
 	return strings.Join(parts, "\n\n")
 }
 
+func (r *runRenderer) thoughtTextLocked() string {
+	if strings.TrimSpace(r.thought) == "" {
+		return ""
+	}
+	return formatThought(r.thought, true)
+}
+
+func formatThought(value string, streaming bool) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if streaming {
+		value += " ▌"
+	}
+	return "💭 **Thought**\n\n" + truncateStream(value)
+}
+
 func (r *runRenderer) setCancel(cancel context.CancelFunc) {
 	r.mu.Lock()
 	r.cancel = cancel
@@ -127,13 +157,35 @@ func (r *runRenderer) close() {
 func (r *runRenderer) reasoning(value string) {
 	now := time.Now()
 	r.mu.Lock()
-	if now.Sub(r.lastStatus) < 300*time.Millisecond {
+	if r.stopped {
 		r.mu.Unlock()
 		return
+	}
+	r.thought = value
+	thoughtID := r.thoughtID
+	shouldStream := now.Sub(r.lastThought) >= 300*time.Millisecond
+	if shouldStream {
+		r.lastThought = now
 	}
 	r.lastStatus = now
 	r.mu.Unlock()
 	r.pinned.UpdateReasoning(value)
+	if !shouldStream {
+		return
+	}
+	if thoughtID == 0 {
+		messageID, err := sendRichMessage(r.token, r.chatID, formatThought(value, true))
+		if err != nil {
+			messageID = sendWithKeyboard(r.token, r.chatID, formatThought(value, true), nil)
+		}
+		if messageID == 0 {
+			return
+		}
+		r.mu.Lock()
+		r.thoughtID = messageID
+		r.mu.Unlock()
+	}
+	r.signalStream()
 }
 
 func (r *runRenderer) tool(callID, value string) {
@@ -212,9 +264,16 @@ func (r *runRenderer) finish(answer string) {
 	r.mu.Lock()
 	stopped = r.stopped
 	messageID := r.messageID
+	thoughtID := r.thoughtID
+	thought := r.thought
 	r.mu.Unlock()
 	if stopped {
 		return
+	}
+	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
+		if !r.publishRichMessage(formatThought(thought, false), thoughtID) {
+			logger.Warn("Telegram final thought publication failed")
+		}
 	}
 	if answer != "" {
 		runes := []rune(answer)
@@ -266,12 +325,21 @@ func (r *runRenderer) finish(answer string) {
 }
 
 func (r *runRenderer) fail() {
+	r.close()
 	r.mu.Lock()
 	stopped := r.stopped
+	thoughtID := r.thoughtID
+	thought := r.thought
 	r.mu.Unlock()
-	if !stopped {
-		r.pinned.Fail()
+	if stopped {
+		return
 	}
+	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
+		if !r.publishRichMessage(formatThought(thought, false), thoughtID) {
+			logger.Warn("Telegram failed thought publication failed")
+		}
+	}
+	r.pinned.Fail()
 }
 
 func (r *runRenderer) stop() {

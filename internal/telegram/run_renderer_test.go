@@ -210,6 +210,71 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 	}
 }
 
+func TestThoughtStreamsInSeparateMessage(t *testing.T) {
+	var mu sync.Mutex
+	edits := make(map[int][]string)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/sendRichMessage") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			rich, _ := body["rich_message"].(map[string]any)
+			markdown, _ := rich["markdown"].(string)
+			messageID := 15
+			if markdown == "▌" {
+				messageID = 14
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, messageID)))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/editMessageText") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			id := int(body["message_id"].(float64))
+			rich, _ := body["rich_message"].(map[string]any)
+			markdown, _ := rich["markdown"].(string)
+			mu.Lock()
+			edits[id] = append(edits[id], markdown)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	pinned := NewPinnedManager("token", 42)
+	defer pinned.close()
+	pinned.Init()
+	renderer := newRunRenderer("token", 42, pinned)
+	renderer.reasoning("first step")
+	renderer.reasoning("first step\nsecond step")
+	renderer.finish("done")
+	renderer.close()
+
+	mu.Lock()
+	thoughtEdits := append([]string(nil), edits[15]...)
+	assistantEdits := append([]string(nil), edits[14]...)
+	mu.Unlock()
+	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "💭 **Thought**") || !strings.Contains(thoughtEdits[0], "first step") {
+		t.Fatalf("thought edits = %#v", thoughtEdits)
+	}
+	if !strings.Contains(thoughtEdits[len(thoughtEdits)-1], "second step") || strings.Contains(thoughtEdits[len(thoughtEdits)-1], "▌") {
+		t.Fatalf("final thought edit = %#v", thoughtEdits)
+	}
+	if len(assistantEdits) == 0 || assistantEdits[len(assistantEdits)-1] != "done" {
+		t.Fatalf("assistant edits = %#v", assistantEdits)
+	}
+	for _, edit := range assistantEdits {
+		if strings.Contains(edit, "💭 **Thought**") {
+			t.Fatalf("thought leaked into assistant block: %#v", assistantEdits)
+		}
+	}
+}
+
 func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	var mu sync.Mutex
 	var liveText string
