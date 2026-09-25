@@ -303,3 +303,72 @@ func TestThoughtSignatureIsReplayedOnToolCalls(t *testing.T) {
 		}
 	}
 }
+
+// TestUnsignedToolCallGetsSkipSentinel pins the fix for a permanent 400.
+//
+// Gemini 3 validates the first functionCall part of every step in the current
+// turn and rejects the whole request when it carries no thought_signature. A
+// call recorded by an earlier provider can never obtain a real signature, so
+// replaying that history fails on every retry. Google's documented escape hatch
+// is the skip_thought_signature_validator sentinel.
+func TestUnsignedToolCallGetsSkipSentinel(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "look around"},
+		// Signed by Gemini: the real signature must be replayed verbatim.
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{"command":"ls"}`, ThoughtSignature: "real-sig"},
+		// Recorded by another provider: no signature exists and none can.
+		{Kind: "tool_call", CallID: "chatcmpl-tool-abc", Name: "run", Args: `{"command":"ls"}`},
+		{Kind: "text", Role: RoleTool, CallID: "chatcmpl-tool-abc", Name: "run", Output: "out"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	got := map[string]string{}
+	for _, msg := range msgs {
+		calls, ok := msg["tool_calls"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, call := range calls {
+			extra, _ := call["extra_content"].(map[string]any)
+			google, _ := extra["google"].(map[string]any)
+			sig, _ := google["thought_signature"].(string)
+			fn, _ := call["function"].(map[string]any)
+			name, _ := fn["name"].(string)
+			got[name] = sig
+		}
+	}
+	if got["bash"] != "real-sig" {
+		t.Fatalf("signed call signature = %q, want it replayed unchanged", got["bash"])
+	}
+	if got["run"] != skipThoughtSignatureValidator {
+		t.Fatalf("unsigned call signature = %q, want %q", got["run"], skipThoughtSignatureValidator)
+	}
+}
+
+// TestSkipSentinelOnlyOnFunctionCalls pins that the sentinel never leaks onto
+// text or reasoning parts, which Gemini validates leniently.
+func TestSkipSentinelOnlyOnFunctionCalls(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleAssistant, Text: "thinking out loud", Reason: ""},
+		{Kind: "reasoning", Reason: "some reasoning"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	for _, msg := range msgs {
+		if _, present := msg["extra_content"]; present {
+			t.Fatalf("extra_content must not appear on a non-functionCall part: %v", msg)
+		}
+	}
+}
+
+// TestNoSentinelWhenSignaturesDisabled pins that other providers are untouched:
+// no signature, no sentinel.
+func TestNoSentinelWhenSignaturesDisabled(t *testing.T) {
+	items := []Item{{Kind: "tool_call", CallID: "c1", Name: "bash", Args: "{}"}}
+	msgs := encodeMessagesWithCompatibility(items, false, defaultCompatibility())
+	calls, _ := msgs[0]["tool_calls"].([]map[string]any)
+	if len(calls) != 1 {
+		t.Fatalf("tool_calls = %v", msgs[0]["tool_calls"])
+	}
+	if _, present := calls[0]["extra_content"]; present {
+		t.Fatal("extra_content must be absent when signatures are disabled")
+	}
+}

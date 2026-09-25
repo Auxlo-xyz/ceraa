@@ -419,6 +419,33 @@ func geminiExtraContent(signature string, enabled bool) map[string]any {
 	return map[string]any{"google": map[string]any{"thought_signature": signature}}
 }
 
+// skipThoughtSignatureValidator is the sentinel Google documents for a
+// functionCall part that did not come from the API and therefore can never
+// carry a real signature, such as history recorded by an earlier provider.
+const skipThoughtSignatureValidator = "skip_thought_signature_validator"
+
+// geminiToolCallExtraContent builds the extra_content for a functionCall part.
+//
+// A signed call replays its real signature. An unsigned one gets Google's
+// documented skip sentinel, because Gemini 3 validates the first functionCall
+// of every step in the current turn and answers 400 without it. That is the
+// permanent-failure case: a call recorded by another model can never obtain a
+// signature, so replaying history containing one would 400 on every retry
+// forever. Losing a little reasoning fidelity beats a session that cannot
+// continue, which is the trade Google documents for this sentinel.
+//
+// The sentinel is applied only to functionCall parts. Text and reasoning parts
+// are validated leniently and must not carry it.
+func geminiToolCallExtraContent(signature string, enabled bool) map[string]any {
+	if !enabled {
+		return nil
+	}
+	if strings.TrimSpace(signature) == "" {
+		signature = skipThoughtSignatureValidator
+	}
+	return map[string]any{"google": map[string]any{"thought_signature": signature}}
+}
+
 func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any {
 	return encodeMessagesWithCompatibility(items, geminiThoughtSignatures, defaultCompatibility())
 }
@@ -487,7 +514,7 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 			call := map[string]any{
 				"id": item.CallID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": args},
 			}
-			if extra := geminiExtraContent(item.ThoughtSignature, geminiThoughtSignatures); extra != nil {
+			if extra := geminiToolCallExtraContent(item.ThoughtSignature, geminiThoughtSignatures); extra != nil {
 				call["extra_content"] = extra
 			}
 			assistant := map[string]any{"role": "assistant", "tool_calls": []map[string]any{call}}
@@ -506,7 +533,7 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 				encoded := map[string]any{
 					"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": args},
 				}
-				if extra := geminiExtraContent(call.ThoughtSignature, geminiThoughtSignatures); extra != nil {
+				if extra := geminiToolCallExtraContent(call.ThoughtSignature, geminiThoughtSignatures); extra != nil {
 					encoded["extra_content"] = extra
 				}
 				calls = append(calls, encoded)
