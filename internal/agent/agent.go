@@ -70,6 +70,8 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		MaxOutputTokens:     provider.MaxOutputTokens,
 		ToolOutputDir:       cfg.ToolOutputDir,
 		MaxToolResultChars:  cfg.MaxToolResultChars,
+		MaxConcurrentTools:  cfg.MaxConcurrentTools,
+		GoalDir:             cfg.SessionFile,
 		ModelCatalogURL:     cfg.ModelCatalogURL,
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,

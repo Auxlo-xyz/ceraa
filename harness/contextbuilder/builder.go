@@ -123,10 +123,11 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 			}
 			item.Output = m.ToolResult
 		}
-		if m.Reasoning != "" {
+		if m.Reasoning != "" || len(m.ReasoningDetails) > 0 {
 			req.Messages = append(req.Messages, llm.Item{
-				Kind:   "reasoning",
-				Reason: m.Reasoning,
+				Kind:             "reasoning",
+				Reason:           m.Reasoning,
+				ReasoningDetails: m.ReasoningDetails,
 			})
 		}
 		req.Messages = append(req.Messages, item)
@@ -209,7 +210,7 @@ func EstimateTokens(s string) int {
 func EstimateMessages(items []llm.Item) int {
 	total := 0
 	for _, item := range items {
-		total += EstimateTokens(item.Text) + EstimateTokens(item.Args) + EstimateTokens(item.Output) + EstimateTokens(item.Reason)
+		total += EstimateTokens(item.Text) + EstimateTokens(item.Args) + EstimateTokens(item.Output) + EstimateTokens(item.Reason) + EstimateTokens(string(item.ReasoningDetails))
 		total += EstimateTokens(item.CallID) + EstimateTokens(item.Name)
 		for _, call := range item.ToolCalls {
 			total += EstimateTokens(call.ID) + EstimateTokens(call.Name) + EstimateTokens(call.Args)

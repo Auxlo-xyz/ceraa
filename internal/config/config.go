@@ -19,6 +19,7 @@ type Config struct {
 	WorkspaceRoot            string                     `json:"workspace_root,omitempty"`
 	ToolOutputDir            string                     `json:"tool_output_dir,omitempty"`
 	MaxToolResultChars       int                        `json:"max_tool_result_chars,omitempty"`
+	MaxConcurrentTools       int                        `json:"max_concurrent_tools,omitempty"`
 	ModelCatalogURL          string                     `json:"model_catalog_url,omitempty"`
 	ModelCatalogCache        string                     `json:"model_catalog_cache,omitempty"`
 	ModelCatalogRefreshHours int                        `json:"model_catalog_refresh_hours,omitempty"`
@@ -94,6 +95,7 @@ func DefaultConfig() *Config {
 		SessionFile:              "sessions",
 		WorkspaceRoot:            defaultWorkspaceRoot(),
 		MaxToolResultChars:       12000,
+		MaxConcurrentTools:       8,
 		ModelCatalogURL:          "https://openrouter.ai/api/v1/models",
 		ModelCatalogRefreshHours: 24,
 		TitleAPIURL:              "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -210,6 +212,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("SOORAA_MAX_TOOL_RESULT_CHARS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxToolResultChars = n
+		}
+	}
+	if v := os.Getenv("SOORAA_MAX_CONCURRENT_TOOLS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxConcurrentTools = n
 		}
 	}
 	if v := os.Getenv("SOORAA_MODEL_CATALOG_URL"); v != "" {

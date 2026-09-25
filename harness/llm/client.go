@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +24,18 @@ type ProviderConfig struct {
 	GeminiThoughtSignatures bool
 	MaxRetries              int
 	Timeout                 time.Duration
+	ToolChoice              string
+	Compatibility           *Compatibility
+}
+
+type Compatibility struct {
+	MaxTokensField         string
+	SupportsUsageStreaming bool
+	SupportsFinishReason   bool
+	SupportsDeveloperRole  bool
+	RequiresToolResultName bool
+	StrictTools            bool
+	ReasoningField         string
 }
 
 func DefaultConfig() ProviderConfig {
@@ -56,6 +70,46 @@ func FromProvider(baseURL, apiKey, model string) ProviderConfig {
 	}
 }
 
+func defaultCompatibility() Compatibility {
+	return Compatibility{
+		MaxTokensField:         "max_tokens",
+		SupportsUsageStreaming: true,
+		SupportsFinishReason:   false,
+		RequiresToolResultName: true,
+		ReasoningField:         "reasoning_content",
+	}
+}
+
+func compatibilityFor(cfg ProviderConfig) Compatibility {
+	compatibility := defaultCompatibility()
+	base := strings.ToLower(cfg.BaseURL)
+	model := strings.ToLower(cfg.Model)
+	if strings.Contains(base, "openai.com") || strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+		compatibility.MaxTokensField = "max_completion_tokens"
+		compatibility.SupportsDeveloperRole = true
+		compatibility.SupportsFinishReason = true
+	}
+	if strings.Contains(base, "openrouter.ai") {
+		compatibility.MaxTokensField = "max_tokens"
+		compatibility.SupportsDeveloperRole = false
+	}
+	if cfg.Compatibility != nil {
+		provided := *cfg.Compatibility
+		if provided.MaxTokensField != "" {
+			compatibility.MaxTokensField = provided.MaxTokensField
+		}
+		if provided.ReasoningField != "" {
+			compatibility.ReasoningField = provided.ReasoningField
+		}
+		compatibility.SupportsUsageStreaming = provided.SupportsUsageStreaming
+		compatibility.SupportsFinishReason = provided.SupportsFinishReason
+		compatibility.SupportsDeveloperRole = provided.SupportsDeveloperRole
+		compatibility.RequiresToolResultName = provided.RequiresToolResultName
+		compatibility.StrictTools = provided.StrictTools
+	}
+	return compatibility
+}
+
 type ToolDef struct {
 	Name        string
 	Description string
@@ -71,11 +125,15 @@ type StreamedToolCall struct {
 }
 
 type ProviderResponse struct {
-	Content   string
-	Reasoning string
-	ToolCalls []StreamedToolCall
-	Done      bool
-	Usage     *UsageInfo
+	Content          string
+	Reasoning        string
+	ToolCalls        []StreamedToolCall
+	Done             bool
+	FinishReason     string
+	ResponseID       string
+	ResponseModel    string
+	ReasoningDetails json.RawMessage
+	Usage            *UsageInfo
 }
 
 type UsageInfo struct {
@@ -85,6 +143,29 @@ type UsageInfo struct {
 	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
 	ReasoningTokens   int `json:"reasoning_tokens,omitempty"`
 	TotalTokens       int `json:"total_tokens,omitempty"`
+}
+
+type ProviderError struct {
+	Status     int
+	Body       string
+	Retryable  bool
+	RetryAfter time.Duration
+}
+
+type StreamError struct {
+	Err       error
+	Retryable bool
+	Partial   bool
+}
+
+func (e *StreamError) Error() string { return e.Err.Error() }
+func (e *StreamError) Unwrap() error { return e.Err }
+
+func (e *ProviderError) Error() string {
+	if e.Status == 0 {
+		return "provider request failed: " + e.Body
+	}
+	return fmt.Sprintf("provider error %d: %s", e.Status, e.Body)
 }
 
 type TokenBreakdown struct {
@@ -224,7 +305,7 @@ func EstimateTokenBreakdown(messages []Item, tools []ToolDef) TokenBreakdown {
 	var breakdown TokenBreakdown
 	breakdown.Tools = EstimateToolDefinitionTokens(tools)
 	for _, item := range messages {
-		tokens := estimateTokens(item.Text) + estimateTokens(item.Args) + estimateTokens(item.Output) + estimateTokens(item.Reason)
+		tokens := estimateTokens(item.Text) + estimateTokens(item.Args) + estimateTokens(item.Output) + estimateTokens(item.Reason) + estimateTokens(string(item.ReasoningDetails))
 		tokens += estimateTokens(item.CallID) + estimateTokens(item.Name)
 		for _, call := range item.ToolCalls {
 			tokens += estimateTokens(call.ID) + estimateTokens(call.Name) + estimateTokens(call.Args)
@@ -258,10 +339,11 @@ func estimateTokens(s string) int {
 }
 
 type StreamRequest struct {
-	Messages  []Item
-	Tools     []ToolDef
-	Reason    ReasonLevel
-	MaxTokens int
+	Messages   []Item
+	Tools      []ToolDef
+	Reason     ReasonLevel
+	MaxTokens  int
+	ToolChoice string
 }
 
 type StreamingClient struct {
@@ -286,21 +368,41 @@ func geminiExtraContent(signature string, enabled bool) map[string]any {
 }
 
 func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any {
+	return encodeMessagesWithCompatibility(items, geminiThoughtSignatures, defaultCompatibility())
+}
+
+func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool, compatibility Compatibility) []map[string]any {
+	items = normalizeItemsForChat(items)
 	msgs := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		switch item.Kind {
 		case "text":
-			msg := map[string]any{"role": string(item.Role)}
+			role := string(item.Role)
+			if item.Role == RoleSystem && compatibility.SupportsDeveloperRole {
+				role = "developer"
+			}
+			msg := map[string]any{"role": role}
 			if item.Role == RoleTool {
 				msg["tool_call_id"] = item.CallID
 				msg["content"] = item.Output
-				if item.Name != "" {
+				if item.Name != "" && compatibility.RequiresToolResultName {
 					msg["name"] = item.Name
 				}
 			} else {
 				msg["content"] = item.Text
 			}
 			msgs = append(msgs, msg)
+		case "reasoning":
+			if item.Reason != "" || len(item.ReasoningDetails) > 0 {
+				message := map[string]any{"role": "assistant"}
+				if item.Reason != "" {
+					message[compatibility.ReasoningField] = item.Reason
+				}
+				if len(item.ReasoningDetails) > 0 {
+					message["reasoning_details"] = item.ReasoningDetails
+				}
+				msgs = append(msgs, message)
+			}
 		case "tool_call":
 			args := item.Args
 			if repaired, changed := RepairToolArgumentsJSON(args); changed {
@@ -342,52 +444,94 @@ func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any
 	return msgs
 }
 
-func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
-	api := c.cfg.BaseURL
-	if !strings.HasSuffix(api, "/") {
-		api += "/"
+func normalizeItemsForChat(items []Item) []Item {
+	results := make(map[string]struct{})
+	for _, item := range items {
+		if item.Kind == "text" && item.Role == RoleTool && item.CallID != "" {
+			results[item.CallID] = struct{}{}
+		}
 	}
-	url := api + "chat/completions"
+	normalized := make([]Item, 0, len(items))
+	for _, item := range items {
+		normalized = append(normalized, item)
+		var calls []ToolCall
+		switch item.Kind {
+		case "tool_call":
+			if item.CallID != "" {
+				calls = []ToolCall{{ID: item.CallID, Name: item.Name}}
+			}
+		case "tool_calls":
+			calls = item.ToolCalls
+		}
+		for _, call := range calls {
+			if call.ID == "" {
+				continue
+			}
+			if _, ok := results[call.ID]; ok {
+				continue
+			}
+			results[call.ID] = struct{}{}
+			normalized = append(normalized, Item{Kind: "text", Role: RoleTool, CallID: call.ID, Name: call.Name, Output: "Error: tool result was not recorded", Text: "Error: tool result was not recorded"})
+		}
+	}
+	return normalized
+}
 
-	msgs := encodeMessages(req.Messages, c.cfg.GeminiThoughtSignatures)
+func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+	compatibility := compatibilityFor(c.cfg)
+	url := chatCompletionsURL(c.cfg.BaseURL)
+	msgs := encodeMessagesWithCompatibility(req.Messages, c.cfg.GeminiThoughtSignatures, compatibility)
 
 	body := map[string]any{
-		"model":          c.cfg.Model,
-		"messages":       msgs,
-		"stream":         true,
-		"stream_options": map[string]any{"include_usage": true},
+		"model":    c.cfg.Model,
+		"messages": msgs,
+		"stream":   true,
+	}
+	if compatibility.SupportsUsageStreaming {
+		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	if req.Reason != "" {
 		body["reasoning_effort"] = string(req.Reason)
 	}
 	if req.MaxTokens > 0 {
-		body["max_tokens"] = req.MaxTokens
+		body[compatibility.MaxTokensField] = req.MaxTokens
 	}
-	if req.Tools != nil && len(req.Tools) > 0 {
+	if len(req.Tools) > 0 {
 		toolMaps := make([]map[string]any, len(req.Tools))
-		for i, t := range req.Tools {
-			toolMaps[i] = map[string]any{
-				"type": "function",
-				"function": map[string]any{
-					"name":        t.Name,
-					"description": t.Description,
-					"parameters":  t.Parameters,
-				},
+		for i, tool := range req.Tools {
+			function := map[string]any{
+				"name":        tool.Name,
+				"description": tool.Description,
+				"parameters":  tool.Parameters,
 			}
+			if compatibility.StrictTools {
+				function["strict"] = true
+			}
+			toolMaps[i] = map[string]any{"type": "function", "function": function}
 		}
 		body["tools"] = toolMaps
-		body["tool_choice"] = "auto"
+		body["tool_choice"] = req.ToolChoice
+		if body["tool_choice"] == "" {
+			body["tool_choice"] = c.cfg.ToolChoice
+		}
+		if body["tool_choice"] == "" {
+			body["tool_choice"] = "auto"
+		}
 	}
 
-	b, _ := json.Marshal(body)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode provider request: %w", err)
+	}
 
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
-		hreq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
+		hreq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(encoded))
 		if err != nil {
 			return err
 		}
 		hreq.Header.Set("Content-Type", "application/json")
+		hreq.Header.Set("Accept", "text/event-stream")
 		if c.cfg.APIKey != "" {
 			hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
@@ -403,20 +547,40 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			break
 		}
 		if resp.StatusCode >= 300 {
-			raw, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			errMsg := fmt.Sprintf("provider error %d: %s", resp.StatusCode, string(raw))
-			lastErr = fmt.Errorf("%s", errMsg)
-			if isTransient(resp.StatusCode) && attempt < c.cfg.MaxRetries {
-				if !sleepContext(ctx, backoff(attempt)) {
+			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			_ = resp.Body.Close()
+			if readErr != nil {
+				raw = []byte(readErr.Error())
+			}
+			providerErr := &ProviderError{Status: resp.StatusCode, Body: string(raw), Retryable: shouldRetry(resp), RetryAfter: retryAfter(resp.Header)}
+			lastErr = providerErr
+			if providerErr.Retryable && attempt < c.cfg.MaxRetries {
+				delay := providerErr.RetryAfter
+				if delay <= 0 {
+					delay = backoff(attempt)
+				}
+				if !sleepContext(ctx, delay) {
 					break
 				}
 				continue
 			}
 			break
 		}
-		defer resp.Body.Close()
-		return c.readStream(resp.Body, onDelta)
+		err = c.readStreamWithCompatibility(resp.Body, onDelta, compatibility)
+		_ = resp.Body.Close()
+		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
+			if !sleepContext(ctx, backoff(attempt)) {
+				break
+			}
+			continue
+		}
+		return err
+	}
+	if providerErr, ok := lastErr.(*ProviderError); ok {
+		return providerErr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("provider request failed")
 	}
 	return fmt.Errorf("after %d retries: %w", c.cfg.MaxRetries, lastErr)
 }
@@ -429,31 +593,42 @@ type accumulatedToolCall struct {
 }
 
 func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	return c.readStreamWithCompatibility(r, onDelta, Compatibility{SupportsFinishReason: false})
+}
 
-	acc := map[int]*accumulatedToolCall{}
+func (c *StreamingClient) readStreamWithCompatibility(r io.Reader, onDelta func(ProviderResponse), compatibility Compatibility) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	acc := map[string]*accumulatedToolCall{}
+	var finishReason, responseID, responseModel string
+	terminal := false
+	emitted := false
 
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			onDelta(ProviderResponse{Done: true})
-			return nil
+		if data == "" {
+			continue
 		}
-
-		var ev struct {
+		if data == "[DONE]" {
+			terminal = true
+			break
+		}
+		var event struct {
 			ID      string `json:"id"`
+			Model   string `json:"model"`
 			Choices []struct {
 				Delta struct {
-					Content    *string `json:"content"`
-					Reasoning  *string `json:"reasoning_content"`
-					Reasoning2 *string `json:"reasoning"`
-					ToolCalls  []struct {
-						Index        int    `json:"index"`
+					Content         *string         `json:"content"`
+					Reasoning       *string         `json:"reasoning_content"`
+					ReasoningAlt    *string         `json:"reasoning"`
+					ReasoningText   *string         `json:"reasoning_text"`
+					ReasoningDetail json.RawMessage `json:"reasoning_details"`
+					ToolCalls       []struct {
+						Index        *int   `json:"index"`
 						ID           string `json:"id"`
 						Type         string `json:"type"`
 						ExtraContent struct {
@@ -471,38 +646,69 @@ func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)
 			} `json:"choices"`
 			Usage *UsageInfo `json:"usage"`
 		}
-		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			continue
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return &StreamError{Err: fmt.Errorf("decode provider stream event: %w", err), Retryable: false, Partial: emitted}
 		}
-
+		if event.ID != "" {
+			responseID = event.ID
+		}
+		if event.Model != "" {
+			responseModel = event.Model
+		}
 		var delta ProviderResponse
-		if len(ev.Choices) > 0 && ev.Choices[0].Delta.Content != nil && *ev.Choices[0].Delta.Content != "" {
-			delta.Content = *ev.Choices[0].Delta.Content
-		}
-		if len(ev.Choices) > 0 {
-			if ev.Choices[0].Delta.Reasoning != nil {
-				delta.Reasoning = *ev.Choices[0].Delta.Reasoning
-			} else if ev.Choices[0].Delta.Reasoning2 != nil {
-				delta.Reasoning = *ev.Choices[0].Delta.Reasoning2
+		delta.ResponseID = responseID
+		delta.ResponseModel = responseModel
+		if len(event.Choices) > 0 {
+			choice := event.Choices[0]
+			if choice.Delta.Content != nil {
+				delta.Content = *choice.Delta.Content
 			}
-			for _, tc := range ev.Choices[0].Delta.ToolCalls {
-				existing, ok := acc[tc.Index]
-				if !ok {
+			if len(choice.Delta.ReasoningDetail) > 0 && string(choice.Delta.ReasoningDetail) != "null" {
+				delta.ReasoningDetails = choice.Delta.ReasoningDetail
+			}
+			for _, candidate := range []*string{choice.Delta.Reasoning, choice.Delta.ReasoningAlt, choice.Delta.ReasoningText} {
+				if candidate != nil && *candidate != "" {
+					delta.Reasoning = *candidate
+					break
+				}
+			}
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				finishReason = *choice.FinishReason
+				delta.FinishReason = finishReason
+			}
+			for _, toolCall := range choice.Delta.ToolCalls {
+				key := streamedToolKey(toolCall.Index, toolCall.ID, len(acc))
+				if toolCall.Index == nil && toolCall.ID != "" {
+					if _, exists := acc[key]; !exists {
+						for existingKey, existing := range acc {
+							if existing.ID == "" {
+								key = existingKey
+								break
+							}
+						}
+					}
+				}
+				existing := acc[key]
+				if existing == nil {
 					existing = &accumulatedToolCall{}
-					acc[tc.Index] = existing
+					acc[key] = existing
 				}
-				if tc.ID != "" {
-					existing.ID = tc.ID
+				if toolCall.ID != "" {
+					existing.ID = toolCall.ID
 				}
-				if tc.Function.Name != "" {
-					existing.Name = tc.Function.Name
+				if toolCall.Function.Name != "" {
+					existing.Name = toolCall.Function.Name
 				}
-				if tc.ExtraContent.Google.ThoughtSignature != "" {
-					existing.ThoughtSignature = tc.ExtraContent.Google.ThoughtSignature
+				if toolCall.ExtraContent.Google.ThoughtSignature != "" {
+					existing.ThoughtSignature = toolCall.ExtraContent.Google.ThoughtSignature
 				}
-				existing.Arguments += tc.Function.Arguments
+				existing.Arguments = mergeStreamedArguments(existing.Arguments, toolCall.Function.Arguments)
+				index := len(acc) - 1
+				if toolCall.Index != nil {
+					index = *toolCall.Index
+				}
 				delta.ToolCalls = append(delta.ToolCalls, StreamedToolCall{
-					Index:            tc.Index,
+					Index:            index,
 					ID:               existing.ID,
 					Name:             existing.Name,
 					Arguments:        existing.Arguments,
@@ -510,12 +716,101 @@ func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)
 				})
 			}
 		}
-		if ev.Usage != nil {
-			delta.Usage = ev.Usage
+		if event.Usage != nil {
+			delta.Usage = event.Usage
+		}
+		if delta.Content != "" || delta.Reasoning != "" || len(delta.ToolCalls) > 0 || delta.Usage != nil || delta.FinishReason != "" {
+			emitted = true
 		}
 		onDelta(delta)
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return &StreamError{Err: fmt.Errorf("read provider stream: %w", err), Retryable: true, Partial: emitted}
+	}
+	if !terminal {
+		if finishReason == "" {
+			return &StreamError{Err: fmt.Errorf("provider stream ended without a terminal event"), Retryable: true, Partial: emitted}
+		}
+		terminal = true
+	}
+	if compatibility.SupportsFinishReason && finishReason == "" {
+		return &StreamError{Err: fmt.Errorf("provider stream ended without finish_reason"), Retryable: true, Partial: emitted}
+	}
+	onDelta(ProviderResponse{Done: true, FinishReason: finishReason, ResponseID: responseID, ResponseModel: responseModel})
+	return nil
+}
+
+func streamedToolKey(index *int, id string, fallback int) string {
+	if index != nil {
+		return "index:" + strconv.Itoa(*index)
+	}
+	if id != "" {
+		return "id:" + id
+	}
+	return "fallback:" + strconv.Itoa(fallback)
+}
+
+func mergeStreamedArguments(current, incoming string) string {
+	if incoming == "" {
+		return current
+	}
+	if current == "" || strings.HasPrefix(incoming, current) {
+		return incoming
+	}
+	return current + incoming
+}
+
+// isTransient returns true for status codes that should be retried.
+func chatCompletionsURL(base string) string {
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(base, "/chat/completions") {
+		return base
+	}
+	return base + "/chat/completions"
+}
+
+func retryAfter(header http.Header) time.Duration {
+	for _, name := range []string{"Retry-After-Ms", "Retry-After"} {
+		value := strings.TrimSpace(header.Get(name))
+		if value == "" {
+			continue
+		}
+		if milliseconds, err := strconv.ParseFloat(value, 64); err == nil && strings.EqualFold(name, "Retry-After-Ms") {
+			if milliseconds > 0 {
+				return time.Duration(milliseconds * float64(time.Millisecond))
+			}
+		}
+		if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds > 0 {
+			return time.Duration(seconds * float64(time.Second))
+		}
+		if when, err := http.ParseTime(value); err == nil {
+			if delay := time.Until(when); delay > 0 {
+				return delay
+			}
+		}
+	}
+	return 0
+}
+
+func IsContextOverflow(err error) bool {
+	if err == nil {
+		return false
+	}
+	if providerErr, ok := err.(*ProviderError); ok {
+		body := strings.ToLower(providerErr.Body)
+		return strings.Contains(body, "context_length") || strings.Contains(body, "context window") || strings.Contains(body, "maximum context") || strings.Contains(body, "too many tokens")
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "context_length") || strings.Contains(message, "context window") || strings.Contains(message, "maximum context")
+}
+
+func shouldRetry(response *http.Response) bool {
+	if value := strings.TrimSpace(response.Header.Get("X-Should-Retry")); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
+	}
+	return isTransient(response.StatusCode)
 }
 
 // isTransient returns true for status codes that should be retried.
@@ -540,10 +835,11 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 
 // backoff returns exponential backoff duration for the given attempt (0-based).
 func backoff(attempt int) time.Duration {
-	// 1s, 3s, 8s schedule
 	durations := []time.Duration{1 * time.Second, 3 * time.Second, 8 * time.Second}
+	delay := 8 * time.Second
 	if attempt < len(durations) {
-		return durations[attempt]
+		delay = durations[attempt]
 	}
-	return 8 * time.Second
+	jitter := time.Duration(rand.Int63n(int64(250 * time.Millisecond)))
+	return delay + jitter
 }

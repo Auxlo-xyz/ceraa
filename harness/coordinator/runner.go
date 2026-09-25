@@ -14,6 +14,7 @@ import (
 	"sooraa/harness/compaction"
 	"sooraa/harness/contextbuilder"
 	"sooraa/harness/evaluation"
+	"sooraa/harness/goal"
 	"sooraa/harness/inbox"
 	"sooraa/harness/llm"
 	"sooraa/harness/operation"
@@ -32,6 +33,8 @@ type RunnerConfig struct {
 	WorkDir             string
 	ToolOutputDir       string
 	MaxToolResultChars  int
+	MaxConcurrentTools  int
+	GoalDir             string
 	ModelCatalogURL     string
 	ModelCatalogCache   string
 	ModelCatalogRefresh time.Duration
@@ -93,6 +96,12 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	if cfg.MaxToolResultChars <= 0 {
 		cfg.MaxToolResultChars = 12000
 	}
+	if cfg.MaxConcurrentTools <= 0 {
+		cfg.MaxConcurrentTools = 8
+	}
+	if cfg.GoalDir == "" {
+		cfg.GoalDir = "sessions"
+	}
 	if cfg.ToolOutputDir == "" {
 		cfg.ToolOutputDir = filepath.Join(os.TempDir(), "sooraa-tool-outputs")
 	}
@@ -100,6 +109,7 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	if opMgr == nil {
 		opMgr = operation.NewWithBuffer(&toolRunner{reg: reg}, 4096)
 	}
+	opMgr.SetConcurrencyLimit(cfg.MaxConcurrentTools)
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	return &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
 }
@@ -242,6 +252,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 
 	step := 0
+	goalUsageBase := 0
+	goalContinuations := 0
 	correctiveToolRetryUsed := false
 	finalContentRetryUsed := false
 	forceFinalResponse := false
@@ -310,6 +322,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		var content strings.Builder
 		var reasoning strings.Builder
+		var reasoningDetails []json.RawMessage
 		var calls []llm.StreamedToolCall
 		var usage llm.UsageInfo
 		err = client.Stream(ctx, request, func(delta llm.ProviderResponse) {
@@ -324,6 +337,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				if r.cb.OnReasoning != nil {
 					r.cb.OnReasoning(reasoning.String())
 				}
+			}
+			if len(delta.ReasoningDetails) > 0 {
+				reasoningDetails = append(reasoningDetails, append(json.RawMessage(nil), delta.ReasoningDetails...))
 			}
 			if len(delta.ToolCalls) > 0 {
 				calls = llm.MergeStreamedToolCalls(calls, delta.ToolCalls)
@@ -356,7 +372,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 		}
 		if err != nil {
-			if r.cfg.Compactor != nil && (r.cfg.Compactor.IsOverflow(sess) || strings.Contains(strings.ToLower(err.Error()), "context") || strings.Contains(strings.ToLower(err.Error()), "token")) {
+			if r.cfg.Compactor != nil && (r.cfg.Compactor.IsOverflow(sess) || llm.IsContextOverflow(err)) {
 				if r.cb.OnCompactionStart != nil {
 					r.cb.OnCompactionStart()
 				}
@@ -442,9 +458,34 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			if rescued {
 				messageReasoning = ""
 			}
-			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: messageReasoning})
+			messageReasoningDetails := llm.MergeReasoningDetails(reasoningDetails)
+			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: messageReasoning, ReasoningDetails: messageReasoningDetails, Usage: usage})
 			if err := r.store.Save(sess); err != nil {
 				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+			}
+			if !r.cfg.StopWhenIdle && goalContinuations < 100 {
+				if goalStore, goalErr := goal.New(r.cfg.GoalDir); goalErr == nil {
+					if current, exists, loadErr := goalStore.Load(r.cfg.SessionID); loadErr == nil && exists && current.Status == goal.StatusActive {
+						current.TokensUsed += runUsage.TotalTokens - goalUsageBase
+						goalUsageBase = runUsage.TotalTokens
+						current.Iterations++
+						if current.TokenBudget > 0 && current.TokensUsed >= current.TokenBudget {
+							current.Status = goal.StatusBlocked
+							current.Reason = "token budget exhausted"
+							_ = goalStore.Save(r.cfg.SessionID, current)
+						} else {
+							if saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+								goalContinuations++
+								sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Continue working autonomously on the active goal. Make progress, verify the result, and call update_goal when it is completed or blocked. Active goal: " + current.Objective})
+								if saveErr := r.store.Save(sess); saveErr != nil {
+									return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
+								}
+								step++
+								continue
+							}
+						}
+					}
+				}
 			}
 			if r.cb.OnDone != nil {
 				r.cb.OnDone(answer)
@@ -452,7 +493,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			return Result{Final: answer, Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunCompleted, nil)
 		}
 
-		assistant := sessionstore.Message{Role: llm.RoleAssistant, Content: content.String(), Reasoning: reasoning.String(), ToolCalls: make([]sessionstore.ToolCallRef, 0, len(calls))}
+		assistant := sessionstore.Message{Role: llm.RoleAssistant, Content: content.String(), Reasoning: reasoning.String(), ReasoningDetails: llm.MergeReasoningDetails(reasoningDetails), Usage: usage, ToolCalls: make([]sessionstore.ToolCallRef, 0, len(calls))}
 		for _, call := range calls {
 			assistant.ToolCalls = append(assistant.ToolCalls, sessionstore.ToolCallRef{ID: call.ID, Name: call.Name, Args: call.Arguments, ThoughtSignature: call.ThoughtSignature})
 		}
@@ -856,6 +897,15 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			}
 			continue
 		}
+		if err := tool.ValidateArguments(t.Schema(), args); err != nil {
+			corrective = true
+			message := "Error: invalid arguments for " + toolName + ": " + err.Error() + "; use arguments " + toolCatalogArguments(t.Schema())
+			results[call.ID] = message
+			if err := r.persistPreparedFailure(sess, runID, call.ID, message, err.Error()); err != nil {
+				return nil, nil, false, err
+			}
+			continue
+		}
 		spec, err := t.Translate(args)
 		if err != nil {
 			corrective = true
@@ -869,6 +919,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		if spec.Args == nil {
 			spec.Args = map[string]any{}
 		}
+		spec.Args["goal_dir"] = r.cfg.GoalDir
 		if r.cfg.WorkDir != "" {
 			spec.Args["workdir"] = r.cfg.WorkDir
 		}
@@ -893,7 +944,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 	}
 
 	dispatched := make([]preparedTool, 0, len(prepared))
-	start := func(item preparedTool) error {
+	start := func(item preparedTool, forceSequential bool) error {
 		if r.cb.OnToolStart != nil {
 			r.cb.OnToolStart(item.call.ID, item.tool.Name(), map[string]any{"tool": item.tool.Name(), "args": item.rawArgs})
 		}
@@ -906,49 +957,79 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		if err := r.store.Save(sess); err != nil {
 			return err
 		}
-		r.opMgr.Add(operation.Operation{ID: item.call.ID, Spec: item.spec, Status: operation.StatusRunning})
+		op := operation.Operation{ID: item.call.ID, Spec: item.spec, Status: operation.StatusRunning}
+		if forceSequential {
+			r.opMgr.AddSequential(op)
+		} else if sequential, ok := item.tool.(tool.SequentialTool); ok && sequential.Sequential() {
+			r.opMgr.AddSequential(op)
+		} else {
+			r.opMgr.Add(op)
+		}
 		dispatched = append(dispatched, item)
 		return nil
 	}
-	authCount := 0
+	type authDecision struct {
+		allow bool
+		err   error
+	}
+	decisions := make(map[string]authDecision, len(prepared))
 	allowed := make(chan struct {
-		item  preparedTool
+		id    string
 		allow bool
 		err   error
 	}, len(prepared))
+	authCount := 0
 	for _, item := range prepared {
 		needsAuth := r.cfg.AuthorizeTool != nil && (r.cfg.NeedsAuthorization == nil || r.cfg.NeedsAuthorization(item.tool.Name(), item.args))
 		if !needsAuth {
-			if err := start(item); err != nil {
-				return nil, nil, false, err
-			}
+			decisions[item.call.ID] = authDecision{allow: true}
 			continue
 		}
 		authCount++
 		go func(item preparedTool) {
 			allow, err := r.cfg.AuthorizeTool(ctx, item.call.ID, item.tool.Name(), item.args)
 			allowed <- struct {
-				item  preparedTool
+				id    string
 				allow bool
 				err   error
-			}{item: item, allow: allow, err: err}
+			}{id: item.call.ID, allow: allow, err: err}
 		}(item)
 	}
 	for i := 0; i < authCount; i++ {
 		decision := <-allowed
+		decisions[decision.id] = authDecision{allow: decision.allow, err: decision.err}
+	}
+	authorized := make([]preparedTool, 0, len(prepared))
+	hasSequential := false
+	for _, item := range prepared {
+		decision := decisions[item.call.ID]
 		if decision.err != nil || !decision.allow {
 			message := "Error: permission denied by user"
 			if decision.err != nil {
 				message = "Error: permission request failed: " + decision.err.Error()
 			}
-			results[decision.item.call.ID] = message
-			if err := r.persistPreparedFailure(sess, runID, decision.item.call.ID, message, message); err != nil {
+			results[item.call.ID] = message
+			if err := r.persistPreparedFailure(sess, runID, item.call.ID, message, message); err != nil {
 				return nil, nil, false, err
 			}
 			continue
 		}
-		if err := start(decision.item); err != nil {
-			return nil, nil, false, err
+		authorized = append(authorized, item)
+		if sequential, ok := item.tool.(tool.SequentialTool); ok && sequential.Sequential() {
+			hasSequential = true
+		}
+	}
+	if hasSequential {
+		for _, item := range authorized {
+			if err := start(item, hasSequential); err != nil {
+				return nil, nil, false, err
+			}
+		}
+	} else {
+		for _, item := range authorized {
+			if err := start(item, hasSequential); err != nil {
+				return nil, nil, false, err
+			}
 		}
 	}
 	return dispatched, results, corrective, nil
@@ -1051,10 +1132,21 @@ func (r *Runner) statusFor(sess *sessionstore.Session, id string) sessionstore.O
 }
 
 func (r *Runner) resultText(runID string, result operation.ResultEvent) string {
+	output := result.Output
+	if result.OutputPath != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += "Full output: " + result.OutputPath
+	}
+	formatted := r.formatOutput(runID, result.OpID, output)
 	if result.Error != "" {
+		if formatted != "" {
+			return formatted + "\nError: " + result.Error
+		}
 		return "Error: " + result.Error
 	}
-	return r.formatOutput(runID, result.OpID, result.Output)
+	return formatted
 }
 
 func (r *Runner) formatOutput(runID, operationID, output string) string {

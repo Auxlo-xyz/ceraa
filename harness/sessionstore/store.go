@@ -70,6 +70,8 @@ type Message struct {
 	ToolCall          *ToolCallRef    `json:"tool_call,omitempty"`
 	ToolCalls         []ToolCallRef   `json:"tool_calls,omitempty"`
 	Reasoning         string          `json:"reasoning,omitempty"`
+	ReasoningDetails  json.RawMessage `json:"reasoning_details,omitempty"`
+	Usage             llm.UsageInfo   `json:"usage,omitempty"`
 	Compaction        *CompactionInfo `json:"compaction,omitempty"`
 }
 

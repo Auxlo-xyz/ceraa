@@ -86,6 +86,11 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		userText = "[PLAN MODE] Do not modify files or execute commands. Produce a concrete implementation plan and ask before any state-changing action.\n\n" + userText
 	}
 	providerID := defaultState.provider()
+	if cfg.ActiveProvider != "" {
+		providerID = cfg.ActiveProvider
+	} else if cfg.ProviderProfiles == nil {
+		providerID = "default"
+	}
 	providerConfig := activeProviderConfig(cfg, providerID)
 	modelConfig := llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model)
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
@@ -101,6 +106,8 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		WorkDir:             projectRoot,
 		ToolOutputDir:       cfg.ToolOutputDir,
 		MaxToolResultChars:  cfg.MaxToolResultChars,
+		MaxConcurrentTools:  cfg.MaxConcurrentTools,
+		GoalDir:             cfg.SessionFile,
 		ModelCatalogURL:     cfg.ModelCatalogURL,
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,

@@ -11,16 +11,18 @@ import (
 type ReasonLevel string
 
 const (
-	ReasonLow    ReasonLevel = "low"
-	ReasonMedium ReasonLevel = "medium"
-	ReasonHigh   ReasonLevel = "high"
-	ReasonXHigh  ReasonLevel = "xhigh"
-	ReasonMax    ReasonLevel = "max"
+	ReasonOff     ReasonLevel = "off"
+	ReasonMinimal ReasonLevel = "minimal"
+	ReasonLow     ReasonLevel = "low"
+	ReasonMedium  ReasonLevel = "medium"
+	ReasonHigh    ReasonLevel = "high"
+	ReasonXHigh   ReasonLevel = "xhigh"
+	ReasonMax     ReasonLevel = "max"
 )
 
 func (r ReasonLevel) Valid() bool {
 	switch r {
-	case ReasonLow, ReasonMedium, ReasonHigh, ReasonXHigh, ReasonMax:
+	case ReasonOff, ReasonMinimal, ReasonLow, ReasonMedium, ReasonHigh, ReasonXHigh, ReasonMax:
 		return true
 	}
 	return false
@@ -92,16 +94,31 @@ func ExtractSingleArgValue(text string) (string, bool) {
 }
 
 type Item struct {
-	Kind             string     `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
-	Role             Role       `json:"role,omitempty"`
-	Text             string     `json:"text,omitempty"`
-	CallID           string     `json:"call_id,omitempty"`
-	Name             string     `json:"name,omitempty"`
-	Args             string     `json:"arguments,omitempty"`
-	ThoughtSignature string     `json:"thought_signature,omitempty"`
-	Output           string     `json:"output,omitempty"`
-	Reason           string     `json:"reasoning,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Kind             string          `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
+	Role             Role            `json:"role,omitempty"`
+	Text             string          `json:"text,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Args             string          `json:"arguments,omitempty"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
+	Output           string          `json:"output,omitempty"`
+	Reason           string          `json:"reasoning,omitempty"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+}
+
+func MergeReasoningDetails(parts []json.RawMessage) json.RawMessage {
+	if len(parts) == 0 {
+		return nil
+	}
+	if len(parts) == 1 {
+		return append(json.RawMessage(nil), parts[0]...)
+	}
+	data, err := json.Marshal(parts)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func RepairToolArgumentsJSON(value string) (string, bool) {

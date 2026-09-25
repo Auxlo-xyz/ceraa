@@ -27,6 +27,14 @@ type Runner interface {
 	Run(spec operation.Spec) (string, error)
 }
 
+type SequentialTool interface {
+	Sequential() bool
+}
+
+type MutationKeyer interface {
+	MutationKey(args map[string]any) string
+}
+
 // Registry holds available tools.
 type Registry struct {
 	tools map[string]Tool
@@ -160,6 +168,68 @@ func (w *WriteTool) Translate(args map[string]any) (operation.Spec, error) {
 func (w *WriteTool) TranslateResult(op operation.Operation) string {
 	return "written"
 }
+func (w *WriteTool) Sequential() bool { return true }
+func (w *WriteTool) MutationKey(args map[string]any) string {
+	path, _ := args["path"].(string)
+	return path
+}
+
+type EditTool struct{}
+
+func (e *EditTool) Name() string { return "edit" }
+func (e *EditTool) Description() string {
+	return "Replace one exact occurrence of old_text with new_text in a file."
+}
+func (e *EditTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":     map[string]any{"type": "string", "description": "File path"},
+			"old_text": map[string]any{"type": "string", "description": "Existing text to replace"},
+			"new_text": map[string]any{"type": "string", "description": "Replacement text"},
+		},
+		"required": []string{"path", "old_text", "new_text"},
+	}
+}
+func (e *EditTool) Translate(args map[string]any) (operation.Spec, error) {
+	p, _ := args["path"].(string)
+	oldText, _ := args["old_text"].(string)
+	newText, _ := args["new_text"].(string)
+	if p == "" || oldText == "" {
+		return operation.Spec{}, fmt.Errorf("path and non-empty old_text are required")
+	}
+	return operation.Spec{Type: "edit", Args: map[string]any{"path": p, "old_text": oldText, "new_text": newText}}, nil
+}
+func (e *EditTool) TranslateResult(op operation.Operation) string { return "edited" }
+func (e *EditTool) Sequential() bool                              { return true }
+func (e *EditTool) MutationKey(args map[string]any) string {
+	path, _ := args["path"].(string)
+	return path
+}
+
+type LsTool struct{}
+
+func (l *LsTool) Name() string { return "ls" }
+func (l *LsTool) Description() string {
+	return "List files and directories at a path."
+}
+func (l *LsTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "Directory path"},
+		},
+		"required": []string{"path"},
+	}
+}
+func (l *LsTool) Translate(args map[string]any) (operation.Spec, error) {
+	path, _ := args["path"].(string)
+	if path == "" {
+		return operation.Spec{}, fmt.Errorf("path is required")
+	}
+	return operation.Spec{Type: "ls", Args: map[string]any{"path": path}}, nil
+}
+func (l *LsTool) TranslateResult(op operation.Operation) string { return op.Output }
 
 // GlobTool - glob file patterns.
 type GlobTool struct{}
@@ -254,6 +324,8 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&BashTool{})
 	r.Register(&ReadTool{})
 	r.Register(&WriteTool{})
+	r.Register(&EditTool{})
+	r.Register(&LsTool{})
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
 	r.Register(&ViewImageTool{})
@@ -264,6 +336,9 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&CommandCatalogTool{})
 	r.Register(&MCPCatalogTool{})
 	r.Register(&TodoWriteTool{})
+	r.Register(&CreateGoalTool{})
+	r.Register(&GetGoalTool{})
+	r.Register(&UpdateGoalTool{})
 
 	// WebSearch with config from env
 	provider := os.Getenv("SOORAA_WEBSEARCH_PROVIDER")

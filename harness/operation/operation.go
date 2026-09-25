@@ -55,10 +55,11 @@ type Manager interface {
 
 // ResultEvent fires when an operation completes.
 type ResultEvent struct {
-	OpID   string
-	Output string
-	Error  string
-	Status Status
+	OpID       string
+	Output     string
+	OutputPath string
+	Error      string
+	Status     Status
 }
 
 // ToolRunner allows tools to be executed by the operation manager.
@@ -72,10 +73,12 @@ type ContextRunner interface {
 
 // LocalManager runs operations in goroutines within the current process.
 type LocalManager struct {
-	mu      sync.Mutex
-	results chan ResultEvent
-	cancels map[string]context.CancelCauseFunc
-	runner  ToolRunner
+	mu       sync.Mutex
+	results  chan ResultEvent
+	cancels  map[string]context.CancelCauseFunc
+	runner   ToolRunner
+	slots    chan struct{}
+	serialMu sync.Mutex
 }
 
 // New creates a LocalManager. If runner is nil, only built-in types (shell, read, write, glob) are supported.
@@ -98,6 +101,16 @@ func (m *LocalManager) Results() <-chan ResultEvent {
 	return m.results
 }
 
+func (m *LocalManager) SetConcurrencyLimit(limit int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 {
+		m.slots = nil
+		return
+	}
+	m.slots = make(chan struct{}, limit)
+}
+
 func (m *LocalManager) CancelAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -118,6 +131,14 @@ func (m *LocalManager) Cancel(id string) {
 
 // Add dispatches an operation for execution and returns immediately.
 func (m *LocalManager) Add(op Operation) {
+	m.add(op, false)
+}
+
+func (m *LocalManager) AddSequential(op Operation) {
+	m.add(op, true)
+}
+
+func (m *LocalManager) add(op Operation, sequential bool) {
 	m.mu.Lock()
 	if _, exists := m.cancels[op.ID]; exists {
 		m.mu.Unlock()
@@ -125,9 +146,22 @@ func (m *LocalManager) Add(op Operation) {
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	m.cancels[op.ID] = cancel
+	slots := m.slots
 	m.mu.Unlock()
 
-	go m.execute(ctx, op)
+	if slots != nil {
+		slots <- struct{}{}
+	}
+	go func() {
+		if slots != nil {
+			defer func() { <-slots }()
+		}
+		if sequential {
+			m.serialMu.Lock()
+			defer m.serialMu.Unlock()
+		}
+		m.execute(ctx, op)
+	}()
 }
 
 func (m *LocalManager) execute(ctx context.Context, op Operation) {
@@ -157,6 +191,12 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			workDir, _ := op.Spec.Args["workdir"].(string)
 			r, err := primitives.RunShellContext(ctx, cmd, workDir, to)
 			result.Output = r.Content
+			result.OutputPath = r.OutputPath
+			if r.OutputPath != "" {
+				if data, readErr := os.ReadFile(r.OutputPath); readErr == nil {
+					_ = os.WriteFile(r.OutputPath, []byte(redact.SecretsInText(string(data))), 0o600)
+				}
+			}
 			if err != nil {
 				result.Error = err.Error()
 				result.Status = StatusFailed
@@ -167,6 +207,12 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			p, _ := op.Spec.Args["path"].(string)
 			workDir, _ := op.Spec.Args["workdir"].(string)
 			p = operationPath(p, workDir)
+			info, statErr := os.Stat(p)
+			if statErr == nil && info.IsDir() {
+				result.Output = listDirectory(p)
+				result.Status = StatusCompleted
+				break
+			}
 			r, err := primitives.ReadFile(p)
 			result.Output = r.Content
 			if err != nil {
@@ -175,24 +221,75 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			} else {
 				result.Status = StatusCompleted
 			}
+		case "ls":
+			path, _ := op.Spec.Args["path"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			path = operationPath(path, workDir)
+			info, err := os.Stat(path)
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+			} else if !info.IsDir() {
+				result.Error = "path is not a directory"
+				result.Status = StatusFailed
+			} else {
+				result.Output = listDirectory(path)
+				result.Status = StatusCompleted
+			}
 		case "write":
 			p, _ := op.Spec.Args["path"].(string)
 			workDir, _ := op.Spec.Args["workdir"].(string)
 			p = operationPath(p, workDir)
 			c, _ := op.Spec.Args["content"].(string)
-			if d := filepath.Dir(p); d != "" {
-				_ = os.MkdirAll(d, 0o755)
-			}
-			// Snapshot before write -> maps to soraacode snapshot.ts + revert.ts
-			if snapStore, err := newSnapshotStore(); err == nil {
-				_, _ = snapStore.Capture(p)
-			}
-			if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			err := withMutationLock(p, func() error {
+				if d := filepath.Dir(p); d != "" {
+					if err := os.MkdirAll(d, 0o755); err != nil {
+						return err
+					}
+				}
+				if snapStore, snapshotErr := newSnapshotStore(); snapshotErr == nil {
+					_, _ = snapStore.Capture(p)
+				}
+				return os.WriteFile(p, []byte(c), 0o644)
+			})
+			if err != nil {
 				result.Error = err.Error()
 				result.Status = StatusFailed
 			} else {
 				result.Status = StatusCompleted
 				result.Output = "written"
+			}
+		case "edit":
+			p, _ := op.Spec.Args["path"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			p = operationPath(p, workDir)
+			oldText, _ := op.Spec.Args["old_text"].(string)
+			newText, _ := op.Spec.Args["new_text"].(string)
+			err := withMutationLock(p, func() error {
+				if d := filepath.Dir(p); d != "" {
+					if err := os.MkdirAll(d, 0o755); err != nil {
+						return err
+					}
+				}
+				data, err := os.ReadFile(p)
+				if err != nil {
+					return err
+				}
+				content := string(data)
+				if count := strings.Count(content, oldText); count != 1 {
+					return fmt.Errorf("old_text must occur exactly once; found %d occurrences", count)
+				}
+				if snapStore, snapshotErr := newSnapshotStore(); snapshotErr == nil {
+					_, _ = snapStore.Capture(p)
+				}
+				return os.WriteFile(p, []byte(strings.Replace(content, oldText, newText, 1)), 0o644)
+			})
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+			} else {
+				result.Status = StatusCompleted
+				result.Output = "edited"
 			}
 		case "todowrite":
 			// Maps to soraacode session/todo.ts TodoWrite
@@ -345,7 +442,7 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			} else {
 				result.Status = StatusCompleted
 			}
-		case "webfetch", "websearch":
+		case "webfetch", "websearch", "create_goal", "get_goal", "update_goal":
 			if m.runner != nil {
 				// Default timeout: 30s for webfetch, 25s for websearch
 				to := 30 * time.Second
@@ -453,7 +550,9 @@ func runCatalog(kind string, args map[string]any) (string, error) {
 	case "skills":
 		skills := []struct{ Name, Desc string }{
 			{"read", "Read file contents or list directory"},
+			{"ls", "List directory entries"},
 			{"write", "Create or overwrite file"},
+			{"edit", "Replace exact text in a file"},
 			{"bash", "Execute shell command"},
 			{"grep", "Search via ripgrep"},
 			{"glob", "File pattern match"},
@@ -530,4 +629,23 @@ func todoStoreDir() (string, error) {
 
 func newTodoStore(dir string) (*todo.Store, error) {
 	return todo.New(dir)
+}
+
+func listDirectory(path string) string {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for i, entry := range entries {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		name := entry.Name()
+		if entry.IsDir() {
+			name += "/"
+		}
+		b.WriteString(name)
+	}
+	return b.String()
 }

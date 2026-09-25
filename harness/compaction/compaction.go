@@ -46,7 +46,7 @@ func EstimateTokens(s string) int {
 }
 
 func estimateMessage(m sessionstore.Message) int {
-	n := EstimateTokens(m.Content) + EstimateTokens(m.Reasoning) + EstimateTokens(m.ToolResult)
+	n := EstimateTokens(m.Content) + EstimateTokens(m.Reasoning) + EstimateTokens(string(m.ReasoningDetails)) + EstimateTokens(m.ToolResult)
 	for _, call := range m.AllToolCalls() {
 		n += EstimateTokens(call.Args) + EstimateTokens(call.Name) + 10
 	}
@@ -62,6 +62,25 @@ func estimateSession(sess *sessionstore.Session) int {
 		total += estimateMessage(m)
 	}
 	return total
+}
+
+func estimatedContext(sess *sessionstore.Session) int {
+	lastUsage := 0
+	lastAssistant := -1
+	for i, message := range sess.Messages {
+		if message.Role == llm.RoleAssistant && message.Usage.TotalTokens > 0 {
+			lastUsage = message.Usage.TotalTokens
+			lastAssistant = i
+		}
+	}
+	if lastAssistant < 0 || lastUsage == 0 {
+		return estimateSession(sess)
+	}
+	trailing := 0
+	for _, message := range sess.Messages[lastAssistant+1:] {
+		trailing += estimateMessage(message)
+	}
+	return lastUsage + trailing
 }
 
 type messageUnit struct {
@@ -95,25 +114,69 @@ func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head [
 	}
 	flush()
 
-	split := len(units)
 	total := 0
 	for i := len(units) - 1; i >= 0; i-- {
 		if total+units[i].tokens > keepTokens {
-			if split == len(units) {
+			if len(units) > i+1 {
+				return flattenMessages(units[:i+1]), flattenMessages(units[i+1:])
+			}
+			budget := keepTokens - total
+			if budget <= 0 {
+				return flattenMessages(units[:i+1]), flattenMessages(units[i+1:])
+			}
+			prefix := flattenMessages(units[:i])
+			unitHead, unitRecent := splitMessageUnit(units[i].messages, budget)
+			if len(unitRecent) == 0 {
 				return flattenMessages(units), nil
 			}
-			break
+			head = append(prefix, unitHead...)
+			recent = append(unitRecent, flattenMessages(units[i+1:])...)
+			return head, recent
 		}
 		total += units[i].tokens
-		split = i
 	}
-	for i := 0; i < split; i++ {
-		head = append(head, units[i].messages...)
+	return nil, flattenMessages(units)
+}
+
+func splitMessageUnit(messages []sessionstore.Message, budget int) (head, recent []sessionstore.Message) {
+	if len(messages) == 0 || budget <= 0 {
+		return messages, nil
 	}
-	for i := split; i < len(units); i++ {
-		recent = append(recent, units[i].messages...)
+	assistant := -1
+	for i, message := range messages {
+		if message.Role == llm.RoleAssistant {
+			assistant = i
+		}
 	}
-	return head, recent
+	if assistant < 0 {
+		return messages, nil
+	}
+	tailTokens := 0
+	for _, message := range messages[assistant:] {
+		tailTokens += estimateMessage(message)
+	}
+	if tailTokens <= budget {
+		return messages[:assistant], messages[assistant:]
+	}
+	last := len(messages) - 1
+	for last > assistant {
+		candidateTokens := 0
+		for _, message := range messages[assistant : last+1] {
+			candidateTokens += estimateMessage(message)
+		}
+		if candidateTokens <= budget {
+			return messages[:assistant], messages[assistant:]
+		}
+		if messages[last].Role == llm.RoleAssistant {
+			last--
+			continue
+		}
+		last--
+	}
+	if assistant < len(messages)-1 {
+		return messages[:assistant], messages[assistant:]
+	}
+	return messages, nil
 }
 
 func flattenMessages(units []messageUnit) []sessionstore.Message {
@@ -194,7 +257,36 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "...[truncated]"
+	headSize := n * 2 / 3
+	tailSize := n - headSize
+	if headSize < 256 {
+		headSize = n / 2
+		tailSize = n - headSize
+	}
+	var b strings.Builder
+	b.WriteString(s[:headSize])
+	b.WriteString("\n...[truncated; salient diagnostics preserved]...\n")
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(s, "\n") {
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "error") && !strings.Contains(lower, "fail") && !strings.Contains(lower, "panic") && !strings.Contains(lower, "traceback") {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, exists := seen[line]; exists {
+			continue
+		}
+		seen[line] = struct{}{}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if tailSize > 0 {
+		b.WriteString(s[len(s)-tailSize:])
+	}
+	return b.String()
 }
 
 // Select splits messages into head (to summarize) and recent (to keep verbatim)
@@ -263,7 +355,7 @@ func (c *Compactor) NeedsCompaction(sess *sessionstore.Session) bool {
 	if !c.Settings.Auto {
 		return false
 	}
-	used := estimateSession(sess)
+	used := estimatedContext(sess)
 	// Estimate request size including system prompt overhead
 	contextLimit := c.contextLimit()
 	buffer := c.Settings.Buffer
@@ -279,7 +371,7 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 	if !c.Settings.Auto {
 		return false
 	}
-	used := estimateSession(sess)
+	used := estimatedContext(sess)
 	usable := c.contextLimit() - c.outputReserve()
 	return used >= usable
 }
@@ -325,7 +417,10 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	c.LastPromptTokens = EstimateTokens(prompt)
 	client := llm.New(c.LLM)
 	req := llm.StreamRequest{
-		Messages:  []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: prompt}},
+		Messages: []llm.Item{
+			{Kind: "text", Role: llm.RoleSystem, Text: "You are a conversation checkpoint compiler. Produce only the requested anchored summary. Do not call tools, continue the task, or invent results."},
+			{Kind: "text", Role: llm.RoleUser, Text: prompt},
+		},
 		Tools:     nil,
 		MaxTokens: summaryOutput,
 	}
