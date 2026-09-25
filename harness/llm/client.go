@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -455,6 +456,7 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 	// Resolve tool-call names up front so a tool result can always name the call
 	// it answers, even when the stored message lost the name.
 	callNames := toolCallNames(items)
+	callSignatures := toolCallSignatures(items)
 	// A function call must be answered by exactly one tool message. History
 	// recorded across an interrupted run can hold two results for the same call
 	// id, which every OpenAI-compatible provider treats as malformed; Gemini
@@ -491,6 +493,15 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 					output = "No output was produced."
 				}
 				msg["content"] = output
+				if geminiThoughtSignatures && item.CallID != "" && callSignatures[item.CallID] == "" {
+					// Google's docs place the skip sentinel on the functionCall
+					// part, while the widely used gateway workaround places it on
+					// the functionResponse. Which one a deployment validates is
+					// not observable from here, so an unsigned call is marked in
+					// both places. A call that carries a real signature is left
+					// untouched, so signed history replays exactly as received.
+					msg["extra_content"] = map[string]any{"google": map[string]any{"thought_signature": skipThoughtSignatureValidator}}
+				}
 				if compatibility.RequiresToolResultName {
 					// Some providers reject the whole request when a tool result
 					// has no name. Gemini reports it as
@@ -705,6 +716,15 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			continue
 		}
 		body[key] = value
+	}
+
+	// A Gemini 400 naming a thought_signature is impossible to diagnose from the
+	// error alone, so record what this request actually carried.
+	if c.cfg.GeminiThoughtSignatures {
+		stats := geminiSignatureStats(req.Messages)
+		fmt.Fprintf(os.Stderr,
+			"ceraa: gemini-thought-signatures model=%s items=%d signed_calls=%d sentinel_calls=%d tool_messages_marked=%d\n",
+			c.cfg.Model, len(req.Messages), stats.signed, stats.sentinel, stats.toolMarked)
 	}
 
 	encoded, err := json.Marshal(body)
@@ -1015,6 +1035,58 @@ func toolCallNames(items []Item) map[string]string {
 		}
 	}
 	return names
+}
+
+// geminiSignatureStats summarises how signatures were applied to a request, for
+// the diagnostic line above.
+func geminiSignatureStats(items []Item) struct{ signed, sentinel, toolMarked int } {
+	var stats struct{ signed, sentinel, toolMarked int }
+	for _, item := range items {
+		switch item.Kind {
+		case "tool_call":
+			if item.ThoughtSignature != "" {
+				stats.signed++
+			} else {
+				stats.sentinel++
+			}
+		case "tool_calls":
+			for _, call := range item.ToolCalls {
+				if call.ThoughtSignature != "" {
+					stats.signed++
+				} else {
+					stats.sentinel++
+				}
+			}
+		}
+	}
+	signatures := toolCallSignatures(items)
+	for _, item := range items {
+		if item.Kind == "text" && item.Role == RoleTool && item.CallID != "" && signatures[item.CallID] == "" {
+			stats.toolMarked++
+		}
+	}
+	return stats
+}
+
+// toolCallSignatures maps a tool call id to the thought signature it carries,
+// empty when the call never had one.
+func toolCallSignatures(items []Item) map[string]string {
+	signatures := make(map[string]string)
+	for _, item := range items {
+		switch item.Kind {
+		case "tool_call":
+			if item.CallID != "" {
+				signatures[item.CallID] = item.ThoughtSignature
+			}
+		case "tool_calls":
+			for _, call := range item.ToolCalls {
+				if call.ID != "" {
+					signatures[call.ID] = call.ThoughtSignature
+				}
+			}
+		}
+	}
+	return signatures
 }
 
 // canonicalToolResults picks the single result to send for each tool call id.

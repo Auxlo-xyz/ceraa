@@ -435,3 +435,47 @@ func TestToolMessageWithoutCallIDIsKept(t *testing.T) {
 		t.Fatalf("encoded %d messages, want 2", len(msgs))
 	}
 }
+
+// TestSentinelAlsoMarkedOnUnsignedToolMessage pins that an unsigned call is
+// marked in both places Google and the community workaround use. A call with a
+// real signature must be left exactly as received.
+func TestSentinelAlsoMarkedOnUnsignedToolMessage(t *testing.T) {
+	items := []Item{
+		{Kind: "tool_call", CallID: "signed", Name: "bash", Args: "{}", ThoughtSignature: "real-sig"},
+		{Kind: "text", Role: RoleTool, CallID: "signed", Name: "bash", Output: "ok"},
+		{Kind: "tool_call", CallID: "unsigned", Name: "ls", Args: "{}"},
+		{Kind: "text", Role: RoleTool, CallID: "unsigned", Name: "ls", Output: "out"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	toolExtra := map[string]bool{}
+	for _, msg := range msgs {
+		if msg["role"] != string(RoleTool) {
+			continue
+		}
+		id, _ := msg["tool_call_id"].(string)
+		extra, _ := msg["extra_content"].(map[string]any)
+		google, _ := extra["google"].(map[string]any)
+		_, present := google["thought_signature"]
+		toolExtra[id] = present
+	}
+	if toolExtra["signed"] {
+		t.Fatal("a signed call's tool message must not be marked")
+	}
+	if !toolExtra["unsigned"] {
+		t.Fatal("an unsigned call's tool message must carry the sentinel")
+	}
+}
+
+// TestSignatureStatsUnderpinsDiagnostic pins the counters behind the diagnostic
+// line, so a failing run is readable instead of guesswork.
+func TestSignatureStatsUnderpinsDiagnostic(t *testing.T) {
+	stats := geminiSignatureStats([]Item{
+		{Kind: "tool_call", CallID: "a", Name: "bash", ThoughtSignature: "sig"},
+		{Kind: "tool_call", CallID: "b", Name: "ls"},
+		{Kind: "text", Role: RoleTool, CallID: "a", Output: "ok"},
+		{Kind: "text", Role: RoleTool, CallID: "b", Output: "out"},
+	})
+	if stats.signed != 1 || stats.sentinel != 1 || stats.toolMarked != 1 {
+		t.Fatalf("stats = %+v, want signed=1 sentinel=1 toolMarked=1", stats)
+	}
+}
