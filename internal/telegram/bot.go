@@ -285,6 +285,22 @@ var promptQueue = struct {
 var activeRuns sync.Map
 var detachedChats sync.Map
 
+type telegramStartup struct {
+	token         string
+	providerReady bool
+}
+
+func resolveTelegramStartup(cfg *config.Config) (telegramStartup, error) {
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		token = cfg.Telegram.BotToken
+	}
+	if token == "" {
+		return telegramStartup{}, fmt.Errorf("TELEGRAM_BOT_TOKEN required")
+	}
+	return telegramStartup{token: token, providerReady: providerConfigured(cfg)}, nil
+}
+
 func Run() error {
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
@@ -293,19 +309,20 @@ func Run() error {
 	if err := os.MkdirAll(cfg.WorkspaceRootPath(), 0o755); err != nil {
 		return fmt.Errorf("create workspace root: %w", err)
 	}
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if token == "" {
-		token = cfg.Telegram.BotToken
+	startup, err := resolveTelegramStartup(cfg)
+	if err != nil {
+		return err
 	}
-	if token == "" {
-		return fmt.Errorf("TELEGRAM_BOT_TOKEN required")
-	}
+	token := startup.token
 
 	// Initialize logger -> maps to soraacode observability/logging.ts initializeLogger
 	if _, err := logger.Initialize(""); err != nil {
 		fmt.Printf("logger init failed: %v\n", err)
 	} else {
 		logger.Info("Sooraa bridge starting")
+		if !startup.providerReady {
+			logger.Info("Telegram token-only startup: provider onboarding required")
+		}
 		defer logger.Get().Flush()
 	}
 

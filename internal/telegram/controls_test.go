@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"sooraa/internal/config"
 	"sooraa/internal/telegram/keyboard"
 	"sooraa/internal/telegram/menus"
 )
@@ -160,6 +161,17 @@ func TestAuthorizationFailsClosedWithoutOwner(t *testing.T) {
 	}
 	if bootstrapClaimAuthorized(0, 42, -42, "onboarding:claim") {
 		t.Fatal("group claim should not be allowed")
+	}
+}
+
+func TestTokenOnlyStartupIsAccepted(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	startup, err := resolveTelegramStartup(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startup.token != "test-token" || startup.providerReady {
+		t.Fatalf("token-only startup = %#v", startup)
 	}
 }
 
