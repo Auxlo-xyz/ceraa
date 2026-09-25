@@ -5,16 +5,35 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"ceraa/internal/freebuff"
+	"ceraa/internal/paths"
+	"ceraa/internal/secret"
 	"github.com/spf13/cobra"
 )
 
 var freebuffCmd = &cobra.Command{
 	Use:   "freebuff",
 	Short: "Manage the native Freebuff login",
+	// The encrypted store is opened for every subcommand: login has to persist
+	// the token, status has to read it, and logout has to delete it. Without
+	// this the browser approval would succeed and the credential would be
+	// dropped on the floor at the save step.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if err := initSecretStore(); err != nil {
+			fmt.Fprintf(os.Stderr, "freebuff: open credential store: %v\n", err)
+			os.Exit(1)
+		}
+	},
+}
+
+// initSecretStore opens the encrypted store from the resolved data directory.
+func initSecretStore() error {
+	dir := paths.DataDir()
+	return secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json"))
 }
 
 // freebuffLoginCmd starts the device login and blocks until the browser
