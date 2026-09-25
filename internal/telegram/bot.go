@@ -20,6 +20,7 @@ import (
 	"sooraa/harness/scheduler"
 	"sooraa/internal/codexauth"
 	"sooraa/internal/config"
+	"sooraa/internal/hermesauth"
 	"sooraa/internal/logger"
 	"sooraa/internal/secret"
 	"sooraa/internal/telegram/keyboard"
@@ -494,6 +495,15 @@ func Run() error {
 				continue
 			}
 
+			if strings.HasPrefix(txt, "/hermes-login") || strings.HasPrefix(txt, "/hermes_login") || strings.HasPrefix(txt, "/hermes-status") || strings.HasPrefix(txt, "/hermes_status") {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				if strings.HasPrefix(txt, "/hermes-status") || strings.HasPrefix(txt, "/hermes_status") {
+					handleHermesStatus(token, u.Message.Chat.ID)
+				} else {
+					handleHermesLogin(token, u.Message.Chat.ID, txt)
+				}
+				continue
+			}
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -613,6 +623,9 @@ func Run() error {
 
 func providerConfigured(cfg *config.Config) bool {
 	provider := activeProviderConfig(cfg, defaultState.provider())
+	if provider.Subscription == "hermes" {
+		return provider.Model != ""
+	}
 	return provider.URL != "" && provider.Model != "" && provider.APIKey != ""
 }
 
@@ -1098,6 +1111,69 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 }
 
 var authMgr = codexauth.NewManager()
+var hermesAuthMgr = hermesauth.NewLoginManager(nil)
+var hermesLoginModels sync.Map
+
+func handleHermesLogin(token string, chatID int64, text string) {
+	parts := strings.Fields(strings.TrimSpace(text))
+	model := ""
+	if len(parts) > 1 {
+		model = parts[1]
+		if model == "nous" && len(parts) > 2 {
+			model = parts[2]
+		}
+	}
+	flow, err := hermesAuthMgr.Start(context.Background(), "nous")
+	if err != nil {
+		send(token, chatID, "Failed to start Hermes login: "+err.Error())
+		return
+	}
+	hermesLoginModels.Store(flow.ID, model)
+	keyboard, _ := flow.InlineKeyboardJSON()
+	var markup map[string]any
+	if err := json.Unmarshal(keyboard, &markup); err != nil {
+		send(token, chatID, "Failed to encode Hermes login menu: "+err.Error())
+		return
+	}
+	sendMessageWithMarkup(token, chatID, flow.ResultMessage(), markup)
+}
+
+func handleHermesStatus(token string, chatID int64) {
+	for _, flow := range hermesAuthMgr.ListFlows() {
+		status, _, userCode := flow.StatusSnapshot()
+		if status == "succeeded" {
+			activateHermesProvider(token, chatID, flow.ID)
+			return
+		}
+		if status == "waiting" || status == "checking" {
+			send(token, chatID, "🔄 Hermes login in progress. Code: "+userCode)
+			return
+		}
+	}
+	send(token, chatID, "❌ No completed Hermes login. Use /hermes-login to start Nous Portal login.")
+}
+
+func activateHermesProvider(token string, chatID int64, flowID string) {
+	modelValue, _ := hermesLoginModels.Load(flowID)
+	model, _ := modelValue.(string)
+	if model == "" {
+		_, model, _ = defaultState.values()
+	}
+	if model == "" {
+		send(token, chatID, "✅ Hermes login saved. Send /model <model-id> to activate the provider.")
+		return
+	}
+	profile := config.ProviderProfile{Model: model, ContextLimit: 236000, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: "hermes", HermesProvider: "nous"}
+	if err := defaultState.setProviderProfile("hermes", profile); err != nil {
+		send(token, chatID, "Hermes profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider("hermes"); err != nil {
+		send(token, chatID, "Hermes provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ Hermes/Nous provider activated with model "+model+".")
+}
 
 func handleCodexLogin(token string, chatID int64) {
 	state, err := authMgr.Start()

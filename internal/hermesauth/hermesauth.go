@@ -31,6 +31,7 @@ type Credential struct {
 
 type Store struct {
 	Home         string
+	PortalURL    string
 	RefreshSkew  time.Duration
 	RefreshLimit time.Duration
 	HTTPClient   *http.Client
@@ -40,6 +41,7 @@ type Snapshot struct {
 	ActiveProvider string
 	Providers      map[string]ProviderState
 	Pool           map[string][]PoolEntry
+	Native         map[string]ProviderState
 }
 
 type ProviderState struct {
@@ -98,6 +100,21 @@ type rawEntry struct {
 	Status           string `json:"last_status"`
 }
 
+type nativeRecord struct {
+	Provider          string    `json:"provider"`
+	AccessToken       string    `json:"access_token"`
+	RefreshToken      string    `json:"refresh_token"`
+	AgentKey          string    `json:"agent_key"`
+	AgentKeyExpiresAt time.Time `json:"agent_key_expires_at"`
+	BaseURL           string    `json:"base_url"`
+	PortalBaseURL     string    `json:"portal_base_url"`
+	ClientID          string    `json:"client_id"`
+	TokenEndpoint     string    `json:"token_endpoint"`
+	TokenType         string    `json:"token_type"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	Scope             string    `json:"scope"`
+}
+
 type rawState struct {
 	AccessToken       string     `json:"access_token"`
 	RefreshToken      string     `json:"refresh_token"`
@@ -133,14 +150,20 @@ func (s *Store) AuthPath() string {
 }
 
 func (s *Store) Load() (Snapshot, error) {
-	snapshot := Snapshot{Providers: map[string]ProviderState{}, Pool: map[string][]PoolEntry{}}
+	snapshot := Snapshot{Providers: map[string]ProviderState{}, Pool: map[string][]PoolEntry{}, Native: s.loadNative()}
 	path := s.AuthPath()
 	if path == "" {
-		return snapshot, ErrNoCredential
+		if len(snapshot.Native) == 0 {
+			return snapshot, ErrNoCredential
+		}
+		return snapshot, nil
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return snapshot, ErrNoCredential
+		if len(snapshot.Native) == 0 {
+			return snapshot, ErrNoCredential
+		}
+		return snapshot, nil
 	}
 	if err != nil {
 		return snapshot, fmt.Errorf("read hermes auth store: %w", err)
@@ -231,6 +254,19 @@ func resolveFromSnapshot(snapshot Snapshot, providerID string) (Credential, erro
 	}
 	if providerID == "" {
 		return Credential{}, ErrNoCredential
+	}
+	if state, ok := snapshot.Native[providerID]; ok {
+		token := state.AccessToken
+		expiresAt := state.ExpiresAt
+		if providerID == "nous" && state.AgentKey != "" {
+			token = state.AgentKey
+			if !state.AgentKeyExpiresAt.IsZero() {
+				expiresAt = state.AgentKeyExpiresAt
+			}
+		}
+		if token != "" {
+			return Credential{Provider: providerID, ID: "native", AccessToken: token, RefreshToken: state.RefreshToken, BaseURL: firstNonEmpty(state.InferenceBaseURL, state.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(state.TokenType, "Bearer"), Transport: transportForProvider(providerID), PortalBaseURL: firstNonEmpty(state.PortalBaseURL, defaultNousPortalURL), ClientID: state.ClientID, TokenEndpoint: state.TokenEndpoint, ExpiresAt: expiryOr(expiresAt, token), Source: "sooraa-native"}, nil
+		}
 	}
 	for _, entry := range snapshot.Pool[providerID] {
 		if entry.Status == "dead" || entry.Status == "exhausted" {

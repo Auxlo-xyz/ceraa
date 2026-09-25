@@ -18,15 +18,16 @@ import (
 )
 
 const (
-	defaultNousPortalURL = "https://portal.nousresearch.com"
-	defaultNousClientID  = "hermes-cli"
-	codexTokenURL        = "https://auth.openai.com/oauth/token"
-	codexClientID        = "app_EMoamEEZ73f0CkXaXp7hrann"
-	xaiDiscoveryURL      = "https://auth.x.ai/.well-known/openid-configuration"
-	xaiClientID          = "b1a00492-073a-47ea-816f-4c329264a828"
-	qwenTokenURL         = "https://chat.qwen.ai/api/v1/oauth2/token"
-	qwenClientID         = "f0304373b74a44d2b584a3fb70ca9e56"
-	minimaxClientID      = "78257093-7e40-4613-99e0-527b14b39113"
+	defaultNousPortalURL    = "https://portal.nousresearch.com"
+	defaultNousInferenceURL = "https://inference-api.nousresearch.com/v1"
+	defaultNousClientID     = "hermes-cli"
+	codexTokenURL           = "https://auth.openai.com/oauth/token"
+	codexClientID           = "app_EMoamEEZ73f0CkXaXp7hrann"
+	xaiDiscoveryURL         = "https://auth.x.ai/.well-known/openid-configuration"
+	xaiClientID             = "b1a00492-073a-47ea-816f-4c329264a828"
+	qwenTokenURL            = "https://chat.qwen.ai/api/v1/oauth2/token"
+	qwenClientID            = "f0304373b74a44d2b584a3fb70ca9e56"
+	minimaxClientID         = "78257093-7e40-4613-99e0-527b14b39113"
 )
 
 func (s *Store) Refresh(ctx context.Context, providerID string) error {
@@ -37,6 +38,9 @@ func (s *Store) Refresh(ctx context.Context, providerID string) error {
 	path := s.AuthPath()
 	if path == "" {
 		return errors.New("hermes home is not configured")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create hermes auth directory: %w", err)
 	}
 	lock, err := flock.Acquire(path + ".lock")
 	if err != nil {
@@ -251,6 +255,9 @@ func expiryOr(explicit time.Time, token string) time.Time {
 }
 
 func (s *Store) persistRefresh(before, after Credential) error {
+	if before.Source == "sooraa-native" {
+		return s.saveNative(after)
+	}
 	path := s.AuthPath()
 	data, err := os.ReadFile(path)
 	if err != nil {

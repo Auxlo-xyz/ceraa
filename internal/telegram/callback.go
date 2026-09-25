@@ -623,6 +623,30 @@ func handleCallback(token string, q *struct {
 		send(token, chatID, string(output))
 		return
 	}
+	if strings.HasPrefix(data, "hermes:check:") {
+		flowID := strings.TrimPrefix(data, "hermes:check:")
+		flow, err := hermesAuthMgr.Check(flowID)
+		if err != nil {
+			editCallback(token, chatID, q.Message.MessageID, "❌ "+err.Error(), nil)
+			return
+		}
+		status, _, _ := flow.StatusSnapshot()
+		if status == "succeeded" {
+			activateHermesProvider(token, chatID, flowID)
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, flow.ResultMessage(), nil)
+		return
+	}
+	if strings.HasPrefix(data, "hermes:cancel:") {
+		flowID := strings.TrimPrefix(data, "hermes:cancel:")
+		if err := hermesAuthMgr.Cancel(flowID); err != nil {
+			editCallback(token, chatID, q.Message.MessageID, "❌ "+err.Error(), nil)
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "Hermes login cancelled.", nil)
+		return
+	}
 	if strings.HasPrefix(data, "codex:check:") {
 		flowID := strings.TrimPrefix(data, "codex:check:")
 		state, err := authMgr.Check(flowID)

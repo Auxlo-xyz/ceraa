@@ -48,5 +48,7 @@ func Commands() []CommandSpec {
 		{"delsecret", "Delete an encrypted secret"},
 		{"codex-login", "Start Codex device login"},
 		{"codex-status", "Show Codex login status"},
+		{"hermes-login", "Start Nous Portal device login"},
+		{"hermes-status", "Show Hermes login status"},
 	}
 }
