@@ -529,3 +529,32 @@ func TestSignatureStatsUnderpinsDiagnostic(t *testing.T) {
 		t.Fatalf("stats = %+v, want signed=2 sentinel=2", stats)
 	}
 }
+
+// TestDescribeEncodedTurnRevealsSignaturePlacement pins the diagnostic that makes
+// a Gemini 400 readable: it must show, per assistant turn, every function name
+// and whether a signature rides along, while never leaking message content.
+func TestDescribeEncodedTurnRevealsSignaturePlacement(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "secret question"},
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{"command":"ls secret"}`, ThoughtSignature: "real-signature-value"},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "secret output"},
+		{Kind: "tool_call", CallID: "c2", Name: "read", Args: "{}"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	got := describeEncodedTurn(msgs)
+	for _, want := range []string{
+		"user",
+		"assistant/tool_calls(bash:sig20)",
+		"tool",
+		"assistant/tool_calls(read:sentinel)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("turn %q missing %q", got, want)
+		}
+	}
+	for _, leak := range []string{"secret question", "secret output", "ls secret"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("turn leaked message content %q: %s", leak, got)
+		}
+	}
+}

@@ -746,12 +746,14 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		body[key] = value
 	}
 
-	// A Gemini 400 naming a thought_signature is impossible to diagnose from the
-	// error alone, so record what this request actually carried.
+	// A Gemini 400 naming a thought_signature cannot be diagnosed from the error
+	// text, which has produced several wrong diagnoses in a row. Record the exact
+	// turn shape that goes on the wire: which messages, which tool calls, and for
+	// each one whether a signature is present. Message content is never logged.
 	if c.cfg.GeminiThoughtSignatures {
 		stats := geminiSignatureStats(req.Messages)
-		note := fmt.Sprintf("gemini-thought-signatures model=%s items=%d signed_calls=%d sentinel_calls=%d\n",
-			c.cfg.Model, len(req.Messages), stats.signed, stats.sentinel)
+		note := fmt.Sprintf("gemini-thought-signatures model=%s items=%d signed_calls=%d sentinel_calls=%d turn=%s\n",
+			c.cfg.Model, len(req.Messages), stats.signed, stats.sentinel, describeEncodedTurn(msgs))
 		// Written to the data log as well as stderr: a CLI run's stderr belongs to
 		// whatever terminal launched it, so a file is the only place a diagnostic
 		// can be read from afterwards.
@@ -1082,6 +1084,48 @@ func writeDebugNote(name, line string) {
 	}
 	defer f.Close()
 	fmt.Fprint(f, time.Now().Format(time.RFC3339)+" "+line)
+}
+
+// describeEncodedTurn renders the structure of an encoded request: every
+// message role in order, and for assistant tool calls the function name plus
+// whether a thought_signature rides along. Message content, arguments and tool
+// output are deliberately omitted, so the diagnostic can never capture a
+// conversation.
+func describeEncodedTurn(msgs []map[string]any) string {
+	parts := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		role, _ := msg["role"].(string)
+		calls, _ := msg["tool_calls"].([]map[string]any)
+		switch {
+		case len(calls) == 0:
+			parts = append(parts, role)
+		default:
+			descriptions := make([]string, 0, len(calls))
+			for _, call := range calls {
+				name := "?"
+				if fn, ok := call["function"].(map[string]any); ok {
+					if value, ok := fn["name"].(string); ok {
+						name = value
+					}
+				}
+				signature := "none"
+				if extra, ok := call["extra_content"].(map[string]any); ok {
+					if google, ok := extra["google"].(map[string]any); ok {
+						if value, ok := google["thought_signature"].(string); ok && value != "" {
+							if value == skipThoughtSignatureValidator {
+								signature = "sentinel"
+							} else {
+								signature = fmt.Sprintf("sig%d", len(value))
+							}
+						}
+					}
+				}
+				descriptions = append(descriptions, name+":"+signature)
+			}
+			parts = append(parts, role+"/tool_calls("+strings.Join(descriptions, ",")+")")
+		}
+	}
+	return strings.Join(parts, "|")
 }
 
 // geminiSignatureStats summarises how signatures were applied to a request, for
