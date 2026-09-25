@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"strings"
 	"sync"
@@ -71,8 +72,8 @@ func (r *runRenderer) runStream() {
 		thoughtText := r.thoughtTextLocked()
 		r.mu.Unlock()
 		if thoughtID != 0 && thoughtText != "" {
-			if err := editTelegramRichMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
-				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtText); fallbackErr != nil {
+			if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
+				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
 					logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
 				}
 			}
@@ -128,7 +129,7 @@ func formatThought(value string, streaming bool) string {
 	if streaming {
 		value += " ▌"
 	}
-	return "💭 **Thought**\n\n" + truncateStream(value)
+	return "<blockquote expandable><b>Thought</b>\n\n" + html.EscapeString(truncateStream(value)) + "</blockquote>"
 }
 
 func (r *runRenderer) setCancel(cancel context.CancelFunc) {
@@ -176,9 +177,9 @@ func (r *runRenderer) reasoning(value string) {
 		return
 	}
 	if thoughtID == 0 {
-		thoughtMessageID, err := sendRichMessage(r.token, r.chatID, formatThought(value, true))
+		thoughtMessageID, err := sendHTMLMessage(r.token, r.chatID, formatThought(value, true))
 		if err != nil {
-			thoughtMessageID = sendWithKeyboard(r.token, r.chatID, formatThought(value, true), nil)
+			thoughtMessageID = sendPlainMessage(r.token, r.chatID, thoughtFallbackText(formatThought(value, true)))
 		}
 		if thoughtMessageID == 0 {
 			return
@@ -286,7 +287,7 @@ func (r *runRenderer) finish(answer string) {
 		return
 	}
 	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
-		if !r.publishRichMessage(formatThought(thought, false), thoughtID) {
+		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
 			logger.Warn("Telegram final thought publication failed")
 		}
 	}
@@ -350,7 +351,7 @@ func (r *runRenderer) fail() {
 		return
 	}
 	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
-		if !r.publishRichMessage(formatThought(thought, false), thoughtID) {
+		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
 			logger.Warn("Telegram failed thought publication failed")
 		}
 	}
@@ -376,6 +377,27 @@ func (r *runRenderer) isStopped() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopped
+}
+
+func (r *runRenderer) publishThoughtMessage(text string, messageID int) bool {
+	if messageID != 0 {
+		if err := editTelegramHTMLMessage(r.token, r.chatID, messageID, text); err == nil {
+			return true
+		}
+	}
+	newMessageID, err := sendHTMLMessage(r.token, r.chatID, text)
+	if err != nil {
+		newMessageID = sendPlainMessage(r.token, r.chatID, thoughtFallbackText(text))
+	}
+	if newMessageID == 0 {
+		return false
+	}
+	if messageID != 0 && messageID != newMessageID {
+		if err := deleteTelegramMessage(r.token, r.chatID, messageID); err != nil {
+			logger.Warn("Telegram thought replacement cleanup failed: " + err.Error())
+		}
+	}
+	return true
 }
 
 func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
@@ -413,6 +435,24 @@ func editTelegramRichMessage(token string, chatID int64, messageID int, markdown
 			"markdown": markdown,
 		},
 	})
+}
+
+func editTelegramHTMLMessage(token string, chatID int64, messageID int, text string) error {
+	return postTelegramEditMessage(token, map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+		"parse_mode": "HTML",
+	})
+}
+
+func sendHTMLMessage(token string, chatID int64, text string) (int, error) {
+	return sendMessagePayload(token, chatID, text, "HTML", nil)
+}
+
+func thoughtFallbackText(value string) string {
+	value = strings.NewReplacer("<blockquote expandable>", "", "</blockquote>", "", "<b>", "", "</b>", "").Replace(value)
+	return html.UnescapeString(value)
 }
 
 func postTelegramEditMessage(token string, payload map[string]any) error {

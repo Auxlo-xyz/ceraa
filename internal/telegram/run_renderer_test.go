@@ -225,22 +225,32 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 			richSends++
 			sendNumber := richSends
 			mu.Unlock()
-			messageID := 15
-			if markdown == "▌" {
-				messageID = 14
-				if sendNumber > 1 {
-					messageID = 16
-				}
+			messageID := 14
+			if sendNumber > 1 {
+				messageID = 16
 			}
+			_ = markdown
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, messageID)))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["parse_mode"] == "HTML" {
+				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":15}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/editMessageText") {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			id := int(body["message_id"].(float64))
-			rich, _ := body["rich_message"].(map[string]any)
-			markdown, _ := rich["markdown"].(string)
+			markdown, _ := body["text"].(string)
+			if rich, ok := body["rich_message"].(map[string]any); ok {
+				markdown, _ = rich["markdown"].(string)
+			}
 			mu.Lock()
 			edits[id] = append(edits[id], markdown)
 			mu.Unlock()
@@ -268,10 +278,10 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	assistantEdits := append([]string(nil), edits[16]...)
 	sendCount := richSends
 	mu.Unlock()
-	if sendCount < 3 {
-		t.Fatalf("rich message sends = %d, want initial, thought, replacement", sendCount)
+	if sendCount < 2 {
+		t.Fatalf("rich message sends = %d, want initial and replacement", sendCount)
 	}
-	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "💭 **Thought**") || !strings.Contains(thoughtEdits[0], "first step") {
+	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], "<b>Thought</b>") || !strings.Contains(thoughtEdits[0], "first step") {
 		t.Fatalf("thought edits = %#v", thoughtEdits)
 	}
 	if !strings.Contains(thoughtEdits[len(thoughtEdits)-1], "second step") || strings.Contains(thoughtEdits[len(thoughtEdits)-1], "▌") {
@@ -281,7 +291,7 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 		t.Fatalf("assistant edits = %#v", assistantEdits)
 	}
 	for _, edit := range assistantEdits {
-		if strings.Contains(edit, "💭 **Thought**") {
+		if strings.Contains(edit, "<blockquote expandable>") {
 			t.Fatalf("thought leaked into assistant block: %#v", assistantEdits)
 		}
 	}
