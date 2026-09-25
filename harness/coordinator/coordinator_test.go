@@ -35,10 +35,33 @@ func TestRunnerExposesSingleRunToolDefinition(t *testing.T) {
 func TestRunnerCompactCatalogIncludesActiveTools(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
 	catalog := runner.compactToolCatalog()
-	for _, want := range []string{"<tool-catalog>", "bash(command)", "read(path)", "write(content, path)", "webfetch(url)", "</tool-catalog>"} {
+	for _, want := range []string{"<tool-catalog>", "Canonical names only. Do not use aliases.", "bash: arguments {command: string, timeout: integer?}", "read: arguments {path: string}", "write: arguments {content: string, path: string}", "webfetch: arguments {format: string?, timeout: integer?, url: string}", "</tool-catalog>"} {
 		if !strings.Contains(catalog, want) {
 			t.Fatalf("catalog missing %q: %s", want, catalog)
 		}
+	}
+}
+
+func TestDispatcherCanonicalizesAliasesAndArgumentNames(t *testing.T) {
+	reg := tool.DefaultRegistry()
+	for requested, want := range map[string]string{
+		"cat":        "read",
+		"read_file":  "read",
+		"shell":      "bash",
+		"file_write": "write",
+		"web_fetch":  "webfetch",
+	} {
+		if got := canonicalToolName(reg, requested); got != want {
+			t.Fatalf("canonicalToolName(%q) = %q, want %q", requested, got, want)
+		}
+	}
+	args := map[string]any{"file": "README.md"}
+	if !repairToolArguments("read", args) || args["path"] != "README.md" {
+		t.Fatalf("repaired read arguments = %#v", args)
+	}
+	args = map[string]any{"cmd": "pwd"}
+	if !repairToolArguments("bash", args) || args["command"] != "pwd" {
+		t.Fatalf("repaired bash arguments = %#v", args)
 	}
 }
 
@@ -74,7 +97,7 @@ func TestRunnerRejectsNativeAndUnknownDispatcherCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if results["native"] != "Error: tool calls must use run" || results["unknown"] != "Error: unknown tool missing" {
+	if results["native"] != "Error: tool calls must use run" || !strings.Contains(results["unknown"], "Error: unknown tool missing; use canonical tools:") {
 		t.Fatalf("dispatcher errors = %#v", results)
 	}
 }
@@ -86,7 +109,7 @@ func TestDispatcherDefinitionsStayCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalog := runner.compactToolCatalog()
-	if len(definition) > 512 {
+	if len(definition) > 1024 {
 		t.Fatalf("run definition bytes = %d", len(definition))
 	}
 	if len(catalog) > 4096 {
@@ -226,9 +249,10 @@ func TestBuildLLMMessages(t *testing.T) {
 		{
 			Role: llm.RoleAssistant,
 			ToolCall: &sessionstore.ToolCallRef{
-				ID:   "call1",
-				Name: "bash",
-				Args: `{"command":"echo hi"}`,
+				ID:               "call1",
+				Name:             "bash",
+				Args:             `{"command":"echo hi"}`,
+				ThoughtSignature: "sig",
 			},
 		},
 		{
@@ -244,7 +268,7 @@ func TestBuildLLMMessages(t *testing.T) {
 	if items[0].Kind != "text" || items[0].Role != llm.RoleSystem {
 		t.Fatalf("expected system text item, got %+v", items[0])
 	}
-	if items[2].Kind != "tool_call" || items[2].Name != "bash" {
+	if items[2].Kind != "tool_call" || items[2].Name != "bash" || items[2].ThoughtSignature != "sig" {
 		t.Fatalf("expected tool_call, got %+v", items[2])
 	}
 	if items[3].Kind != "text" || items[3].Role != llm.RoleTool {
@@ -280,6 +304,40 @@ func TestHandleInboxStopHard(t *testing.T) {
 	// returns error when we stop hard
 	if err == nil {
 		t.Fatal("expected error on hard stop")
+	}
+}
+
+func TestCoordinatorReturnsFallbackForReasoningOnlyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	t.Setenv("SOORAA_API_URL", server.URL)
+	t.Setenv("SOORAA_API_KEY", "test")
+	t.Setenv("SOORAA_MODEL", "test")
+
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ib, err := inbox.New(context.Background(), nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ib.Stop()
+	done := make(chan string, 1)
+	err = RunAsync(context.Background(), Config{SessionID: "reasoning-only", SystemPrompt: "test", ModelCatalogURL: "http://127.0.0.1:1"}, store, tool.DefaultRegistry(), operation.New(nil), ib, Callbacks{OnDone: func(answer string) { done <- answer }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case answer := <-done:
+		if answer != "The model completed without producing a final response." {
+			t.Fatalf("unexpected fallback answer: %q", answer)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("coordinator did not finish reasoning-only response")
 	}
 }
 

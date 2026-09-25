@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestReasonLevelValid(t *testing.T) {
 	tests := []struct {
@@ -35,9 +38,39 @@ func TestItemString(t *testing.T) {
 }
 
 func TestEncodeMessagesIncludesToolResultName(t *testing.T) {
-	messages := encodeMessages([]Item{{Kind: "text", Role: RoleTool, CallID: "call1", Name: "run", Output: "ok"}})
+	messages := encodeMessages([]Item{{Kind: "text", Role: RoleTool, CallID: "call1", Name: "run", Output: "ok"}}, false)
 	if len(messages) != 1 || messages[0]["name"] != "run" {
 		t.Fatalf("encoded tool result = %#v", messages)
+	}
+}
+
+func TestEncodeMessagesAddsGeminiThoughtSignatureOnlyWhenEnabled(t *testing.T) {
+	item := Item{Kind: "tool_call", CallID: "call1", Name: "run", Args: `{"tool":"read","arguments":{}}`, ThoughtSignature: "sig"}
+	enabled := encodeMessages([]Item{item}, true)
+	disabled := encodeMessages([]Item{item}, false)
+	enabledCalls := enabled[0]["tool_calls"].([]map[string]any)
+	disabledCalls := disabled[0]["tool_calls"].([]map[string]any)
+	if enabledCalls[0]["extra_content"] == nil {
+		t.Fatal("Gemini thought signature was not serialized")
+	}
+	if _, ok := disabledCalls[0]["extra_content"]; ok {
+		t.Fatal("thought signature was serialized for a non-Gemini provider")
+	}
+}
+
+func TestReadStreamPreservesGeminiThoughtSignature(t *testing.T) {
+	client := &StreamingClient{}
+	var got ProviderResponse
+	err := client.readStream(strings.NewReader("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call1\",\"extra_content\":{\"google\":{\"thought_signature\":\"sig\"}},\"function\":{\"name\":\"run\",\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n"), func(response ProviderResponse) {
+		if len(response.ToolCalls) > 0 {
+			got = response
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ToolCalls) != 1 || got.ToolCalls[0].ThoughtSignature != "sig" {
+		t.Fatalf("thought signature = %+v", got.ToolCalls)
 	}
 }
 

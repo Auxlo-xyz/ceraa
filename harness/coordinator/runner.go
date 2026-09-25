@@ -383,6 +383,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		calls = r.uniqueToolCallIDs(calls, sess)
 		if len(calls) == 0 {
 			answer := content.String()
+			if strings.TrimSpace(answer) == "" {
+				answer = "The model completed without producing a final response."
+			}
 			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: reasoning.String()})
 			if err := r.store.Save(sess); err != nil {
 				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
@@ -395,7 +398,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 
 		assistant := sessionstore.Message{Role: llm.RoleAssistant, Content: content.String(), Reasoning: reasoning.String(), ToolCalls: make([]sessionstore.ToolCallRef, 0, len(calls))}
 		for _, call := range calls {
-			assistant.ToolCalls = append(assistant.ToolCalls, sessionstore.ToolCallRef{ID: call.ID, Name: call.Name, Args: call.Arguments})
+			assistant.ToolCalls = append(assistant.ToolCalls, sessionstore.ToolCallRef{ID: call.ID, Name: call.Name, Args: call.Arguments, ThoughtSignature: call.ThoughtSignature})
 		}
 		sess.Messages = append(sess.Messages, assistant)
 		if err := r.store.Save(sess); err != nil {
@@ -478,20 +481,29 @@ func (r *Runner) handleInbox(ctx context.Context) error {
 }
 
 func (r *Runner) toolDefs() []llm.ToolDef {
+	toolNames := make([]string, 0)
+	if r.reg != nil {
+		for _, item := range r.reg.All() {
+			toolNames = append(toolNames, item.Name())
+		}
+	}
 	return []llm.ToolDef{{
 		Name:        "run",
-		Description: "Invoke an available tool with JSON arguments.",
+		Description: "Invoke exactly one active canonical tool. Never call run recursively. Use only names from <tool-catalog>.",
 		Parameters: map[string]any{
-			"type": "object",
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
 				"tool": map[string]any{
 					"type":        "string",
-					"description": "The registered tool name.",
+					"enum":        toolNames,
+					"description": "Canonical active tool name from <tool-catalog>.",
 				},
 				"arguments": map[string]any{
 					"type":                 "object",
-					"description":          "Arguments for the selected tool.",
+					"minProperties":        1,
 					"additionalProperties": true,
+					"description":          "Arguments for the selected canonical tool; keys are defined in <tool-catalog>.",
 				},
 			},
 			"required": []string{"tool", "arguments"},
@@ -606,24 +618,48 @@ func (r *Runner) systemPrompt() string {
 func (r *Runner) compactToolCatalog() string {
 	var catalog strings.Builder
 	catalog.WriteString("<tool-catalog>\n")
-	catalog.WriteString("Use the run tool for every tool action. Do not call unavailable names.\n")
+	catalog.WriteString("Canonical names only. Do not use aliases.\n\n")
 	for _, item := range r.reg.All() {
-		args := toolCatalogArguments(item.Schema())
-		description := strings.Join(strings.Fields(item.Description()), " ")
-		if len(description) > 110 {
-			description = description[:107] + "..."
-		}
-		catalog.WriteString("- " + item.Name() + "(" + strings.Join(args, ", ") + "): " + description + "\n")
+		catalog.WriteString("- " + item.Name() + ": arguments " + toolCatalogArguments(item.Schema()) + "\n")
 	}
 	catalog.WriteString("</tool-catalog>")
 	return catalog.String()
 }
 
-func toolCatalogArguments(schema map[string]any) []string {
-	required, _ := schema["required"].([]string)
-	keys := append([]string(nil), required...)
+func toolCatalogArguments(schema map[string]any) string {
+	properties, _ := schema["properties"].(map[string]any)
+	required := make(map[string]bool)
+	switch values := schema["required"].(type) {
+	case []string:
+		for _, key := range values {
+			required[key] = true
+		}
+	case []any:
+		for _, value := range values {
+			if key, ok := value.(string); ok {
+				required[key] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		keys = append(keys, key)
+	}
 	sort.Strings(keys)
-	return keys
+	arguments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		argumentType := "value"
+		if property, ok := properties[key].(map[string]any); ok {
+			if name, ok := property["type"].(string); ok && name != "" {
+				argumentType = name
+			}
+		}
+		if !required[key] {
+			argumentType += "?"
+		}
+		arguments = append(arguments, key+": "+argumentType)
+	}
+	return "{" + strings.Join(arguments, ", ") + "}"
 }
 
 type preparedTool struct {
@@ -632,6 +668,76 @@ type preparedTool struct {
 	tool    tool.Tool
 	args    map[string]any
 	rawArgs string
+}
+
+var canonicalToolAliases = map[string]string{
+	"cat":            "read",
+	"read_file":      "read",
+	"fs_read":        "read",
+	"workspace_read": "read",
+	"shell":          "bash",
+	"exec":           "bash",
+	"file_write":     "write",
+	"file_edit":      "edit",
+	"web_fetch":      "webfetch",
+}
+
+var canonicalToolArgumentAliases = map[string]map[string]string{
+	"read":     {"file": "path", "filename": "path", "file_path": "path"},
+	"write":    {"file": "path", "filename": "path", "file_path": "path"},
+	"edit":     {"file": "path", "filename": "path", "file_path": "path"},
+	"bash":     {"cmd": "command", "script": "command", "shell_command": "command"},
+	"webfetch": {"uri": "url", "link": "url"},
+}
+
+func canonicalToolName(reg *tool.Registry, requested string) string {
+	requested = strings.TrimSpace(requested)
+	if _, ok := reg.Get(requested); ok {
+		return requested
+	}
+	canonical, ok := canonicalToolAliases[requested]
+	if !ok {
+		return requested
+	}
+	if _, active := reg.Get(canonical); active {
+		return canonical
+	}
+	return requested
+}
+
+func repairToolArguments(toolName string, args map[string]any) bool {
+	aliases, ok := canonicalToolArgumentAliases[toolName]
+	if !ok {
+		return false
+	}
+	changed := false
+	keys := make([]string, 0, len(aliases))
+	for alias := range aliases {
+		keys = append(keys, alias)
+	}
+	sort.Strings(keys)
+	for _, alias := range keys {
+		value, exists := args[alias]
+		if !exists {
+			continue
+		}
+		canonical := aliases[alias]
+		if _, exists := args[canonical]; !exists {
+			args[canonical] = value
+		}
+		delete(args, alias)
+		changed = true
+	}
+	return changed
+}
+
+func activeToolNames(reg *tool.Registry) string {
+	items := reg.All()
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Name())
+	}
+	return strings.Join(names, ", ")
 }
 
 func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, runID string, calls []llm.StreamedToolCall) ([]preparedTool, map[string]string, error) {
@@ -666,8 +772,9 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			}
 			continue
 		}
-		toolName := strings.TrimSpace(envelope.Tool)
+		toolName := canonicalToolName(r.reg, envelope.Tool)
 		args := envelope.Arguments
+		repairToolArguments(toolName, args)
 		rawArgs, err := json.Marshal(args)
 		if err != nil {
 			results[call.ID] = "Error: invalid arguments for " + toolName + ": " + err.Error()
@@ -678,16 +785,18 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		}
 		t, ok := r.reg.Get(toolName)
 		if !ok {
-			results[call.ID] = "Error: unknown tool " + toolName
-			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "unknown tool"); err != nil {
+			message := "Error: unknown tool " + toolName + "; use canonical tools: " + activeToolNames(r.reg)
+			results[call.ID] = message
+			if err := r.persistPreparedFailure(sess, runID, call.ID, message, "unknown tool"); err != nil {
 				return nil, nil, err
 			}
 			continue
 		}
 		spec, err := t.Translate(args)
 		if err != nil {
-			results[call.ID] = "Error: " + err.Error()
-			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], err.Error()); err != nil {
+			message := "Error: " + err.Error() + "; use arguments " + toolCatalogArguments(t.Schema())
+			results[call.ID] = message
+			if err := r.persistPreparedFailure(sess, runID, call.ID, message, err.Error()); err != nil {
 				return nil, nil, err
 			}
 			continue

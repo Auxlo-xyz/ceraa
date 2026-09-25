@@ -34,21 +34,23 @@ const (
 )
 
 type ToolCall struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Args string `json:"arguments"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Args             string `json:"arguments"`
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 type Item struct {
-	Kind      string     `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
-	Role      Role       `json:"role,omitempty"`
-	Text      string     `json:"text,omitempty"`
-	CallID    string     `json:"call_id,omitempty"`
-	Name      string     `json:"name,omitempty"`
-	Args      string     `json:"arguments,omitempty"`
-	Output    string     `json:"output,omitempty"`
-	Reason    string     `json:"reasoning,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Kind             string     `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
+	Role             Role       `json:"role,omitempty"`
+	Text             string     `json:"text,omitempty"`
+	CallID           string     `json:"call_id,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	Args             string     `json:"arguments,omitempty"`
+	ThoughtSignature string     `json:"thought_signature,omitempty"`
+	Output           string     `json:"output,omitempty"`
+	Reason           string     `json:"reasoning,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 func (i Item) String() string {
@@ -101,6 +103,9 @@ func MergeStreamedToolCalls(dst, incoming []StreamedToolCall) []StreamedToolCall
 		}
 		if call.Name != "" {
 			current.Name = call.Name
+		}
+		if call.ThoughtSignature != "" {
+			current.ThoughtSignature = call.ThoughtSignature
 		}
 		if call.Arguments != "" {
 			if current.Arguments == "" || strings.HasPrefix(call.Arguments, current.Arguments) {

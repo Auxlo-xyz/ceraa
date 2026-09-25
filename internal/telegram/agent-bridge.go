@@ -87,13 +87,15 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	}
 	providerID := defaultState.provider()
 	providerConfig := activeProviderConfig(cfg, providerID)
+	modelConfig := llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model)
+	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
 	compactor := newCompactor(cfg, providerID)
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		SystemPrompt:        prompt.System,
-		Model:               llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model),
+		Model:               modelConfig,
 		ContextLimit:        providerConfig.ContextLimit,
 		MaxOutputTokens:     providerConfig.MaxOutputTokens,
 		WorkDir:             projectRoot,
@@ -187,6 +189,14 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	}, store, tool.DefaultRegistryForUser(user, memoryStore, skillStore))
 	_, err = runner.Run(parent, userText)
 	return err
+}
+
+func telegramProviderUsesGeminiThoughtSignatures(providerID string, provider config.LLMProvider) bool {
+	if providerID == "" || providerID == "default" {
+		return false
+	}
+	model := strings.ToLower(provider.Model)
+	return strings.Contains(model, "gemini") || strings.Contains(model, "gemma")
 }
 
 func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvider {

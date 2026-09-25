@@ -96,11 +96,12 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 				item.CallID = calls[0].ID
 				item.Name = calls[0].Name
 				item.Args = calls[0].Args
+				item.ThoughtSignature = calls[0].ThoughtSignature
 			} else {
 				item.Kind = "tool_calls"
 				item.ToolCalls = make([]llm.ToolCall, 0, len(calls))
 				for _, call := range calls {
-					item.ToolCalls = append(item.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
+					item.ToolCalls = append(item.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args, ThoughtSignature: call.ThoughtSignature})
 				}
 			}
 		}

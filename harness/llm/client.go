@@ -16,11 +16,12 @@ import (
 )
 
 type ProviderConfig struct {
-	BaseURL    string
-	APIKey     string
-	Model      string
-	MaxRetries int
-	Timeout    time.Duration
+	BaseURL                 string
+	APIKey                  string
+	Model                   string
+	GeminiThoughtSignatures bool
+	MaxRetries              int
+	Timeout                 time.Duration
 }
 
 func DefaultConfig() ProviderConfig {
@@ -62,10 +63,11 @@ type ToolDef struct {
 }
 
 type StreamedToolCall struct {
-	Index     int
-	ID        string
-	Name      string
-	Arguments string
+	Index            int
+	ID               string
+	Name             string
+	Arguments        string
+	ThoughtSignature string
 }
 
 type ProviderResponse struct {
@@ -276,7 +278,14 @@ func New(cfg ProviderConfig) *StreamingClient {
 	}
 }
 
-func encodeMessages(items []Item) []map[string]any {
+func geminiExtraContent(signature string, enabled bool) map[string]any {
+	if !enabled || signature == "" {
+		return nil
+	}
+	return map[string]any{"google": map[string]any{"thought_signature": signature}}
+}
+
+func encodeMessages(items []Item, geminiThoughtSignatures bool) []map[string]any {
 	msgs := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		switch item.Kind {
@@ -293,12 +302,13 @@ func encodeMessages(items []Item) []map[string]any {
 			}
 			msgs = append(msgs, msg)
 		case "tool_call":
-			assistant := map[string]any{
-				"role": "assistant",
-				"tool_calls": []map[string]any{
-					{"id": item.CallID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": item.Args}},
-				},
+			call := map[string]any{
+				"id": item.CallID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": item.Args},
 			}
+			if extra := geminiExtraContent(item.ThoughtSignature, geminiThoughtSignatures); extra != nil {
+				call["extra_content"] = extra
+			}
+			assistant := map[string]any{"role": "assistant", "tool_calls": []map[string]any{call}}
 			if item.Text != "" {
 				assistant["content"] = item.Text
 			}
@@ -306,9 +316,13 @@ func encodeMessages(items []Item) []map[string]any {
 		case "tool_calls":
 			calls := make([]map[string]any, 0, len(item.ToolCalls))
 			for _, call := range item.ToolCalls {
-				calls = append(calls, map[string]any{
+				encoded := map[string]any{
 					"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": call.Args},
-				})
+				}
+				if extra := geminiExtraContent(call.ThoughtSignature, geminiThoughtSignatures); extra != nil {
+					encoded["extra_content"] = extra
+				}
+				calls = append(calls, encoded)
 			}
 			assistant := map[string]any{"role": "assistant", "tool_calls": calls}
 			if item.Text != "" {
@@ -327,7 +341,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 	url := api + "chat/completions"
 
-	msgs := encodeMessages(req.Messages)
+	msgs := encodeMessages(req.Messages, c.cfg.GeminiThoughtSignatures)
 
 	body := map[string]any{
 		"model":          c.cfg.Model,
@@ -400,9 +414,10 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 }
 
 type accumulatedToolCall struct {
-	ID        string
-	Name      string
-	Arguments string
+	ID               string
+	Name             string
+	Arguments        string
+	ThoughtSignature string
 }
 
 func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)) error {
@@ -430,9 +445,14 @@ func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)
 					Reasoning  *string `json:"reasoning_content"`
 					Reasoning2 *string `json:"reasoning"`
 					ToolCalls  []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id"`
-						Type     string `json:"type"`
+						Index        int    `json:"index"`
+						ID           string `json:"id"`
+						Type         string `json:"type"`
+						ExtraContent struct {
+							Google struct {
+								ThoughtSignature string `json:"thought_signature"`
+							} `json:"google"`
+						} `json:"extra_content"`
 						Function struct {
 							Name      string `json:"name"`
 							Arguments string `json:"arguments"`
@@ -469,12 +489,16 @@ func (c *StreamingClient) readStream(r io.Reader, onDelta func(ProviderResponse)
 				if tc.Function.Name != "" {
 					existing.Name = tc.Function.Name
 				}
+				if tc.ExtraContent.Google.ThoughtSignature != "" {
+					existing.ThoughtSignature = tc.ExtraContent.Google.ThoughtSignature
+				}
 				existing.Arguments += tc.Function.Arguments
 				delta.ToolCalls = append(delta.ToolCalls, StreamedToolCall{
-					Index:     tc.Index,
-					ID:        existing.ID,
-					Name:      existing.Name,
-					Arguments: existing.Arguments,
+					Index:            tc.Index,
+					ID:               existing.ID,
+					Name:             existing.Name,
+					Arguments:        existing.Arguments,
+					ThoughtSignature: existing.ThoughtSignature,
 				})
 			}
 		}

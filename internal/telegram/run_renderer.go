@@ -36,7 +36,8 @@ type runRenderer struct {
 	cancel        context.CancelFunc
 	streamSignal  chan struct{}
 	streamDone    chan struct{}
-	streamClose   sync.Once
+	streamMu      sync.Mutex
+	streamClosed  bool
 }
 
 func newRunRenderer(token string, chatID int64, pinned *PinnedManager) *runRenderer {
@@ -76,6 +77,11 @@ func (r *runRenderer) runStream() {
 }
 
 func (r *runRenderer) signalStream() {
+	r.streamMu.Lock()
+	defer r.streamMu.Unlock()
+	if r.streamClosed {
+		return
+	}
 	select {
 	case r.streamSignal <- struct{}{}:
 	default:
@@ -109,9 +115,12 @@ func (r *runRenderer) close() {
 	if r.streamSignal == nil {
 		return
 	}
-	r.streamClose.Do(func() {
+	r.streamMu.Lock()
+	if !r.streamClosed {
+		r.streamClosed = true
 		close(r.streamSignal)
-	})
+	}
+	r.streamMu.Unlock()
 	<-r.streamDone
 }
 
@@ -194,6 +203,14 @@ func (r *runRenderer) content(delta string) {
 func (r *runRenderer) finish(answer string) {
 	r.mu.Lock()
 	stopped := r.stopped
+	r.mu.Unlock()
+	if stopped {
+		r.close()
+		return
+	}
+	r.close()
+	r.mu.Lock()
+	stopped = r.stopped
 	messageID := r.messageID
 	r.mu.Unlock()
 	if stopped {

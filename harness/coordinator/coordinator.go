@@ -61,11 +61,11 @@ func buildLLMMessages(msgs []sessionstore.Message) []llm.Item {
 	for _, m := range msgs {
 		if calls := m.AllToolCalls(); len(calls) > 0 {
 			if len(calls) == 1 {
-				items = append(items, llm.Item{Kind: "tool_call", CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, Text: m.Content})
+				items = append(items, llm.Item{Kind: "tool_call", CallID: calls[0].ID, Name: calls[0].Name, Args: calls[0].Args, ThoughtSignature: calls[0].ThoughtSignature, Text: m.Content})
 			} else {
 				toolCalls := make([]llm.ToolCall, 0, len(calls))
 				for _, call := range calls {
-					toolCalls = append(toolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args})
+					toolCalls = append(toolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args, ThoughtSignature: call.ThoughtSignature})
 				}
 				items = append(items, llm.Item{Kind: "tool_calls", ToolCalls: toolCalls, Text: m.Content})
 			}

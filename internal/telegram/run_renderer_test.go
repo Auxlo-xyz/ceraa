@@ -90,6 +90,68 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	}
 }
 
+func TestFinishDrainsPreviewBeforeFinalEdit(t *testing.T) {
+	var mu sync.Mutex
+	var edits []string
+	previewStarted := make(chan struct{})
+	releasePreview := make(chan struct{})
+	var previewOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":14}}`))
+		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if richMessage, ok := body["rich_message"].(map[string]any); ok {
+				markdown, _ := richMessage["markdown"].(string)
+				mu.Lock()
+				edits = append(edits, markdown)
+				mu.Unlock()
+				if strings.Contains(markdown, "▌") {
+					previewOnce.Do(func() { close(previewStarted) })
+					<-releasePreview
+				}
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	pinned := NewPinnedManager("token", 42)
+	defer pinned.close()
+	pinned.Init()
+	renderer := newRunRenderer("token", 42, pinned)
+	answer := "Complete answer"
+	renderer.content("Complete")
+	<-previewStarted
+	finished := make(chan struct{})
+	go func() {
+		renderer.finish(answer)
+		close(finished)
+	}()
+	select {
+	case <-finished:
+		t.Fatal("finish returned before the preview edit completed")
+	default:
+	}
+	close(releasePreview)
+	<-finished
+	renderer.close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(edits) < 2 || edits[len(edits)-1] != answer {
+		t.Fatalf("final edit = %#v", edits)
+	}
+}
+
 func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 	var mu sync.Mutex
 	var sentMarkdown string

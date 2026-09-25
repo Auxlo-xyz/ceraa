@@ -80,9 +80,10 @@ type CompactionInfo struct {
 }
 
 type ToolCallRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Args string `json:"arguments"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Args             string `json:"arguments"`
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 func (m Message) AllToolCalls() []ToolCallRef {

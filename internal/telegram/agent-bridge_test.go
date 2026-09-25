@@ -99,6 +99,21 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 	}
 }
 
+func TestTelegramProviderUsesGeminiThoughtSignatures(t *testing.T) {
+	if !telegramProviderUsesGeminiThoughtSignatures("custom", config.LLMProvider{Model: "gemini-3.5-flash"}) {
+		t.Fatal("expected Gemini model to enable thought signatures")
+	}
+	if !telegramProviderUsesGeminiThoughtSignatures("custom", config.LLMProvider{Model: "gemma-3-27b"}) {
+		t.Fatal("expected Gemma model to enable thought signatures")
+	}
+	if telegramProviderUsesGeminiThoughtSignatures("default", config.LLMProvider{Model: "gemini-3.5-flash"}) {
+		t.Fatal("default provider must not enable Telegram-only thought signatures")
+	}
+	if telegramProviderUsesGeminiThoughtSignatures("custom", config.LLMProvider{Model: "gpt-5"}) {
+		t.Fatal("non-Gemini model must not enable thought signatures")
+	}
+}
+
 func TestNeedsPermissionProtectsDestructiveBashButAllowsSystemReads(t *testing.T) {
 	if !needsPermission("bash", "rm -rf /tmp/example") {
 		t.Fatal("destructive bash command should require approval")
