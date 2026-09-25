@@ -1,10 +1,11 @@
 package telegram
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
+
+	"sooraa/internal/logger"
 )
 
 type PinnedManager struct {
@@ -51,9 +52,9 @@ func (p *PinnedManager) runUpdates() {
 		if messageID == 0 {
 			continue
 		}
-		body, _ := json.Marshal(map[string]any{"chat_id": p.chatID, "message_id": messageID, "text": text})
-		resp, _ := doTelegramPost(api("editMessageText", p.token), body)
-		discardTelegramResponse(resp)
+		if err := postTelegramEditMessage(p.token, map[string]any{"chat_id": p.chatID, "message_id": messageID, "text": text}); err != nil {
+			logger.Warn("Telegram pinned update failed: " + err.Error())
+		}
 	}
 }
 
@@ -72,22 +73,13 @@ func (p *PinnedManager) Init() {
 	}
 	text := p.formatLocked()
 	p.mu.Unlock()
-	body, _ := json.Marshal(map[string]any{"chat_id": p.chatID, "text": text})
-	resp, err := doTelegramPost(api("sendMessage", p.token), body)
-	if err != nil || resp == nil {
-		return
-	}
-	defer resp.Body.Close()
-	var result struct {
-		Result struct {
-			MessageID int `json:"message_id"`
-		} `json:"result"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+	messageID, err := sendMessagePayload(p.token, p.chatID, text, "", nil)
+	if err != nil {
+		logger.Warn("Telegram pinned initialization failed: " + err.Error())
 		return
 	}
 	p.mu.Lock()
-	p.messageID = result.Result.MessageID
+	p.messageID = messageID
 	p.mu.Unlock()
 }
 

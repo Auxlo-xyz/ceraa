@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -119,24 +118,13 @@ func menuRootForMessage(chatID int64, messageID int) (menuRoot, bool) {
 }
 
 func sendMenuMarkup(token string, chatID int64, text string, markup map[string]any) {
-	body, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "reply_markup": markup})
-	resp, _ := doTelegramPost(api("sendMessage", token), body)
-	if resp == nil {
+	messageID := sendMessageWithMarkup(token, chatID, text, markup)
+	if messageID == 0 {
 		return
 	}
-	var result struct {
-		Result struct {
-			MessageID int `json:"message_id"`
-		} `json:"result"`
-	}
-	decodeErr := json.NewDecoder(resp.Body).Decode(&result)
-	resp.Body.Close()
-	if decodeErr != nil || result.Result.MessageID == 0 {
-		return
-	}
-	menuRootByMessage.Store(menuTriggerKey(chatID, result.Result.MessageID), menuRoot{text: text, markup: markup})
+	menuRootByMessage.Store(menuTriggerKey(chatID, messageID), menuRoot{text: text, markup: markup})
 	if trigger, ok := menuTriggerPending.LoadAndDelete(chatID); ok {
-		menuTriggerByMessage.Store(menuTriggerKey(chatID, result.Result.MessageID), trigger)
+		menuTriggerByMessage.Store(menuTriggerKey(chatID, messageID), trigger)
 	}
 }
 
@@ -642,12 +630,10 @@ func handleSettings(token string, chatID int64) {
 	}
 	provider := activeProviderConfig(cfg, defaultState.provider())
 	text := fmt.Sprintf("⚙️ Safe settings\n• Provider: %s\n• Model: %s\n• Endpoint: %s\n• Context limit: %d\n• Max output: %d\n• Session store: %s\n• Telegram user: configured\n• Subscriptions: %s", defaultState.provider(), provider.Model, provider.URL, provider.ContextLimit, provider.MaxOutputTokens, cfg.SessionFile, strings.Join(providers, ", "))
-	b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": text, "reply_markup": map[string]any{"inline_keyboard": [][]map[string]string{
+	sendMessageWithMarkup(token, chatID, text, map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "🧠 Model", "callback_data": "menu:model"}},
 		{{"text": "🧮 Context", "callback_data": "menu:context"}, {"text": "✕ Close", "callback_data": "close"}},
-	}}})
-	resp, _ := doTelegramPost(api("sendMessage", token), b)
-	discardTelegramResponse(resp)
+	}})
 }
 
 // handleDeleteSession deletes a session -> maps to soraacode session.ts delete

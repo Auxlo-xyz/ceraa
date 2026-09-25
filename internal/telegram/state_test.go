@@ -45,6 +45,39 @@ func TestBridgeStateDefaultsToWorkspaceRoot(t *testing.T) {
 	}
 }
 
+func TestBridgeStateRejectsMalformedState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge-state.json")
+	if err := os.WriteFile(path, []byte(`{"allowed_user_id":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if state := loadBridgeStateFromFile(path); state.loadErr == nil {
+		t.Fatal("malformed bridge state must fail closed")
+	}
+}
+
+func TestBridgeStateRejectsNegativeAllowedUserID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge-state.json")
+	if err := os.WriteFile(path, []byte(`{"allowed_user_id":-1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if state := loadBridgeStateFromFile(path); state.loadErr == nil {
+		t.Fatal("negative bridge-state allowlist must fail closed")
+	}
+}
+
+func TestBridgeStateClaimIsSingleOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge-state.json")
+	state := loadBridgeStateFromFile(path)
+	claimed, err := state.claimAllowedUserID(42)
+	if err != nil || !claimed {
+		t.Fatalf("first claim = %t, %v", claimed, err)
+	}
+	claimed, err = state.claimAllowedUserID(99)
+	if err != nil || claimed {
+		t.Fatalf("second claim = %t, %v", claimed, err)
+	}
+}
+
 func TestBridgeStateRuntimeValues(t *testing.T) {
 	t.Setenv("SOORAA_MODEL", "test/model")
 	path := filepath.Join(t.TempDir(), "bridge-state.json")

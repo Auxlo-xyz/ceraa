@@ -17,6 +17,7 @@ type bridgeState struct {
 	mu               sync.RWMutex
 	writeMu          sync.Mutex
 	path             string
+	loadErr          error
 	Model            string                            `json:"model,omitempty"`
 	Provider         string                            `json:"provider,omitempty"`
 	AllowedUserID    int64                             `json:"allowed_user_id,omitempty"`
@@ -43,7 +44,14 @@ func loadBridgeStateFromFile(path string) *bridgeState {
 	state := &bridgeState{path: path, ActiveSessions: make(map[string]string), Projects: make(map[string]string), SessionProjects: make(map[string]string), AlwaysAllow: make(map[string]bool), ProviderProfiles: make(map[string]config.ProviderProfile)}
 	data, err := os.ReadFile(path)
 	if err == nil {
-		_ = json.Unmarshal(data, state)
+		if unmarshalErr := json.Unmarshal(data, state); unmarshalErr != nil {
+			state.loadErr = fmt.Errorf("parse bridge state: %w", unmarshalErr)
+		}
+	} else if !os.IsNotExist(err) {
+		state.loadErr = fmt.Errorf("read bridge state: %w", err)
+	}
+	if state.AllowedUserID < 0 {
+		state.loadErr = errors.New("bridge state allowed user ID must be positive")
 	}
 	if state.ActiveSessions == nil {
 		state.ActiveSessions = make(map[string]string)
@@ -259,14 +267,21 @@ func (s *bridgeState) allowedUserID() int64 {
 	return s.AllowedUserID
 }
 
-func (s *bridgeState) setAllowedUserID(id int64) error {
+func (s *bridgeState) claimAllowedUserID(id int64) (bool, error) {
 	if id <= 0 {
-		return errors.New("Telegram user ID must be positive")
+		return false, errors.New("Telegram user ID must be positive")
 	}
 	s.mu.Lock()
+	if s.AllowedUserID != 0 && s.AllowedUserID != id {
+		s.mu.Unlock()
+		return false, nil
+	}
 	s.AllowedUserID = id
 	s.mu.Unlock()
-	return s.save()
+	if err := s.save(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *bridgeState) providerProfiles() map[string]config.ProviderProfile {

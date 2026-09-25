@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -85,6 +87,75 @@ func TestSetMyCommandsPayloadUsesCommandsObject(t *testing.T) {
 	var decoded []map[string]string
 	if err := json.Unmarshal(commands, &decoded); err != nil || len(decoded) == 0 {
 		t.Fatal("setMyCommands commands must be a non-empty array")
+	}
+}
+
+func TestSendWithKeyboardFallsBackAfterMarkdownRejection(t *testing.T) {
+	var modes []any
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		modes = append(modes, body["parse_mode"])
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"description":"Bad Request: can't parse entities"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":9}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	if got := sendWithKeyboard("token", 42, "*broken*", nil); got != 9 {
+		t.Fatalf("message ID = %d", got)
+	}
+	if len(modes) != 2 || modes[0] != "Markdown" || modes[1] != nil {
+		t.Fatalf("parse modes = %#v", modes)
+	}
+}
+
+func TestResolveAllowedUserIDFailsClosed(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		set       bool
+		configID  int64
+		stateID   int64
+		want      int64
+		wantError bool
+	}{
+		{name: "positive env", raw: "42", set: true, want: 42},
+		{name: "state fallback", stateID: 42, want: 42},
+		{name: "blank env", set: true, wantError: true},
+		{name: "malformed env", raw: "not-an-id", set: true, wantError: true},
+		{name: "zero env", raw: "0", set: true, wantError: true},
+		{name: "negative config", configID: -1, wantError: true},
+		{name: "negative state", stateID: -1, wantError: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveAllowedUserID(test.raw, test.set, test.configID, test.stateID)
+			if (err != nil) != test.wantError || (!test.wantError && got != test.want) {
+				t.Fatalf("resolveAllowedUserID() = %d, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestAuthorizationFailsClosedWithoutOwner(t *testing.T) {
+	if authorized(0, 42, 42) {
+		t.Fatal("zero allowlist must not authorize")
+	}
+	if !bootstrapStartAuthorized(0, 42, 42, "/start") {
+		t.Fatal("private bootstrap start should be allowed")
+	}
+	if bootstrapClaimAuthorized(0, 42, -42, "onboarding:claim") {
+		t.Fatal("group claim should not be allowed")
 	}
 }
 

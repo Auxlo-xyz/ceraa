@@ -18,6 +18,7 @@ import (
 	"sooraa/harness/todo"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
+	"sooraa/internal/logger"
 	"sooraa/internal/telegram/menus"
 )
 
@@ -27,7 +28,10 @@ func answerCallback(token, id string) {
 	}
 	body, _ := json.Marshal(map[string]string{"callback_query_id": id})
 	go func() {
-		resp, _ := doTelegramPost(api("answerCallbackQuery", token), body)
+		resp, err := doTelegramPost(api("answerCallbackQuery", token), body)
+		if err != nil {
+			logger.Warn("Telegram answerCallbackQuery failed: " + err.Error())
+		}
 		discardTelegramResponse(resp)
 	}()
 }
@@ -43,7 +47,10 @@ func editCallback(token string, chatID int64, messageID int, text string, markup
 		payload["reply_markup"] = markup
 	}
 	body, _ := json.Marshal(payload)
-	resp, _ := doTelegramPost(api("editMessageText", token), body)
+	resp, err := doTelegramPost(api("editMessageText", token), body)
+	if err != nil {
+		logger.Warn("Telegram editMessageText failed: " + err.Error())
+	}
 	discardTelegramResponse(resp)
 }
 
@@ -65,7 +72,10 @@ func removeCallbackMarkup(token string, chatID int64, messageID int, text string
 		text = "Closed"
 	}
 	body, _ = json.Marshal(map[string]any{"chat_id": chatID, "message_id": messageID, "text": text, "reply_markup": emptyMarkup})
-	resp, _ = doTelegramPost(api("editMessageText", token), body)
+	resp, err = doTelegramPost(api("editMessageText", token), body)
+	if err != nil {
+		logger.Warn("Telegram menu close fallback failed: " + err.Error())
+	}
 	discardTelegramResponse(resp)
 }
 
@@ -75,9 +85,13 @@ func closeCallbackMenu(token string, chatID int64, menuMessageID int, currentTex
 		return
 	}
 	triggerMessageID := menuTriggerForMessage(chatID, menuMessageID)
-	_ = deleteTelegramMessage(token, chatID, menuMessageID)
+	if err := deleteTelegramMessage(token, chatID, menuMessageID); err != nil {
+		logger.Warn("Telegram menu close delete failed: " + err.Error())
+	}
 	if triggerMessageID > 0 && triggerMessageID != menuMessageID {
-		_ = deleteTelegramMessage(token, chatID, triggerMessageID)
+		if err := deleteTelegramMessage(token, chatID, triggerMessageID); err != nil {
+			logger.Warn("Telegram menu trigger delete failed: " + err.Error())
+		}
 	}
 	menuTriggerByMessage.Delete(menuTriggerKey(chatID, menuMessageID))
 	menuRootByMessage.Delete(menuTriggerKey(chatID, menuMessageID))
@@ -175,8 +189,13 @@ func handleCallback(token string, q *struct {
 		return
 	}
 	if data == "onboarding:claim" {
-		if err := defaultState.setAllowedUserID(q.From.ID); err != nil {
+		claimed, err := defaultState.claimAllowedUserID(q.From.ID)
+		if err != nil {
 			send(token, chatID, "Could not save Telegram allowlist: "+err.Error())
+			return
+		}
+		if !claimed {
+			send(token, chatID, "🔒 This bot is already locked to another Telegram account.")
 			return
 		}
 		editCallback(token, chatID, q.Message.MessageID, "🔒 Bot locked to your Telegram account", nil)

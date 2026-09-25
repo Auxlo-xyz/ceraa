@@ -11,6 +11,7 @@ import (
 
 	"sooraa/harness/operation"
 	"sooraa/harness/redact"
+	"sooraa/internal/logger"
 )
 
 type runRenderer struct {
@@ -60,7 +61,9 @@ func (r *runRenderer) runStream() {
 			continue
 		}
 		if err := editTelegramRichMessage(r.token, r.chatID, messageID, text); err != nil {
-			_ = editTelegramMessage(r.token, r.chatID, messageID, text)
+			if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, text); fallbackErr != nil {
+				logger.Warn("Telegram streaming preview fallback failed: " + fallbackErr.Error())
+			}
 		}
 	}
 }
@@ -168,7 +171,9 @@ func (r *runRenderer) finish(answer string) {
 				if messageID == 0 {
 					sendPlainMessage(r.token, r.chatID, answer)
 				} else {
-					_ = editTelegramMessage(r.token, r.chatID, messageID, answer)
+					if err := editTelegramMessage(r.token, r.chatID, messageID, answer); err != nil {
+						logger.Warn("Telegram final message fallback failed: " + err.Error())
+					}
 				}
 			}
 		} else if messageID == 0 {
@@ -187,7 +192,9 @@ func (r *runRenderer) finish(answer string) {
 		} else {
 			first := string(runes[:telegramRichMessageLimit])
 			if !r.publishRichMessage(first, messageID) {
-				_ = editTelegramMessage(r.token, r.chatID, messageID, first)
+				if err := editTelegramMessage(r.token, r.chatID, messageID, first); err != nil {
+					logger.Warn("Telegram long message fallback failed: " + err.Error())
+				}
 			}
 			for rest := string(runes[telegramRichMessageLimit:]); len([]rune(rest)) > 0; {
 				chunkRunes := []rune(rest)
@@ -246,7 +253,9 @@ func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
 		return false
 	}
 	if messageID != 0 {
-		_ = deleteTelegramMessage(r.token, r.chatID, messageID)
+		if err := deleteTelegramMessage(r.token, r.chatID, messageID); err != nil {
+			logger.Warn("Telegram replacement message cleanup failed: " + err.Error())
+		}
 	}
 	return true
 }

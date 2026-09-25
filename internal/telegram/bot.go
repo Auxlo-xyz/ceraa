@@ -123,33 +123,44 @@ func applyStateOverrides() {
 
 // doTelegramPost posts with rate-limit retry -> maps to soraacode bot/telegram-client-options.js withTelegramRateLimitRetry max 5
 func doTelegramPost(url string, body []byte) (*http.Response, error) {
-	var resp *http.Response
-	var err error
+	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		resp, err = telegramClient.Post(url, "application/json", bytes.NewReader(body))
+		resp, err := telegramClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			lastErr = err
+			if attempt < 4 {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+			}
 			continue
 		}
-		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			raw, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			var out struct {
-				Parameters struct {
-					RetryAfter int `json:"retry_after"`
-				} `json:"parameters"`
+			if readErr != nil {
+				return nil, fmt.Errorf("telegram HTTP %d: read response: %w", resp.StatusCode, readErr)
 			}
-			_ = json.Unmarshal(raw, &out)
-			wait := time.Duration(out.Parameters.RetryAfter) * time.Second
-			if wait == 0 {
-				wait = time.Duration(attempt+1) * 2 * time.Second
+			lastErr = fmt.Errorf("telegram HTTP %d: %s", resp.StatusCode, string(raw))
+			if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+				var out struct {
+					Parameters struct {
+						RetryAfter int `json:"retry_after"`
+					} `json:"parameters"`
+				}
+				_ = json.Unmarshal(raw, &out)
+				if attempt < 4 {
+					wait := time.Duration(out.Parameters.RetryAfter) * time.Second
+					if wait == 0 {
+						wait = time.Duration(attempt+1) * 2 * time.Second
+					}
+					time.Sleep(wait)
+					continue
+				}
 			}
-			time.Sleep(wait)
-			continue
+			return nil, lastErr
 		}
-		break
+		return resp, nil
 	}
-	return resp, err
+	return nil, lastErr
 }
 
 func discardTelegramResponse(resp *http.Response) {
@@ -167,52 +178,98 @@ func sendRootKeyboard(token string, chatID int64) {
 	send(token, chatID, "📋 Sooraa menu")
 }
 
-func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any) int {
-	// Rendering pipeline -> maps to soraacode bot/render/limits.js 4096 chunking + markdown fallback
-	if len(text) > 4000 {
-		// Chunk long messages per soraacode limits.js
-		for len(text) > 4000 {
-			chunk := text[:4000]
-			text = text[4000:]
-			sendWithKeyboard(token, chatID, chunk, nil)
-		}
+func sendMessagePayload(token string, chatID int64, text string, parseMode string, kb map[string]any) (int, error) {
+	payload := map[string]any{"chat_id": chatID, "text": text}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
 	}
-	payload := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "Markdown"}
 	if kb != nil {
 		payload["reply_markup"] = kb
 	}
-	b, _ := json.Marshal(payload)
-	resp, _ := doTelegramPost(api("sendMessage", token), b)
-	if resp == nil {
-		return 0
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
 	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	var out struct {
-		Result struct {
+	resp, err := doTelegramPost(api("sendMessage", token), body)
+	if err != nil {
+		return 0, err
+	}
+	if resp == nil {
+		return 0, fmt.Errorf("sendMessage: empty response")
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("sendMessage response: %w", err)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
 			MessageID int `json:"message_id"`
 		} `json:"result"`
 	}
-	_ = json.Unmarshal(raw, &out)
-	return out.Result.MessageID
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return 0, fmt.Errorf("sendMessage response: %w", err)
+	}
+	if !result.OK {
+		return 0, fmt.Errorf("sendMessage: %s", result.Description)
+	}
+	if result.Result.MessageID == 0 {
+		return 0, fmt.Errorf("sendMessage: missing message_id")
+	}
+	return result.Result.MessageID, nil
+}
+
+func isTelegramParseError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "parse entities") || strings.Contains(message, "can't parse")
+}
+
+func sendWithKeyboard(token string, chatID int64, text string, kb map[string]any) int {
+	runes := []rune(text)
+	if len(runes) > 4000 {
+		for len(runes) > 4000 {
+			chunk := string(runes[:4000])
+			runes = runes[4000:]
+			if sendWithKeyboard(token, chatID, chunk, nil) == 0 {
+				return 0
+			}
+		}
+		text = string(runes)
+	}
+	messageID, err := sendMessagePayload(token, chatID, text, "Markdown", kb)
+	if err == nil {
+		return messageID
+	}
+	if isTelegramParseError(err) {
+		messageID, fallbackErr := sendMessagePayload(token, chatID, text, "", kb)
+		if fallbackErr == nil {
+			return messageID
+		}
+		logger.Warn("Telegram Markdown fallback failed: " + fallbackErr.Error())
+		return 0
+	}
+	logger.Warn("Telegram sendMessage failed: " + err.Error())
+	return 0
+}
+
+func sendMessageWithMarkup(token string, chatID int64, text string, markup map[string]any) int {
+	messageID, err := sendMessagePayload(token, chatID, text, "", markup)
+	if err != nil {
+		logger.Warn("Telegram sendMessage failed: " + err.Error())
+		return 0
+	}
+	return messageID
 }
 
 func sendPlainMessage(token string, chatID int64, text string) int {
-	payload := map[string]any{"chat_id": chatID, "text": text}
-	b, _ := json.Marshal(payload)
-	resp, _ := doTelegramPost(api("sendMessage", token), b)
-	if resp == nil {
+	messageID, err := sendMessagePayload(token, chatID, text, "", nil)
+	if err != nil {
+		logger.Warn("Telegram sendMessage failed: " + err.Error())
 		return 0
 	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	var out struct {
-		Result struct {
-			MessageID int `json:"message_id"`
-		} `json:"result"`
-	}
-	_ = json.Unmarshal(raw, &out)
-	return out.Result.MessageID
+	return messageID
 }
 
 // promptQueue serializes prompts per chat -> maps to soraacode app/managers/prompt-queue-manager.js
@@ -260,19 +317,13 @@ func Run() error {
 		return fmt.Errorf("secret store: %w", err)
 	}
 
-	allow := os.Getenv("TELEGRAM_ALLOWED_USER_ID")
-	var allowID int64
-	if allow == "" {
-		allowID = cfg.Telegram.AllowedUserID
-	} else {
-		parsed, err := strconv.ParseInt(strings.TrimSpace(allow), 10, 64)
-		if err != nil || parsed <= 0 {
-			return fmt.Errorf("TELEGRAM_ALLOWED_USER_ID must be a positive integer")
-		}
-		allowID = parsed
+	if defaultState.loadErr != nil {
+		return fmt.Errorf("bridge state: %w", defaultState.loadErr)
 	}
-	if allowID == 0 {
-		allowID = defaultState.allowedUserID()
+	allow, allowSet := os.LookupEnv("TELEGRAM_ALLOWED_USER_ID")
+	allowID, err := resolveAllowedUserID(allow, allowSet, cfg.Telegram.AllowedUserID, defaultState.allowedUserID())
+	if err != nil {
+		return err
 	}
 	applyStateOverrides()
 	if err := registerCommands(token); err != nil {
@@ -308,15 +359,29 @@ func Run() error {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		raw, _ := io.ReadAll(resp.Body)
+		raw, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if readErr != nil {
+			logger.Warn("Telegram getUpdates response read failed: " + readErr.Error())
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		var out struct {
 			Ok          bool     `json:"ok"`
 			Result      []update `json:"result"`
 			ErrorCode   int      `json:"error_code"`
 			Description string   `json:"description"`
 		}
-		_ = json.Unmarshal(raw, &out)
+		if unmarshalErr := json.Unmarshal(raw, &out); unmarshalErr != nil {
+			logger.Warn("Telegram getUpdates response decode failed: " + unmarshalErr.Error())
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if !out.Ok && out.ErrorCode == 0 {
+			logger.Warn("Telegram getUpdates returned an unsuccessful response")
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if out.ErrorCode == 409 {
 			fmt.Printf("conflict 409 - backing off 5s: %s\n", out.Description)
 			time.Sleep(5 * time.Second)
@@ -344,17 +409,20 @@ func Run() error {
 					chatID = u.CallbackQuery.Message.Chat.ID
 				}
 				fmt.Printf("callback update=%d data=%q message=%d\n", u.UpdateID, u.CallbackQuery.Data, chatID)
-				if !authorized(allowID, u.CallbackQuery.From.ID, chatID) {
+				if !authorized(allowID, u.CallbackQuery.From.ID, chatID) && !bootstrapClaimAuthorized(allowID, u.CallbackQuery.From.ID, chatID, u.CallbackQuery.Data) {
 					send(token, chatID, "Unauthorized.")
 					continue
 				}
 				handleCallback(token, u.CallbackQuery)
+				if configured := defaultState.allowedUserID(); configured > 0 {
+					allowID = configured
+				}
 				continue
 			}
 			if u.Message == nil {
 				continue
 			}
-			if !authorized(allowID, u.Message.From.ID, u.Message.Chat.ID) {
+			if !authorized(allowID, u.Message.From.ID, u.Message.Chat.ID) && !bootstrapStartAuthorized(allowID, u.Message.From.ID, u.Message.Chat.ID, u.Message.Text) {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				send(token, u.Message.Chat.ID, "Unauthorized.")
 				continue
@@ -391,11 +459,6 @@ func Run() error {
 				continue
 			}
 			if u.Message.Text == "" {
-				continue
-			}
-			if allowID != 0 && u.Message.From.ID != allowID && u.Message.Chat.ID != allowID {
-				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				send(token, u.Message.Chat.ID, "Unauthorized.")
 				continue
 			}
 			txt := normalizeCommandText(strings.TrimSpace(u.Message.Text))
@@ -504,9 +567,7 @@ func Run() error {
 					for _, m := range menus.All {
 						if m == name {
 							GetDefaultInbox().CheckAndRecord(u.UpdateID)
-							b, _ := json.Marshal(map[string]any{"chat_id": u.Message.Chat.ID, "text": m, "reply_markup": menus.InlineForChat(m, 0, u.Message.Chat.ID, currentSessionID(u.Message.Chat.ID))})
-							resp, _ := doTelegramPost(api("sendMessage", token), b)
-							discardTelegramResponse(resp)
+							sendMessageWithMarkup(token, u.Message.Chat.ID, m, menus.InlineForChat(m, 0, u.Message.Chat.ID, currentSessionID(u.Message.Chat.ID)))
 							goto next
 						}
 					}
@@ -550,8 +611,40 @@ func normalizeCommandText(text string) string {
 	return strings.Join(fields, " ")
 }
 
+func resolveAllowedUserID(raw string, set bool, configID, stateID int64) (int64, error) {
+	if set {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return 0, fmt.Errorf("TELEGRAM_ALLOWED_USER_ID must be a positive integer")
+		}
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("TELEGRAM_ALLOWED_USER_ID must be a positive integer")
+		}
+		return parsed, nil
+	}
+	if configID < 0 {
+		return 0, fmt.Errorf("Telegram allowed user ID must be positive")
+	}
+	if configID > 0 {
+		return configID, nil
+	}
+	if stateID < 0 {
+		return 0, fmt.Errorf("bridge-state allowed user ID must be positive")
+	}
+	return stateID, nil
+}
+
 func authorized(allowID, userID, chatID int64) bool {
-	return allowID == 0 || userID == allowID || chatID == allowID
+	return allowID > 0 && (userID == allowID || chatID == allowID)
+}
+
+func bootstrapStartAuthorized(allowID, userID, chatID int64, text string) bool {
+	return allowID == 0 && userID > 0 && userID == chatID && normalizeCommandText(strings.TrimSpace(text)) == "/start"
+}
+
+func bootstrapClaimAuthorized(allowID, userID, chatID int64, data string) bool {
+	return allowID == 0 && userID > 0 && userID == chatID && data == "onboarding:claim"
 }
 
 func handlePrompt(token string, chatID int64, prompt string, updateID int) {
@@ -612,9 +705,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 							{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID + ":" + tool}},
 							{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID + ":" + tool}},
 						}}
-						b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "🔒 Permission required for `" + tool + "`\n`" + fmt.Sprint(e.Data["args"]) + "`", "parse_mode": "Markdown", "reply_markup": kb})
-						resp, _ := doTelegramPost(api("sendMessage", token), b)
-						discardTelegramResponse(resp)
+						sendWithKeyboard(token, chatID, "🔒 Permission required for `"+tool+"`\n`"+fmt.Sprint(e.Data["args"])+"`", kb)
 					case event.TypeQuestion:
 						ques, _ := e.Data["question"].(string)
 						if ques == "" {
@@ -646,9 +737,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						}
 						rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 						kb := map[string]any{"inline_keyboard": rows}
-						b, _ := json.Marshal(map[string]any{"chat_id": chatID, "text": "❓ " + ques, "reply_markup": kb})
-						resp, _ := doTelegramPost(api("sendMessage", token), b)
-						discardTelegramResponse(resp)
+						sendMessageWithMarkup(token, chatID, "❓ "+ques, kb)
 					case event.TypeCost, event.TypeTokens:
 						cost, _ := e.Data["cost"].(string)
 						if cost != "" {
