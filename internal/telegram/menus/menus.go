@@ -666,6 +666,15 @@ func Onboarding() map[string]any {
 	}}
 }
 
+func Root() map[string]any {
+	return map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text": "📊 Status", "callback_data": "menu:status"}, {"text": "💬 Sessions", "callback_data": "menu:session"}},
+		{{"text": "🧠 Provider / Model", "callback_data": "menu:model"}, {"text": "🤖 Agent", "callback_data": "menu:agent"}},
+		{{"text": "💭 Variant", "callback_data": "menu:variant"}, {"text": "📁 Project", "callback_data": "menu:project"}},
+		{{"text": "🔧 Tools", "callback_data": "menu:tools"}, {"text": "✅ Todos", "callback_data": "menu:todos"}, {"text": "✕ Close", "callback_data": "close"}},
+	}}
+}
+
 func Hub() map[string]any {
 	labels := map[string]string{
 		"status": "📊 Status", "session": "💬 Sessions", "model": "🧠 Provider / Model", "agent": "🤖 Agent",

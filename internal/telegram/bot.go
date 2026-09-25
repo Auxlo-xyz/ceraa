@@ -415,7 +415,7 @@ func Run() error {
 				if !providerConfigured(cfg) {
 					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Sooraa. Choose a provider to finish onboarding.", menus.Onboarding())
 				} else {
-					sendMenuMarkup(token, u.Message.Chat.ID, "Sooraa is ready. Choose a control or send a task.", menus.Hub())
+					sendMenuMarkup(token, u.Message.Chat.ID, "Sooraa is ready. Choose a control or send a task.", menus.Root())
 				}
 			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -475,7 +475,7 @@ func Run() error {
 				send(token, u.Message.Chat.ID, "🔗 Attached to session "+currentSessionID(u.Message.Chat.ID))
 			case "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Hub())
+				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Root())
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				startNewSession(token, u.Message.Chat.ID)
@@ -487,7 +487,7 @@ func Run() error {
 				handleAgentCommand(token, u.Message.Chat.ID, "/agent")
 			case "📋 Menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Hub())
+				sendMenuMarkup(token, u.Message.Chat.ID, "📋 Sooraa control hub", menus.Root())
 			case "📊 Context":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)
