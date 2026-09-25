@@ -38,6 +38,8 @@ type LLMProvider struct {
 	APIKey          string `json:"api_key,omitempty"`
 	ContextLimit    int    `json:"context_limit,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
+	PromptCacheTTL  string `json:"prompt_cache_ttl,omitempty"`
 }
 
 type ProviderProfile struct {
@@ -46,6 +48,8 @@ type ProviderProfile struct {
 	Model           string `json:"model"`
 	ContextLimit    int    `json:"context_limit,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
+	PromptCacheTTL  string `json:"prompt_cache_ttl,omitempty"`
 }
 
 // Subscriptions holds provider subscription settings.
@@ -90,7 +94,7 @@ func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	base := filepath.Join(home, ".config", "sooraa")
 	return &Config{
-		LLM:                      LLMProvider{ContextLimit: 236000, MaxOutputTokens: 8192},
+		LLM:                      LLMProvider{ContextLimit: 236000, MaxOutputTokens: 8192, PromptCacheMode: "auto"},
 		ProviderProfiles:         map[string]ProviderProfile{},
 		SessionFile:              "sessions",
 		WorkspaceRoot:            defaultWorkspaceRoot(),
@@ -144,6 +148,12 @@ func (c *Config) ActiveLLM() LLMProvider {
 	if profile.MaxOutputTokens > 0 {
 		result.MaxOutputTokens = profile.MaxOutputTokens
 	}
+	if profile.PromptCacheMode != "" {
+		result.PromptCacheMode = profile.PromptCacheMode
+	}
+	if profile.PromptCacheTTL != "" {
+		result.PromptCacheTTL = profile.PromptCacheTTL
+	}
 	return result
 }
 
@@ -152,7 +162,7 @@ func (c *Config) ProviderProfile(id string) (ProviderProfile, bool) {
 		return profile, true
 	}
 	if id == "default" {
-		return ProviderProfile{URL: c.LLM.URL, APIKey: c.LLM.APIKey, Model: c.LLM.Model, ContextLimit: c.LLM.ContextLimit, MaxOutputTokens: c.LLM.MaxOutputTokens}, true
+		return ProviderProfile{URL: c.LLM.URL, APIKey: c.LLM.APIKey, Model: c.LLM.Model, ContextLimit: c.LLM.ContextLimit, MaxOutputTokens: c.LLM.MaxOutputTokens, PromptCacheMode: c.LLM.PromptCacheMode, PromptCacheTTL: c.LLM.PromptCacheTTL}, true
 	}
 	return ProviderProfile{}, false
 }
@@ -199,6 +209,12 @@ func Load() (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.LLM.MaxOutputTokens = n
 		}
+	}
+	if v := os.Getenv("SOORAA_PROMPT_CACHE_MODE"); v != "" {
+		cfg.LLM.PromptCacheMode = v
+	}
+	if v := os.Getenv("SOORAA_PROMPT_CACHE_TTL"); v != "" {
+		cfg.LLM.PromptCacheTTL = v
 	}
 	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {
 		cfg.SessionFile = v

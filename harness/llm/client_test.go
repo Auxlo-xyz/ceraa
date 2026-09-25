@@ -58,6 +58,68 @@ func TestStreamUsesOpenAICompatibilityAndReplaysReasoning(t *testing.T) {
 	}
 }
 
+func TestAddPromptCacheFieldsUsesProviderDefaults(t *testing.T) {
+	body := map[string]any{}
+	sessionID := addPromptCacheFields(body, ProviderConfig{
+		BaseURL:         "https://openrouter.ai/api/v1",
+		PromptCacheMode: "auto",
+	}, StreamRequest{PromptCacheKey: "cache-key", SessionID: "session-id"})
+	if body["prompt_cache_key"] != "cache-key" || body["session_id"] != "session-id" || sessionID != "session-id" {
+		t.Fatalf("cache fields = %#v, session = %q", body, sessionID)
+	}
+	if _, exists := body["cache_control"]; exists {
+		t.Fatalf("auto mode added cache_control: %#v", body)
+	}
+}
+
+func TestAddPromptCacheFieldsUsesOptionalTTL(t *testing.T) {
+	body := map[string]any{}
+	addPromptCacheFields(body, ProviderConfig{
+		BaseURL:         "https://openrouter.ai/api/v1",
+		PromptCacheMode: "explicit",
+	}, StreamRequest{PromptCacheKey: "cache-key", SessionID: "session-id"})
+	control, ok := body["cache_control"].(map[string]any)
+	if !ok || control["type"] != "ephemeral" {
+		t.Fatalf("cache control = %#v", body["cache_control"])
+	}
+	if _, exists := control["ttl"]; exists {
+		t.Fatalf("default cache control forced a TTL: %#v", control)
+	}
+}
+
+func TestAddPromptCacheFieldsUsesConfiguredTTL(t *testing.T) {
+	body := map[string]any{}
+	addPromptCacheFields(body, ProviderConfig{
+		BaseURL:         "https://openrouter.ai/api/v1",
+		PromptCacheMode: "explicit",
+		PromptCacheTTL:  "3h",
+	}, StreamRequest{PromptCacheKey: "cache-key", SessionID: "session-id"})
+	control, ok := body["cache_control"].(map[string]any)
+	if !ok || control["type"] != "ephemeral" || control["ttl"] != "3h" {
+		t.Fatalf("cache control = %#v", body["cache_control"])
+	}
+}
+
+func TestAddPromptCacheFieldsCanDisableCaching(t *testing.T) {
+	body := map[string]any{}
+	if sessionID := addPromptCacheFields(body, ProviderConfig{
+		BaseURL:         "https://openrouter.ai/api/v1",
+		PromptCacheMode: "off",
+	}, StreamRequest{PromptCacheKey: "cache-key", SessionID: "session-id"}); sessionID != "" {
+		t.Fatalf("disabled cache session = %q, body = %#v", sessionID, body)
+	}
+	if len(body) != 0 {
+		t.Fatalf("disabled cache fields = %#v", body)
+	}
+}
+
+func TestUsageCacheReadRatio(t *testing.T) {
+	usage := UsageInfo{InputTokens: 100, CachedInputTokens: 75}
+	if usage.CacheReadRatio() != 0.75 {
+		t.Fatalf("cache read ratio = %v", usage.CacheReadRatio())
+	}
+}
+
 func TestEncodeMessagesAttachesReasoningToAssistantText(t *testing.T) {
 	messages := encodeMessages([]Item{{Kind: "text", Role: RoleAssistant, Text: "answer", Reason: "thinking", ReasoningDetails: json.RawMessage(`{"type":"summary"}`)}}, false)
 	if len(messages) != 1 {

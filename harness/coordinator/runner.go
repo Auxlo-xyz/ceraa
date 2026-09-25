@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,6 +84,11 @@ type Runner struct {
 	cb         Callbacks
 }
 
+func (r *Runner) promptCacheKey() string {
+	digest := sha256.Sum256([]byte(r.cfg.Model.BaseURL + "\x00" + r.cfg.Model.Model + "\x00" + r.cfg.SessionID))
+	return fmt.Sprintf("sooraa-%x", digest)
+}
+
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
 	if cfg.Model.BaseURL == "" {
 		cfg.Model = llm.DefaultConfig()
@@ -161,6 +167,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: user})
 	}
 	runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
+	promptCacheKey := r.promptCacheKey()
 	now := time.Now()
 	sess.Runs = append(sess.Runs, sessionstore.Run{ID: runID, User: user, Status: sessionstore.RunRunning, CreatedAt: now, UpdatedAt: now})
 	if err := r.store.Save(sess); err != nil {
@@ -310,14 +317,18 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 
 		client := llm.New(r.cfg.Model)
 		toolDefs := r.toolDefs()
+		requestToolChoice := ""
 		if forceFinalResponse {
-			toolDefs = nil
+			requestToolChoice = "none"
 		}
 		request := llm.StreamRequest{
-			Messages:  r.messages(sess, toolDefs),
-			Tools:     toolDefs,
-			Reason:    r.cfg.Reasoning,
-			MaxTokens: r.cfg.MaxOutputTokens,
+			Messages:       r.messages(sess, toolDefs),
+			Tools:          toolDefs,
+			Reason:         r.cfg.Reasoning,
+			MaxTokens:      r.cfg.MaxOutputTokens,
+			ToolChoice:     requestToolChoice,
+			PromptCacheKey: promptCacheKey,
+			SessionID:      r.cfg.SessionID,
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		var content strings.Builder

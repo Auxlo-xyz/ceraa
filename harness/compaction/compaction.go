@@ -327,6 +327,7 @@ type Compactor struct {
 	Settings         Settings
 	ContextLimit     int
 	MaxOutputTokens  int
+	CacheKey         string
 	LastPromptTokens int
 	OnUsage          func(llm.UsageInfo)
 }
@@ -421,8 +422,9 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 			{Kind: "text", Role: llm.RoleSystem, Text: "You are a conversation checkpoint compiler. Produce only the requested anchored summary. Do not call tools, continue the task, or invent results."},
 			{Kind: "text", Role: llm.RoleUser, Text: prompt},
 		},
-		Tools:     nil,
-		MaxTokens: summaryOutput,
+		Tools:          nil,
+		MaxTokens:      summaryOutput,
+		PromptCacheKey: c.CacheKey,
 	}
 	var summary strings.Builder
 	err := client.Stream(ctx, req, func(delta llm.ProviderResponse) {

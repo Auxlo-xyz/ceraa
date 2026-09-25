@@ -255,6 +255,7 @@ func handleContextCommand(token string, chatID int64) {
 		return
 	}
 	tokens, messages := 0, 0
+	cacheReadPercent := 0
 	sessionTitle := "Untitled session"
 	if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 		messages = len(sess.Messages)
@@ -262,12 +263,15 @@ func handleContextCommand(token string, chatID int64) {
 		for _, message := range sess.Messages {
 			tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
 		}
+		if len(sess.Runs) > 0 {
+			cacheReadPercent = int(sess.Runs[len(sess.Runs)-1].Usage.CacheReadRatio() * 100)
+		}
 	}
 	percent := 0
 	if cfg.LLM.ContextLimit > 0 {
 		percent = tokens * 100 / cfg.LLM.ContextLimit
 	}
-	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nSession: %s\nProject: `%s`\nMessages: %d\nModel: %s", tokens, cfg.LLM.ContextLimit, percent, sessionTitle, defaultState.project(chatID), messages, cfg.LLM.Model)
+	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nModel: %s", tokens, cfg.LLM.ContextLimit, percent, cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, cfg.LLM.Model)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 

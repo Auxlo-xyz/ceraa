@@ -57,15 +57,22 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		return fmt.Errorf("evaluation store: %w", err)
 	}
 	provider := cfg.ActiveLLM()
-	compactor := compaction.New(llm.FromProvider(provider.URL, provider.APIKey, provider.Model))
+	pcfg := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
+	pcfg.PromptCacheMode = provider.PromptCacheMode
+	pcfg.PromptCacheTTL = provider.PromptCacheTTL
+	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
+	compactor.CacheKey = "sooraa-compaction-cli"
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
+	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
+	modelConfig.PromptCacheMode = provider.PromptCacheMode
+	modelConfig.PromptCacheTTL = provider.PromptCacheTTL
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
-		Model:               llm.FromProvider(provider.URL, provider.APIKey, provider.Model),
+		Model:               modelConfig,
 		ContextLimit:        provider.ContextLimit,
 		MaxOutputTokens:     provider.MaxOutputTokens,
 		ToolOutputDir:       cfg.ToolOutputDir,

@@ -348,7 +348,7 @@ func handleCallback(token string, q *struct {
 			return
 		}
 		current := activeProviderConfig(cfg, defaultState.provider())
-		profile := config.ProviderProfile{URL: current.URL, Model: metadata.ID, ContextLimit: current.ContextLimit, MaxOutputTokens: current.MaxOutputTokens}
+		profile := config.ProviderProfile{URL: current.URL, Model: metadata.ID, ContextLimit: current.ContextLimit, MaxOutputTokens: current.MaxOutputTokens, PromptCacheMode: current.PromptCacheMode, PromptCacheTTL: current.PromptCacheTTL}
 		if err := defaultState.setProviderProfile(defaultState.provider(), profile); err != nil {
 			send(token, chatID, "Model save failed: "+err.Error())
 			return

@@ -20,6 +20,19 @@ import (
 	"sooraa/harness/tool"
 )
 
+func TestRunnerPromptCacheKeyIsStablePerProviderAndSession(t *testing.T) {
+	first := &Runner{cfg: RunnerConfig{SessionID: "session-a", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "model")}}
+	second := &Runner{cfg: RunnerConfig{SessionID: "session-a", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "model")}}
+	otherSession := &Runner{cfg: RunnerConfig{SessionID: "session-b", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "model")}}
+	otherModel := &Runner{cfg: RunnerConfig{SessionID: "session-a", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "other")}}
+	if first.promptCacheKey() != second.promptCacheKey() {
+		t.Fatal("cache key changed for the same session")
+	}
+	if first.promptCacheKey() == otherSession.promptCacheKey() || first.promptCacheKey() == otherModel.promptCacheKey() {
+		t.Fatal("cache key did not include session or model")
+	}
+}
+
 func TestRunnerExposesNativeToolDefinitions(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry()}
 	defs := runner.toolDefs()
@@ -183,16 +196,16 @@ func TestCoordinatorRetriesMalformedToolCallWithValidSchema(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRetriesReasoningOnlyResponseWithoutTools(t *testing.T) {
+func TestCoordinatorRetriesReasoningOnlyResponseWithToolsDisabled(t *testing.T) {
 	var requests atomic.Int32
-	var retryWithoutTools atomic.Bool
+	var retryWithToolsDisabled atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if requests.Add(1) == 2 {
 			tools, _ := body["tools"].([]any)
-			retryWithoutTools.Store(len(tools) == 0)
+			retryWithToolsDisabled.Store(len(tools) > 0 && body["tool_choice"] == "none")
 		}
 		var payload map[string]any
 		if requests.Load() == 1 {
@@ -224,8 +237,8 @@ func TestCoordinatorRetriesReasoningOnlyResponseWithoutTools(t *testing.T) {
 	}
 	select {
 	case answer := <-done:
-		if answer != "final answer" || requests.Load() != 2 || !retryWithoutTools.Load() {
-			t.Fatalf("answer=%q requests=%d without_tools=%t", answer, requests.Load(), retryWithoutTools.Load())
+		if answer != "final answer" || requests.Load() != 2 || !retryWithToolsDisabled.Load() {
+			t.Fatalf("answer=%q requests=%d tools_disabled=%t", answer, requests.Load(), retryWithToolsDisabled.Load())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("coordinator did not retry reasoning-only response")
@@ -280,14 +293,14 @@ func TestCoordinatorConvertsTextToolCallToDispatcherCall(t *testing.T) {
 
 func TestCoordinatorHardStopsToolsAndRecoversLingFinalValue(t *testing.T) {
 	var requests atomic.Int32
-	var retryWithoutTools atomic.Bool
+	var retryWithToolsDisabled atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if requests.Add(1) == 2 {
 			tools, _ := body["tools"].([]any)
-			retryWithoutTools.Store(len(tools) == 0)
+			retryWithToolsDisabled.Store(len(tools) > 0 && body["tool_choice"] == "none")
 		}
 		var payload map[string]any
 		if requests.Load() == 1 {
@@ -322,8 +335,8 @@ func TestCoordinatorHardStopsToolsAndRecoversLingFinalValue(t *testing.T) {
 	}
 	select {
 	case answer := <-done:
-		if answer != "recovered final" || requests.Load() != 2 || !retryWithoutTools.Load() {
-			t.Fatalf("answer=%q requests=%d without_tools=%t", answer, requests.Load(), retryWithoutTools.Load())
+		if answer != "recovered final" || requests.Load() != 2 || !retryWithToolsDisabled.Load() {
+			t.Fatalf("answer=%q requests=%d tools_disabled=%t", answer, requests.Load(), retryWithToolsDisabled.Load())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("coordinator did not hard-stop finalization tools")

@@ -25,6 +25,8 @@ type ProviderConfig struct {
 	MaxRetries              int
 	Timeout                 time.Duration
 	ToolChoice              string
+	PromptCacheMode         string
+	PromptCacheTTL          string
 	Compatibility           *Compatibility
 }
 
@@ -209,6 +211,17 @@ func (u UsageInfo) UncachedInputTokens() int {
 	return value
 }
 
+func (u UsageInfo) CacheReadRatio() float64 {
+	if u.InputTokens <= 0 || u.CachedInputTokens <= 0 {
+		return 0
+	}
+	ratio := float64(u.CachedInputTokens) / float64(u.InputTokens)
+	if ratio > 1 {
+		return 1
+	}
+	return ratio
+}
+
 func (u *UsageInfo) Add(delta UsageInfo) {
 	delta = delta.normalized()
 	u.InputTokens += delta.InputTokens
@@ -339,11 +352,13 @@ func estimateTokens(s string) int {
 }
 
 type StreamRequest struct {
-	Messages   []Item
-	Tools      []ToolDef
-	Reason     ReasonLevel
-	MaxTokens  int
-	ToolChoice string
+	Messages       []Item
+	Tools          []ToolDef
+	Reason         ReasonLevel
+	MaxTokens      int
+	ToolChoice     string
+	PromptCacheKey string
+	SessionID      string
 }
 
 type StreamingClient struct {
@@ -498,6 +513,50 @@ func normalizeItemsForChat(items []Item) []Item {
 	return normalized
 }
 
+func isOpenRouterEndpoint(baseURL string) bool {
+	return strings.Contains(strings.ToLower(baseURL), "openrouter.ai")
+}
+
+func isPromptCacheKeyEndpoint(baseURL string) bool {
+	base := strings.ToLower(baseURL)
+	return strings.Contains(base, "openai.com") || isOpenRouterEndpoint(base)
+}
+
+func promptCacheMode(cfg ProviderConfig) string {
+	mode := strings.ToLower(strings.TrimSpace(cfg.PromptCacheMode))
+	if mode == "" {
+		return "auto"
+	}
+	return mode
+}
+
+func addPromptCacheFields(body map[string]any, cfg ProviderConfig, req StreamRequest) string {
+	mode := promptCacheMode(cfg)
+	if mode == "off" || req.PromptCacheKey == "" {
+		return ""
+	}
+	if isPromptCacheKeyEndpoint(cfg.BaseURL) || mode == "explicit" {
+		body["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if !isOpenRouterEndpoint(cfg.BaseURL) {
+		return ""
+	}
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = req.PromptCacheKey
+	}
+	body["session_id"] = sessionID
+	if mode != "explicit" {
+		return sessionID
+	}
+	cacheControl := map[string]any{"type": "ephemeral"}
+	if ttl := strings.TrimSpace(cfg.PromptCacheTTL); ttl != "" {
+		cacheControl["ttl"] = ttl
+	}
+	body["cache_control"] = cacheControl
+	return sessionID
+}
+
 func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
 	compatibility := compatibilityFor(c.cfg)
 	url := chatCompletionsURL(c.cfg.BaseURL)
@@ -539,6 +598,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			body["tool_choice"] = "auto"
 		}
 	}
+	sessionID := addPromptCacheFields(body, c.cfg, req)
 
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -553,6 +613,9 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		}
 		hreq.Header.Set("Content-Type", "application/json")
 		hreq.Header.Set("Accept", "text/event-stream")
+		if sessionID != "" {
+			hreq.Header.Set("x-session-id", sessionID)
+		}
 		if c.cfg.APIKey != "" {
 			hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}

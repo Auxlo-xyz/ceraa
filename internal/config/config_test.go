@@ -30,11 +30,11 @@ func TestActiveLLMUsesSelectedProviderProfile(t *testing.T) {
 		LLM:            LLMProvider{URL: "default-url", APIKey: "default-key", Model: "default-model", ContextLimit: 100, MaxOutputTokens: 10},
 		ActiveProvider: "fast",
 		ProviderProfiles: map[string]ProviderProfile{
-			"fast": {URL: "fast-url", APIKey: "fast-key", Model: "fast-model", ContextLimit: 200, MaxOutputTokens: 20},
+			"fast": {URL: "fast-url", APIKey: "fast-key", Model: "fast-model", ContextLimit: 200, MaxOutputTokens: 20, PromptCacheMode: "explicit", PromptCacheTTL: "1h"},
 		},
 	}
 	active := cfg.ActiveLLM()
-	if active.URL != "fast-url" || active.APIKey != "fast-key" || active.Model != "fast-model" || active.ContextLimit != 200 || active.MaxOutputTokens != 20 {
+	if active.URL != "fast-url" || active.APIKey != "fast-key" || active.Model != "fast-model" || active.ContextLimit != 200 || active.MaxOutputTokens != 20 || active.PromptCacheMode != "explicit" || active.PromptCacheTTL != "1h" {
 		t.Fatalf("unexpected active provider: %+v", active)
 	}
 }

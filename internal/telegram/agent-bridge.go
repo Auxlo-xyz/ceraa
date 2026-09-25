@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -93,8 +94,10 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	}
 	providerConfig := activeProviderConfig(cfg, providerID)
 	modelConfig := llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model)
+	modelConfig.PromptCacheMode = providerConfig.PromptCacheMode
+	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
-	compactor := newCompactor(cfg, providerID)
+	compactor := newCompactor(cfg, providerID, sessionID)
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
@@ -239,12 +242,20 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 	return result
 }
 
-func newCompactor(cfg *config.Config, providerID string) *compaction.Compactor {
+func compactionCacheKey(providerURL, model, sessionID string) string {
+	digest := sha256.Sum256([]byte(providerURL + "\x00" + model + "\x00" + sessionID))
+	return fmt.Sprintf("sooraa-compaction-%x", digest)
+}
+
+func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.Compactor {
 	provider := activeProviderConfig(cfg, providerID)
 	pcfg := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
+	pcfg.PromptCacheMode = provider.PromptCacheMode
+	pcfg.PromptCacheTTL = provider.PromptCacheTTL
 	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
+	compactor.CacheKey = compactionCacheKey(provider.URL, provider.Model, sessionID)
 	_, _, variant := defaultState.values()
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled
