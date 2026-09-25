@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -176,7 +177,7 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 				if richMessage, ok := body["rich_message"].(map[string]any); ok {
 					markdown, _ := richMessage["markdown"].(string)
 					mu.Lock()
-					if strings.Contains(markdown, "🛠 Tools") {
+					if strings.Contains(markdown, "📚 Read file") {
 						liveText = markdown
 					} else {
 						finalMarkdown = markdown
@@ -198,8 +199,8 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	defer pinned.close()
 	pinned.Init()
 	renderer := newRunRenderer("token", 42, pinned)
-	renderer.tool("🔄 📚 Read file · /workspace/sooraa")
-	renderer.tool("✅ 📚 Read file completed")
+	renderer.tool("read-1", "🔄 📚 Read file · /workspace/sooraa")
+	renderer.tool("read-1", "✅ 📚 Read file completed")
 	renderer.finish("Done")
 	renderer.close()
 
@@ -208,7 +209,7 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	final := finalMarkdown
 	pinnedStatus := pinnedText
 	mu.Unlock()
-	if !strings.Contains(live, "🛠 Tools") || !strings.Contains(live, "📚 Read file") || strings.Contains(live, "⏳") {
+	if !strings.Contains(live, "📚 Read file") || !strings.Contains(live, "✓") || strings.Contains(live, "⏳") {
 		t.Fatalf("live assistant message = %q", live)
 	}
 	if final != "Done" {
@@ -249,6 +250,36 @@ func TestToolActivityIsReadableAndRedacted(t *testing.T) {
 	}
 	if got := formatToolStatus("✅ Read file completed"); got != "✓ Read file completed" {
 		t.Fatalf("completed tool status = %q", got)
+	}
+}
+
+func TestToolActivityKeepsOneLinePerCallAndLastSix(t *testing.T) {
+	renderer := &runRenderer{messageID: 1}
+	for i := 1; i <= 7; i++ {
+		callID := fmt.Sprintf("read-%d", i)
+		renderer.tool(callID, fmt.Sprintf("🔄 📚 Read file · file-%d", i))
+		renderer.tool(callID, "✅ 📚 Read file completed")
+	}
+	activity := formatToolActivity(renderer.tools)
+	lines := strings.Split(activity, "\n")
+	if len(lines) != 6 {
+		t.Fatalf("tool lines = %d, want 6: %q", len(lines), activity)
+	}
+	if strings.Contains(activity, "file-1") || !strings.Contains(activity, "file-2") || !strings.Contains(activity, "file-7") {
+		t.Fatalf("tool window = %q", activity)
+	}
+	if strings.Count(activity, "Read file") != 6 || strings.Contains(activity, "completed") {
+		t.Fatalf("tool activity was not normalized: %q", activity)
+	}
+}
+
+func TestToolActivityPreservesCommandDetailOnCompletion(t *testing.T) {
+	renderer := &runRenderer{messageID: 1}
+	renderer.tool("run-1", "🔄 >_ Run command · find /workspace -name config.json")
+	renderer.tool("run-1", "✅ >_ Run command completed")
+	want := "• ✓ >_ Run command · find /workspace -name config.json"
+	if got := formatToolActivity(renderer.tools); got != want {
+		t.Fatalf("tool activity = %q, want %q", got, want)
 	}
 }
 

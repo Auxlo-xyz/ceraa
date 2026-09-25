@@ -913,11 +913,11 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 	return dst, nil
 }
 
-func runWithThinking(sessionID string, prompt string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runWithThinking(sessionID string, prompt string, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	return runAgent(sessionID, prompt, onReasoning, onTool, onAnswer)
 }
 
-func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	return runAgentContext(ctx, sessionID, prompt, onContent, onReasoning, onTool, onAnswer)
 }
 

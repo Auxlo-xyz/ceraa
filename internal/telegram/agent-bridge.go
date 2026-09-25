@@ -24,11 +24,11 @@ import (
 	"sooraa/internal/secret"
 )
 
-func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	return runAgentContext(context.Background(), sessionID, user, nil, onReasoning, onTool, onAnswer)
 }
 
-func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -36,15 +36,15 @@ func runAgentContext(parent context.Context, sessionID string, user string, onCo
 	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer)
 }
 
-func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	return runAgentWithConfigContext(context.Background(), sessionID, user, cfg, nil, onReasoning, onTool, onAnswer)
 }
 
-func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer)
 }
 
-func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string), onAnswer func(string)) error {
+func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	if err := parent.Err(); err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 			},
 			OnToolStart: func(callID, name string, args map[string]any) {
 				if onTool != nil {
-					onTool("🔄 " + toolDisplayName(name) + toolArgsSummary(name, args))
+					onTool(callID, "🔄 "+toolDisplayName(name)+toolArgsSummary(name, args))
 				}
 			},
 			OnToolDone: func(callID, name string, result operation.ResultEvent) {
@@ -148,20 +148,20 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 					status = "⚠️"
 				}
 				if onTool != nil {
-					onTool(fmt.Sprintf("%s %s %s", status, label, toolResultLabel(result)))
+					onTool(callID, fmt.Sprintf("%s %s %s", status, label, toolResultLabel(result)))
 				}
 			},
 			OnCompactionStart: func() {
 				if onTool != nil {
-					onTool("⚡ Compacting context...")
+					onTool("compaction", "⚡ Compacting context...")
 				}
 			},
 			OnCompactionDone: func(ok bool, err error) {
 				if onTool != nil {
 					if ok {
-						onTool("✅ Compaction completed")
+						onTool("compaction", "✅ Compaction completed")
 					} else if err != nil {
-						onTool("⚠️ Compaction skipped")
+						onTool("compaction", "⚠️ Compaction skipped")
 					}
 				}
 			},

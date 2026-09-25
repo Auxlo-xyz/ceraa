@@ -14,6 +14,13 @@ import (
 	"sooraa/internal/logger"
 )
 
+type toolActivity struct {
+	id     string
+	status string
+	label  string
+	detail string
+}
+
 type runRenderer struct {
 	token  string
 	chatID int64
@@ -22,7 +29,7 @@ type runRenderer struct {
 	mu            sync.Mutex
 	messageID     int
 	streamContent string
-	tools         []string
+	tools         []toolActivity
 	lastStream    time.Time
 	lastStatus    time.Time
 	stopped       bool
@@ -120,14 +127,42 @@ func (r *runRenderer) reasoning(value string) {
 	r.pinned.UpdateReasoning(value)
 }
 
-func (r *runRenderer) tool(value string) {
-	r.mu.Lock()
-	if strings.HasPrefix(value, "🔄") || strings.HasPrefix(value, "✅") || strings.HasPrefix(value, "⚠️") {
-		r.streamContent = ""
+func (r *runRenderer) tool(callID, value string) {
+	activity, ok := parseToolActivity(value)
+	if !ok {
+		return
 	}
-	r.tools = append(r.tools, value)
-	if len(r.tools) > 8 {
-		r.tools = r.tools[len(r.tools)-8:]
+	activity.id = callID
+	r.mu.Lock()
+	r.streamContent = ""
+	if activity.status == "🔄" || activity.status == "⚡" {
+		r.tools = append(r.tools, activity)
+	} else {
+		index := -1
+		if callID != "" {
+			for i := len(r.tools) - 1; i >= 0; i-- {
+				if r.tools[i].id == callID {
+					index = i
+					break
+				}
+			}
+		}
+		if index < 0 {
+			for i := len(r.tools) - 1; i >= 0; i-- {
+				if r.tools[i].label == activity.label {
+					index = i
+					break
+				}
+			}
+		}
+		if index >= 0 {
+			r.tools[index].status = activity.status
+			if activity.detail != "" {
+				r.tools[index].detail = activity.detail
+			}
+		} else {
+			r.tools = append(r.tools, activity)
+		}
 	}
 	messageID := r.messageID
 	r.mu.Unlock()
@@ -438,12 +473,52 @@ func toolDisplayName(name string) string {
 	}
 }
 
-func formatToolActivity(tools []string) string {
-	lines := make([]string, 0, len(tools))
-	for _, status := range tools {
-		lines = append(lines, "• "+formatToolStatus(status))
+func parseToolActivity(value string) (toolActivity, bool) {
+	value = strings.TrimSpace(value)
+	prefixes := []struct {
+		prefix string
+		status string
+	}{
+		{"🔄 ", "🔄"},
+		{"✅ ", "✓"},
+		{"✓ ", "✓"},
+		{"⚠️ ", "⚠"},
+		{"⚠ ", "⚠"},
+		{"⚡ ", "⚡"},
 	}
-	return "🛠 Tools\n" + strings.Join(lines, "\n")
+	for _, item := range prefixes {
+		if !strings.HasPrefix(value, item.prefix) {
+			continue
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(value, item.prefix))
+		detail := ""
+		if separator := strings.Index(body, " · "); separator >= 0 {
+			detail = strings.TrimSpace(body[separator+3:])
+			body = strings.TrimSpace(body[:separator])
+		}
+		if item.status != "🔄" && item.status != "⚡" {
+			body = strings.TrimSpace(strings.TrimSuffix(body, " completed"))
+			body = strings.TrimSpace(strings.TrimSuffix(body, " failed"))
+			body = strings.TrimSpace(strings.TrimSuffix(body, " cancelled"))
+		}
+		return toolActivity{status: item.status, label: body, detail: detail}, true
+	}
+	return toolActivity{}, false
+}
+
+func formatToolActivity(tools []toolActivity) string {
+	if len(tools) > 6 {
+		tools = tools[len(tools)-6:]
+	}
+	lines := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		line := "• " + tool.status + " " + tool.label
+		if tool.detail != "" {
+			line += " · " + tool.detail
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func toolResultLabel(result operation.ResultEvent) string {
