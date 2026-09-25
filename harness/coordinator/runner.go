@@ -145,7 +145,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 	}
 	if len(sess.Messages) == 0 {
-		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.systemPrompt(true)})
+		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.systemPrompt()})
 	}
 	if user != "" {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: user})
@@ -544,34 +544,15 @@ func (r *Runner) handleInbox(ctx context.Context) error {
 }
 
 func (r *Runner) toolDefs() []llm.ToolDef {
-	toolNames := make([]string, 0)
-	if r.reg != nil {
-		for _, item := range r.reg.All() {
-			toolNames = append(toolNames, item.Name())
-		}
+	if r.reg == nil {
+		return nil
 	}
-	return []llm.ToolDef{{
-		Name:        "run",
-		Description: "Invoke exactly one active canonical tool. Never call run recursively. Use only names from <tool-catalog>.",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"tool": map[string]any{
-					"type":        "string",
-					"enum":        toolNames,
-					"description": "Canonical active tool name from <tool-catalog>.",
-				},
-				"arguments": map[string]any{
-					"type":                 "object",
-					"minProperties":        1,
-					"additionalProperties": true,
-					"description":          "Arguments for the selected canonical tool; keys are defined in <tool-catalog>.",
-				},
-			},
-			"required": []string{"tool", "arguments"},
-		},
-	}}
+	items := r.reg.All()
+	definitions := make([]llm.ToolDef, 0, len(items))
+	for _, item := range items {
+		definitions = append(definitions, llm.ToolDef{Name: item.Name(), Description: item.Description(), Parameters: item.Schema()})
+	}
+	return definitions
 }
 
 func (r *Runner) uniqueToolCallIDs(calls []llm.StreamedToolCall, sess *sessionstore.Session) []llm.StreamedToolCall {
@@ -614,64 +595,73 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	if limit <= 0 {
 		limit = 216000
 	}
-	request := contextbuilder.New(&history, r.systemPrompt(len(tools) > 0)).BuildWithLimit(limit)
+	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
 	return request.Messages
 }
 
 func normalizeDispatcherMessages(items []llm.Item) []llm.Item {
+	callNames := make(map[string]string)
 	for i := range items {
 		switch items[i].Kind {
 		case "tool_call":
-			items[i] = normalizeDispatcherToolCall(items[i].Name, items[i].Args, items[i])
-		case "text":
-			if items[i].Role == llm.RoleTool && items[i].Name != "" {
-				items[i].Name = "run"
+			items[i] = normalizeLegacyRunToolCall(items[i])
+			if items[i].Name != "" {
+				callNames[items[i].CallID] = items[i].Name
 			}
 		case "tool_calls":
 			for j := range items[i].ToolCalls {
-				call := &items[i].ToolCalls[j]
-				if call.Name == "run" {
-					continue
+				items[i].ToolCalls[j] = normalizeLegacyRunToolCallRef(items[i].ToolCalls[j])
+				if items[i].ToolCalls[j].Name != "" {
+					callNames[items[i].ToolCalls[j].ID] = items[i].ToolCalls[j].Name
 				}
-				var args map[string]any
-				if err := json.Unmarshal([]byte(call.Args), &args); err != nil {
-					continue
-				}
-				wrapped, err := json.Marshal(map[string]any{"tool": call.Name, "arguments": args})
-				if err != nil {
-					continue
-				}
-				call.Name = "run"
-				call.Args = string(wrapped)
+			}
+		}
+	}
+	for i := range items {
+		if items[i].Kind == "text" && items[i].Role == llm.RoleTool {
+			if name := callNames[items[i].CallID]; name != "" {
+				items[i].Name = name
 			}
 		}
 	}
 	return items
 }
 
-func normalizeDispatcherToolCall(name, args string, item llm.Item) llm.Item {
-	if name == "run" {
+func normalizeLegacyRunToolCall(item llm.Item) llm.Item {
+	if item.Name != "run" {
 		return item
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(args), &decoded); err != nil {
+	var envelope struct {
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(item.Args), &envelope); err != nil || envelope.Tool == "" || len(envelope.Arguments) == 0 {
 		return item
 	}
-	wrapped, err := json.Marshal(map[string]any{"tool": name, "arguments": decoded})
-	if err != nil {
-		return item
-	}
-	item.Name = "run"
-	item.Args = string(wrapped)
+	item.Name = envelope.Tool
+	item.Args = string(envelope.Arguments)
 	return item
 }
 
-func (r *Runner) systemPrompt(includeTools bool) string {
-	parts := []string{r.cfg.SystemPrompt}
-	if includeTools {
-		parts = append(parts, r.compactToolCatalog())
+func normalizeLegacyRunToolCallRef(call llm.ToolCall) llm.ToolCall {
+	if call.Name != "run" {
+		return call
 	}
+	var envelope struct {
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(call.Args), &envelope); err != nil || envelope.Tool == "" || len(envelope.Arguments) == 0 {
+		return call
+	}
+	call.Name = envelope.Tool
+	call.Args = string(envelope.Arguments)
+	return call
+}
+
+func (r *Runner) systemPrompt() string {
+	parts := []string{r.cfg.SystemPrompt}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
 	}
@@ -679,17 +669,6 @@ func (r *Runner) systemPrompt(includeTools bool) string {
 		parts = append(parts, strings.TrimSpace(r.cfg.MemoryContext))
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-func (r *Runner) compactToolCatalog() string {
-	var catalog strings.Builder
-	catalog.WriteString("<tool-catalog>\n")
-	catalog.WriteString("Canonical names only. Do not use aliases.\n\n")
-	for _, item := range r.reg.All() {
-		catalog.WriteString("- " + item.Name() + ": arguments " + toolCatalogArguments(item.Schema()) + "\n")
-	}
-	catalog.WriteString("</tool-catalog>")
-	return catalog.String()
 }
 
 func toolCatalogArguments(schema map[string]any) string {
@@ -814,36 +793,49 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		op := sessionstore.Operation{ID: call.ID, Tool: call.Name, Status: sessionstore.StatusPending, RunID: runID, ToolCallID: call.ID}
 		sess.Operations = append(sess.Operations, op)
 		results[call.ID] = ""
-		if call.Name != "run" {
-			corrective = true
-			results[call.ID] = "Error: tool calls must use run"
-			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "tool calls must use run"); err != nil {
-				return nil, nil, false, err
+		toolName := canonicalToolName(r.reg, call.Name)
+		args := make(map[string]any)
+		if call.Name == "run" {
+			if !json.Valid([]byte(call.Arguments)) {
+				corrective = true
+				results[call.ID] = "Error: invalid JSON arguments for run; use the run schema and canonical tool catalog"
+				if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "invalid JSON arguments"); err != nil {
+					return nil, nil, false, err
+				}
+				continue
 			}
-			continue
-		}
-		if !json.Valid([]byte(call.Arguments)) {
-			corrective = true
-			results[call.ID] = "Error: invalid JSON arguments for run; use the run schema and canonical tool catalog"
-			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "invalid JSON arguments"); err != nil {
-				return nil, nil, false, err
+			var envelope struct {
+				Tool      string         `json:"tool"`
+				Arguments map[string]any `json:"arguments"`
 			}
-			continue
-		}
-		var envelope struct {
-			Tool      string         `json:"tool"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal([]byte(call.Arguments), &envelope); err != nil || strings.TrimSpace(envelope.Tool) == "" || envelope.Arguments == nil {
-			corrective = true
-			results[call.ID] = "Error: run requires tool and arguments; use a canonical tool from the tool catalog with its listed argument keys"
-			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "run requires tool and arguments"); err != nil {
-				return nil, nil, false, err
+			if err := json.Unmarshal([]byte(call.Arguments), &envelope); err != nil || strings.TrimSpace(envelope.Tool) == "" || envelope.Arguments == nil {
+				corrective = true
+				results[call.ID] = "Error: run requires tool and arguments; use a canonical tool from the tool catalog with its listed argument keys"
+				if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "run requires tool and arguments"); err != nil {
+					return nil, nil, false, err
+				}
+				continue
 			}
-			continue
+			toolName = canonicalToolName(r.reg, envelope.Tool)
+			args = envelope.Arguments
+		} else {
+			if !json.Valid([]byte(call.Arguments)) {
+				corrective = true
+				results[call.ID] = "Error: invalid JSON arguments for " + toolName
+				if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "invalid JSON arguments"); err != nil {
+					return nil, nil, false, err
+				}
+				continue
+			}
+			if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil || args == nil {
+				corrective = true
+				results[call.ID] = "Error: " + toolName + " requires a JSON object"
+				if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "arguments must be a JSON object"); err != nil {
+					return nil, nil, false, err
+				}
+				continue
+			}
 		}
-		toolName := canonicalToolName(r.reg, envelope.Tool)
-		args := envelope.Arguments
 		repairToolArguments(toolName, args)
 		rawArgs, err := json.Marshal(args)
 		if err != nil {

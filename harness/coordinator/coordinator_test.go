@@ -20,25 +20,28 @@ import (
 	"sooraa/harness/tool"
 )
 
-func TestRunnerExposesSingleRunToolDefinition(t *testing.T) {
+func TestRunnerExposesNativeToolDefinitions(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry()}
 	defs := runner.toolDefs()
-	if len(defs) != 1 || defs[0].Name != "run" {
+	if len(defs) == 0 || defs[0].Name == "run" {
 		t.Fatalf("tool definitions = %#v", defs)
 	}
-	parameters, ok := defs[0].Parameters["properties"].(map[string]any)
-	if !ok || parameters["tool"] == nil || parameters["arguments"] == nil {
-		t.Fatalf("run parameters = %#v", defs[0].Parameters)
+	native := false
+	for _, def := range defs {
+		if def.Name == "read" {
+			native = true
+		}
+	}
+	if !native {
+		t.Fatal("native tool definitions were not exposed")
 	}
 }
 
-func TestRunnerCompactCatalogIncludesActiveTools(t *testing.T) {
+func TestRunnerSystemPromptOmitsCompactCatalog(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
-	catalog := runner.compactToolCatalog()
-	for _, want := range []string{"<tool-catalog>", "Canonical names only. Do not use aliases.", "bash: arguments {command: string, timeout: integer?}", "read: arguments {path: string}", "write: arguments {content: string, path: string}", "webfetch: arguments {format: string?, timeout: integer?, url: string}", "</tool-catalog>"} {
-		if !strings.Contains(catalog, want) {
-			t.Fatalf("catalog missing %q: %s", want, catalog)
-		}
+	prompt := runner.systemPrompt()
+	if strings.Contains(prompt, "<tool-catalog>") || !strings.Contains(prompt, "system") {
+		t.Fatalf("system prompt = %q", prompt)
 	}
 }
 
@@ -65,40 +68,40 @@ func TestDispatcherCanonicalizesAliasesAndArgumentNames(t *testing.T) {
 	}
 }
 
-func TestNormalizeDispatcherMessagesWrapsLegacyNativeCalls(t *testing.T) {
+func TestNormalizeDispatcherMessagesUnwrapsLegacyRunCalls(t *testing.T) {
 	items := []llm.Item{
-		{Kind: "tool_call", CallID: "one", Name: "read", Args: `{"path":"README.md"}`},
-		{Kind: "tool_calls", ToolCalls: []llm.ToolCall{{ID: "two", Name: "bash", Args: `{"command":"pwd"}`}}},
-		{Kind: "text", Role: llm.RoleTool, CallID: "one", Name: "read", Output: "ok"},
+		{Kind: "tool_call", CallID: "one", Name: "run", Args: `{"tool":"read","arguments":{"path":"README.md"}}`},
+		{Kind: "tool_calls", ToolCalls: []llm.ToolCall{{ID: "two", Name: "run", Args: `{"tool":"bash","arguments":{"command":"pwd"}}`}}},
+		{Kind: "text", Role: llm.RoleTool, CallID: "one", Name: "run", Output: "ok"},
 	}
 	normalized := normalizeDispatcherMessages(items)
-	if normalized[0].Name != "run" || !strings.Contains(normalized[0].Args, `"tool":"read"`) {
+	if normalized[0].Name != "read" || normalized[0].Args != `{"path":"README.md"}` {
 		t.Fatalf("legacy single call = %#v", normalized[0])
 	}
-	if normalized[1].ToolCalls[0].Name != "run" || !strings.Contains(normalized[1].ToolCalls[0].Args, `"tool":"bash"`) {
+	if normalized[1].ToolCalls[0].Name != "bash" || normalized[1].ToolCalls[0].Args != `{"command":"pwd"}` {
 		t.Fatalf("legacy multi call = %#v", normalized[1])
 	}
-	if normalized[2].Name != "run" {
+	if normalized[2].Name != "read" {
 		t.Fatalf("legacy tool result = %#v", normalized[2])
 	}
 }
 
-func TestRunnerRejectsNativeAndUnknownDispatcherCalls(t *testing.T) {
+func TestRunnerAcceptsNativeAndRejectsUnknownDispatcherCalls(t *testing.T) {
 	store, err := sessionstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &Runner{reg: tool.DefaultRegistry(), store: store, cfg: RunnerConfig{SessionID: "dispatcher"}}
+	runner := &Runner{reg: tool.DefaultRegistry(), store: store, opMgr: operation.New(nil), cfg: RunnerConfig{SessionID: "dispatcher"}}
 	sess := &sessionstore.Session{ID: "dispatcher", Version: 2}
-	_, results, _, err := runner.prepareTools(context.Background(), sess, "run1", []llm.StreamedToolCall{
+	prepared, results, _, err := runner.prepareTools(context.Background(), sess, "run1", []llm.StreamedToolCall{
 		{ID: "native", Name: "read", Arguments: `{"path":"README.md"}`},
 		{ID: "unknown", Name: "run", Arguments: `{"tool":"missing","arguments":{}}`},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if results["native"] != "Error: tool calls must use run" || !strings.Contains(results["unknown"], "Error: unknown tool missing; use canonical tools:") {
-		t.Fatalf("dispatcher errors = %#v", results)
+	if len(prepared) != 1 || prepared[0].tool.Name() != "read" || !strings.Contains(results["unknown"], "Error: unknown tool missing; use canonical tools:") {
+		t.Fatalf("dispatcher results = %#v, prepared = %#v", results, prepared)
 	}
 }
 
@@ -108,32 +111,28 @@ func TestDispatcherDefinitionsStayCompact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog := runner.compactToolCatalog()
-	if len(definition) > 1024 {
-		t.Fatalf("run definition bytes = %d", len(definition))
-	}
-	if len(catalog) > 4096 {
-		t.Fatalf("catalog bytes = %d", len(catalog))
+	if len(definition) > 16384 {
+		t.Fatalf("native definitions bytes = %d", len(definition))
 	}
 }
 
 func TestCoordinatorRetriesMalformedToolCallWithValidSchema(t *testing.T) {
 	var requests atomic.Int32
-	var retryHasCanonicalEnum atomic.Bool
+	var retryHasNativeDefinition atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if requests.Add(1) == 2 {
 			tools, _ := body["tools"].([]any)
-			if len(tools) > 0 {
-				toolMap, _ := tools[0].(map[string]any)
-				function, _ := toolMap["function"].(map[string]any)
-				parameters, _ := function["parameters"].(map[string]any)
-				properties, _ := parameters["properties"].(map[string]any)
-				toolProperty, _ := properties["tool"].(map[string]any)
-				enum, _ := toolProperty["enum"].([]any)
-				retryHasCanonicalEnum.Store(len(enum) > 0)
+			for _, raw := range tools {
+				toolMap, _ := raw.(map[string]any)
+				if toolMap["type"] == "function" {
+					function, _ := toolMap["function"].(map[string]any)
+					if function["name"] == "read" {
+						retryHasNativeDefinition.Store(true)
+					}
+				}
 			}
 		}
 		var payload map[string]any
@@ -176,8 +175,8 @@ func TestCoordinatorRetriesMalformedToolCallWithValidSchema(t *testing.T) {
 	}
 	select {
 	case answer := <-done:
-		if answer != "recovered" || requests.Load() != 2 || !retryHasCanonicalEnum.Load() {
-			t.Fatalf("answer=%q requests=%d enum=%t", answer, requests.Load(), retryHasCanonicalEnum.Load())
+		if answer != "recovered" || requests.Load() != 2 || !retryHasNativeDefinition.Load() {
+			t.Fatalf("answer=%q requests=%d native_definition=%t", answer, requests.Load(), retryHasNativeDefinition.Load())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("coordinator did not retry malformed tool call")
