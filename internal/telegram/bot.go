@@ -356,6 +356,7 @@ func Run() error {
 	for {
 		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
 		if err != nil {
+			logger.Warn("Telegram getUpdates request failed: " + err.Error())
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -1097,15 +1098,13 @@ func handleCodexLogin(token string, chatID int64) {
 		send(token, chatID, "Failed to start Codex login: "+err.Error())
 		return
 	}
-	// Send inline keyboard message
 	kb, _ := state.InlineKeyboardJSON()
-	encoded, _ := json.Marshal(map[string]any{
-		"chat_id":      chatID,
-		"text":         state.ResultMessage(),
-		"reply_markup": json.RawMessage(kb),
-	})
-	resp, _ := telegramClient.Post(api("sendMessage", token), "application/json", bytes.NewReader(encoded))
-	discardTelegramResponse(resp)
+	var markup map[string]any
+	if err := json.Unmarshal(kb, &markup); err != nil {
+		send(token, chatID, "Failed to encode Codex login menu: "+err.Error())
+		return
+	}
+	sendMessageWithMarkup(token, chatID, state.ResultMessage(), markup)
 }
 
 func handleCodexStatus(token string, chatID int64) {
