@@ -436,34 +436,78 @@ func TestToolMessageWithoutCallIDIsKept(t *testing.T) {
 	}
 }
 
-// TestSentinelAlsoMarkedOnUnsignedToolMessage pins that an unsigned call is
-// marked in both places Google and the community workaround use. A call with a
-// real signature must be left exactly as received.
-func TestSentinelAlsoMarkedOnUnsignedToolMessage(t *testing.T) {
+// TestToolResultNeverCarriesThoughtSignature pins Google's OpenAI request
+// shape: a tool result is a plain functionResponse. Signature material belongs
+// only inside assistant tool_calls[].
+func TestToolResultNeverCarriesThoughtSignature(t *testing.T) {
 	items := []Item{
-		{Kind: "tool_call", CallID: "signed", Name: "bash", Args: "{}", ThoughtSignature: "real-sig"},
-		{Kind: "text", Role: RoleTool, CallID: "signed", Name: "bash", Output: "ok"},
 		{Kind: "tool_call", CallID: "unsigned", Name: "ls", Args: "{}"},
 		{Kind: "text", Role: RoleTool, CallID: "unsigned", Name: "ls", Output: "out"},
 	}
 	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
-	toolExtra := map[string]bool{}
 	for _, msg := range msgs {
 		if msg["role"] != string(RoleTool) {
 			continue
 		}
-		id, _ := msg["tool_call_id"].(string)
-		extra, _ := msg["extra_content"].(map[string]any)
-		google, _ := extra["google"].(map[string]any)
-		_, present := google["thought_signature"]
-		toolExtra[id] = present
+		if _, present := msg["extra_content"]; present {
+			t.Fatalf("tool message must not carry extra_content: %v", msg)
+		}
 	}
-	if toolExtra["signed"] {
-		t.Fatal("a signed call's tool message must not be marked")
+}
+
+// TestGenuineParallelCallsReplayExactly pins Google's most important
+// distinction: only the first parallel call carries a signature. A batch that
+// already has one must not gain a sentinel on its later calls.
+func TestGenuineParallelCallsReplayExactly(t *testing.T) {
+	items := []Item{{Kind: "tool_calls", ToolCalls: []ToolCall{
+		{ID: "first", Name: "weather", Args: "{}", ThoughtSignature: "real-sig"},
+		{ID: "second", Name: "weather", Args: "{}"},
+	}}}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	got := toolCallSignatures(msgs)
+	if got["first"] != "real-sig" {
+		t.Fatalf("first parallel signature = %q, want real-sig", got["first"])
 	}
-	if !toolExtra["unsigned"] {
-		t.Fatal("an unsigned call's tool message must carry the sentinel")
+	if signature, present := got["second"]; present {
+		t.Fatalf("second parallel signature = %q, want it omitted", signature)
 	}
+}
+
+// TestSyntheticParallelBatchBypassesOnlyFirstCall pins the narrow injected-call
+// escape hatch: an unsigned batch gets the sentinel once, on its first part,
+// preserving Gemini's documented parallel-call shape.
+func TestSyntheticParallelBatchBypassesOnlyFirstCall(t *testing.T) {
+	items := []Item{{Kind: "tool_calls", ToolCalls: []ToolCall{
+		{ID: "first", Name: "weather", Args: "{}"},
+		{ID: "second", Name: "weather", Args: "{}"},
+	}}}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	got := toolCallSignatures(msgs)
+	if got["first"] != skipThoughtSignatureValidator {
+		t.Fatalf("first synthetic signature = %q, want %q", got["first"], skipThoughtSignatureValidator)
+	}
+	if signature, present := got["second"]; present {
+		t.Fatalf("second synthetic signature = %q, want it omitted", signature)
+	}
+}
+
+func toolCallSignatures(msgs []map[string]any) map[string]string {
+	got := map[string]string{}
+	for _, msg := range msgs {
+		calls, ok := msg["tool_calls"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, call := range calls {
+			id, _ := call["id"].(string)
+			extra, _ := call["extra_content"].(map[string]any)
+			google, _ := extra["google"].(map[string]any)
+			if signature, _ := google["thought_signature"].(string); signature != "" {
+				got[id] = signature
+			}
+		}
+	}
+	return got
 }
 
 // TestSignatureStatsUnderpinsDiagnostic pins the counters behind the diagnostic
@@ -472,10 +516,16 @@ func TestSignatureStatsUnderpinsDiagnostic(t *testing.T) {
 	stats := geminiSignatureStats([]Item{
 		{Kind: "tool_call", CallID: "a", Name: "bash", ThoughtSignature: "sig"},
 		{Kind: "tool_call", CallID: "b", Name: "ls"},
-		{Kind: "text", Role: RoleTool, CallID: "a", Output: "ok"},
-		{Kind: "text", Role: RoleTool, CallID: "b", Output: "out"},
+		{Kind: "tool_calls", ToolCalls: []ToolCall{
+			{ID: "c", Name: "weather", ThoughtSignature: "sig"},
+			{ID: "d", Name: "weather"},
+		}},
+		{Kind: "tool_calls", ToolCalls: []ToolCall{
+			{ID: "e", Name: "weather"},
+			{ID: "f", Name: "weather"},
+		}},
 	})
-	if stats.signed != 1 || stats.sentinel != 1 || stats.toolMarked != 1 {
-		t.Fatalf("stats = %+v, want signed=1 sentinel=1 toolMarked=1", stats)
+	if stats.signed != 2 || stats.sentinel != 2 {
+		t.Fatalf("stats = %+v, want signed=2 sentinel=2", stats)
 	}
 }
