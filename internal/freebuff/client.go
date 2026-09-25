@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,11 +34,49 @@ type Client struct {
 
 func NewClient() *Client {
 	return &Client{
-		HTTPClient: &http.Client{Timeout: RequestTimeout},
+		HTTPClient: newSecureClient(),
 		WebBaseURL: DefaultWebBaseURL,
 		APIBaseURL: DefaultAPIBaseURL,
 		Now:        time.Now,
 		Sleep:      sleepCtx,
+	}
+}
+
+// newSecureClient returns an HTTP client that keeps a bearer token attached
+// across same-origin redirects and refuses to send it anywhere else.
+//
+// Two failure modes are being avoided at once. Go drops Authorization on a
+// cross-host redirect, so a canonical-host redirect would silently arrive
+// unauthenticated and read as a revoked token. And blindly re-attaching the
+// header on every redirect would hand the token to whatever host the redirect
+// names. The comparison is on the full host:port, not the hostname, because a
+// different port on the same host is a different origin and may be an
+// attacker-controlled local service. Since the API base is the canonical
+// non-redirecting host, a legitimate redirect should never arise at all.
+func newSecureClient() *http.Client {
+	return &http.Client{
+		Timeout: RequestTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) == 0 {
+				return nil
+			}
+			if len(via) >= 10 {
+				return errors.New("too many redirects")
+			}
+			origin := via[0].URL.Host
+			target := req.URL.Host
+			if strings.EqualFold(origin, target) {
+				// Same origin: carry the credential forward explicitly, because
+				// net/http has already dropped it by this point.
+				for _, header := range []string{"Authorization", "Cookie"} {
+					if value := via[len(via)-1].Header.Get(header); value != "" {
+						req.Header.Set(header, value)
+					}
+				}
+				return nil
+			}
+			return fmt.Errorf("refusing to follow redirect for a credentialed request from %s to %s", origin, target)
+		},
 	}
 }
 
@@ -83,6 +122,34 @@ func (c *Client) apiBase() string {
 		return strings.TrimRight(c.APIBaseURL, "/")
 	}
 	return DefaultAPIBaseURL
+}
+
+// readLimited reads at most 1 MiB from a response body.
+func readLimited(response *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(response.Body, 1<<20))
+}
+
+// localTimezone reports an IANA timezone name for the scheduling-preference
+// header. Go's time package exposes only abbreviations like "UTC" or "IST", so
+// the IANA name is read from TZ, /etc/timezone, or the /etc/localtime symlink.
+// A timezone is a scheduling preference, never proof of country or access, so
+// returning "" is safe and correct.
+func localTimezone() string {
+	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" && !strings.HasPrefix(tz, ":") {
+		return tz
+	}
+	if data, err := os.ReadFile("/etc/timezone"); err == nil {
+		if name := strings.TrimSpace(string(data)); name != "" {
+			return name
+		}
+	}
+	if target, err := os.Readlink("/etc/localtime"); err == nil {
+		// e.g. /usr/share/zoneinfo/Europe/Berlin
+		if idx := strings.Index(target, "zoneinfo/"); idx >= 0 {
+			return target[idx+len("zoneinfo/"):]
+		}
+	}
+	return ""
 }
 
 // requestOptions describes a single logical request.

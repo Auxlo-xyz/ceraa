@@ -289,6 +289,11 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 			if credential.AccessToken == "" {
 				return llm.ProviderConfig{}, errors.New("freebuff credential has no access token; run /freebuff-login")
 			}
+			// Quota is only granted through a hosted session, so hold the slot
+			// before the request rather than letting completions be gated.
+			if err := ensureFreebuffSession(ctx, credential, provider.Model); err != nil {
+				return llm.ProviderConfig{}, err
+			}
 			model.BaseURL = credential.BaseURL
 			model.APIKey = credential.AccessToken
 			return model, nil

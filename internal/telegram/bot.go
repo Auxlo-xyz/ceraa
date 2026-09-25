@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"sooraa/harness/event"
@@ -1201,6 +1202,51 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 var freebuffAuthMgr = freebuff.NewLoginManager(nil)
 var freebuffLoginModels sync.Map
 var freebuffStore = freebuff.NewStore()
+var freebuffSessions = freebuff.NewSessionManager(nil)
+
+// freebuffQuotaChatID is the chat that receives quota exhaustion notices. It is
+// set on login so a background refusal can reach the user.
+var freebuffQuotaChatID atomic.Int64
+
+// ensureFreebuffSession admits (or adopts) a hosted session for the model, and
+// keeps the keep-alive loop running. Freebuff grants quota per session, so this
+// is what actually lets Sooraa spend the daily allowance.
+func ensureFreebuffSession(ctx context.Context, credential freebuff.Credential, model string) error {
+	if model == "" {
+		return errors.New("freebuff session needs a model id")
+	}
+	if err := freebuffSessions.Start(ctx, credential.AccessToken, model); err != nil {
+		var unsupported *freebuff.UnsupportedError
+		if errors.As(err, &unsupported) {
+			return errors.New("freebuff session admission is not supported by this server: " + unsupported.Message)
+		}
+		return fmt.Errorf("freebuff session admission failed: %w", err)
+	}
+	if session := freebuffSessions.Current(); session.Status == "active" {
+		return nil
+	}
+	session := freebuffSessions.Current()
+	if message := freebuffSessionMessage(session); message != "" {
+		return errors.New(message)
+	}
+	return fmt.Errorf("freebuff session is %s", session.Status)
+}
+
+func freebuffSessionMessage(session freebuff.SessionResponse) string {
+	switch session.Status {
+	case "rate_limited", "spend_limited":
+		return "Freebuff daily allowance is used up. It refills at midnight Pacific."
+	case "country_blocked":
+		return "Freebuff is not available from this location for that model."
+	case "banned":
+		return "This Freebuff account is suspended."
+	case "ip_capped":
+		return "Freebuff has capped this IP address. Try another network."
+	case "model_locked", "model_unavailable":
+		return "That model is not available on this Freebuff plan. Pick another model."
+	}
+	return ""
+}
 
 // defaultFreebuffModel is the hosted model Sooraa activates after a Freebuff
 // login when the user has not picked one. Freebuff model ids are plain
@@ -1242,7 +1288,77 @@ func handleFreebuffStatus(token string, chatID int64) {
 		send(token, chatID, "⚠️ Freebuff status check failed: "+err.Error())
 		return
 	}
-	send(token, chatID, "✅ Freebuff logged in as "+identity+".")
+	message := "✅ Freebuff logged in as " + identity + "."
+	// Report the live quota so the user can see what the allowance is doing.
+	if session, err := freebuffSessions.Ensure(context.Background(), freebuffMustToken(), providerModelFor("freebuff")); err == nil {
+		message += "\n\n" + freebuffQuotaLine(session)
+	}
+	send(token, chatID, message)
+}
+
+// freebuffQuotaLine renders the quota meters from a session response.
+func freebuffQuotaLine(session freebuff.SessionResponse) string {
+	var b strings.Builder
+	switch session.Status {
+	case "active":
+		b.WriteString("🟢 Freebuff session active on " + session.Model + ".")
+	case "ended":
+		b.WriteString("🟡 Freebuff session ended (grace window).")
+	case "none":
+		b.WriteString("⚪ No active Freebuff session.")
+	default:
+		b.WriteString("⚪ Freebuff session: " + session.Status + ".")
+	}
+	if hours, ok, unlimited := freebuffRemainingHours(session); ok {
+		if unlimited {
+			b.WriteString("\nThis model does not use the daily allowance.")
+		} else {
+			b.WriteString(fmt.Sprintf("\nFree hours left today: %.1f", hours))
+		}
+	}
+	if session.Freebucks != nil {
+		b.WriteString(fmt.Sprintf("\nFreebucks balance: %.0f", session.Freebucks.Balance))
+	}
+	return b.String()
+}
+
+func freebuffRemainingHours(session freebuff.SessionResponse) (float64, bool, bool) {
+	for _, entry := range session.RateLimitsByModel {
+		if entry.Model == session.Model {
+			return entry.RemainingHours, true, entry.Unlimited
+		}
+	}
+	if session.RateLimit != nil && session.RateLimit.Model == session.Model {
+		return session.RateLimit.RemainingHours, true, session.RateLimit.Unlimited
+	}
+	return 0, false, false
+}
+
+// freebuffMustToken returns the stored bearer token, or "" when absent. Used for
+// best-effort status reads that must never panic.
+func freebuffMustToken() string {
+	credential, err := freebuffStore.Resolve(context.Background())
+	if err != nil {
+		return ""
+	}
+	return credential.AccessToken
+}
+
+// providerModelFor returns the configured model for a provider id.
+func providerModelFor(providerID string) string {
+	if providerID == defaultState.provider() {
+		_, model, _ := defaultState.values()
+		return model
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return ""
+	}
+	profile, ok := cfg.ProviderProfile("freebuff")
+	if !ok {
+		return ""
+	}
+	return profile.Model
 }
 
 func handleFreebuffLogout(token string, chatID int64) {
@@ -1250,6 +1366,10 @@ func handleFreebuffLogout(token string, chatID int64) {
 		send(token, chatID, "Freebuff logout failed: "+err.Error())
 		return
 	}
+	if credential, err := freebuffStore.Resolve(context.Background()); err == nil {
+		freebuffSessions.Stop(context.Background(), credential.AccessToken)
+	}
+	freebuffQuotaChatID.Store(0)
 	send(token, chatID, "✅ Freebuff credential cleared from Sooraa. Use /freebuff-login to sign in again.")
 }
 
@@ -1279,6 +1399,7 @@ func activateFreebuffProvider(token string, chatID int64, flowID string) {
 		send(token, chatID, "Freebuff provider activation failed: "+err.Error())
 		return
 	}
+	freebuffQuotaChatID.Store(chatID)
 	send(token, chatID, "✅ Freebuff provider activated with model "+model+". Send a task to start.")
 }
 

@@ -24,13 +24,13 @@ var ErrNoCredential = errors.New("freebuff credential not found")
 // intentionally a plain string: the CLI coerces null to "" because requiring
 // name to be a string logged every null-name account out on every launch.
 type User struct {
-	ID             string  `json:"id"`
-	Name           string  `json:"name"`
-	Email          string  `json:"email"`
-	AuthToken      string  `json:"authToken"`
-	FingerprintID  string  `json:"fingerprintId"`
-	FingerprintHash string `json:"fingerprintHash"`
-	Credits        float64 `json:"credits,omitempty"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Email           string  `json:"email"`
+	AuthToken       string  `json:"authToken"`
+	FingerprintID   string  `json:"fingerprintId"`
+	FingerprintHash string  `json:"fingerprintHash"`
+	Credits         float64 `json:"credits,omitempty"`
 }
 
 // cliCredentialsFile is the Freebuff CLI on-disk format: a map of profile name

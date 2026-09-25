@@ -11,11 +11,19 @@ package freebuff
 import "time"
 
 const (
-	// DefaultWebBaseURL serves the device-code login endpoints.
+	// DefaultWebBaseURL serves the device-code login endpoints. It does not
+	// redirect.
 	DefaultWebBaseURL = "https://freebuff.com"
 	// DefaultAPIBaseURL is the hosted API host, used for /api/v1/me, hosted
-	// session admission, and logout.
-	DefaultAPIBaseURL = "https://codebuff.com"
+	// session admission, and chat completions.
+	//
+	// The canonical www host matters. The bare codebuff.com host answers a 301
+	// to www.codebuff.com, and Go (like every other HTTP client) strips the
+	// Authorization header on a cross-host redirect — which would turn every
+	// authenticated call into "Missing or invalid Authorization header" and
+	// look like a revoked token. Released Freebuff binaries bake in the www
+	// host for the same reason. See also the redirect guard in newSecureClient.
+	DefaultAPIBaseURL = "https://www.codebuff.com"
 	// DefaultInferenceBaseURL is the OpenAI-compatible root. The Freebuff
 	// completions endpoint is /api/v1/chat/completions and Sooraa's transport
 	// appends "/chat/completions" to whatever base it is given, so the

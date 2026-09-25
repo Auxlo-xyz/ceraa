@@ -94,7 +94,7 @@ func TestStoreResolveUsesHostedInferenceBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.BaseURL != "https://codebuff.com/api/v1" {
+	if credential.BaseURL != "https://www.codebuff.com/api/v1" {
 		t.Fatalf("BaseURL = %q", credential.BaseURL)
 	}
 	if credential.AccessToken != "t" || credential.Source != "freebuff-native" {
