@@ -50,8 +50,5 @@ func Commands() []CommandSpec {
 		{"codex-status", "Show Codex login status"},
 		{"hermes-login", "Start Nous Portal device login"},
 		{"hermes-status", "Show Hermes login status"},
-		{"freebuff-login", "Start Freebuff browser login"},
-		{"freebuff-status", "Show Freebuff login status"},
-		{"freebuff-logout", "Clear the Freebuff credential"},
 	}
 }

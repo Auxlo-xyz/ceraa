@@ -15,7 +15,6 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
-	"ceraa/internal/freebuff"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/prompt"
 )
@@ -80,14 +79,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			}
 			if credential.Transport != "chat_completions" {
 				return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
-			}
-			modelConfig.BaseURL = credential.BaseURL
-			modelConfig.APIKey = credential.AccessToken
-			return modelConfig, nil
-		case "freebuff":
-			credential, err := freebuff.NewStore().Resolve(ctx)
-			if err != nil {
-				return llm.ProviderConfig{}, fmt.Errorf("freebuff is not authenticated: %w; run: ceraa freebuff-login", err)
 			}
 			modelConfig.BaseURL = credential.BaseURL
 			modelConfig.APIKey = credential.AccessToken

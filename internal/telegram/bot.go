@@ -8,7 +8,6 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/envs"
-	"ceraa/internal/freebuff"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
@@ -26,7 +25,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -507,25 +505,6 @@ func Run() error {
 				continue
 			}
 
-			if strings.HasPrefix(txt, "/freebuff-") || strings.HasPrefix(txt, "/freebuff_") {
-				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				command := strings.Fields(strings.TrimSpace(txt))
-				action := ""
-				if len(command) > 0 {
-					action = strings.ToLower(command[0])
-				}
-				switch action {
-				case "/freebuff-login", "/freebuff_login":
-					handleFreebuffLogin(token, u.Message.Chat.ID, txt)
-				case "/freebuff-status", "/freebuff_status":
-					handleFreebuffStatus(token, u.Message.Chat.ID)
-				case "/freebuff-logout", "/freebuff_logout":
-					handleFreebuffLogout(token, u.Message.Chat.ID)
-				default:
-					send(token, u.Message.Chat.ID, "Unknown Freebuff command. Use /freebuff-login, /freebuff-status, or /freebuff-logout.")
-				}
-				continue
-			}
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -647,7 +626,7 @@ func providerConfigured(cfg *config.Config) bool {
 	provider := activeProviderConfig(cfg, defaultState.provider())
 	// Subscription providers carry no API key in the profile: their credential
 	// comes from the encrypted native store at request time.
-	if provider.Subscription == "hermes" || provider.Subscription == "freebuff" {
+	if provider.Subscription == "hermes" {
 		return provider.Model != ""
 	}
 	return provider.URL != "" && provider.Model != "" && provider.APIKey != ""
@@ -1197,214 +1176,6 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 		return
 	}
 	send(token, chatID, "✅ Hermes/Nous provider activated with model "+model+".")
-}
-
-var freebuffAuthMgr = freebuff.NewLoginManager(nil)
-var freebuffLoginModels sync.Map
-var freebuffStore = freebuff.NewStore()
-var freebuffSessions = freebuff.NewSessionManager(nil)
-var freebuffMetadata = freebuff.NewMetadataBuilder()
-
-// freebuffQuotaChatID is the chat that receives quota exhaustion notices. It is
-// set on login so a background refusal can reach the user.
-var freebuffQuotaChatID atomic.Int64
-
-// ensureFreebuffSession admits (or adopts) a hosted session for the model, and
-// keeps the keep-alive loop running. Freebuff grants quota per session, so this
-// is what actually lets Ceraa spend the daily allowance.
-func ensureFreebuffSession(ctx context.Context, credential freebuff.Credential, model string) error {
-	if model == "" {
-		return errors.New("freebuff session needs a model id")
-	}
-	if err := freebuffSessions.Start(ctx, credential.AccessToken, model); err != nil {
-		var unsupported *freebuff.UnsupportedError
-		if errors.As(err, &unsupported) {
-			return errors.New("freebuff session admission is not supported by this server: " + unsupported.Message)
-		}
-		return fmt.Errorf("freebuff session admission failed: %w", err)
-	}
-	if session := freebuffSessions.Current(); session.Status == "active" {
-		return nil
-	}
-	session := freebuffSessions.Current()
-	if message := freebuffSessionMessage(session); message != "" {
-		return errors.New(message)
-	}
-	return fmt.Errorf("freebuff session is %s", session.Status)
-}
-
-func freebuffSessionMessage(session freebuff.SessionResponse) string {
-	switch session.Status {
-	case "rate_limited", "spend_limited":
-		return "Freebuff daily allowance is used up. It refills at midnight Pacific."
-	case "country_blocked":
-		return "Freebuff is not available from this location for that model."
-	case "banned":
-		return "This Freebuff account is suspended."
-	case "ip_capped":
-		return "Freebuff has capped this IP address. Try another network."
-	case "model_locked", "model_unavailable":
-		return "That model is not available on this Freebuff plan. Pick another model."
-	}
-	return ""
-}
-
-// defaultFreebuffModel is the hosted model Ceraa activates after a Freebuff
-// login when the user has not picked one. Freebuff model ids are plain
-// OpenRouter-style slugs.
-const defaultFreebuffModel = "deepseek/deepseek-v4-flash"
-
-func handleFreebuffLogin(token string, chatID int64, text string) {
-	parts := strings.Fields(strings.TrimSpace(text))
-	model := ""
-	if len(parts) > 1 {
-		model = parts[1]
-	}
-	flow, err := freebuffAuthMgr.Start(context.Background())
-	if err != nil {
-		send(token, chatID, "Failed to start Freebuff login: "+err.Error())
-		return
-	}
-	freebuffLoginModels.Store(flow.ID, model)
-	keyboard, _ := flow.InlineKeyboardJSON()
-	var markup map[string]any
-	if err := json.Unmarshal(keyboard, &markup); err != nil {
-		send(token, chatID, "Failed to encode Freebuff login menu: "+err.Error())
-		return
-	}
-	sendMessageWithMarkup(token, chatID, flow.ResultMessage(), markup)
-}
-
-func handleFreebuffStatus(token string, chatID int64) {
-	identity, err := freebuffStore.Status(context.Background())
-	if err != nil {
-		if err == freebuff.ErrNoCredential {
-			send(token, chatID, "❌ Not logged in to Freebuff. Use /freebuff-login to sign in.")
-			return
-		}
-		if identity != "" {
-			send(token, chatID, "⚠️ Freebuff account "+identity+": "+err.Error())
-			return
-		}
-		send(token, chatID, "⚠️ Freebuff status check failed: "+err.Error())
-		return
-	}
-	message := "✅ Freebuff logged in as " + identity + "."
-	// Report the live quota so the user can see what the allowance is doing.
-	if session, err := freebuffSessions.Ensure(context.Background(), freebuffMustToken(), providerModelFor("freebuff")); err == nil {
-		message += "\n\n" + freebuffQuotaLine(session)
-	}
-	send(token, chatID, message)
-}
-
-// freebuffQuotaLine renders the quota meters from a session response.
-func freebuffQuotaLine(session freebuff.SessionResponse) string {
-	var b strings.Builder
-	switch session.Status {
-	case "active":
-		b.WriteString("🟢 Freebuff session active on " + session.Model + ".")
-	case "ended":
-		b.WriteString("🟡 Freebuff session ended (grace window).")
-	case "none":
-		b.WriteString("⚪ No active Freebuff session.")
-	default:
-		b.WriteString("⚪ Freebuff session: " + session.Status + ".")
-	}
-	if hours, ok := freebuffRemainingHours(session); ok {
-		b.WriteString(fmt.Sprintf("\nSession hours left today: %.1f", hours))
-	} else {
-		b.WriteString("\nThis model has no hourly pool on your plan.")
-	}
-	if session.Freebucks != nil && session.Freebucks.Daily != nil {
-		daily := session.Freebucks.Daily
-		b.WriteString(fmt.Sprintf("\nFreebucks today: %.0f of %.0f left (resets %s %s)",
-			daily.Remaining, daily.Limit, daily.ResetAt, daily.ResetTimeZone))
-	} else if session.Freebucks != nil {
-		b.WriteString(fmt.Sprintf("\nFreebucks balance: %.0f", session.Freebucks.Balance))
-	}
-	if session.CountryBlockReason != "" {
-		b.WriteString(fmt.Sprintf("\nRegion note: %s (detected %s)", session.CountryBlockReason, session.CountryCode))
-	}
-	return b.String()
-}
-
-func freebuffRemainingHours(session freebuff.SessionResponse) (float64, bool) {
-	if entry, ok := session.RateLimitsByModel[session.Model]; ok {
-		return entry.RemainingHours(), true
-	}
-	if session.RateLimit != nil && session.RateLimit.Model == session.Model {
-		return session.RateLimit.RemainingHours(), true
-	}
-	return 0, false
-}
-
-// freebuffMustToken returns the stored bearer token, or "" when absent. Used for
-// best-effort status reads that must never panic.
-func freebuffMustToken() string {
-	credential, err := freebuffStore.Resolve(context.Background())
-	if err != nil {
-		return ""
-	}
-	return credential.AccessToken
-}
-
-// providerModelFor returns the configured model for a provider id.
-func providerModelFor(providerID string) string {
-	if providerID == defaultState.provider() {
-		_, model, _ := defaultState.values()
-		return model
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return ""
-	}
-	profile, ok := cfg.ProviderProfile("freebuff")
-	if !ok {
-		return ""
-	}
-	return profile.Model
-}
-
-func handleFreebuffLogout(token string, chatID int64) {
-	if err := freebuffStore.Logout(context.Background()); err != nil {
-		send(token, chatID, "Freebuff logout failed: "+err.Error())
-		return
-	}
-	if credential, err := freebuffStore.Resolve(context.Background()); err == nil {
-		freebuffSessions.Stop(context.Background(), credential.AccessToken)
-	}
-	freebuffQuotaChatID.Store(0)
-	send(token, chatID, "✅ Freebuff credential cleared from Ceraa. Use /freebuff-login to sign in again.")
-}
-
-func activateFreebuffProvider(token string, chatID int64, flowID string) {
-	modelValue, _ := freebuffLoginModels.Load(flowID)
-	model, _ := modelValue.(string)
-	if model == "" {
-		if _, current, _ := defaultState.values(); current != "" && !strings.HasPrefix(current, "openai/") {
-			model = current
-		}
-	}
-	if model == "" {
-		model = defaultFreebuffModel
-	}
-	profile := config.ProviderProfile{
-		Model:           model,
-		ContextLimit:    128000,
-		MaxOutputTokens: 8192,
-		PromptCacheMode: "auto",
-		Subscription:    "freebuff",
-	}
-	if err := defaultState.setProviderProfile("freebuff", profile); err != nil {
-		send(token, chatID, "Freebuff profile save failed: "+err.Error())
-		return
-	}
-	if err := defaultState.setProvider("freebuff"); err != nil {
-		send(token, chatID, "Freebuff provider activation failed: "+err.Error())
-		return
-	}
-	freebuffQuotaChatID.Store(chatID)
-	send(token, chatID, "✅ Freebuff provider activated with model "+model+". Send a task to start.")
 }
 
 func handleCodexLogin(token string, chatID int64) {

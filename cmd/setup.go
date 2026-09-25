@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"ceraa/internal/config"
-	"ceraa/internal/freebuff"
 	"ceraa/internal/hermesauth"
 )
 
@@ -65,7 +64,6 @@ func collectDoctorReport(timeout time.Duration) doctorReport {
 	report.Checks = append(report.Checks, checkConfig(cfg))
 	report.Checks = append(report.Checks, checkWorkspace(cfg))
 	report.Checks = append(report.Checks, checkProvider(cfg, timeout))
-	report.Checks = append(report.Checks, doctorCheck{"freebuff", "INFO", freebuffSummary()})
 	report.Checks = append(report.Checks, checkTelegram(cfg, timeout))
 	report.Checks = append(report.Checks, checkStorage(cfg)...)
 	return report
@@ -78,7 +76,7 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	provider := cfg.ActiveLLM()
 	// Subscription providers carry no API key in the profile; their credential
 	// is resolved from the encrypted native store at request time.
-	subscription := provider.Subscription == "hermes" || provider.Subscription == "freebuff"
+	subscription := provider.Subscription == "hermes"
 	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
@@ -99,7 +97,7 @@ func checkWorkspace(cfg *config.Config) doctorCheck {
 
 func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	provider := cfg.ActiveLLM()
-	if provider.Model == "" || (provider.URL == "" && provider.Subscription != "hermes" && provider.Subscription != "freebuff") {
+	if provider.Model == "" || (provider.URL == "" && provider.Subscription != "hermes") {
 		return doctorCheck{"provider", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -114,15 +112,6 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 		}
 		apiKey = credential.AccessToken
 		baseURL = credential.BaseURL
-	case "freebuff":
-		// Freebuff's inference root is a hosted path; probe /api/v1/me instead
-		// so a valid token is distinguishable from an unreachable host.
-		credential, err := freebuff.NewStore().Resolve(ctx)
-		if err != nil {
-			return doctorCheck{"provider", "FAIL", "Freebuff credential: " + err.Error() + " (run: ceraa freebuff login)"}
-		}
-		apiKey = credential.AccessToken
-		baseURL = freebuff.DefaultAPIBaseURL
 	}
 	if !validProviderURL(baseURL) {
 		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}

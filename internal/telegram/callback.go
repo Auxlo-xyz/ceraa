@@ -176,11 +176,6 @@ func handleCallback(token string, q *struct {
 			draft.URL = "https://inference.poolside.ai/v1"
 		case "hermes":
 			draft.URL = ""
-		case "freebuff":
-			// Freebuff authenticates with a browser login rather than an API key,
-			// so start that flow instead of collecting a model id.
-			handleFreebuffLogin(token, chatID, "/freebuff-login "+defaultFreebuffModel)
-			return
 		case "custom":
 			draft.Stage = "url"
 		default:
@@ -650,41 +645,6 @@ func handleCallback(token string, q *struct {
 			return
 		}
 		editCallback(token, chatID, q.Message.MessageID, "Hermes login cancelled.", nil)
-		return
-	}
-	if strings.HasPrefix(data, "freebuff:check:") {
-		flowID := strings.TrimPrefix(data, "freebuff:check:")
-		flow, err := freebuffAuthMgr.Check(flowID)
-		if err != nil {
-			editCallback(token, chatID, q.Message.MessageID, "❌ "+err.Error(), nil)
-			return
-		}
-		status, _ := flow.StatusSnapshot()
-		if status == "succeeded" {
-			activateFreebuffProvider(token, chatID, flowID)
-			return
-		}
-		markup := map[string]any{"inline_keyboard": [][]any{}}
-		if status == "waiting" {
-			if keyboard, err := flow.InlineKeyboardJSON(); err == nil {
-				var parsed map[string]any
-				if json.Unmarshal(keyboard, &parsed) == nil {
-					if rows, ok := parsed["inline_keyboard"]; ok {
-						markup = map[string]any{"inline_keyboard": rows}
-					}
-				}
-			}
-		}
-		editCallback(token, chatID, q.Message.MessageID, flow.ResultMessage(), markup)
-		return
-	}
-	if strings.HasPrefix(data, "freebuff:cancel:") {
-		flowID := strings.TrimPrefix(data, "freebuff:cancel:")
-		if err := freebuffAuthMgr.Cancel(flowID); err != nil {
-			editCallback(token, chatID, q.Message.MessageID, "❌ "+err.Error(), nil)
-			return
-		}
-		editCallback(token, chatID, q.Message.MessageID, "Freebuff login cancelled.", nil)
 		return
 	}
 	if strings.HasPrefix(data, "codex:check:") {

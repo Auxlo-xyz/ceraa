@@ -21,7 +21,6 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
-	"ceraa/internal/freebuff"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
@@ -278,33 +277,6 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 			}
 			model.BaseURL = credential.BaseURL
 			model.APIKey = credential.AccessToken
-			return model, nil
-		case "freebuff":
-			credential, err := freebuffStore.Resolve(ctx)
-			if err != nil {
-				return llm.ProviderConfig{}, fmt.Errorf("freebuff is not authenticated: %w; run /freebuff-login", err)
-			}
-			if credential.BaseURL == "" {
-				return llm.ProviderConfig{}, errors.New("freebuff credential has no inference base URL")
-			}
-			if credential.AccessToken == "" {
-				return llm.ProviderConfig{}, errors.New("freebuff credential has no access token; run /freebuff-login")
-			}
-			// Quota is only granted through a hosted session, so hold the slot
-			// before the request rather than letting completions be gated.
-			if err := ensureFreebuffSession(ctx, credential, provider.Model); err != nil {
-				return llm.ProviderConfig{}, err
-			}
-			model.BaseURL = credential.BaseURL
-			model.APIKey = credential.AccessToken
-			// Hosted completions require codebuff_metadata, and a session gate
-			// rejection has to re-admit rather than simply retry.
-			instanceID := freebuffSessions.InstanceID()
-			model.ExtraBodyFunc = func() map[string]any {
-				return freebuffMetadata.Body(instanceID)
-			}
-			model.ExtraHeaders = freebuffMetadata.Headers()
-			model.RecoverError = freebuff.MakeRecoverError(freebuffSessions)
 			return model, nil
 		default:
 			return model, nil

@@ -9,14 +9,11 @@ import (
 
 // ResolveProvider resolves a provider's settings with env var overrides.
 // Env format: CERAA_<KEY>_API_KEY, CERAA_<KEY>_CLI
-// Supported keys: "opencode", "hermes", "codex", "poolside", "freebuff"
-//
-// Freebuff has no CLI binary, so no CLIPath is resolved for it. Its hosted API
-// base URL is intentionally not env-overridable: a process able to set one
-// variable could otherwise redirect a bearer token to a host of its choosing.
+// Supported keys: "opencode", "hermes", "codex", "poolside"
+
 func ResolveProvider(key string) (SubProvider, bool) {
 	switch key {
-	case "opencode", "hermes", "codex", "poolside", "freebuff":
+	case "opencode", "hermes", "codex", "poolside":
 	default:
 		return SubProvider{}, false
 	}
@@ -114,10 +111,6 @@ func defaultAuthDir(kind string) string {
 		return filepath.Join(home, ".codex")
 	case "poolside":
 		return filepath.Join(home, ".config", "poolside")
-	case "freebuff":
-		// The Freebuff CLI keeps credentials in ~/.config/manicode. Pointing
-		// AuthDir there lets the read-only import find an existing CLI login.
-		return filepath.Join(home, ".config", "manicode")
 	default:
 		return ""
 	}

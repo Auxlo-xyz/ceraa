@@ -29,8 +29,8 @@ type ProviderConfig struct {
 	PromptCacheTTL          string
 	Compatibility           *Compatibility
 	// ExtraBody is merged into every chat-completions request body. Used by
-	// providers that require extra top-level fields, such as Freebuff's
-	// codebuff_metadata. Set by the caller; never mutated here.
+	// providers that require extra top-level fields. Set by the caller; never
+	// mutated here.
 	ExtraBody map[string]any
 	// ExtraBodyFunc is evaluated per request, for metadata that must carry a
 	// fresh correlation id on every call. Its result is merged after ExtraBody
