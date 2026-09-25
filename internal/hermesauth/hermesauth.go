@@ -1,13 +1,12 @@
 package hermesauth
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,21 +15,25 @@ import (
 var ErrNoCredential = errors.New("hermes credential not found")
 
 type Credential struct {
-	Provider     string
-	AccessToken  string
-	RefreshToken string
-	BaseURL      string
-	TokenType    string
-	Transport    string
-	ExpiresAt    time.Time
-	Source       string
+	Provider      string
+	ID            string
+	AccessToken   string
+	RefreshToken  string
+	BaseURL       string
+	TokenType     string
+	Transport     string
+	PortalBaseURL string
+	ClientID      string
+	TokenEndpoint string
+	ExpiresAt     time.Time
+	Source        string
 }
 
 type Store struct {
 	Home         string
-	Command      string
 	RefreshSkew  time.Duration
 	RefreshLimit time.Duration
+	HTTPClient   *http.Client
 }
 
 type Snapshot struct {
@@ -40,14 +43,18 @@ type Snapshot struct {
 }
 
 type ProviderState struct {
-	AccessToken      string
-	RefreshToken     string
-	AgentKey         string
-	BaseURL          string
-	InferenceBaseURL string
-	TokenType        string
-	ExpiresAt        time.Time
-	Tokens           *TokenPair
+	AccessToken       string
+	RefreshToken      string
+	AgentKey          string
+	AgentKeyExpiresAt time.Time
+	BaseURL           string
+	InferenceBaseURL  string
+	PortalBaseURL     string
+	ClientID          string
+	TokenEndpoint     string
+	TokenType         string
+	ExpiresAt         time.Time
+	Tokens            *TokenPair
 }
 
 type TokenPair struct {
@@ -92,15 +99,19 @@ type rawEntry struct {
 }
 
 type rawState struct {
-	AccessToken      string     `json:"access_token"`
-	RefreshToken     string     `json:"refresh_token"`
-	AgentKey         string     `json:"agent_key"`
-	BaseURL          string     `json:"base_url"`
-	InferenceBaseURL string     `json:"inference_base_url"`
-	TokenType        string     `json:"token_type"`
-	ExpiresAt        string     `json:"expires_at"`
-	ExpiresAtMS      int64      `json:"expires_at_ms"`
-	Tokens           *TokenPair `json:"tokens"`
+	AccessToken       string     `json:"access_token"`
+	RefreshToken      string     `json:"refresh_token"`
+	AgentKey          string     `json:"agent_key"`
+	AgentKeyExpiresAt string     `json:"agent_key_expires_at"`
+	BaseURL           string     `json:"base_url"`
+	InferenceBaseURL  string     `json:"inference_base_url"`
+	PortalBaseURL     string     `json:"portal_base_url"`
+	ClientID          string     `json:"client_id"`
+	TokenEndpoint     string     `json:"token_endpoint"`
+	TokenType         string     `json:"token_type"`
+	ExpiresAt         string     `json:"expires_at"`
+	ExpiresAtMS       int64      `json:"expires_at_ms"`
+	Tokens            *TokenPair `json:"tokens"`
 }
 
 func NewStore() *Store {
@@ -111,13 +122,7 @@ func NewStore() *Store {
 			home = filepath.Join(userHome, ".hermes")
 		}
 	}
-	command := strings.TrimSpace(os.Getenv("HERMES_CLI"))
-	if command == "" {
-		if resolved, err := exec.LookPath("hermes"); err == nil {
-			command = resolved
-		}
-	}
-	return &Store{Home: home, Command: command, RefreshSkew: 2 * time.Minute, RefreshLimit: 90 * time.Second}
+	return &Store{Home: home, RefreshSkew: 2 * time.Minute, RefreshLimit: 90 * time.Second, HTTPClient: &http.Client{Timeout: 20 * time.Second}}
 }
 
 func (s *Store) AuthPath() string {
@@ -154,13 +159,17 @@ func (s *Store) Load() (Snapshot, error) {
 			continue
 		}
 		providerState := ProviderState{
-			AccessToken:      strings.TrimSpace(state.AccessToken),
-			RefreshToken:     strings.TrimSpace(state.RefreshToken),
-			AgentKey:         strings.TrimSpace(state.AgentKey),
-			BaseURL:          strings.TrimSpace(state.BaseURL),
-			InferenceBaseURL: strings.TrimSpace(state.InferenceBaseURL),
-			TokenType:        strings.TrimSpace(state.TokenType),
-			ExpiresAt:        parseTime(state.ExpiresAt, state.ExpiresAtMS),
+			AccessToken:       strings.TrimSpace(state.AccessToken),
+			RefreshToken:      strings.TrimSpace(state.RefreshToken),
+			AgentKey:          strings.TrimSpace(state.AgentKey),
+			AgentKeyExpiresAt: parseTime(state.AgentKeyExpiresAt, 0),
+			BaseURL:           strings.TrimSpace(state.BaseURL),
+			InferenceBaseURL:  strings.TrimSpace(state.InferenceBaseURL),
+			PortalBaseURL:     strings.TrimSpace(state.PortalBaseURL),
+			ClientID:          strings.TrimSpace(state.ClientID),
+			TokenEndpoint:     strings.TrimSpace(state.TokenEndpoint),
+			TokenType:         strings.TrimSpace(state.TokenType),
+			ExpiresAt:         parseTime(state.ExpiresAt, state.ExpiresAtMS),
 		}
 		if state.Tokens != nil {
 			providerState.Tokens = &TokenPair{
@@ -216,34 +225,6 @@ func (s *Store) Resolve(ctx context.Context, providerID string) (Credential, err
 	return resolveFromSnapshot(refreshed, providerID)
 }
 
-func (s *Store) Refresh(ctx context.Context, providerID string) error {
-	providerID = normalizeProvider(providerID)
-	if providerID == "" {
-		return ErrNoCredential
-	}
-	if s.Command == "" {
-		return errors.New("hermes CLI is not installed or not on PATH")
-	}
-	refreshCtx := ctx
-	cancel := func() {}
-	if s.RefreshLimit > 0 {
-		refreshCtx, cancel = context.WithTimeout(ctx, s.RefreshLimit)
-	}
-	defer cancel()
-	var output bytes.Buffer
-	command := exec.CommandContext(refreshCtx, s.Command, "auth", "refresh", providerID)
-	command.Env = append(os.Environ(), "HERMES_HOME="+s.Home)
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Run(); err != nil {
-		if errors.Is(refreshCtx.Err(), context.DeadlineExceeded) {
-			return errors.New("hermes auth refresh timed out")
-		}
-		return fmt.Errorf("hermes auth refresh failed: %w", err)
-	}
-	return nil
-}
-
 func resolveFromSnapshot(snapshot Snapshot, providerID string) (Credential, error) {
 	if providerID == "" {
 		providerID = normalizeProvider(snapshot.ActiveProvider)
@@ -262,7 +243,7 @@ func resolveFromSnapshot(snapshot Snapshot, providerID string) (Credential, erro
 		if token == "" {
 			continue
 		}
-		return Credential{Provider: providerID, AccessToken: token, RefreshToken: entry.RefreshToken, BaseURL: firstNonEmpty(entry.InferenceBaseURL, entry.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(entry.TokenType, "Bearer"), Transport: transportForProvider(providerID), ExpiresAt: entry.ExpiresAt, Source: firstNonEmpty(entry.Source, entry.ID)}, nil
+		return Credential{Provider: providerID, ID: entry.ID, AccessToken: token, RefreshToken: entry.RefreshToken, BaseURL: firstNonEmpty(entry.InferenceBaseURL, entry.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(entry.TokenType, "Bearer"), Transport: transportForProvider(providerID), ExpiresAt: expiryOr(entry.ExpiresAt, token), Source: firstNonEmpty(entry.Source, entry.ID)}, nil
 	}
 	state, ok := snapshot.Providers[providerID]
 	if !ok {
@@ -284,11 +265,20 @@ func resolveFromSnapshot(snapshot Snapshot, providerID string) (Credential, erro
 	}
 	if providerID == "nous" && state.AgentKey != "" {
 		token = state.AgentKey
+		if !state.AgentKeyExpiresAt.IsZero() {
+			expiresAt = state.AgentKeyExpiresAt
+		}
 	}
 	if token == "" {
 		return Credential{}, ErrNoCredential
 	}
-	return Credential{Provider: providerID, AccessToken: token, RefreshToken: refreshToken, BaseURL: firstNonEmpty(state.InferenceBaseURL, state.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(state.TokenType, "Bearer"), Transport: transportForProvider(providerID), ExpiresAt: expiresAt, Source: "auth.json"}, nil
+	portalBaseURL := state.PortalBaseURL
+	clientID := state.ClientID
+	if providerID == "nous" {
+		portalBaseURL = firstNonEmpty(portalBaseURL, defaultNousPortalURL)
+		clientID = firstNonEmpty(clientID, defaultNousClientID)
+	}
+	return Credential{Provider: providerID, AccessToken: token, RefreshToken: refreshToken, BaseURL: firstNonEmpty(state.InferenceBaseURL, state.BaseURL, defaultBaseURL(providerID)), TokenType: firstNonEmpty(state.TokenType, "Bearer"), Transport: transportForProvider(providerID), PortalBaseURL: portalBaseURL, ClientID: clientID, TokenEndpoint: state.TokenEndpoint, ExpiresAt: expiryOr(expiresAt, token), Source: "auth.json"}, nil
 }
 
 func needsRefresh(credential Credential, skew time.Duration) bool {
