@@ -28,7 +28,35 @@ type ProviderConfig struct {
 	PromptCacheMode         string
 	PromptCacheTTL          string
 	Compatibility           *Compatibility
+	// ExtraBody is merged into every chat-completions request body. Used by
+	// providers that require extra top-level fields, such as Freebuff's
+	// codebuff_metadata. Set by the caller; never mutated here.
+	ExtraBody map[string]any
+	// ExtraBodyFunc is evaluated per request, for metadata that must carry a
+	// fresh correlation id on every call. Its result is merged after ExtraBody
+	// and is likewise never allowed to shadow a field Sooraa owns.
+	ExtraBodyFunc func() map[string]any
+	// ExtraHeaders are added to every request. Used for provider-required
+	// client identification.
+	ExtraHeaders map[string]string
+	// RecoverError is consulted when the provider returns an error that a plain
+	// retry cannot fix. It returns whether the request may be retried once
+	// after the hook repaired provider state, plus a user-facing message.
+	//
+	// Typical use: a hosted provider gates requests behind a session, so a gate
+	// rejection must re-admit the session before the request can succeed. The
+	// hook must be fast and idempotent, and retries are bounded by
+	// MaxRecoveries so a broken hook cannot spin.
+	RecoverError func(ctx context.Context, status int, body []byte) (retry bool, message string)
+	// HTTPClient overrides the transport. Used for a custom TLS trust store or
+	// proxy; Timeout still applies when unset.
+	HTTPClient *http.Client
 }
+
+// MaxRecoveries bounds RecoverError-driven retries per request. Two is enough
+// for a session re-admission: one to detect the gate, one to confirm the retry
+// actually worked before giving up.
+const MaxRecoveries = 2
 
 type Compatibility struct {
 	MaxTokensField         string
@@ -152,6 +180,11 @@ type ProviderError struct {
 	Body       string
 	Retryable  bool
 	RetryAfter time.Duration
+	// Recovered is set when RecoverError repaired provider state and the
+	// request was re-issued.
+	Recovered bool
+	// RecoverMessage is a user-facing explanation produced by RecoverError.
+	RecoverMessage string
 }
 
 type StreamError struct {
@@ -164,10 +197,18 @@ func (e *StreamError) Error() string { return e.Err.Error() }
 func (e *StreamError) Unwrap() error { return e.Err }
 
 func (e *ProviderError) Error() string {
+	detail := e.Body
 	if e.Status == 0 {
-		return "provider request failed: " + e.Body
+		detail = "provider request failed: " + e.Body
+	} else {
+		detail = fmt.Sprintf("provider error %d: %s", e.Status, e.Body)
 	}
-	return fmt.Sprintf("provider error %d: %s", e.Status, e.Body)
+	// A provider-supplied explanation is far more useful to the user than a raw
+	// status line, so it leads and the raw detail follows for diagnosis.
+	if e.RecoverMessage != "" {
+		return e.RecoverMessage + " (" + detail + ")"
+	}
+	return detail
 }
 
 type TokenBreakdown struct {
@@ -367,12 +408,11 @@ type StreamingClient struct {
 }
 
 func New(cfg ProviderConfig) *StreamingClient {
-	return &StreamingClient{
-		cfg: cfg,
-		http: &http.Client{
-			Timeout: cfg.Timeout,
-		},
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: cfg.Timeout}
 	}
+	return &StreamingClient{cfg: cfg, http: httpClient}
 }
 
 func geminiExtraContent(signature string, enabled bool) map[string]any {
@@ -599,6 +639,18 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		}
 	}
 	sessionID := addPromptCacheFields(body, c.cfg, req)
+	extras := c.cfg.ExtraBody
+	if c.cfg.ExtraBodyFunc != nil {
+		// Evaluated per request so correlation ids are never reused.
+		extras = c.cfg.ExtraBodyFunc()
+	}
+	for key, value := range extras {
+		if _, reserved := body[key]; reserved {
+			// Never let a provider extra shadow a field Sooraa owns.
+			continue
+		}
+		body[key] = value
+	}
 
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -606,6 +658,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 
 	var lastErr error
+	recoveries := 0
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		hreq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(encoded))
 		if err != nil {
@@ -615,6 +668,9 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		hreq.Header.Set("Accept", "text/event-stream")
 		if sessionID != "" {
 			hreq.Header.Set("x-session-id", sessionID)
+		}
+		for key, value := range c.cfg.ExtraHeaders {
+			hreq.Header.Set(key, value)
 		}
 		if c.cfg.APIKey != "" {
 			hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
@@ -638,6 +694,25 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			}
 			providerErr := &ProviderError{Status: resp.StatusCode, Body: string(raw), Retryable: shouldRetry(resp), RetryAfter: retryAfter(resp.Header)}
 			lastErr = providerErr
+			// A gate rejection (for example a hosted provider refusing a request
+			// with no live session) cannot be fixed by repeating the same call,
+			// but it can be fixed by repairing provider state and asking once
+			// more. Recovery is attempted before plain retries so a session can
+			// be re-admitted instead of burning the retry budget on a request
+			// that is certain to fail the same way.
+			if c.cfg.RecoverError != nil && recoveries < MaxRecoveries {
+				if retry, message := c.cfg.RecoverError(ctx, resp.StatusCode, raw); retry {
+					recoveries++
+					if message != "" {
+						providerErr.RecoverMessage = message
+					}
+					providerErr.Recovered = true
+					attempt-- // a recovery is not a failed attempt
+					continue
+				} else if message != "" {
+					providerErr.RecoverMessage = message
+				}
+			}
 			if providerErr.Retryable && attempt < c.cfg.MaxRetries {
 				delay := providerErr.RetryAfter
 				if delay <= 0 {

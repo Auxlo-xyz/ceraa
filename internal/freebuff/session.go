@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"sync"
@@ -26,6 +27,11 @@ type SessionManager struct {
 	client   *Client
 	instance string
 	session  SessionResponse
+	// token and model are held in memory only (never persisted, never logged)
+	// so a gate recovery can re-admit synchronously without the caller having to
+	// thread the credential back in.
+	token string
+	model string
 	// generation invalidates in-flight ticks after a model change.
 	generation int
 	cancel     context.CancelFunc
@@ -103,6 +109,10 @@ func (m *SessionManager) QuotaRemainingHours() (float64, bool, bool) {
 // Ensure admits a session for the given model, reusing a live one when the model
 // matches. It is safe to call before every run.
 func (m *SessionManager) Ensure(ctx context.Context, token, model string) (SessionResponse, error) {
+	m.mu.Lock()
+	m.token = token
+	m.model = model
+	m.mu.Unlock()
 	current := m.Current()
 	if current.Status == "active" && current.Model == model && current.InstanceID != "" {
 		return current, nil
@@ -114,6 +124,22 @@ func (m *SessionManager) Ensure(ctx context.Context, token, model string) (Sessi
 		return probe, nil
 	}
 	return m.admit(ctx, token, model)
+}
+
+// ReAdmit claims a fresh session using the credentials and model captured by the
+// last Ensure. This is the recovery for a session-ending gate: the row is gone,
+// so the request must be re-issued against a newly admitted session on the SAME
+// instance id. It is a no-op without a prior Ensure, because there is no
+// credential to re-admit with.
+func (m *SessionManager) ReAdmit(ctx context.Context) error {
+	m.mu.Lock()
+	token, model := m.token, m.model
+	m.mu.Unlock()
+	if token == "" || model == "" {
+		return errors.New("freebuff has no session credential to re-admit with")
+	}
+	_, err := m.admit(ctx, token, model)
+	return err
 }
 
 // probe is a read-only GET that doubles as a heartbeat on an existing row.
@@ -200,6 +226,16 @@ func (m *SessionManager) Stop(ctx context.Context, token string) {
 		cancel()
 	}
 	m.Release(ctx, token)
+}
+
+// Invalidate drops the cached session state without contacting the server. It is
+// used when a hosted gate reports the row is gone: the next Ensure must re-admit
+// rather than trust the stale row, and the reference's only supported recovery
+// is to re-admit on the SAME instance id.
+func (m *SessionManager) Invalidate() {
+	m.mu.Lock()
+	m.session = SessionResponse{Status: "invalidated"}
+	m.mu.Unlock()
 }
 
 func (m *SessionManager) adopt(session SessionResponse) {

@@ -1203,6 +1203,7 @@ var freebuffAuthMgr = freebuff.NewLoginManager(nil)
 var freebuffLoginModels sync.Map
 var freebuffStore = freebuff.NewStore()
 var freebuffSessions = freebuff.NewSessionManager(nil)
+var freebuffMetadata = freebuff.NewMetadataBuilder()
 
 // freebuffQuotaChatID is the chat that receives quota exhaustion notices. It is
 // set on login so a background refusal can reach the user.

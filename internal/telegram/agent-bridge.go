@@ -21,6 +21,7 @@ import (
 	"sooraa/harness/skills"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
+	"sooraa/internal/freebuff"
 	"sooraa/internal/hermesauth"
 	"sooraa/internal/prompt"
 	"sooraa/internal/secret"
@@ -296,6 +297,14 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 			}
 			model.BaseURL = credential.BaseURL
 			model.APIKey = credential.AccessToken
+			// Hosted completions require codebuff_metadata, and a session gate
+			// rejection has to re-admit rather than simply retry.
+			instanceID := freebuffSessions.InstanceID()
+			model.ExtraBodyFunc = func() map[string]any {
+				return freebuffMetadata.Body(instanceID)
+			}
+			model.ExtraHeaders = freebuffMetadata.Headers()
+			model.RecoverError = freebuff.MakeRecoverError(freebuffSessions)
 			return model, nil
 		default:
 			return model, nil
