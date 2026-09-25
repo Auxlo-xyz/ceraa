@@ -328,6 +328,7 @@ type Compactor struct {
 	ContextLimit     int
 	MaxOutputTokens  int
 	CacheKey         string
+	ResolveModel     func(context.Context) (llm.ProviderConfig, error)
 	LastPromptTokens int
 	OnUsage          func(llm.UsageInfo)
 }
@@ -416,7 +417,15 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		return false, fmt.Errorf("prompt too large for compaction")
 	}
 	c.LastPromptTokens = EstimateTokens(prompt)
-	client := llm.New(c.LLM)
+	modelConfig := c.LLM
+	if c.ResolveModel != nil {
+		resolved, resolveErr := c.ResolveModel(ctx)
+		if resolveErr != nil {
+			return false, fmt.Errorf("resolve compaction provider: %w", resolveErr)
+		}
+		modelConfig = resolved
+	}
+	client := llm.New(modelConfig)
 	req := llm.StreamRequest{
 		Messages: []llm.Item{
 			{Kind: "text", Role: llm.RoleSystem, Text: "You are a conversation checkpoint compiler. Produce only the requested anchored summary. Do not call tools, continue the task, or invent results."},

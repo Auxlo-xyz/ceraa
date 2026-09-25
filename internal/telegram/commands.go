@@ -829,6 +829,20 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				return true
 			}
 			draft.Model = text
+			if draft.ID == "hermes" {
+				pendingProvider.Delete(chatID)
+				profile := config.ProviderProfile{Model: draft.Model, Subscription: "hermes"}
+				if err := defaultState.setProviderProfile(draft.ID, profile); err != nil {
+					send(token, chatID, "Provider profile save failed: "+err.Error())
+					return true
+				}
+				if err := defaultState.setProvider(draft.ID); err != nil {
+					send(token, chatID, "Provider activation failed: "+err.Error())
+					return true
+				}
+				send(token, chatID, "🔐 Hermes subscription selected. Make sure Hermes is logged in, then send a task.")
+				return true
+			}
 			draft.Stage = "key"
 			pendingProvider.Store(chatID, draft)
 			send(token, chatID, "Send the API key for "+draft.ID+".")

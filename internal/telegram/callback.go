@@ -174,6 +174,8 @@ func handleCallback(token string, q *struct {
 			draft.URL = "https://openrouter.ai/api/v1"
 		case "poolside":
 			draft.URL = "https://inference.poolside.ai/v1"
+		case "hermes":
+			draft.URL = ""
 		case "custom":
 			draft.Stage = "url"
 		default:
@@ -348,7 +350,7 @@ func handleCallback(token string, q *struct {
 			return
 		}
 		current := activeProviderConfig(cfg, defaultState.provider())
-		profile := config.ProviderProfile{URL: current.URL, Model: metadata.ID, ContextLimit: current.ContextLimit, MaxOutputTokens: current.MaxOutputTokens, PromptCacheMode: current.PromptCacheMode, PromptCacheTTL: current.PromptCacheTTL}
+		profile := config.ProviderProfile{URL: current.URL, Model: metadata.ID, ContextLimit: current.ContextLimit, MaxOutputTokens: current.MaxOutputTokens, PromptCacheMode: current.PromptCacheMode, PromptCacheTTL: current.PromptCacheTTL, Subscription: current.Subscription, HermesProvider: current.HermesProvider}
 		if err := defaultState.setProviderProfile(defaultState.provider(), profile); err != nil {
 			send(token, chatID, "Model save failed: "+err.Error())
 			return

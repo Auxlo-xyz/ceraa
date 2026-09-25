@@ -45,6 +45,7 @@ type RunnerConfig struct {
 	Inbox               *inbox.Inbox
 	OperationPool       *operation.LocalManager
 	Compactor           *compaction.Compactor
+	ResolveModel        func(context.Context) (llm.ProviderConfig, error)
 	ForcedCompaction    func() bool
 	AuthorizeTool       func(context.Context, string, string, map[string]any) (bool, error)
 	NeedsAuthorization  func(string, map[string]any) bool
@@ -84,9 +85,13 @@ type Runner struct {
 	cb         Callbacks
 }
 
-func (r *Runner) promptCacheKey() string {
-	digest := sha256.Sum256([]byte(r.cfg.Model.BaseURL + "\x00" + r.cfg.Model.Model + "\x00" + r.cfg.SessionID))
+func promptCacheKey(model llm.ProviderConfig, sessionID string) string {
+	digest := sha256.Sum256([]byte(model.BaseURL + "\x00" + model.Model + "\x00" + sessionID))
 	return fmt.Sprintf("sooraa-%x", digest)
+}
+
+func (r *Runner) promptCacheKey() string {
+	return promptCacheKey(r.cfg.Model, r.cfg.SessionID)
 }
 
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
@@ -167,7 +172,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: user})
 	}
 	runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
-	promptCacheKey := r.promptCacheKey()
 	now := time.Now()
 	sess.Runs = append(sess.Runs, sessionstore.Run{ID: runID, User: user, Status: sessionstore.RunRunning, CreatedAt: now, UpdatedAt: now})
 	if err := r.store.Save(sess); err != nil {
@@ -315,7 +319,15 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			}
 		}
 
-		client := llm.New(r.cfg.Model)
+		modelConfig := r.cfg.Model
+		if r.cfg.ResolveModel != nil {
+			resolved, resolveErr := r.cfg.ResolveModel(ctx)
+			if resolveErr != nil {
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, fmt.Errorf("resolve provider credentials: %w", resolveErr))
+			}
+			modelConfig = resolved
+		}
+		client := llm.New(modelConfig)
 		toolDefs := r.toolDefs()
 		requestToolChoice := ""
 		if forceFinalResponse {
@@ -327,7 +339,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			Reason:         r.cfg.Reasoning,
 			MaxTokens:      r.cfg.MaxOutputTokens,
 			ToolChoice:     requestToolChoice,
-			PromptCacheKey: promptCacheKey,
+			PromptCacheKey: promptCacheKey(modelConfig, r.cfg.SessionID),
 			SessionID:      r.cfg.SessionID,
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)

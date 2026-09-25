@@ -40,6 +40,8 @@ type LLMProvider struct {
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
 	PromptCacheTTL  string `json:"prompt_cache_ttl,omitempty"`
+	Subscription    string `json:"subscription,omitempty"`
+	HermesProvider  string `json:"hermes_provider,omitempty"`
 }
 
 type ProviderProfile struct {
@@ -50,6 +52,8 @@ type ProviderProfile struct {
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
 	PromptCacheTTL  string `json:"prompt_cache_ttl,omitempty"`
+	Subscription    string `json:"subscription,omitempty"`
+	HermesProvider  string `json:"hermes_provider,omitempty"`
 }
 
 // Subscriptions holds provider subscription settings.
@@ -154,6 +158,12 @@ func (c *Config) ActiveLLM() LLMProvider {
 	if profile.PromptCacheTTL != "" {
 		result.PromptCacheTTL = profile.PromptCacheTTL
 	}
+	if profile.Subscription != "" {
+		result.Subscription = profile.Subscription
+	}
+	if profile.HermesProvider != "" {
+		result.HermesProvider = profile.HermesProvider
+	}
 	return result
 }
 
@@ -162,7 +172,7 @@ func (c *Config) ProviderProfile(id string) (ProviderProfile, bool) {
 		return profile, true
 	}
 	if id == "default" {
-		return ProviderProfile{URL: c.LLM.URL, APIKey: c.LLM.APIKey, Model: c.LLM.Model, ContextLimit: c.LLM.ContextLimit, MaxOutputTokens: c.LLM.MaxOutputTokens, PromptCacheMode: c.LLM.PromptCacheMode, PromptCacheTTL: c.LLM.PromptCacheTTL}, true
+		return ProviderProfile{URL: c.LLM.URL, APIKey: c.LLM.APIKey, Model: c.LLM.Model, ContextLimit: c.LLM.ContextLimit, MaxOutputTokens: c.LLM.MaxOutputTokens, PromptCacheMode: c.LLM.PromptCacheMode, PromptCacheTTL: c.LLM.PromptCacheTTL, Subscription: c.LLM.Subscription, HermesProvider: c.LLM.HermesProvider}, true
 	}
 	return ProviderProfile{}, false
 }
@@ -215,6 +225,12 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("SOORAA_PROMPT_CACHE_TTL"); v != "" {
 		cfg.LLM.PromptCacheTTL = v
+	}
+	if v := os.Getenv("SOORAA_SUBSCRIPTION"); v != "" {
+		cfg.LLM.Subscription = v
+	}
+	if v := os.Getenv("SOORAA_HERMES_PROVIDER"); v != "" {
+		cfg.LLM.HermesProvider = v
 	}
 	if v := os.Getenv("SOORAA_SESSION_FILE"); v != "" {
 		cfg.SessionFile = v

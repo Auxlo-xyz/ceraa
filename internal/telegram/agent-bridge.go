@@ -21,6 +21,7 @@ import (
 	"sooraa/harness/skills"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
+	"sooraa/internal/hermesauth"
 	"sooraa/internal/prompt"
 	"sooraa/internal/secret"
 )
@@ -98,12 +99,15 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
 	compactor := newCompactor(cfg, providerID, sessionID)
+	resolveModel := providerModelResolver(providerConfig)
+	compactor.ResolveModel = resolveModel
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		SystemPrompt:        prompt.System,
 		Model:               modelConfig,
+		ResolveModel:        resolveModel,
 		ContextLimit:        providerConfig.ContextLimit,
 		MaxOutputTokens:     providerConfig.MaxOutputTokens,
 		WorkDir:             projectRoot,
@@ -234,12 +238,48 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 	if profile.MaxOutputTokens > 0 {
 		result.MaxOutputTokens = profile.MaxOutputTokens
 	}
+	if profile.PromptCacheMode != "" {
+		result.PromptCacheMode = profile.PromptCacheMode
+	}
+	if profile.PromptCacheTTL != "" {
+		result.PromptCacheTTL = profile.PromptCacheTTL
+	}
+	if profile.Subscription != "" {
+		result.Subscription = profile.Subscription
+	}
+	if profile.HermesProvider != "" {
+		result.HermesProvider = profile.HermesProvider
+	}
 	if result.APIKey == "" && providerID != "default" {
 		if key, err := secret.Get("provider_api_key_" + providerID); err == nil {
 			result.APIKey = key
 		}
 	}
 	return result
+}
+
+func providerModelResolver(provider config.LLMProvider) func(context.Context) (llm.ProviderConfig, error) {
+	return func(ctx context.Context) (llm.ProviderConfig, error) {
+		model := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
+		model.PromptCacheMode = provider.PromptCacheMode
+		model.PromptCacheTTL = provider.PromptCacheTTL
+		if provider.Subscription != "hermes" {
+			return model, nil
+		}
+		credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
+		if err != nil {
+			return llm.ProviderConfig{}, err
+		}
+		if credential.BaseURL == "" {
+			return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q has no inference base URL", credential.Provider)
+		}
+		if credential.Transport != "chat_completions" {
+			return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
+		}
+		model.BaseURL = credential.BaseURL
+		model.APIKey = credential.AccessToken
+		return model, nil
+	}
 }
 
 func compactionCacheKey(providerURL, model, sessionID string) string {

@@ -15,6 +15,7 @@ import (
 	"sooraa/harness/skills"
 	"sooraa/harness/tool"
 	"sooraa/internal/config"
+	"sooraa/internal/hermesauth"
 	"sooraa/internal/prompt"
 )
 
@@ -69,10 +70,27 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
 	modelConfig.PromptCacheTTL = provider.PromptCacheTTL
+	resolveModel := func(ctx context.Context) (llm.ProviderConfig, error) {
+		if provider.Subscription != "hermes" {
+			return modelConfig, nil
+		}
+		credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
+		if err != nil {
+			return llm.ProviderConfig{}, err
+		}
+		if credential.Transport != "chat_completions" {
+			return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
+		}
+		modelConfig.BaseURL = credential.BaseURL
+		modelConfig.APIKey = credential.AccessToken
+		return modelConfig, nil
+	}
+	compactor.ResolveModel = resolveModel
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
 		Model:               modelConfig,
+		ResolveModel:        resolveModel,
 		ContextLimit:        provider.ContextLimit,
 		MaxOutputTokens:     provider.MaxOutputTokens,
 		ToolOutputDir:       cfg.ToolOutputDir,

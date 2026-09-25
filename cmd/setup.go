@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"sooraa/internal/config"
+	"sooraa/internal/hermesauth"
 )
 
 type doctorCheck struct {
@@ -71,10 +72,11 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	if cfg == nil {
 		return doctorCheck{"config", "FAIL", "configuration is nil"}
 	}
-	if cfg.LLM.URL == "" || cfg.LLM.Model == "" || (cfg.LLM.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "") {
+	provider := cfg.ActiveLLM()
+	if (provider.URL == "" && provider.Subscription != "hermes") || provider.Model == "" || (provider.Subscription != "hermes" && provider.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
-	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, cfg.LLM.Model)}
+	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, provider.Model)}
 }
 
 func checkWorkspace(cfg *config.Config) doctorCheck {
@@ -90,20 +92,31 @@ func checkWorkspace(cfg *config.Config) doctorCheck {
 }
 
 func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
-	if cfg.LLM.URL == "" || cfg.LLM.Model == "" {
+	provider := cfg.ActiveLLM()
+	if provider.Model == "" || (provider.URL == "" && provider.Subscription != "hermes") {
 		return doctorCheck{"provider", "WARN", "provider is not configured; finish onboarding in Telegram"}
-	}
-	if !validProviderURL(cfg.LLM.URL) {
-		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.LLM.URL, "/"), nil)
+	apiKey := provider.APIKey
+	baseURL := provider.URL
+	if provider.Subscription == "hermes" {
+		credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
+		if err != nil {
+			return doctorCheck{"provider", "FAIL", "Hermes credential: " + err.Error()}
+		}
+		apiKey = credential.AccessToken
+		baseURL = credential.BaseURL
+	}
+	if !validProviderURL(baseURL) {
+		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/"), nil)
 	if err != nil {
 		return doctorCheck{"provider", "FAIL", err.Error()}
 	}
-	if cfg.LLM.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.LLM.APIKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
