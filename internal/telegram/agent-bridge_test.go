@@ -33,12 +33,12 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 		switch requests.Add(1) {
 		case 1:
 			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{
-				map[string]any{"index": 0, "id": "call_1", "function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`}},
-				map[string]any{"index": 1, "id": "call_2", "function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`}},
+				map[string]any{"index": 0, "id": "call_1", "function": map[string]any{"name": "run", "arguments": `{"tool":"read","arguments":{"path":"../../go.mod"}}`}},
+				map[string]any{"index": 1, "id": "call_2", "function": map[string]any{"name": "run", "arguments": `{"tool":"read","arguments":{"path":"../../go.mod"}}`}},
 			}}}}}
 		case 2:
 			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{
-				map[string]any{"index": 0, "id": "call_3", "function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`}},
+				map[string]any{"index": 0, "id": "call_3", "function": map[string]any{"name": "run", "arguments": `{"tool":"read","arguments":{"path":"../../go.mod"}}`}},
 			}}}}}
 		default:
 			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "finished"}}}}

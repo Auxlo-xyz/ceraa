@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -477,11 +478,25 @@ func (r *Runner) handleInbox(ctx context.Context) error {
 }
 
 func (r *Runner) toolDefs() []llm.ToolDef {
-	defs := make([]llm.ToolDef, 0, len(r.reg.All()))
-	for _, t := range r.reg.All() {
-		defs = append(defs, llm.ToolDef{Name: t.Name(), Description: t.Description(), Parameters: t.Schema()})
-	}
-	return defs
+	return []llm.ToolDef{{
+		Name:        "run",
+		Description: "Invoke an available tool with JSON arguments.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tool": map[string]any{
+					"type":        "string",
+					"description": "The registered tool name.",
+				},
+				"arguments": map[string]any{
+					"type":                 "object",
+					"description":          "Arguments for the selected tool.",
+					"additionalProperties": true,
+				},
+			},
+			"required": []string{"tool", "arguments"},
+		},
+	}}
 }
 
 func (r *Runner) uniqueToolCallIDs(calls []llm.StreamedToolCall, sess *sessionstore.Session) []llm.StreamedToolCall {
@@ -524,11 +539,57 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	if limit <= 0 {
 		limit = 216000
 	}
-	return contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit).Messages
+	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
+	request.Messages = normalizeDispatcherMessages(request.Messages)
+	return request.Messages
+}
+
+func normalizeDispatcherMessages(items []llm.Item) []llm.Item {
+	for i := range items {
+		switch items[i].Kind {
+		case "tool_call":
+			items[i] = normalizeDispatcherToolCall(items[i].Name, items[i].Args, items[i])
+		case "tool_calls":
+			for j := range items[i].ToolCalls {
+				call := &items[i].ToolCalls[j]
+				if call.Name == "run" {
+					continue
+				}
+				var args map[string]any
+				if err := json.Unmarshal([]byte(call.Args), &args); err != nil {
+					continue
+				}
+				wrapped, err := json.Marshal(map[string]any{"tool": call.Name, "arguments": args})
+				if err != nil {
+					continue
+				}
+				call.Name = "run"
+				call.Args = string(wrapped)
+			}
+		}
+	}
+	return items
+}
+
+func normalizeDispatcherToolCall(name, args string, item llm.Item) llm.Item {
+	if name == "run" {
+		return item
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(args), &decoded); err != nil {
+		return item
+	}
+	wrapped, err := json.Marshal(map[string]any{"tool": name, "arguments": decoded})
+	if err != nil {
+		return item
+	}
+	item.Name = "run"
+	item.Args = string(wrapped)
+	return item
 }
 
 func (r *Runner) systemPrompt() string {
-	parts := []string{r.cfg.SystemPrompt}
+	parts := []string{r.cfg.SystemPrompt, r.compactToolCatalog()}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
 	}
@@ -538,10 +599,35 @@ func (r *Runner) systemPrompt() string {
 	return strings.Join(parts, "\n\n")
 }
 
+func (r *Runner) compactToolCatalog() string {
+	var catalog strings.Builder
+	catalog.WriteString("<tool-catalog>\n")
+	catalog.WriteString("Use the run tool for every tool action. Do not call unavailable names.\n")
+	for _, item := range r.reg.All() {
+		args := toolCatalogArguments(item.Schema())
+		description := strings.Join(strings.Fields(item.Description()), " ")
+		if len(description) > 110 {
+			description = description[:107] + "..."
+		}
+		catalog.WriteString("- " + item.Name() + "(" + strings.Join(args, ", ") + "): " + description + "\n")
+	}
+	catalog.WriteString("</tool-catalog>")
+	return catalog.String()
+}
+
+func toolCatalogArguments(schema map[string]any) []string {
+	required, _ := schema["required"].([]string)
+	keys := append([]string(nil), required...)
+	sort.Strings(keys)
+	return keys
+}
+
 type preparedTool struct {
-	call llm.StreamedToolCall
-	spec operation.Spec
-	tool tool.Tool
+	call    llm.StreamedToolCall
+	spec    operation.Spec
+	tool    tool.Tool
+	args    map[string]any
+	rawArgs string
 }
 
 func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, runID string, calls []llm.StreamedToolCall) ([]preparedTool, map[string]string, error) {
@@ -551,24 +637,44 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		op := sessionstore.Operation{ID: call.ID, Tool: call.Name, Status: sessionstore.StatusPending, RunID: runID, ToolCallID: call.ID}
 		sess.Operations = append(sess.Operations, op)
 		results[call.ID] = ""
-		var args map[string]any
+		if call.Name != "run" {
+			results[call.ID] = "Error: tool calls must use run"
+			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "tool calls must use run"); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
 		if !json.Valid([]byte(call.Arguments)) {
-			results[call.ID] = "Error: invalid JSON arguments for " + call.Name
+			results[call.ID] = "Error: invalid JSON arguments for run"
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "invalid JSON arguments"); err != nil {
 				return nil, nil, err
 			}
 			continue
 		}
-		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-			results[call.ID] = "Error: invalid arguments for " + call.Name + ": " + err.Error()
+		var envelope struct {
+			Tool      string         `json:"tool"`
+			Arguments map[string]any `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(call.Arguments), &envelope); err != nil || strings.TrimSpace(envelope.Tool) == "" || envelope.Arguments == nil {
+			results[call.ID] = "Error: run requires tool and arguments"
+			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "run requires tool and arguments"); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		toolName := strings.TrimSpace(envelope.Tool)
+		args := envelope.Arguments
+		rawArgs, err := json.Marshal(args)
+		if err != nil {
+			results[call.ID] = "Error: invalid arguments for " + toolName + ": " + err.Error()
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], err.Error()); err != nil {
 				return nil, nil, err
 			}
 			continue
 		}
-		t, ok := r.reg.Get(call.Name)
+		t, ok := r.reg.Get(toolName)
 		if !ok {
-			results[call.ID] = "Error: unknown tool " + call.Name
+			results[call.ID] = "Error: unknown tool " + toolName
 			if err := r.persistPreparedFailure(sess, runID, call.ID, results[call.ID], "unknown tool"); err != nil {
 				return nil, nil, err
 			}
@@ -595,13 +701,14 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		}
 		for i := range sess.Operations {
 			if sess.Operations[i].ID == call.ID {
+				sess.Operations[i].Tool = toolName
 				sess.Operations[i].Args = args
 				sess.Operations[i].SpecType = spec.Type
 				sess.Operations[i].SpecArgs = spec.Args
 				break
 			}
 		}
-		prepared = append(prepared, preparedTool{call: call, spec: spec, tool: t})
+		prepared = append(prepared, preparedTool{call: call, spec: spec, tool: t, args: args, rawArgs: string(rawArgs)})
 	}
 	if err := r.store.Save(sess); err != nil {
 		return nil, nil, err
@@ -610,7 +717,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 	dispatched := make([]preparedTool, 0, len(prepared))
 	start := func(item preparedTool) error {
 		if r.cb.OnToolStart != nil {
-			r.cb.OnToolStart(item.call.ID, item.call.Name, map[string]any{"tool": item.call.Name, "args": item.call.Arguments})
+			r.cb.OnToolStart(item.call.ID, item.tool.Name(), map[string]any{"tool": item.tool.Name(), "args": item.rawArgs})
 		}
 		for i := range sess.Operations {
 			if sess.Operations[i].ID == item.call.ID {
@@ -632,9 +739,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		err   error
 	}, len(prepared))
 	for _, item := range prepared {
-		var args map[string]any
-		_ = json.Unmarshal([]byte(item.call.Arguments), &args)
-		needsAuth := r.cfg.AuthorizeTool != nil && (r.cfg.NeedsAuthorization == nil || r.cfg.NeedsAuthorization(item.call.Name, args))
+		needsAuth := r.cfg.AuthorizeTool != nil && (r.cfg.NeedsAuthorization == nil || r.cfg.NeedsAuthorization(item.tool.Name(), item.args))
 		if !needsAuth {
 			if err := start(item); err != nil {
 				return nil, nil, err
@@ -642,14 +747,14 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			continue
 		}
 		authCount++
-		go func(item preparedTool, args map[string]any) {
-			allow, err := r.cfg.AuthorizeTool(ctx, item.call.ID, item.call.Name, args)
+		go func(item preparedTool) {
+			allow, err := r.cfg.AuthorizeTool(ctx, item.call.ID, item.tool.Name(), item.args)
 			allowed <- struct {
 				item  preparedTool
 				allow bool
 				err   error
 			}{item: item, allow: allow, err: err}
-		}(item, args)
+		}(item)
 	}
 	for i := 0; i < authCount; i++ {
 		decision := <-allowed

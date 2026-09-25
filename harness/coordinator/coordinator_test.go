@@ -20,6 +20,76 @@ import (
 	"sooraa/harness/tool"
 )
 
+func TestRunnerExposesSingleRunToolDefinition(t *testing.T) {
+	runner := &Runner{reg: tool.DefaultRegistry()}
+	defs := runner.toolDefs()
+	if len(defs) != 1 || defs[0].Name != "run" {
+		t.Fatalf("tool definitions = %#v", defs)
+	}
+	parameters, ok := defs[0].Parameters["properties"].(map[string]any)
+	if !ok || parameters["tool"] == nil || parameters["arguments"] == nil {
+		t.Fatalf("run parameters = %#v", defs[0].Parameters)
+	}
+}
+
+func TestRunnerCompactCatalogIncludesActiveTools(t *testing.T) {
+	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
+	catalog := runner.compactToolCatalog()
+	for _, want := range []string{"<tool-catalog>", "bash(command)", "read(path)", "write(content, path)", "webfetch(url)", "</tool-catalog>"} {
+		if !strings.Contains(catalog, want) {
+			t.Fatalf("catalog missing %q: %s", want, catalog)
+		}
+	}
+}
+
+func TestNormalizeDispatcherMessagesWrapsLegacyNativeCalls(t *testing.T) {
+	items := []llm.Item{
+		{Kind: "tool_call", CallID: "one", Name: "read", Args: `{"path":"README.md"}`},
+		{Kind: "tool_calls", ToolCalls: []llm.ToolCall{{ID: "two", Name: "bash", Args: `{"command":"pwd"}`}}},
+	}
+	normalized := normalizeDispatcherMessages(items)
+	if normalized[0].Name != "run" || !strings.Contains(normalized[0].Args, `"tool":"read"`) {
+		t.Fatalf("legacy single call = %#v", normalized[0])
+	}
+	if normalized[1].ToolCalls[0].Name != "run" || !strings.Contains(normalized[1].ToolCalls[0].Args, `"tool":"bash"`) {
+		t.Fatalf("legacy multi call = %#v", normalized[1])
+	}
+}
+
+func TestRunnerRejectsNativeAndUnknownDispatcherCalls(t *testing.T) {
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{reg: tool.DefaultRegistry(), store: store, cfg: RunnerConfig{SessionID: "dispatcher"}}
+	sess := &sessionstore.Session{ID: "dispatcher", Version: 2}
+	_, results, err := runner.prepareTools(context.Background(), sess, "run1", []llm.StreamedToolCall{
+		{ID: "native", Name: "read", Arguments: `{"path":"README.md"}`},
+		{ID: "unknown", Name: "run", Arguments: `{"tool":"missing","arguments":{}}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results["native"] != "Error: tool calls must use run" || results["unknown"] != "Error: unknown tool missing" {
+		t.Fatalf("dispatcher errors = %#v", results)
+	}
+}
+
+func TestDispatcherDefinitionsStayCompact(t *testing.T) {
+	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
+	definition, err := json.Marshal(runner.toolDefs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := runner.compactToolCatalog()
+	if len(definition) > 512 {
+		t.Fatalf("run definition bytes = %d", len(definition))
+	}
+	if len(catalog) > 4096 {
+		t.Fatalf("catalog bytes = %d", len(catalog))
+	}
+}
+
 func TestRunnerPersistsOperationLedger(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +102,7 @@ func TestRunnerPersistsOperationLedger(t *testing.T) {
 						"tool_calls": []any{map[string]any{
 							"index":    0,
 							"id":       "call1",
-							"function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`},
+							"function": map[string]any{"name": "run", "arguments": `{"tool":"read","arguments":{"path":"../../go.mod"}}`},
 						}},
 					},
 				}},
@@ -71,6 +141,9 @@ func TestRunnerPersistsOperationLedger(t *testing.T) {
 	}
 	if len(sess.Operations) != 1 {
 		t.Fatalf("expected one durable operation, got %d", len(sess.Operations))
+	}
+	if sess.Operations[0].Tool != "read" {
+		t.Fatalf("resolved operation tool = %q", sess.Operations[0].Tool)
 	}
 	if sess.Operations[0].Status != sessionstore.StatusCompleted || !sess.Operations[0].ResultPresent {
 		t.Fatalf("operation was not checkpointed: %+v", sess.Operations[0])
@@ -209,7 +282,7 @@ func TestCoordinatorDispatchesTools(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		var payload map[string]any
 		if requests.Add(1) == 1 {
-			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call1", "function": map[string]any{"name": "read", "arguments": `{"path":"../../go.mod"}`}}}}}}}
+			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call1", "function": map[string]any{"name": "run", "arguments": `{"tool":"read","arguments":{"path":"../../go.mod"}}`}}}}}}}
 		} else {
 			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "done"}}}}
 		}
