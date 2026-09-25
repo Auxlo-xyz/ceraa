@@ -106,8 +106,20 @@ func TestTelegramProviderUsesGeminiThoughtSignatures(t *testing.T) {
 	if !telegramProviderUsesGeminiThoughtSignatures("custom", config.LLMProvider{Model: "gemma-3-27b"}) {
 		t.Fatal("expected Gemma model to enable thought signatures")
 	}
-	if telegramProviderUsesGeminiThoughtSignatures("default", config.LLMProvider{Model: "gemini-3.5-flash"}) {
-		t.Fatal("default provider must not enable Telegram-only thought signatures")
+	// The rule follows the model, not the profile slot. Keying it on the
+	// provider id disabled the signature round-trip for an env-configured
+	// Gemini model, and every turn after the first tool call failed with a 400.
+	for _, providerID := range []string{"default", "", "custom", "openrouter"} {
+		if !telegramProviderUsesGeminiThoughtSignatures(providerID, config.LLMProvider{Model: "gemini-3.5-flash"}) {
+			t.Fatalf("provider %q must still enable thought signatures for a Gemini model", providerID)
+		}
+	}
+	// A Gemini model reached through a renamed proxy is still detected by host.
+	if !telegramProviderUsesGeminiThoughtSignatures("default", config.LLMProvider{
+		Model: "internal-coding-model",
+		URL:   "https://generativelanguage.googleapis.com/v1beta/openai",
+	}) {
+		t.Fatal("a Gemini host must enable thought signatures regardless of model name")
 	}
 	if telegramProviderUsesGeminiThoughtSignatures("custom", config.LLMProvider{Model: "gpt-5"}) {
 		t.Fatal("non-Gemini model must not enable thought signatures")

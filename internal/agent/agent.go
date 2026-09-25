@@ -61,6 +61,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	pcfg := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	pcfg.PromptCacheMode = provider.PromptCacheMode
 	pcfg.PromptCacheTTL = provider.PromptCacheTTL
+	pcfg.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
@@ -70,6 +71,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
 	modelConfig.PromptCacheTTL = provider.PromptCacheTTL
+	modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 	resolveModel := func(ctx context.Context) (llm.ProviderConfig, error) {
 		switch provider.Subscription {
 		case "hermes":

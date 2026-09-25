@@ -930,6 +930,28 @@ func mergeStreamedArguments(current, incoming string) string {
 	return current + incoming
 }
 
+// UsesGeminiThoughtSignatures reports whether a provider needs Gemini's
+// thought_signature round-trip.
+//
+// Gemini 3 rejects a conversation whose functionCall parts carry no
+// thought_signature with a 400, so the signature the model returned must be
+// replayed on the next request. It is also the only way Ceraa's reasoning
+// display works for these models, since the signature rides along with the
+// thought block.
+//
+// This is decided by the model, never by which profile slot the provider sits
+// in. Keying it on the profile id previously disabled it for the default
+// provider, which is exactly the path an env-configured Gemini model takes.
+func UsesGeminiThoughtSignatures(model, baseURL string) bool {
+	name := strings.ToLower(strings.TrimSpace(model))
+	if strings.Contains(name, "gemini") || strings.Contains(name, "gemma") {
+		return true
+	}
+	// A proxied or renamed model still needs it when the host is Gemini's.
+	host := strings.ToLower(baseURL)
+	return strings.Contains(host, "generativelanguage.googleapis.com")
+}
+
 // toolCallNames maps a tool call id to the function name that produced it, from
 // both single and batched tool-call items in the same request.
 func toolCallNames(items []Item) map[string]string {

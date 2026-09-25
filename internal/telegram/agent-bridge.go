@@ -205,12 +205,13 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	return err
 }
 
-func telegramProviderUsesGeminiThoughtSignatures(providerID string, provider config.LLMProvider) bool {
-	if providerID == "" || providerID == "default" {
-		return false
-	}
-	model := strings.ToLower(provider.Model)
-	return strings.Contains(model, "gemini") || strings.Contains(model, "gemma")
+// telegramProviderUsesGeminiThoughtSignatures is kept as a named seam for the
+// runner's tests, but the rule itself lives in the transport and depends only
+// on the model and host. It used to return false for the "default" provider,
+// which silently disabled the signature round-trip for any env-configured
+// Gemini model and made every follow-up turn fail with a 400.
+func telegramProviderUsesGeminiThoughtSignatures(_ string, provider config.LLMProvider) bool {
+	return llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 }
 
 func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvider {
@@ -294,6 +295,7 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	pcfg := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	pcfg.PromptCacheMode = provider.PromptCacheMode
 	pcfg.PromptCacheTTL = provider.PromptCacheTTL
+	pcfg.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens

@@ -237,3 +237,69 @@ func TestFallbackToolResultName(t *testing.T) {
 		t.Fatal("fallback name must be bounded")
 	}
 }
+
+// TestUsesGeminiThoughtSignatures pins the detection rule. It must follow the
+// model and host, never the profile slot: keying it on the provider id disabled
+// the signature round-trip for env-configured Gemini models.
+func TestUsesGeminiThoughtSignatures(t *testing.T) {
+	cases := []struct {
+		model, base string
+		want        bool
+	}{
+		{"gemini-3.5-flash", "https://generativelanguage.googleapis.com/v1beta/openai", true},
+		{"gemini-2.5-pro", "https://proxy.internal/v1", true},
+		{"GEMINI-3.5-FLASH", "https://proxy.internal/v1", true},
+		{"gemma-3-27b", "https://proxy.internal/v1", true},
+		{"  gemini-3.5-flash  ", "", true},
+		// Renamed behind a proxy, but Gemini's host: still needed.
+		{"internal-coding-model", "https://generativelanguage.googleapis.com/v1beta/openai", true},
+		{"gpt-5", "https://api.openai.com/v1", false},
+		{"poolside/laguna-xs-2.1", "https://inference.poolside.ai/v1", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		if got := UsesGeminiThoughtSignatures(tc.model, tc.base); got != tc.want {
+			t.Errorf("UsesGeminiThoughtSignatures(%q, %q) = %v, want %v", tc.model, tc.base, got, tc.want)
+		}
+	}
+}
+
+// TestThoughtSignatureIsReplayedOnToolCalls pins the round-trip Gemini 3
+// requires: the signature the model returned on a function call must go back out
+// on the next request, or the provider rejects the whole conversation.
+func TestThoughtSignatureIsReplayedOnToolCalls(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "list files"},
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{"command":"ls"}`, ThoughtSignature: "sig-abc"},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "go.mod"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, true, defaultCompatibility())
+	found := false
+	for _, msg := range msgs {
+		calls, ok := msg["tool_calls"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, call := range calls {
+			extra, _ := call["extra_content"].(map[string]any)
+			google, _ := extra["google"].(map[string]any)
+			if google["thought_signature"] == "sig-abc" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("thought_signature was not replayed on the tool call: %v", msgs)
+	}
+	// With the flag off, no signature is sent, so other providers are unchanged.
+	msgs = encodeMessagesWithCompatibility(items, false, defaultCompatibility())
+	for _, msg := range msgs {
+		if calls, ok := msg["tool_calls"].([]map[string]any); ok {
+			for _, call := range calls {
+				if _, present := call["extra_content"]; present {
+					t.Fatal("extra_content must be absent when signatures are disabled")
+				}
+			}
+		}
+	}
+}
