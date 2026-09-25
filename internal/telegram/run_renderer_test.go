@@ -373,7 +373,7 @@ func TestRunRendererStopCancelsTheRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pinned := NewPinnedManager("token", 42)
 	defer pinned.close()
-	renderer := &runRenderer{pinned: pinned}
+	renderer := &runRenderer{}
 	renderer.setCancel(cancel)
 	renderer.stop()
 	select {

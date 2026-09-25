@@ -672,12 +672,10 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 		return
 	}
 	sessionID := currentSessionID(chatID)
-	pinned := getPinnedManager(token, chatID)
-	pinned.Init()
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	activeRuns.Store(chatID, cancelRun)
 	defer activeRuns.Delete(chatID)
-	renderer := newRunRenderer(token, chatID, pinned)
+	renderer := newRunRenderer(token, chatID)
 	renderer.setCancel(cancelRun)
 	defer renderer.close()
 
@@ -756,14 +754,6 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 						kb := map[string]any{"inline_keyboard": rows}
 						sendMessageWithMarkup(token, chatID, "❓ "+ques, kb)
-					case event.TypeCost, event.TypeTokens:
-						cost, _ := e.Data["cost"].(string)
-						if cost != "" {
-							pinned.UpdateCost(cost)
-						}
-						if tok, ok := e.Data["tokens"].(int); ok {
-							pinned.UpdateTokens(tok)
-						}
 					}
 				case <-idleTimer.C:
 					consecutiveTimeouts++

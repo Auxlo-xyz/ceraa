@@ -25,7 +25,6 @@ type toolActivity struct {
 type runRenderer struct {
 	token  string
 	chatID int64
-	pinned *PinnedManager
 
 	mu            sync.Mutex
 	messageID     int
@@ -44,11 +43,10 @@ type runRenderer struct {
 	streamClosed  bool
 }
 
-func newRunRenderer(token string, chatID int64, pinned *PinnedManager) *runRenderer {
+func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRenderer {
 	renderer := &runRenderer{
 		token:        token,
 		chatID:       chatID,
-		pinned:       pinned,
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
 	}
@@ -57,7 +55,6 @@ func newRunRenderer(token string, chatID int64, pinned *PinnedManager) *runRende
 	} else {
 		renderer.messageID = sendWithKeyboard(token, chatID, "💬", nil)
 	}
-	pinned.BeginRun()
 	go renderer.runStream()
 	return renderer
 }
@@ -172,7 +169,6 @@ func (r *runRenderer) reasoning(value string) {
 	}
 	r.lastStatus = now
 	r.mu.Unlock()
-	r.pinned.UpdateReasoning(value)
 	if !shouldStream {
 		return
 	}
@@ -243,9 +239,7 @@ func (r *runRenderer) tool(callID, value string) {
 	}
 	messageID := r.messageID
 	r.mu.Unlock()
-	if messageID == 0 {
-		r.pinned.ClearContent()
-	} else {
+	if messageID != 0 {
 		r.signalStream()
 	}
 }
@@ -253,7 +247,6 @@ func (r *runRenderer) tool(callID, value string) {
 func (r *runRenderer) content(delta string) {
 	r.mu.Lock()
 	r.streamContent += delta
-	content := r.streamContent
 	messageID := r.messageID
 	if time.Since(r.lastStream) < 350*time.Millisecond {
 		r.mu.Unlock()
@@ -262,7 +255,6 @@ func (r *runRenderer) content(delta string) {
 	r.lastStream = time.Now()
 	r.mu.Unlock()
 	if messageID == 0 {
-		r.pinned.UpdateContent(content)
 		return
 	}
 	r.signalStream()
@@ -337,7 +329,6 @@ func (r *runRenderer) finish(answer string) {
 			}
 		}
 	}
-	r.pinned.Complete()
 }
 
 func (r *runRenderer) fail() {
@@ -355,7 +346,6 @@ func (r *runRenderer) fail() {
 			logger.Warn("Telegram failed thought publication failed")
 		}
 	}
-	r.pinned.Fail()
 }
 
 func (r *runRenderer) stop() {
@@ -367,7 +357,6 @@ func (r *runRenderer) stop() {
 	r.stopped = true
 	cancel := r.cancel
 	r.mu.Unlock()
-	r.pinned.Stop()
 	if cancel != nil {
 		cancel()
 	}
