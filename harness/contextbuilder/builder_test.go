@@ -96,6 +96,21 @@ func TestBuildHandlesToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildPreservesEmptyToolResultWithPresenceMarker(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "call_empty", Name: "bash", Args: `{"command":"mkdir -p /tmp/example"}`}}},
+		{Role: llm.RoleTool, ToolCallID: "call_empty", ToolName: "run", ToolResultPresent: true},
+	}}
+	req := New(sess, "system").Build()
+	if len(req.Messages) < 3 {
+		t.Fatalf("expected tool pair, got %d messages", len(req.Messages))
+	}
+	result := req.Messages[len(req.Messages)-1]
+	if result.Role != llm.RoleTool || result.CallID != "call_empty" || result.Output != "" {
+		t.Fatalf("empty tool result = %+v", result)
+	}
+}
+
 func TestBuildWithLimitKeepsCompleteToolTurn(t *testing.T) {
 	sess := &sessionstore.Session{Messages: []sessionstore.Message{
 		{Role: llm.RoleUser, Content: strings.Repeat("old ", 100)},

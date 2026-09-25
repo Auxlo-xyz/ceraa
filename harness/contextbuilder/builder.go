@@ -113,7 +113,7 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 				}
 			}
 		}
-		if m.ToolResult != "" {
+		if m.ToolResultPresent || m.ToolResult != "" {
 			item.Kind = "text"
 			item.Role = llm.RoleTool
 			item.CallID = m.ToolCallID
