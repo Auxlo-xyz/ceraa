@@ -50,6 +50,14 @@ func RunAsync(ctx context.Context, cfg Config, store *sessionstore.Store, reg *t
 
 func buildLLMMessages(msgs []sessionstore.Message) []llm.Item {
 	items := make([]llm.Item, 0, len(msgs))
+	toolNames := make(map[string]string)
+	for _, m := range msgs {
+		for _, call := range m.AllToolCalls() {
+			if call.Name != "" {
+				toolNames[call.ID] = call.Name
+			}
+		}
+	}
 	for _, m := range msgs {
 		if calls := m.AllToolCalls(); len(calls) > 0 {
 			if len(calls) == 1 {
@@ -63,7 +71,11 @@ func buildLLMMessages(msgs []sessionstore.Message) []llm.Item {
 			}
 			continue
 		}
-		items = append(items, llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Output: m.ToolResult})
+		name := m.ToolName
+		if name == "" {
+			name = toolNames[m.ToolCallID]
+		}
+		items = append(items, llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Name: name, Output: m.ToolResult})
 	}
 	return items
 }

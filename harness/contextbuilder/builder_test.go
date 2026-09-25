@@ -83,6 +83,9 @@ func TestBuildHandlesToolCalls(t *testing.T) {
 		}
 		if m.Role == llm.RoleTool && m.Output == "file1.txt\nfile2.txt" {
 			foundResult = true
+			if m.Name != "bash" {
+				t.Fatalf("tool result name = %q", m.Name)
+			}
 		}
 	}
 	if !foundCall {

@@ -46,6 +46,7 @@ func TestNormalizeDispatcherMessagesWrapsLegacyNativeCalls(t *testing.T) {
 	items := []llm.Item{
 		{Kind: "tool_call", CallID: "one", Name: "read", Args: `{"path":"README.md"}`},
 		{Kind: "tool_calls", ToolCalls: []llm.ToolCall{{ID: "two", Name: "bash", Args: `{"command":"pwd"}`}}},
+		{Kind: "text", Role: llm.RoleTool, CallID: "one", Name: "read", Output: "ok"},
 	}
 	normalized := normalizeDispatcherMessages(items)
 	if normalized[0].Name != "run" || !strings.Contains(normalized[0].Args, `"tool":"read"`) {
@@ -53,6 +54,9 @@ func TestNormalizeDispatcherMessagesWrapsLegacyNativeCalls(t *testing.T) {
 	}
 	if normalized[1].ToolCalls[0].Name != "run" || !strings.Contains(normalized[1].ToolCalls[0].Args, `"tool":"bash"`) {
 		t.Fatalf("legacy multi call = %#v", normalized[1])
+	}
+	if normalized[2].Name != "run" {
+		t.Fatalf("legacy tool result = %#v", normalized[2])
 	}
 }
 
@@ -245,6 +249,9 @@ func TestBuildLLMMessages(t *testing.T) {
 	}
 	if items[3].Kind != "text" || items[3].Role != llm.RoleTool {
 		t.Fatalf("expected tool result, got %+v", items[3])
+	}
+	if items[3].Name != "bash" {
+		t.Fatalf("expected tool result name, got %+v", items[3])
 	}
 	if items[3].Output != "hi\n" {
 		t.Fatalf("expected 'hi', got %q", items[3].Output)

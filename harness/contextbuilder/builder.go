@@ -63,6 +63,14 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 
 	// conversation history - handle compaction messages as synthetic checkpoints
 	// Mirrors soraacode agent/core/src/session/runner/to-llm-message.ts
+	toolNames := make(map[string]string)
+	for _, m := range b.sess.Messages {
+		for _, call := range m.AllToolCalls() {
+			if call.Name != "" {
+				toolNames[call.ID] = call.Name
+			}
+		}
+	}
 	for _, m := range b.sess.Messages {
 		if m.Compaction != nil {
 			// Render compaction as synthetic checkpoint -> maps to soraacode to-llm-message.ts compaction case
@@ -100,6 +108,10 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 			item.Kind = "text"
 			item.Role = llm.RoleTool
 			item.CallID = m.ToolCallID
+			item.Name = m.ToolName
+			if item.Name == "" {
+				item.Name = toolNames[m.ToolCallID]
+			}
 			item.Output = m.ToolResult
 		}
 		if m.Reasoning != "" {

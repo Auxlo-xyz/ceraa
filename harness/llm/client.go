@@ -276,21 +276,18 @@ func New(cfg ProviderConfig) *StreamingClient {
 	}
 }
 
-func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
-	api := c.cfg.BaseURL
-	if !strings.HasSuffix(api, "/") {
-		api += "/"
-	}
-	url := api + "chat/completions"
-
-	msgs := make([]map[string]any, 0, len(req.Messages))
-	for _, item := range req.Messages {
+func encodeMessages(items []Item) []map[string]any {
+	msgs := make([]map[string]any, 0, len(items))
+	for _, item := range items {
 		switch item.Kind {
 		case "text":
 			msg := map[string]any{"role": string(item.Role)}
 			if item.Role == RoleTool {
 				msg["tool_call_id"] = item.CallID
 				msg["content"] = item.Output
+				if item.Name != "" {
+					msg["name"] = item.Name
+				}
 			} else {
 				msg["content"] = item.Text
 			}
@@ -320,6 +317,17 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			msgs = append(msgs, assistant)
 		}
 	}
+	return msgs
+}
+
+func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+	api := c.cfg.BaseURL
+	if !strings.HasSuffix(api, "/") {
+		api += "/"
+	}
+	url := api + "chat/completions"
+
+	msgs := encodeMessages(req.Messages)
 
 	body := map[string]any{
 		"model":          c.cfg.Model,

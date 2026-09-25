@@ -63,6 +63,7 @@ type Message struct {
 	Role              llm.Role        `json:"role"`
 	Content           string          `json:"content,omitempty"`
 	ToolCallID        string          `json:"tool_call_id,omitempty"`
+	ToolName          string          `json:"tool_name,omitempty"`
 	ToolResult        string          `json:"tool_result,omitempty"`
 	ToolResultPresent bool            `json:"tool_result_present,omitempty"`
 	ResultStatus      OperationStatus `json:"result_status,omitempty"`
@@ -414,6 +415,7 @@ func Recover(sess *Session) bool {
 			recovered = append(recovered, Message{
 				Role:              llm.RoleTool,
 				ToolCallID:        call.ID,
+				ToolName:          call.Name,
 				ToolResult:        result,
 				ToolResultPresent: true,
 				ResultStatus:      status,

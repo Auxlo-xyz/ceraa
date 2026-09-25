@@ -549,6 +549,10 @@ func normalizeDispatcherMessages(items []llm.Item) []llm.Item {
 		switch items[i].Kind {
 		case "tool_call":
 			items[i] = normalizeDispatcherToolCall(items[i].Name, items[i].Args, items[i])
+		case "text":
+			if items[i].Role == llm.RoleTool && items[i].Name != "" {
+				items[i].Name = "run"
+			}
 		case "tool_calls":
 			for j := range items[i].ToolCalls {
 				call := &items[i].ToolCalls[j]
@@ -855,6 +859,7 @@ func (r *Runner) appendResults(sess *sessionstore.Session, calls []llm.StreamedT
 		sess.Messages = append(sess.Messages, sessionstore.Message{
 			Role:              llm.RoleTool,
 			ToolCallID:        call.ID,
+			ToolName:          call.Name,
 			ToolResult:        results[call.ID],
 			ToolResultPresent: true,
 			ResultStatus:      r.statusFor(sess, call.ID),

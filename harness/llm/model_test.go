@@ -34,6 +34,13 @@ func TestItemString(t *testing.T) {
 	}
 }
 
+func TestEncodeMessagesIncludesToolResultName(t *testing.T) {
+	messages := encodeMessages([]Item{{Kind: "text", Role: RoleTool, CallID: "call1", Name: "run", Output: "ok"}})
+	if len(messages) != 1 || messages[0]["name"] != "run" {
+		t.Fatalf("encoded tool result = %#v", messages)
+	}
+}
+
 func TestEnsureToolCallIDs(t *testing.T) {
 	calls := EnsureToolCallIDs([]StreamedToolCall{{}, {ID: "same"}, {ID: "same"}}, "call_1")
 	if calls[0].ID != "call_1_0" || calls[1].ID != "same" || calls[2].ID != "call_1_2" {
