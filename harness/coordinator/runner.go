@@ -385,6 +385,23 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(status, err)
 		}
 
+		if len(calls) == 0 {
+			if textCall, ok := llm.ParseTextToolCall(content.String()); ok {
+				calls = []llm.StreamedToolCall{textCall}
+				content.Reset()
+			} else if llm.ContainsTextToolCall(content.String()) {
+				content.Reset()
+				if !correctiveToolRetryUsed {
+					correctiveToolRetryUsed = true
+					sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Your previous response emitted a tool call as text. Use the actual tool-calling mechanism and do not return tool-call tags in content."})
+					if err := r.store.Save(sess); err != nil {
+						return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+					}
+					step++
+					continue
+				}
+			}
+		}
 		calls = llm.EnsureToolCallIDs(calls, fmt.Sprintf("%s_%d", runID, step))
 		calls = r.uniqueToolCallIDs(calls, sess)
 		for i := range calls {

@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -39,6 +40,45 @@ type ToolCall struct {
 	Name             string `json:"name"`
 	Args             string `json:"arguments"`
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+var textToolCallPattern = regexp.MustCompile(`(?is)<?tool_call>\s*([a-zA-Z0-9_.-]+)(.*?)</?tool_call>`)
+var textToolArgumentPattern = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>`)
+
+func normalizeTextToolCall(value string) string {
+	return strings.NewReplacer("\u200b", "", "\u2060", "").Replace(value)
+}
+
+func ParseTextToolCall(text string) (StreamedToolCall, bool) {
+	text = strings.TrimSpace(normalizeTextToolCall(text))
+	match := textToolCallPattern.FindStringSubmatch(text)
+	if len(match) != 3 || strings.TrimSpace(match[0]) != text || strings.TrimSpace(match[1]) != "run" {
+		return StreamedToolCall{}, false
+	}
+	values := make(map[string]string)
+	for _, pair := range textToolArgumentPattern.FindAllStringSubmatch(match[2], -1) {
+		if len(pair) == 3 {
+			values[strings.TrimSpace(pair[1])] = strings.TrimSpace(pair[2])
+		}
+	}
+	toolName := values["tool"]
+	rawArguments := values["arguments"]
+	if toolName == "" || rawArguments == "" {
+		return StreamedToolCall{}, false
+	}
+	var arguments map[string]any
+	if err := json.Unmarshal([]byte(rawArguments), &arguments); err != nil {
+		return StreamedToolCall{}, false
+	}
+	encoded, err := json.Marshal(map[string]any{"tool": toolName, "arguments": arguments})
+	if err != nil {
+		return StreamedToolCall{}, false
+	}
+	return StreamedToolCall{Name: "run", Arguments: string(encoded)}, true
+}
+
+func ContainsTextToolCall(text string) bool {
+	return textToolCallPattern.MatchString(normalizeTextToolCall(text))
 }
 
 type Item struct {

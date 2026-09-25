@@ -88,6 +88,21 @@ func TestRepairToolArgumentsJSON(t *testing.T) {
 	}
 }
 
+func TestParseTextToolCall(t *testing.T) {
+	text := `<tool_call>run
+<arg_key>arguments</arg_key>
+<arg_value>{"command": "cat /app/package.json", "timeout": 10000}</arg_value><arg_key>tool</arg_key>
+<arg_value>bash</arg_value>
+</tool_call>`
+	call, ok := ParseTextToolCall(text)
+	if !ok || call.Name != "run" || !strings.Contains(call.Arguments, `"tool":"bash"`) {
+		t.Fatalf("parsed text tool call = %#v, ok=%t", call, ok)
+	}
+	if !ContainsTextToolCall(text) {
+		t.Fatal("text tool call was not detected")
+	}
+}
+
 func TestEnsureToolCallIDs(t *testing.T) {
 	calls := EnsureToolCallIDs([]StreamedToolCall{{}, {ID: "same"}, {ID: "same"}}, "call_1")
 	if calls[0].ID != "call_1_0" || calls[1].ID != "same" || calls[2].ID != "call_1_2" {
