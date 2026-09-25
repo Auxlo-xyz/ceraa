@@ -263,22 +263,38 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 		model := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 		model.PromptCacheMode = provider.PromptCacheMode
 		model.PromptCacheTTL = provider.PromptCacheTTL
-		if provider.Subscription != "hermes" {
+		switch provider.Subscription {
+		case "hermes":
+			credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			if credential.BaseURL == "" {
+				return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q has no inference base URL", credential.Provider)
+			}
+			if credential.Transport != "chat_completions" {
+				return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
+			}
+			model.BaseURL = credential.BaseURL
+			model.APIKey = credential.AccessToken
+			return model, nil
+		case "freebuff":
+			credential, err := freebuffStore.Resolve(ctx)
+			if err != nil {
+				return llm.ProviderConfig{}, fmt.Errorf("freebuff is not authenticated: %w; run /freebuff-login", err)
+			}
+			if credential.BaseURL == "" {
+				return llm.ProviderConfig{}, errors.New("freebuff credential has no inference base URL")
+			}
+			if credential.AccessToken == "" {
+				return llm.ProviderConfig{}, errors.New("freebuff credential has no access token; run /freebuff-login")
+			}
+			model.BaseURL = credential.BaseURL
+			model.APIKey = credential.AccessToken
+			return model, nil
+		default:
 			return model, nil
 		}
-		credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
-		if err != nil {
-			return llm.ProviderConfig{}, err
-		}
-		if credential.BaseURL == "" {
-			return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q has no inference base URL", credential.Provider)
-		}
-		if credential.Transport != "chat_completions" {
-			return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
-		}
-		model.BaseURL = credential.BaseURL
-		model.APIKey = credential.AccessToken
-		return model, nil
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"sooraa/harness/scheduler"
 	"sooraa/internal/codexauth"
 	"sooraa/internal/config"
+	"sooraa/internal/freebuff"
 	"sooraa/internal/hermesauth"
 	"sooraa/internal/logger"
 	"sooraa/internal/secret"
@@ -504,6 +505,26 @@ func Run() error {
 				}
 				continue
 			}
+
+			if strings.HasPrefix(txt, "/freebuff-") || strings.HasPrefix(txt, "/freebuff_") {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				command := strings.Fields(strings.TrimSpace(txt))
+				action := ""
+				if len(command) > 0 {
+					action = strings.ToLower(command[0])
+				}
+				switch action {
+				case "/freebuff-login", "/freebuff_login":
+					handleFreebuffLogin(token, u.Message.Chat.ID, txt)
+				case "/freebuff-status", "/freebuff_status":
+					handleFreebuffStatus(token, u.Message.Chat.ID)
+				case "/freebuff-logout", "/freebuff_logout":
+					handleFreebuffLogout(token, u.Message.Chat.ID)
+				default:
+					send(token, u.Message.Chat.ID, "Unknown Freebuff command. Use /freebuff-login, /freebuff-status, or /freebuff-logout.")
+				}
+				continue
+			}
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -623,7 +644,9 @@ func Run() error {
 
 func providerConfigured(cfg *config.Config) bool {
 	provider := activeProviderConfig(cfg, defaultState.provider())
-	if provider.Subscription == "hermes" {
+	// Subscription providers carry no API key in the profile: their credential
+	// comes from the encrypted native store at request time.
+	if provider.Subscription == "hermes" || provider.Subscription == "freebuff" {
 		return provider.Model != ""
 	}
 	return provider.URL != "" && provider.Model != "" && provider.APIKey != ""
@@ -1173,6 +1196,90 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 		return
 	}
 	send(token, chatID, "✅ Hermes/Nous provider activated with model "+model+".")
+}
+
+var freebuffAuthMgr = freebuff.NewLoginManager(nil)
+var freebuffLoginModels sync.Map
+var freebuffStore = freebuff.NewStore()
+
+// defaultFreebuffModel is the hosted model Sooraa activates after a Freebuff
+// login when the user has not picked one. Freebuff model ids are plain
+// OpenRouter-style slugs.
+const defaultFreebuffModel = "deepseek/deepseek-v4-flash"
+
+func handleFreebuffLogin(token string, chatID int64, text string) {
+	parts := strings.Fields(strings.TrimSpace(text))
+	model := ""
+	if len(parts) > 1 {
+		model = parts[1]
+	}
+	flow, err := freebuffAuthMgr.Start(context.Background())
+	if err != nil {
+		send(token, chatID, "Failed to start Freebuff login: "+err.Error())
+		return
+	}
+	freebuffLoginModels.Store(flow.ID, model)
+	keyboard, _ := flow.InlineKeyboardJSON()
+	var markup map[string]any
+	if err := json.Unmarshal(keyboard, &markup); err != nil {
+		send(token, chatID, "Failed to encode Freebuff login menu: "+err.Error())
+		return
+	}
+	sendMessageWithMarkup(token, chatID, flow.ResultMessage(), markup)
+}
+
+func handleFreebuffStatus(token string, chatID int64) {
+	identity, err := freebuffStore.Status(context.Background())
+	if err != nil {
+		if err == freebuff.ErrNoCredential {
+			send(token, chatID, "❌ Not logged in to Freebuff. Use /freebuff-login to sign in.")
+			return
+		}
+		if identity != "" {
+			send(token, chatID, "⚠️ Freebuff account "+identity+": "+err.Error())
+			return
+		}
+		send(token, chatID, "⚠️ Freebuff status check failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ Freebuff logged in as "+identity+".")
+}
+
+func handleFreebuffLogout(token string, chatID int64) {
+	if err := freebuffStore.Logout(context.Background()); err != nil {
+		send(token, chatID, "Freebuff logout failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ Freebuff credential cleared from Sooraa. Use /freebuff-login to sign in again.")
+}
+
+func activateFreebuffProvider(token string, chatID int64, flowID string) {
+	modelValue, _ := freebuffLoginModels.Load(flowID)
+	model, _ := modelValue.(string)
+	if model == "" {
+		if _, current, _ := defaultState.values(); current != "" && !strings.HasPrefix(current, "openai/") {
+			model = current
+		}
+	}
+	if model == "" {
+		model = defaultFreebuffModel
+	}
+	profile := config.ProviderProfile{
+		Model:           model,
+		ContextLimit:    128000,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    "freebuff",
+	}
+	if err := defaultState.setProviderProfile("freebuff", profile); err != nil {
+		send(token, chatID, "Freebuff profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider("freebuff"); err != nil {
+		send(token, chatID, "Freebuff provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ Freebuff provider activated with model "+model+". Send a task to start.")
 }
 
 func handleCodexLogin(token string, chatID int64) {

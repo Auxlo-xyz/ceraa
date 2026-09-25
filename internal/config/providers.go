@@ -8,10 +8,14 @@ import (
 
 // ResolveProvider resolves a provider's settings with env var overrides.
 // Env format: SOORAA_<KEY>_API_KEY, SOORAA_<KEY>_CLI
-// Supported keys: "opencode", "hermes", "codex", "poolside"
+// Supported keys: "opencode", "hermes", "codex", "poolside", "freebuff"
+//
+// Freebuff has no CLI binary, so no CLIPath is resolved for it. Its hosted API
+// base URL is intentionally not env-overridable: a process able to set one
+// variable could otherwise redirect a bearer token to a host of its choosing.
 func ResolveProvider(key string) (SubProvider, bool) {
 	switch key {
-	case "opencode", "hermes", "codex", "poolside":
+	case "opencode", "hermes", "codex", "poolside", "freebuff":
 	default:
 		return SubProvider{}, false
 	}
@@ -109,6 +113,10 @@ func defaultAuthDir(kind string) string {
 		return filepath.Join(home, ".codex")
 	case "poolside":
 		return filepath.Join(home, ".config", "poolside")
+	case "freebuff":
+		// The Freebuff CLI keeps credentials in ~/.config/manicode. Pointing
+		// AuthDir there lets the read-only import find an existing CLI login.
+		return filepath.Join(home, ".config", "manicode")
 	default:
 		return ""
 	}

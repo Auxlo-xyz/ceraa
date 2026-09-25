@@ -124,6 +124,7 @@ func Execute() {
 	root.AddCommand(doctorCmd)
 	root.AddCommand(configCmd)
 	root.AddCommand(configInitCmd)
+	root.AddCommand(freebuffCmd)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"sooraa/internal/config"
+	"sooraa/internal/freebuff"
 	"sooraa/internal/hermesauth"
 )
 
@@ -63,6 +64,7 @@ func collectDoctorReport(timeout time.Duration) doctorReport {
 	report.Checks = append(report.Checks, checkConfig(cfg))
 	report.Checks = append(report.Checks, checkWorkspace(cfg))
 	report.Checks = append(report.Checks, checkProvider(cfg, timeout))
+	report.Checks = append(report.Checks, doctorCheck{"freebuff", "INFO", freebuffSummary()})
 	report.Checks = append(report.Checks, checkTelegram(cfg, timeout))
 	report.Checks = append(report.Checks, checkStorage(cfg)...)
 	return report
@@ -73,7 +75,10 @@ func checkConfig(cfg *config.Config) doctorCheck {
 		return doctorCheck{"config", "FAIL", "configuration is nil"}
 	}
 	provider := cfg.ActiveLLM()
-	if (provider.URL == "" && provider.Subscription != "hermes") || provider.Model == "" || (provider.Subscription != "hermes" && provider.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "") {
+	// Subscription providers carry no API key in the profile; their credential
+	// is resolved from the encrypted native store at request time.
+	subscription := provider.Subscription == "hermes" || provider.Subscription == "freebuff"
+	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && os.Getenv("SOORAA_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, provider.Model)}
@@ -93,20 +98,30 @@ func checkWorkspace(cfg *config.Config) doctorCheck {
 
 func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	provider := cfg.ActiveLLM()
-	if provider.Model == "" || (provider.URL == "" && provider.Subscription != "hermes") {
+	if provider.Model == "" || (provider.URL == "" && provider.Subscription != "hermes" && provider.Subscription != "freebuff") {
 		return doctorCheck{"provider", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	apiKey := provider.APIKey
 	baseURL := provider.URL
-	if provider.Subscription == "hermes" {
+	switch provider.Subscription {
+	case "hermes":
 		credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
 		if err != nil {
 			return doctorCheck{"provider", "FAIL", "Hermes credential: " + err.Error()}
 		}
 		apiKey = credential.AccessToken
 		baseURL = credential.BaseURL
+	case "freebuff":
+		// Freebuff's inference root is a hosted path; probe /api/v1/me instead
+		// so a valid token is distinguishable from an unreachable host.
+		credential, err := freebuff.NewStore().Resolve(ctx)
+		if err != nil {
+			return doctorCheck{"provider", "FAIL", "Freebuff credential: " + err.Error() + " (run: sooraa freebuff login)"}
+		}
+		apiKey = credential.AccessToken
+		baseURL = freebuff.DefaultAPIBaseURL
 	}
 	if !validProviderURL(baseURL) {
 		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
