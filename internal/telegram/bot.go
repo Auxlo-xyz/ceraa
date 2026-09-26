@@ -312,6 +312,95 @@ var promptQueue = struct {
 }
 
 var activeRuns sync.Map
+
+// activeRun is the cancellable state of the run in progress for one chat.
+type activeRun struct {
+	cancel context.CancelFunc
+	// stop marks the renderer stopped as well as cancelling, so the run reports as
+	// stopped rather than as a failure.
+	stop      func()
+	sessionID string
+	// stopMessageID is the companion "Stop" message, cleared when the run ends so
+	// a stale button cannot sit in the chat pointing at a finished run.
+	stopMessageID int
+}
+
+// stopActiveRun cancels the chat's current run, if there is one. It reports
+// whether a run was found.
+func stopActiveRun(chatID int64) (bool, string) {
+	value, ok := activeRuns.Load(chatID)
+	if !ok {
+		return false, ""
+	}
+	run, ok := value.(*activeRun)
+	if !ok || run == nil {
+		return false, ""
+	}
+	// stop() cancels through the renderer, which holds the same cancel func, so
+	// the stopped flag and the cancellation cannot disagree.
+	if run.stop != nil {
+		run.stop()
+		return true, run.sessionID
+	}
+	run.cancel()
+	return true, run.sessionID
+}
+
+// activeRunMatches reports whether the chat's current run is the given session.
+// An empty requested session matches anything, for a button that predates the
+// session suffix.
+func activeRunMatches(chatID int64, sessionID string) bool {
+	value, ok := activeRuns.Load(chatID)
+	if !ok {
+		return false
+	}
+	run, ok := value.(*activeRun)
+	if !ok || run == nil {
+		return false
+	}
+	return run.sessionID == sessionID
+}
+
+// clearStopMessage removes the Stop button from a finished run's message.
+func clearStopMessage(token string, chatID int64, messageID int) {
+	if messageID == 0 {
+		return
+	}
+	editCallback(token, chatID, messageID, "", map[string]any{"inline_keyboard": [][]map[string]string{}})
+}
+
+// sendStopMessage posts the companion control for a run in progress.
+func sendStopMessage(token string, chatID int64, sessionID string) int {
+	keyboard := map[string]any{"inline_keyboard": [][]map[string]string{{
+		{"text": "🛑 Stop", "callback_data": "run:stop:" + sessionID},
+	}}}
+	return sendMessageWithMarkup(token, chatID, "⏳ Working — tap Stop to cancel this run.", keyboard)
+}
+
+// defaultRunCeiling bounds a single agent run.
+//
+// This used to be a flat 10 minutes, which silently truncated long-horizon work:
+// a refactor across twenty files, a slow test suite, or a dependency install all
+// died mid-flight with "Cancelled after timeout." and no way to tell that apart
+// from a hang. The ceiling is now a leak guard set far above any real task, and
+// is overridable for the rare run that genuinely needs longer.
+const defaultRunCeiling = 6 * time.Hour
+
+// runCeiling returns the per-run wall-clock limit, from CERAA_RUN_TIMEOUT when
+// set to a positive duration. A malformed or non-positive value falls back to the
+// default rather than disabling the guard, so a typo cannot leave a run unbounded.
+func runCeiling() time.Duration {
+	raw := strings.TrimSpace(envs.Get("RUN_TIMEOUT"))
+	if raw == "" {
+		return defaultRunCeiling
+	}
+	if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+		return parsed
+	}
+	logger.Warn("ignoring CERAA_RUN_TIMEOUT=" + raw + ": expected a positive duration such as 90m")
+	return defaultRunCeiling
+}
+
 var detachedChats sync.Map
 
 type telegramStartup struct {
@@ -598,7 +687,7 @@ func Run() error {
 			case "/settings":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleSettings(token, u.Message.Chat.ID)
-			case "/abort":
+			case "/abort", "/stop", "/cancel":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleAbort(token, u.Message.Chat.ID)
 			case "/detach":
@@ -729,11 +818,23 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	}
 	sessionID := currentSessionID(chatID)
 	runCtx, cancelRun := context.WithCancel(context.Background())
-	activeRuns.Store(chatID, cancelRun)
-	defer activeRuns.Delete(chatID)
 	renderer := newRunRenderer(token, chatID)
 	renderer.setCancel(cancelRun)
 	defer renderer.close()
+
+	// A companion control rather than a button on the streamed message: the
+	// streaming path edits a rich message, which carries no reply markup.
+	active := &activeRun{
+		cancel:        cancelRun,
+		stop:          renderer.stop,
+		sessionID:     sessionID,
+		stopMessageID: sendStopMessage(token, chatID, sessionID),
+	}
+	activeRuns.Store(chatID, active)
+	defer func() {
+		activeRuns.Delete(chatID)
+		clearStopMessage(token, chatID, active.stopMessageID)
+	}()
 
 	// SSE-like event subscription -> maps to soraacode soraacode/events.js subscribeToEvents + event-subscription-service.js
 	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff, 30s idle
@@ -889,13 +990,13 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 		} else {
 			renderer.fail()
 		}
-	case <-time.After(10 * time.Minute):
+	case <-time.After(runCeiling()):
 		typing.Stop()
 		cancelRun()
 		<-doneCh
 		close(eventDone)
 		renderer.fail()
-		send(token, chatID, "Cancelled after timeout.")
+		send(token, chatID, "Cancelled after "+runCeiling().String()+". Raise CERAA_RUN_TIMEOUT if this task legitimately runs longer.")
 	}
 	scheduleSessionTitle(sessionID)
 	// Drain prompt queue -> soraacode prompt-queue-manager dispatchNextQueuedPrompt

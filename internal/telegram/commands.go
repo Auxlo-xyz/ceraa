@@ -758,12 +758,13 @@ func handleRenameSession(token string, chatID int64, text string) {
 
 // handleAbort cancels running operations -> maps to soraacode session/interrupt.ts + run-control
 func handleAbort(token string, chatID int64) {
-	if cancel, ok := activeRuns.Load(chatID); ok {
-		if cancelFunc, ok := cancel.(context.CancelFunc); ok {
-			cancelFunc()
-			send(token, chatID, "🛑 Current run cancelled")
-			return
+	if stopped, sessionID := stopActiveRun(chatID); stopped {
+		note := ""
+		if sessionID != "" {
+			note = " (" + sessionID + ")"
 		}
+		send(token, chatID, "🛑 Current run cancelled"+note)
+		return
 	}
 	send(token, chatID, "No active run to cancel")
 }

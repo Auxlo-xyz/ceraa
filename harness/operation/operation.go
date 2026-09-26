@@ -92,6 +92,28 @@ func New(runner ToolRunner) *LocalManager {
 // large resource, and the coordinator imposes its own outer deadline anyway.
 const defaultRunnerTimeout = 150 * time.Second
 
+// defaultShellTimeout bounds one shell command.
+//
+// This was 60s, which is shorter than a cold `go build ./...` on this host and
+// comparable to a full test suite, so ordinary long-horizon work was killed
+// mid-command and reported as an operation failure indistinguishable from the
+// command itself failing. The per-call `timeout` argument overrides it.
+const defaultShellTimeout = 900 * time.Second
+
+// maxShellTimeout caps what a tool call may ask for, so one bad argument cannot
+// pin a run open for a day. The bash schema documents this ceiling.
+const maxShellTimeout = 3600 * time.Second
+
+// clampShellTimeout converts a requested timeout in seconds into a duration
+// inside the allowed range.
+func clampShellTimeout(seconds int) time.Duration {
+	requested := time.Duration(seconds) * time.Second
+	if requested > maxShellTimeout {
+		return maxShellTimeout
+	}
+	return requested
+}
+
 func NewWithBuffer(runner ToolRunner, capacity int) *LocalManager {
 	if capacity < 1 {
 		capacity = 1
@@ -188,10 +210,10 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 		switch op.Spec.Type {
 		case "shell":
 			cmd, _ := op.Spec.Args["command"].(string)
-			to := 60 * time.Second
+			to := defaultShellTimeout
 			if t, ok := op.Spec.Args["timeout"]; ok {
-				if ts, ok := t.(int); ok {
-					to = time.Duration(ts) * time.Second
+				if ts, ok := t.(int); ok && ts > 0 {
+					to = clampShellTimeout(ts)
 				}
 			}
 			workDir, _ := op.Spec.Args["workdir"].(string)

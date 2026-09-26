@@ -673,6 +673,22 @@ func handleCallback(token string, q *struct {
 		}
 		return
 	}
+	if strings.HasPrefix(data, "run:stop") {
+		requested := strings.TrimPrefix(strings.TrimPrefix(data, "run:stop"), ":")
+		// The session is checked before anything is cancelled. Deciding afterwards
+		// would mean a stale button had already killed the run it did not belong to.
+		if requested != "" && !activeRunMatches(chatID, requested) {
+			editHTML(token, chatID, q.Message.MessageID,
+				"That run already finished, so there is nothing to stop.", nil)
+			return
+		}
+		if stopped, _ := stopActiveRun(chatID); !stopped {
+			editHTML(token, chatID, q.Message.MessageID, "Nothing is running any more.", nil)
+			return
+		}
+		editHTML(token, chatID, q.Message.MessageID, "🛑 Stopped.", nil)
+		return
+	}
 	if data == "context:clear" {
 		// The clear-context action and its store method have been removed. The
 		// callback is still answered because keyboards already sitting in a chat
