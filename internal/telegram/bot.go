@@ -737,7 +737,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 							{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID + ":" + tool}},
 							{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID + ":" + tool}},
 						}}
-						sendWithKeyboard(token, chatID, "🔒 Permission required for `"+tool+"`\n`"+fmt.Sprint(e.Data["args"])+"`", kb)
+						sendWithKeyboard(token, chatID, "🔒 Permission required for `"+tool+"`\n"+summariseToolRequest(tool, e.Data["args"]), kb)
 					case event.TypeQuestion:
 						ques, _ := e.Data["question"].(string)
 						if ques == "" {
