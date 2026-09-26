@@ -20,16 +20,27 @@ import (
 	"ceraa/harness/tool"
 )
 
-func TestRunnerPromptCacheKeyIsStablePerProviderAndSession(t *testing.T) {
-	first := &Runner{cfg: RunnerConfig{SessionID: "session-a", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "model")}}
-	second := &Runner{cfg: RunnerConfig{SessionID: "session-a", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "model")}}
-	otherSession := &Runner{cfg: RunnerConfig{SessionID: "session-b", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "model")}}
-	otherModel := &Runner{cfg: RunnerConfig{SessionID: "session-a", Model: llm.FromProvider("https://openrouter.ai/api/v1", "key", "other")}}
-	if first.promptCacheKey() != second.promptCacheKey() {
-		t.Fatal("cache key changed for the same session")
+// The cache key identifies the reusable prefix, which is the system prompt plus
+// the whole tool array. Those are byte-identical across sessions on one provider
+// and model, so the key must NOT vary by session: folding the session in gave
+// every session its own cold prefix and re-billed a shared head for nothing.
+func TestPromptCacheKeyIsSharedAcrossSessionsButSeparatesProvidersAndModels(t *testing.T) {
+	runner := func(sessionID, baseURL, model string) *Runner {
+		return &Runner{cfg: RunnerConfig{SessionID: sessionID, Model: llm.FromProvider(baseURL, "key", model)}}
 	}
-	if first.promptCacheKey() == otherSession.promptCacheKey() || first.promptCacheKey() == otherModel.promptCacheKey() {
-		t.Fatal("cache key did not include session or model")
+	sessionA := runner("session-a", "https://openrouter.ai/api/v1", "model")
+	sessionB := runner("session-b", "https://openrouter.ai/api/v1", "model")
+	otherModel := runner("session-a", "https://openrouter.ai/api/v1", "other")
+	otherHost := runner("session-a", "https://generativelanguage.googleapis.com/v1beta", "model")
+
+	if sessionA.promptCacheKey() != sessionB.promptCacheKey() {
+		t.Error("cache key varies by session; the shared prefix will be re-billed per session")
+	}
+	if sessionA.promptCacheKey() == otherModel.promptCacheKey() {
+		t.Error("cache key does not separate models")
+	}
+	if sessionA.promptCacheKey() == otherHost.promptCacheKey() {
+		t.Error("cache key does not separate providers")
 	}
 }
 

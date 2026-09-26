@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"ceraa/harness/compaction"
@@ -83,15 +84,27 @@ type Runner struct {
 	catalog    *llm.CatalogClient
 	evaluation *evaluation.Store
 	cb         Callbacks
+
+	// identityOnce guards identity, which is resolved from the provider on first
+	// use and then held for the life of the run.
+	identityOnce sync.Once
+	identity     string
 }
 
-func promptCacheKey(model llm.ProviderConfig, sessionID string) string {
-	digest := sha256.Sum256([]byte(model.BaseURL + "\x00" + model.Model + "\x00" + sessionID))
+// promptCacheKey identifies the reusable prefix for the provider's cache router.
+//
+// It deliberately excludes the session id. The leading system prompt and the
+// whole tool array are byte-identical for every session on a given provider and
+// model, so folding the session in forced a separate cold prefix per session and
+// re-billed that shared head on every cold start. Measured, it bought no
+// isolation either: a brand-new session's first request still reported cached
+// tokens, because the provider reuses the prefix regardless.
+//
+// Session identity is not lost: req.SessionID is sent separately, and OpenRouter's
+// session_id field prefers it over this value.
+func promptCacheKey(model llm.ProviderConfig) string {
+	digest := sha256.Sum256([]byte(model.BaseURL + "\x00" + model.Model))
 	return fmt.Sprintf("ceraa-%x", digest)
-}
-
-func (r *Runner) promptCacheKey() string {
-	return promptCacheKey(r.cfg.Model, r.cfg.SessionID)
 }
 
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
@@ -313,12 +326,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				}
 			}
 		}
-		if compaction.Prune(sess) > 0 {
-			if err := r.store.Save(sess); err != nil {
-				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
-			}
-		}
-
 		modelConfig := r.cfg.Model
 		if r.cfg.ResolveModel != nil {
 			resolved, resolveErr := r.cfg.ResolveModel(ctx)
@@ -339,7 +346,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			Reason:         r.cfg.Reasoning,
 			MaxTokens:      r.cfg.MaxOutputTokens,
 			ToolChoice:     requestToolChoice,
-			PromptCacheKey: promptCacheKey(modelConfig, r.cfg.SessionID),
+			PromptCacheKey: promptCacheKey(modelConfig),
 			SessionID:      r.cfg.SessionID,
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
@@ -741,12 +748,34 @@ func (r *Runner) systemPrompt() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// modelIdentity names the model and provider serving this run.
+// promptCacheKey is the per-run accessor used by tests and diagnostics.
+func (r *Runner) promptCacheKey() string {
+	return promptCacheKey(r.cfg.Model)
+}
+
+// modelIdentity names the model and provider serving this run, resolved once and
+// then held.
 //
 // ResolveModel is consulted rather than the static Model config because the
-// provider is resolved per run: a session that switches provider mid-flight
-// would otherwise be told it is the model it started on.
+// provider is resolved per run: a session that switches provider mid-flight would
+// otherwise be told it is the model it started on.
+//
+// It is memoised rather than recomputed per step for two reasons. ResolveModel can
+// read the credential store, so a long run paid a store read on every step. More
+// importantly, the error fallback silently renders the static config's host
+// instead of the resolved one, so a transient resolution failure would rewrite the
+// first token of the system prompt mid-run and invalidate the provider's cached
+// prefix from byte zero. Pinning makes the block provably constant within a run.
+//
+// The block stays at the front of the prompt on purpose. Moving it later would
+// not help the cache at all: a provider or model change invalidates the cache
+// regardless, because the model is in the request body.
 func (r *Runner) modelIdentity() string {
+	r.identityOnce.Do(func() { r.identity = r.resolveModelIdentity() })
+	return r.identity
+}
+
+func (r *Runner) resolveModelIdentity() string {
 	model := r.cfg.Model.Model
 	provider := r.cfg.Model.BaseURL
 	codex := r.cfg.Model.CodexNative

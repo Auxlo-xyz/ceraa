@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"ceraa/harness/compaction"
 	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
 )
@@ -121,7 +122,13 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 			if item.Name == "" {
 				item.Name = toolNames[m.ToolCallID]
 			}
-			item.Output = m.ToolResult
+			// Truncated here, at render time, rather than in the store. Truncating
+			// m.ToolResult rewrites a message that has already been sent and cached,
+			// which invalidates the provider prefix from that point onward, forever:
+			// the bytes are persisted, so the break can never be undone. Rendering
+			// the cut keeps the session append-only and the cache prefix monotone,
+			// and leaves the full result on disk for /messages and for compaction.
+			item.Output = compaction.TruncateToolOutput(m.ToolResult)
 		}
 		if item.Role == llm.RoleAssistant && (m.Reasoning != "" || len(m.ReasoningDetails) > 0) {
 			item.Reason = m.Reasoning

@@ -469,33 +469,13 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	return true, nil
 }
 
-// Prune tool outputs like soraacode prune: keep 40k protected, prune >20k beyond
-func Prune(sess *sessionstore.Session) int {
-	const protect = 40000
-	const minimum = 20000
-	var total, pruned int
-	var toPrune []*sessionstore.Message
-	// Walk backwards, protect recent 40k of tool outputs
-	for i := len(sess.Messages) - 1; i >= 0; i-- {
-		m := &sess.Messages[i]
-		if m.ToolResult == "" {
-			continue
-		}
-		tok := EstimateTokens(m.ToolResult)
-		total += tok
-		if total <= protect {
-			continue
-		}
-		pruned += tok
-		toPrune = append(toPrune, m)
+// TruncateToolOutput caps a single tool result for transmission to the model.
+//
+// Applied when a request is rendered, never written back to the session. See the
+// call site in contextbuilder for why mutating stored history is destructive.
+func TruncateToolOutput(output string) string {
+	if len(output) <= ToolOutputMaxChars {
+		return output
 	}
-	if pruned <= minimum {
-		return 0
-	}
-	for _, m := range toPrune {
-		if len(m.ToolResult) > ToolOutputMaxChars {
-			m.ToolResult = m.ToolResult[:ToolOutputMaxChars] + "...[pruned]"
-		}
-	}
-	return len(toPrune)
+	return output[:ToolOutputMaxChars] + "...[pruned]"
 }
