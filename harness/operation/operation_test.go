@@ -45,17 +45,49 @@ func TestReadOperation(t *testing.T) {
 	}
 }
 
-func TestGlobOperation(t *testing.T) {
+// The glob, grep, ls and catalog operation types were removed along with their
+// tool schemas. They used to stay reachable by name alone, so a model that
+// hallucinated a retired tool name still got real work done: a `ls` call returned
+// a genuine directory listing. The operation layer and the tool layer have to
+// agree on what exists, or the schema stops describing the surface.
+func TestRemovedOperationTypesAreRejected(t *testing.T) {
+	for _, spec := range []Spec{
+		{Type: "glob", Args: map[string]any{"pattern": "go.mod"}},
+		{Type: "grep", Args: map[string]any{"pattern": "func main"}},
+		{Type: "ls", Args: map[string]any{"path": "."}},
+		{Type: "skills_catalog", Args: map[string]any{}},
+		{Type: "command_catalog", Args: map[string]any{}},
+		{Type: "mcp_catalog", Args: map[string]any{}},
+	} {
+		mgr := New(nil)
+		mgr.Add(Operation{ID: "t-" + spec.Type, Spec: spec, Status: StatusPending})
+		select {
+		case r := <-mgr.Results():
+			if r.Status == StatusCompleted {
+				t.Errorf("removed operation type %q still executed (output %q)", spec.Type, r.Output)
+			}
+			if r.Error == "" {
+				t.Errorf("removed operation type %q failed without saying why", spec.Type)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: timeout", spec.Type)
+		}
+	}
+}
+
+// The types that remain must keep working; the removal above is only safe
+// because these are untouched.
+func TestRetainedOperationTypesStillRun(t *testing.T) {
 	mgr := New(nil)
 	mgr.Add(Operation{
-		ID:     "test-glob",
-		Spec:   Spec{Type: "glob", Args: map[string]any{"pattern": "go.mod"}},
+		ID:     "test-read",
+		Spec:   Spec{Type: "read", Args: map[string]any{"path": "operation.go"}},
 		Status: StatusPending,
 	})
 	select {
 	case r := <-mgr.Results():
 		if r.Status != StatusCompleted {
-			t.Fatalf("expected completed, got %s", r.Status)
+			t.Fatalf("read failed: %s %s", r.Status, r.Error)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")

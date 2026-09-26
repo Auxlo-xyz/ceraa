@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -249,21 +248,6 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			} else {
 				result.Status = StatusCompleted
 			}
-		case "ls":
-			path, _ := op.Spec.Args["path"].(string)
-			workDir, _ := op.Spec.Args["workdir"].(string)
-			path = operationPath(path, workDir)
-			info, err := os.Stat(path)
-			if err != nil {
-				result.Error = err.Error()
-				result.Status = StatusFailed
-			} else if !info.IsDir() {
-				result.Error = "path is not a directory"
-				result.Status = StatusFailed
-			} else {
-				result.Output = listDirectory(path)
-				result.Status = StatusCompleted
-			}
 		case "write":
 			p, _ := op.Spec.Args["path"].(string)
 			workDir, _ := op.Spec.Args["workdir"].(string)
@@ -343,37 +327,6 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			}
 			result.Error = "todowrite failed"
 			result.Status = StatusFailed
-		case "glob":
-			p, _ := op.Spec.Args["pattern"].(string)
-			workDir, _ := op.Spec.Args["workdir"].(string)
-			p = operationPath(p, workDir)
-			r, _ := primitives.GlobFiles(p)
-			result.Output = r.Content
-			result.Status = StatusCompleted
-		case "grep":
-			pattern, _ := op.Spec.Args["pattern"].(string)
-			path, _ := op.Spec.Args["path"].(string)
-			workDir, _ := op.Spec.Args["workdir"].(string)
-			if path == "" {
-				path = workDir
-			}
-			path = operationPath(path, workDir)
-			// Use ripgrep if available, fallback to grep
-			var cmd string
-			if _, err := os.Stat("/usr/bin/rg"); err == nil {
-				cmd = fmt.Sprintf("rg --no-heading -n --max-count 100 --glob '!.git/*' %q %q 2>&1 | head -c 4000", pattern, path)
-			} else if _, err := exec.LookPath("rg"); err == nil {
-				cmd = fmt.Sprintf("rg --no-heading -n --max-count 100 --glob '!.git/*' %q %q 2>&1 | head -c 4000", pattern, path)
-			} else {
-				cmd = fmt.Sprintf("grep -rn --include='*.go' --include='*.md' --include='*.json' --include='*.txt' %q %q 2>&1 | head -c 4000", pattern, path)
-			}
-			r, _ := primitives.RunShell(cmd, "", 30*time.Second)
-			result.Output = r.Content
-			// grep/rg returns exit 1 when no matches - still success
-			result.Status = StatusCompleted
-			if r.Content == "" && r.Error != "" && !strings.Contains(r.Error, "exit status 1") {
-				result.Error = r.Error
-			}
 		case "fts_search":
 			query, _ := op.Spec.Args["query"].(string)
 			limit := 20
@@ -447,24 +400,6 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				result.Status = StatusFailed
 			} else {
 				result.Output = answer
-				result.Status = StatusCompleted
-			}
-		case "skills_catalog", "command_catalog", "mcp_catalog":
-			var out string
-			var err error
-			switch op.Spec.Type {
-			case "skills_catalog":
-				out, err = runCatalog("skills", op.Spec.Args)
-			case "command_catalog":
-				out, err = runCatalog("commands", op.Spec.Args)
-			case "mcp_catalog":
-				out, err = runCatalog("mcp", op.Spec.Args)
-			}
-			result.Output = out
-			if err != nil {
-				result.Error = err.Error()
-				result.Status = StatusFailed
-			} else {
 				result.Status = StatusCompleted
 			}
 		case "webfetch", "websearch", "create_goal", "get_goal", "update_goal":
@@ -590,68 +525,6 @@ func runFTSSearch(ctx context.Context, dbPath, query string, limit int, args map
 
 func runFTSSearchInternal(ctx context.Context, dbPath, query string, limit int, args map[string]any) (string, error) {
 	return runFTSSearch(ctx, dbPath, query, limit, args)
-}
-
-func runCatalog(kind string, args map[string]any) (string, error) {
-	query, _ := args["query"].(string)
-	lowerQ := strings.ToLower(query)
-	switch kind {
-	case "skills":
-		skills := []struct{ Name, Desc string }{
-			{"read", "Read file contents or list directory"},
-			{"ls", "List directory entries"},
-			{"write", "Create or overwrite file"},
-			{"edit", "Replace exact text in a file"},
-			{"bash", "Execute shell command"},
-			{"grep", "Search via ripgrep"},
-			{"glob", "File pattern match"},
-			{"fts_search", "Indexed full-text search via FTS5"},
-			{"question", "Ask user with buttons"},
-			{"webfetch", "Fetch URL content"},
-			{"websearch", "Search web via Exa"},
-			{"view_image", "View image file"},
-		}
-		var out strings.Builder
-		for _, s := range skills {
-			if lowerQ != "" && !strings.Contains(strings.ToLower(s.Name), lowerQ) && !strings.Contains(strings.ToLower(s.Desc), lowerQ) {
-				continue
-			}
-			fmt.Fprintf(&out, "• %s: %s\n", s.Name, s.Desc)
-		}
-		if out.Len() == 0 {
-			return "No skills match: " + query, nil
-		}
-		return out.String(), nil
-	case "commands":
-		cmds := []struct{ Name, Desc string }{
-			{"/new", "New session"},
-			{"/sessions", "List sessions"},
-			{"/open", "Open session"},
-			{"/messages", "Show recent messages"},
-			{"/ls", "List files"},
-			{"/status", "Show harness status"},
-			{"/settings", "Show config"},
-			{"/model", "Select model"},
-			{"/agent", "Select agent"},
-			{"/project", "Project menu"},
-			{"/worktree", "Git worktree"},
-			{"/compaction", "Compaction status"},
-			{"/help", "Full help"},
-			{"/abort", "Abort turn"},
-			{"/setsecret", "Store secret"},
-		}
-		var out strings.Builder
-		for _, c := range cmds {
-			if lowerQ != "" && !strings.Contains(strings.ToLower(c.Name), lowerQ) {
-				continue
-			}
-			fmt.Fprintf(&out, "• %s: %s\n", c.Name, c.Desc)
-		}
-		return out.String(), nil
-	case "mcp":
-		return "No MCP servers configured. Add to config.json mcp section. (soraacode has mcp-websearch, etc.)", nil
-	}
-	return "", fmt.Errorf("unknown catalog: %s", kind)
 }
 
 func operationPath(path, workDir string) string {
