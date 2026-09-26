@@ -258,11 +258,18 @@ func handleContextCommand(token string, chatID int64) {
 	tokens, messages := 0, 0
 	cacheReadPercent := 0
 	sessionTitle := "Untitled session"
+	// Cumulative usage across the whole session, summed from each message. This is
+	// billing, not a single request: a session of 66 turns reports millions of
+	// input tokens, which is the number that actually costs something.
+	var usageInput, usageOutput, usageReasoning int
 	if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 		messages = len(sess.Messages)
 		sessionTitle = sess.DisplayTitle()
 		for _, message := range sess.Messages {
 			tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
+			usageInput += message.Usage.InputTokens
+			usageOutput += message.Usage.OutputTokens
+			usageReasoning += message.Usage.ReasoningTokens
 		}
 		if len(sess.Runs) > 0 {
 			cacheReadPercent = int(sess.Runs[len(sess.Runs)-1].Usage.CacheReadRatio() * 100)
@@ -289,8 +296,38 @@ func handleContextCommand(token string, chatID int64) {
 	if strings.TrimSpace(model) == "" {
 		model = "unknown"
 	}
-	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`", tokens, contextLimit, percent, cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model)
+	// The session total is the honest headline, and the estimate beside it is
+	// explicitly labelled: the estimate is a character-count heuristic over stored
+	// text, while the total is what the provider actually reported.
+	text := fmt.Sprintf("📊 Context\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`",
+		groupDigits(tokens), groupDigits(contextLimit), percent,
+		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
+		cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
+}
+
+// groupDigits renders an integer with thousands separators, so a seven-figure
+// token count is readable at a glance in a chat bubble.
+func groupDigits(n int) string {
+	if n < 0 {
+		return "-" + groupDigits(-n)
+	}
+	digits := strconv.Itoa(n)
+	if len(digits) <= 3 {
+		return digits
+	}
+	var out strings.Builder
+	lead := len(digits) % 3
+	if lead > 0 {
+		out.WriteString(digits[:lead])
+	}
+	for index := lead; index < len(digits); index += 3 {
+		if out.Len() > 0 {
+			out.WriteByte(',')
+		}
+		out.WriteString(digits[index : index+3])
+	}
+	return out.String()
 }
 
 func handleSearchCommand(token string, chatID int64, text string) {
