@@ -416,6 +416,24 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// getUpdatesRequest builds the long-poll request against a caller-supplied
+// context.
+//
+// The context is a parameter rather than an internal detail because this is the
+// only part of the poll loop that cancellation can actually interrupt. getUpdates
+// is a long poll the server holds open for 30s, so a loop that only checks for
+// shutdown between iterations stays blocked for up to 30s after the signal
+// arrives; a stop waiting 8s sees nothing, escalates to SIGKILL, and reports a
+// kill against a daemon that was shutting down correctly.
+//
+// It is a separate function so a test can drive this exact construction. A test
+// that builds its own cancellable request instead proves nothing about the
+// production path, and will keep passing if this ever reverts to a background
+// context.
+func getUpdatesRequest(ctx context.Context, url string) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+}
+
 func Run() error {
 	// Released when Run returns, so a second Run in the same process is not
 	// permanently wedged by a context that is already cancelled.
@@ -525,7 +543,15 @@ func Run() error {
 			logger.Info("Shutdown requested; stopping Telegram polling")
 			return nil
 		}
-		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
+		req, reqErr := getUpdatesRequest(shutdown,
+			api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
+		var resp *http.Response
+		var err error
+		if reqErr != nil {
+			err = reqErr
+		} else {
+			resp, err = telegramPollClient.Do(req)
+		}
 		if err != nil {
 			if shutdown.Err() != nil {
 				logger.Info("Shutdown interrupted long poll; stopping Telegram polling")

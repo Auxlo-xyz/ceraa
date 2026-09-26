@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"syscall"
@@ -98,4 +100,55 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+// The long poll is the only part of the loop a cancellation check between
+// iterations cannot reach: getUpdates is held open by the server, so the loop is
+// blocked inside the request when the signal arrives. A stop that waits 8s sees
+// nothing and escalates to SIGKILL against a daemon that is shutting down
+// correctly. Attaching the context to the request is what makes the wait honest.
+func TestShutdownContextAbortsAnInFlightLongPoll(t *testing.T) {
+	held := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-held:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(held)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Through the production constructor, so this test fails if the poll ever
+	// stops carrying the caller's context.
+	req, err := getUpdatesRequest(ctx, server.URL)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	client := &http.Client{Timeout: 45 * time.Second}
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		resp, err := client.Do(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		done <- result{err}
+	}()
+
+	// Let the request reach the server and block.
+	time.Sleep(100 * time.Millisecond)
+	start := time.Now()
+	cancel()
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Error("request completed without error after cancellation")
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("in-flight request took %s to abort; the server holds it for 30s in production", elapsed)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("in-flight request was not aborted by context cancellation")
+	}
 }
