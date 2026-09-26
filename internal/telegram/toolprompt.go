@@ -63,14 +63,20 @@ func primaryToolArg(tool string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "bash":
 		return "command", true
-	case "read", "write", "edit", "glob", "ls", "view_image", "apply_patch":
+	case "read", "write", "edit", "view_image", "apply_patch":
 		return "path", true
-	case "grep", "fts_search":
+	case "fts_search":
 		return "pattern", true
 	case "webfetch":
 		return "url", false
 	case "browser":
 		return "action", false
+	// glob, ls and grep are no longer registered, but stored sessions still
+	// contain calls to them, and this renders history as well as live prompts.
+	case "glob", "ls":
+		return "path", true
+	case "grep":
+		return "pattern", true
 	}
 	return "", false
 }

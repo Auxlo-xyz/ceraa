@@ -40,7 +40,13 @@ func TestDescribeToolRequestIdentifiesEachTool(t *testing.T) {
 		{"bash", map[string]any{"command": "go test ./...", "workdir": "/tmp"}, "go test ./..."},
 		{"read", map[string]any{"path": "go.mod", "offset": 1, "limit": 20}, "go.mod"},
 		{"edit", map[string]any{"path": "main.go", "old_text": "a", "new_text": "b"}, "main.go"},
+		{"fts_search", map[string]any{"pattern": "func main", "path": "."}, "func main"},
+		// Retired tools are no longer registered, but stored sessions still contain
+		// calls to them, so the renderer must keep describing them rather than
+		// falling back to a raw argument dump.
 		{"grep", map[string]any{"pattern": "func main", "path": "."}, "func main"},
+		{"ls", map[string]any{"path": "internal"}, "internal"},
+		{"glob", map[string]any{"pattern": "*.go"}, "*.go"},
 		{"webfetch", map[string]any{"url": "https://example.com/a?b=c"}, "https://example.com/a?b=c"},
 	}
 	for _, tc := range cases {

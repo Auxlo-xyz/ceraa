@@ -208,81 +208,6 @@ func (e *EditTool) MutationKey(args map[string]any) string {
 	return path
 }
 
-type LsTool struct{}
-
-func (l *LsTool) Name() string { return "ls" }
-func (l *LsTool) Description() string {
-	return "List files and directories at a path."
-}
-func (l *LsTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Directory path"},
-		},
-		"required": []string{"path"},
-	}
-}
-func (l *LsTool) Translate(args map[string]any) (operation.Spec, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return operation.Spec{}, fmt.Errorf("path is required")
-	}
-	return operation.Spec{Type: "ls", Args: map[string]any{"path": path}}, nil
-}
-func (l *LsTool) TranslateResult(op operation.Operation) string { return op.Output }
-
-// GlobTool - glob file patterns.
-type GlobTool struct{}
-
-func (g *GlobTool) Name() string        { return "glob" }
-func (g *GlobTool) Description() string { return "Glob a file pattern and return matched paths." }
-func (g *GlobTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"pattern": map[string]any{"type": "string", "description": "Glob pattern"},
-		},
-		"required": []string{"pattern"},
-	}
-}
-func (g *GlobTool) Translate(args map[string]any) (operation.Spec, error) {
-	p, ok := args["pattern"].(string)
-	if !ok || p == "" {
-		return operation.Spec{}, fmt.Errorf("pattern is required")
-	}
-	return operation.Spec{Type: "glob", Args: map[string]any{"pattern": p}}, nil
-}
-func (g *GlobTool) TranslateResult(op operation.Operation) string {
-	return op.Output
-}
-
-// GrepTool - search file contents.
-type GrepTool struct{}
-
-func (g *GrepTool) Name() string        { return "grep" }
-func (g *GrepTool) Description() string { return "Search for a pattern in files using ripgrep." }
-func (g *GrepTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"pattern": map[string]any{"type": "string", "description": "Search pattern (regex)"},
-			"path":    map[string]any{"type": "string", "description": "Directory to search (default current)"},
-		},
-		"required": []string{"pattern"},
-	}
-}
-func (g *GrepTool) Translate(args map[string]any) (operation.Spec, error) {
-	p, ok := args["pattern"].(string)
-	if !ok || p == "" {
-		return operation.Spec{}, fmt.Errorf("pattern is required")
-	}
-	return operation.Spec{Type: "grep", Args: map[string]any{"pattern": p, "path": args["path"]}}, nil
-}
-func (g *GrepTool) TranslateResult(op operation.Operation) string {
-	return op.Output
-}
-
 // DefaultRegistry returns a registry with all built-in tools.
 func DefaultRegistry() *Registry {
 	return DefaultRegistryWithStores(nil, nil)
@@ -294,9 +219,6 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&ReadTool{})
 	r.Register(&WriteTool{})
 	r.Register(&EditTool{})
-	r.Register(&LsTool{})
-	r.Register(&GlobTool{})
-	r.Register(&GrepTool{})
 
 	r.Register(&WebFetchTool{})
 	// Registered without a client and attached later by whoever knows the active
@@ -307,9 +229,6 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(NewBrowserTool())
 	r.Register(&FTSSearchTool{})
 	r.Register(&QuestionTool{})
-	r.Register(&SkillsCatalogTool{})
-	r.Register(&CommandCatalogTool{})
-	r.Register(&MCPCatalogTool{})
 	r.Register(&TodoWriteTool{})
 	r.Register(&CreateGoalTool{})
 	r.Register(&GetGoalTool{})
