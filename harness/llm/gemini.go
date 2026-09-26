@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 // This file implements Google's native Gemini API rather than its
@@ -651,6 +652,26 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 	fmt.Fprint(os.Stderr, "ceraa: "+note)
 	writeDebugNote("gemini.log", note)
 
+	// A missing thought display has two very different causes: we never asked
+	// for thoughts, or we asked and the model returned none. Recording the
+	// request's thinking configuration alongside what actually came back tells
+	// the two apart, instead of leaving it to guesswork.
+	thinking := body.GenerationConfig.thinkingSummary()
+	reasoningChars := 0
+	thoughtTokens := 0
+	tracked := func(delta ProviderResponse) {
+		reasoningChars += utf8.RuneCountInString(delta.Reasoning)
+		if delta.Usage != nil && delta.Usage.ReasoningTokens > 0 {
+			thoughtTokens = delta.Usage.ReasoningTokens
+		}
+		onDelta(delta)
+	}
+	finish := func() {
+		writeDebugNote("gemini.log", fmt.Sprintf(
+			"gemini-thoughts model=%s thinking=%s include_thoughts=%t reasoning_chars=%d thought_tokens=%d\n",
+			c.cfg.Model, thinking, includesThoughts(body), reasoningChars, thoughtTokens))
+	}
+
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
@@ -696,8 +717,11 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 			}
 			break
 		}
-		err = c.readGeminiStream(resp.Body, onDelta)
+		err = c.readGeminiStream(resp.Body, tracked)
 		_ = resp.Body.Close()
+		if err == nil || !isStreamRetryable(err) {
+			finish()
+		}
 		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
 			if !sleepContext(ctx, backoff(attempt)) {
 				break
@@ -754,4 +778,31 @@ func describeGeminiTurn(contents []geminiContent) string {
 		}
 	}
 	return strings.Join(descriptions, "|")
+}
+
+// thinkingSummary names the thinking configuration a request carried, so a log
+// line states the level actually sent rather than the one that was intended.
+func (c *geminiGenerationConfig) thinkingSummary() string {
+	if c == nil || c.ThinkingConfig == nil {
+		return "unset"
+	}
+	switch {
+	case c.ThinkingConfig.ThinkingLevel != "":
+		return c.ThinkingConfig.ThinkingLevel
+	case c.ThinkingConfig.ThinkingBudget != nil:
+		return fmt.Sprintf("budget=%d", *c.ThinkingConfig.ThinkingBudget)
+	}
+	return "default"
+}
+
+func includesThoughts(body geminiRequest) bool {
+	return body.GenerationConfig != nil &&
+		body.GenerationConfig.ThinkingConfig != nil &&
+		body.GenerationConfig.ThinkingConfig.IncludeThoughts
+}
+
+// isStreamRetryable reports whether a stream failed in a way a retry may fix.
+func isStreamRetryable(err error) bool {
+	streamErr, ok := err.(*StreamError)
+	return ok && streamErr.Retryable
 }

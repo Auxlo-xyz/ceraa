@@ -521,3 +521,65 @@ func TestStreamRoutesToNativeTransport(t *testing.T) {
 		}
 	})
 }
+
+// TestThinkingSummaryNamesWhatWasSent pins that a diagnostic reports the level
+// actually sent, so a missing thought display can be attributed to the request
+// rather than guessed at.
+func TestThinkingSummaryNamesWhatWasSent(t *testing.T) {
+	body := buildGeminiRequest(StreamRequest{Reason: ReasonHigh}, "gemini-3.5-flash-lite")
+	if got := body.GenerationConfig.thinkingSummary(); got != "high" {
+		t.Fatalf("thinkingSummary = %q", got)
+	}
+	if !includesThoughts(body) {
+		t.Fatal("thoughts must be requested alongside a level")
+	}
+
+	unset := buildGeminiRequest(StreamRequest{}, "gemini-3.5-flash-lite")
+	if got := unset.GenerationConfig.thinkingSummary(); got != "default" {
+		t.Fatalf("no level chosen must be reported as the model default, got %q", got)
+	}
+	if !includesThoughts(unset) {
+		t.Fatal("thoughts are still requested when no level was chosen")
+	}
+
+	off := buildGeminiRequest(StreamRequest{Reason: ReasonOff}, "gemini-3.5-flash-lite")
+	if includesThoughts(off) {
+		t.Fatal("thinking off must not request thoughts")
+	}
+
+	budget := buildGeminiRequest(StreamRequest{Reason: ReasonHigh}, "gemini-2.5-pro")
+	if got := budget.GenerationConfig.thinkingSummary(); got != "budget=-1" {
+		t.Fatalf("budget summary = %q", got)
+	}
+}
+
+// TestReadGeminiStreamSurfacesThoughts pins that a thought part becomes
+// reasoning rather than answer text, and that thought tokens are reported.
+func TestReadGeminiStreamSurfacesThoughts(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"candidates":[{"content":{"parts":[{"text":"weighing options","thought":true}]}}]}`,
+		`data: {"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":{"thoughtsTokenCount":311}}`,
+		"",
+	}, "\n")
+	var reasoning, content string
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	if err := client.readGeminiStream(strings.NewReader(stream), func(delta ProviderResponse) {
+		reasoning += delta.Reasoning
+		content += delta.Content
+		if delta.Usage != nil {
+			usage = delta.Usage
+		}
+	}); err != nil {
+		t.Fatalf("readGeminiStream: %v", err)
+	}
+	if reasoning != "weighing options" {
+		t.Fatalf("reasoning = %q, want the thought summary", reasoning)
+	}
+	if content != "done" {
+		t.Fatalf("content = %q, want only the answer", content)
+	}
+	if usage == nil || usage.ReasoningTokens != 311 {
+		t.Fatalf("usage = %#v, want thought tokens reported", usage)
+	}
+}

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ceraa — The Interactive CLI & Telegram Agent for Engineers</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased selection:bg-indigo-500 selection:text-white">
+    <!-- Header -->
+    <header class="border-b border-slate-800/80 sticky top-0 bg-slate-950/80 backdrop-blur z-50">
+        <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">C</div>
+                <span class="font-bold text-lg tracking-tight">Ceraa</span>
+            </div>
+            <nav class="hidden md:flex items-center space-x-8 text-sm text-slate-400">
+                <a href="#features" class="hover:text-white transition">Features</a>
+                <a href="#architecture" class="hover:text-white transition">Architecture</a>
+                <a href="#quickstart" class="hover:text-white transition">Quickstart</a>
+                <a href="https://github.com/emperormk01/ceraa" target="_blank" class="hover:text-white transition">GitHub</a>
+            </nav>
+            <div>
+                <a href="https://github.com/emperormk01/ceraa" target="_blank" class="text-sm bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-4 py-2 rounded-lg transition shadow-lg shadow-indigo-600/25">Get Started</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="relative pt-24 pb-20 overflow-hidden">
+        <div class="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))]"></div>
+        <div class="max-w-4xl mx-auto px-6 text-center relative z-10">
+            <div class="inline-flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-full px-3 py-1 text-xs text-indigo-400 mb-6">
+                <span class="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
+                <span>Interactive CLI & Telegram AI Agent</span>
+            </div>
+            <h1 class="text-4xl sm:text-6xl font-extrabold tracking-tight text-white mb-6 leading-tight">
+                Software engineering tasks, <span class="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">automated & interactive.</span>
+            </h1>
+            <p class="text-lg sm:text-xl text-slate-400 mb-10 max-w-2xl mx-auto">
+                Ceraa is an intelligent engineering assistant built for Go and the terminal. Execute commands, edit files, run validations, and manage goals seamlessly from your CLI or Telegram.
+            </p>
+            <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                <a href="https://github.com/emperormk01/ceraa" target="_blank" class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-3 rounded-xl transition shadow-xl shadow-indigo-600/30 text-center">View on GitHub</a>
+                <a href="#quickstart" class="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-medium px-6 py-3 rounded-xl transition text-center">Quickstart Guide</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="py-20 border-t border-slate-900 bg-slate-900/30">
+        <div class="max-w-6xl mx-auto px-6">
+            <div class="text-center max-w-xl mx-auto mb-16">
+                <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3">Engineered for Power & Simplicity</h2>
+                <p class="text-slate-400 text-sm">Everything you need to ship code faster and keep workflows streamlined.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 backdrop-blur hover:border-indigo-500/50 transition">
+                    <div class="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4 font-bold"><i class="fa-solid fa-terminal"></i></div>
+                    <h3 class="text-lg font-semibold text-white mb-2">Interactive CLI & Telegram</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Interact directly via the command-line interface or spin up the Telegram bot for remote agentic workflow management.</p>
+                </div>
+                <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 backdrop-blur hover:border-purple-500/50 transition">
+                    <div class="w-10 h-10 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 mb-4 font-bold"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+                    <h3 class="text-lg font-semibold text-white mb-2">Robust Tool Dispatcher</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Full suite of file editing, code search, bash execution, persistent goals, and web fetching capabilities built right in.</p>
+                </div>
+                <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 backdrop-blur hover:border-emerald-500/50 transition">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-4 font-bold"><i class="fa-solid fa-shield-halved"></i></div>
+                    <h3 class="text-lg font-semibold text-white mb-2">Secure & Modular</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Clean Go codebase adhering to strict security standards, secret management, session persistence, and rigorous validations.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture & Modules -->
+    <section id="architecture" class="py-20 border-t border-slate-900">
+        <div class="max-w-6xl mx-auto px-6">
+            <div class="text-center max-w-xl mx-auto mb-16">
+                <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3">Clean Architecture</h2>
+                <p class="text-slate-400 text-sm">Organized into modular internal packages for extensibility.</p>
+            </div>
+            <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+                    <div class="text-indigo-400 font-mono text-sm font-bold mb-1">cmd/</div>
+                    <p class="text-slate-400 text-xs">CLI commands root, setup, and telegram handlers.</p>
+                </div>
+                <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+                    <div class="text-purple-400 font-mono text-sm font-bold mb-1">internal/agent/</div>
+                    <p class="text-slate-400 text-xs">Core reasoning loop, state, and tool integration.</p>
+                </div>
+                <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+                    <div class="text-emerald-400 font-mono text-sm font-bold mb-1">internal/config/</div>
+                    <p class="text-slate-400 text-xs">Environment and configuration management.</p>
+                </div>
+                <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+                    <div class="text-amber-400 font-mono text-sm font-bold mb-1">sessions/</div>
+                    <p class="text-slate-400 text-xs">Persistent active state, locks, and history logs.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quickstart -->
+    <section id="quickstart" class="py-20 border-t border-slate-900 bg-slate-900/30">
+        <div class="max-w-3xl mx-auto px-6">
+            <div class="text-center mb-12">
+                <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3">Quickstart</h2>
+                <p class="text-slate-400 text-sm">Get up and running with Ceraa in seconds.</p>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 font-mono text-xs sm:text-sm text-slate-300 space-y-4">
+                <div class="flex items-center justify-between text-slate-500 border-b border-slate-800 pb-3">
+                    <span>Terminal</span>
+                    <i class="fa-solid fa-code"></i>
+                </div>
+                <p><span class="text-indigo-400"># Clone the repository</span><br>git clone https://github.com/emperormk01/ceraa.git && cd ceraa</p>
+                <p><span class="text-indigo-400"># Build the binary</span><br>go build -o bin/ceraa main.go</p>
+                <p><span class="text-indigo-400"># Run setup or start CLI</span><br>./bin/ceraa setup</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-900 py-12 text-center text-sm text-slate-500">
+        <div class="flex items-center justify-center space-x-6 mb-4">
+            <a href="https://github.com/emperormk01/ceraa" target="_blank" class="hover:text-slate-300 transition"><i class="fa-brands fa-github text-lg"></i></a>
+            <a href="https://github.com/emperormk01/ceraa/issues" target="_blank" class="hover:text-slate-300 transition"><i class="fa-solid fa-circle-exclamation text-lg"></i></a>
+        </div>
+        <p>&copy; <span id="year"></span> Ceraa. Open source software engineer assistant.</p>
+    </footer>
+
+    <script>
+        document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
+</body>
+</html>

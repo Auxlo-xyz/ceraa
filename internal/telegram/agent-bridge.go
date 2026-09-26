@@ -22,6 +22,7 @@ import (
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
+	"ceraa/internal/logger"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
 )
@@ -103,9 +104,15 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	compactor.ResolveModel = resolveModel
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	skillContext, _ := skillStore.ActiveContext(2000)
+	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
+	// Recorded because a provider may reject or ignore a level, and the only way
+	// to tell a rejected level from a model that chose not to think is to know
+	// what was asked for.
+	logger.Info(fmt.Sprintf("agent run: provider=%s model=%s reasoning=%q native_gemini=%v",
+		providerID, providerConfig.Model, string(reasoning), llm.UsesGeminiNative(providerConfig.Model, providerConfig.URL)))
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
-		Reasoning:           llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState)),
+		Reasoning:           reasoning,
 		SystemPrompt:        prompt.System,
 		Model:               modelConfig,
 		ResolveModel:        resolveModel,
