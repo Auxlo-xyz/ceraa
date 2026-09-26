@@ -389,6 +389,29 @@ func ResolvePath(p string) (string, error) {
 	return filepath.Join(cwd, p), nil
 }
 
+// ResolvePathFrom resolves a path against an explicit base directory, falling
+// back to the process working directory.
+//
+// A relative path from a model means "relative to where my commands run", and a
+// shell tool runs in the session's workdir, which is often not the process
+// working directory. Resolving against the process directory instead makes a
+// file the model just created look missing, while the very same relative path
+// worked moments earlier through bash.
+func ResolvePathFrom(base, p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	root := strings.TrimSpace(base)
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		root = cwd
+	}
+	return filepath.Join(root, p), nil
+}
+
 // RunBash executes a command for fallback cases.
 func RunBash(command, workDir string, timeoutSec int) (string, error) {
 	if timeoutSec <= 0 {

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -53,27 +54,109 @@ func TestSendMediaHoldsNoDestination(t *testing.T) {
 	}
 }
 
-// TestSendMediaValidatesTheFile pins that a file is checked before an upload is
-// attempted, so a missing or empty path fails as a mistake rather than a
-// Telegram error.
-func TestSendMediaValidatesTheFile(t *testing.T) {
+// TestSendMediaRejectsBadArgumentsAtTranslate pins what can be known before the
+// workdir is: the argument shape. Whether the file exists is checked at run time
+// instead, because a relative path cannot be resolved until then.
+func TestSendMediaRejectsBadArgumentsAtTranslate(t *testing.T) {
+	tool := &SendMediaTool{Sender: &recordingSender{}}
+	for _, args := range []map[string]any{
+		{},
+		{"path": ""},
+		{"path": 42},
+		{"path": dirWithFile(t, "a.png"), "kind": "spreadsheet"},
+	} {
+		if _, err := tool.Translate(args); err == nil {
+			t.Errorf("Translate(%v) should have failed", args)
+		}
+	}
+}
+
+func dirWithFile(t *testing.T, name string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/"+name, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir + "/" + name
+}
+
+// TestSendMediaResolvesRelativePathAgainstWorkdir pins the bug that made the
+// tool report a file missing while it sat in the directory the agent's own shell
+// was using.
+//
+// A relative path from the model means "where my commands run". A shell runs in
+// the session workdir, which is not the Ceraa process directory, so resolving
+// against the process directory made a file the model had just created look
+// absent.
+func TestSendMediaResolvesRelativePathAgainstWorkdir(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.WriteFile(workdir+"/screenshot.png", []byte("\x89PNG data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sender := &recordingSender{}
+	tool := &SendMediaTool{Sender: sender}
+
+	spec, err := tool.Translate(map[string]any{"path": "screenshot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Args["workdir"] = workdir
+	if _, err := tool.Run(spec); err != nil {
+		t.Fatalf("a relative path must resolve against the workdir: %v", err)
+	}
+	if len(sender.paths) != 1 || sender.paths[0] != workdir+"/screenshot.png" {
+		t.Fatalf("sent %v, want %s", sender.paths, workdir+"/screenshot.png")
+	}
+}
+
+// TestSendMediaSaysWhereItLooked pins that a missing file names the resolved
+// path, so the model can correct itself instead of retrying the same guess.
+func TestSendMediaSaysWhereItLooked(t *testing.T) {
+	workdir := t.TempDir()
+	tool := &SendMediaTool{Sender: &recordingSender{}}
+	spec, err := tool.Translate(map[string]any{"path": "gone.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Args["workdir"] = workdir
+	_, err = tool.Run(spec)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), workdir+"/gone.png") {
+		t.Fatalf("error should name the resolved path, got %q", err)
+	}
+	if !strings.Contains(err.Error(), workdir) {
+		t.Fatalf("error should name the base it resolved against, got %q", err)
+	}
+}
+
+// TestSendMediaChecksTheFileAtRunTime pins that a missing, empty, or directory
+// target is rejected as a mistake rather than becoming a Telegram error.
+func TestSendMediaChecksTheFileAtRunTime(t *testing.T) {
 	dir := t.TempDir()
 	empty := dir + "/empty.txt"
 	if err := os.WriteFile(empty, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tool := &SendMediaTool{Sender: &recordingSender{}}
-	cases := []map[string]any{
-		{},
-		{"path": dir},
-		{"path": dir + "/missing.png"},
-		{"path": empty},
-		{"path": dir + "/ok.png", "kind": "spreadsheet"},
+	real := dir + "/ok.png"
+	if err := os.WriteFile(real, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, args := range cases {
-		if _, err := tool.Translate(args); err == nil {
-			t.Errorf("Translate(%v) should have failed", args)
+	sender := &recordingSender{}
+	tool := &SendMediaTool{Sender: sender}
+	for _, path := range []string{dir, dir + "/missing.png", empty} {
+		spec, err := tool.Translate(map[string]any{"path": path})
+		if err != nil {
+			continue
 		}
+		spec.Args["workdir"] = dir
+		if _, err := tool.Run(spec); err == nil {
+			t.Errorf("Run(%q) should have failed", path)
+		}
+	}
+	if len(sender.paths) != 0 {
+		t.Fatal("a rejected file must not reach the sender")
 	}
 }
 

@@ -92,22 +92,10 @@ func (s *SendMediaTool) Translate(args map[string]any) (operation.Spec, error) {
 	if !ok || strings.TrimSpace(raw) == "" {
 		return operation.Spec{}, fmt.Errorf("path is required")
 	}
-	path, err := ResolvePath(raw)
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return operation.Spec{}, fmt.Errorf("send_media: %w", err)
-	}
-	if info.IsDir() {
-		return operation.Spec{}, fmt.Errorf("send_media: %s is a directory; name a file", raw)
-	}
-	if info.Size() == 0 {
-		return operation.Spec{}, fmt.Errorf("send_media: %s is empty", raw)
-	}
-	if info.Size() > maxMediaBytes {
-		return operation.Spec{}, fmt.Errorf("send_media: %s is %d bytes, over the %d byte limit", raw, info.Size(), maxMediaBytes)
+	// The file is not stat-ed here: a relative path can only be resolved once the
+	// workdir is known, and that arrives with the spec at run time.
+	if len(raw) > 4096 || strings.ContainsRune(raw, 0) {
+		return operation.Spec{}, fmt.Errorf("path is not a usable file path")
 	}
 	kind := MediaAuto
 	if requested, ok := args["kind"].(string); ok && requested != "" {
@@ -119,7 +107,7 @@ func (s *SendMediaTool) Translate(args map[string]any) (operation.Spec, error) {
 		}
 	}
 	spec := operation.Spec{Type: "send_media", Args: map[string]any{
-		"path":    path,
+		"path":    strings.TrimSpace(raw),
 		"caption": strings.TrimSpace(stringArg(args, "caption")),
 		"kind":    string(kind),
 	}}
@@ -152,13 +140,46 @@ func (s *SendMediaTool) RunContext(ctx context.Context, spec operation.Spec) (st
 	if s.Sender == nil {
 		return "", fmt.Errorf("send_media is not available in this context")
 	}
-	path, _ := spec.Args["path"].(string)
+	base, _ := spec.Args["workdir"].(string)
+	raw, _ := spec.Args["path"].(string)
+	path, err := ResolvePathFrom(base, raw)
+	if err != nil {
+		return "", fmt.Errorf("send_media: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Naming both the resolved path and the base makes a relative-path
+			// mistake obvious, instead of leaving the model to guess where it
+			// searched.
+			return "", fmt.Errorf("send_media: no file at %s (relative paths resolve against %s)", path, displayBase(base))
+		}
+		return "", fmt.Errorf("send_media: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("send_media: %s is a directory; name a file", path)
+	}
+	if info.Size() == 0 {
+		return "", fmt.Errorf("send_media: %s is empty", path)
+	}
 	caption, _ := spec.Args["caption"].(string)
 	kind := MediaKind(stringArg(spec.Args, "kind"))
 	if kind == "" {
 		kind = MediaAuto
 	}
 	return s.Sender.SendMedia(ctx, path, caption, kind)
+}
+
+// displayBase names the directory a relative path was resolved against, for an
+// error message. An empty workdir means the process directory was used.
+func displayBase(base string) string {
+	if trimmed := strings.TrimSpace(base); trimmed != "" {
+		return trimmed
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd + " (the Ceraa process directory)"
+	}
+	return "the Ceraa process directory"
 }
 
 // Sequential reports that a send must not race another one. Telegram accepts
