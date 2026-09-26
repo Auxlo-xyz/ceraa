@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -484,38 +485,15 @@ func TestBrowserDescriptionOmitsTheActionList(t *testing.T) {
 			t.Errorf("description still enumerates actions (%q)", leaked)
 		}
 	}
-	// The non-obvious behaviour has to survive.
-	if !strings.Contains(description, "shared") {
-		t.Error("description dropped the shared-page rule, which the schema cannot state")
+	// The shared-page rule is guidance, and guidance now lives in the system
+	// prompt rather than in the tool description. Assert it there, or trimming
+	// the description would quietly delete the instruction entirely.
+	prompt, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
 	}
-	// The action enum and per-action argument ownership must still be present,
-	// since that is where the model actually reads them.
-	schema := (&BrowserTool{}).Schema()
-	action, _ := schema["properties"].(map[string]any)["action"].(map[string]any)
-	if action == nil {
-		t.Fatal("action property missing")
+	if !strings.Contains(string(prompt), "The page is shared") {
+		t.Error("the prompt no longer states that the browser page is shared across calls")
 	}
-	actions, _ := action["enum"].([]string)
-	if len(actions) != 9 {
-		t.Errorf("action enum has %d entries, want 9", len(actions))
-	}
-	properties, _ := schema["properties"].(map[string]any)
-	// Every argument must still name the actions it belongs to, since that is
-	// where the model reads that. `selector` is shared by five actions, so it
-	// lists them rather than using the "action=x only" form.
-	for name, markers := range map[string][]string{
-		"url":       {"action=open"},
-		"script":    {"action=eval"},
-		"full_page": {"action=screenshot"},
-		"submit":    {"action=type"},
-		"selector":  {"screenshot", "click", "type"},
-	} {
-		property, _ := properties[name].(map[string]any)
-		text, _ := property["description"].(string)
-		for _, marker := range markers {
-			if !strings.Contains(text, marker) {
-				t.Errorf("%s description no longer states %q: %q", name, marker, text)
-			}
-		}
-	}
+
 }

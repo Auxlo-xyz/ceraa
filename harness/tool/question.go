@@ -14,10 +14,8 @@ type QuestionTool struct{}
 
 func (q *QuestionTool) Name() string { return "question" }
 func (q *QuestionTool) Description() string {
-	return "Ask user a question with options, or with a free-form answer field. Use when you need " +
-		"clarification. Options become buttons in Telegram; a free-form question lets the user " +
-		"reply with their own words instead of being limited to what you offered. Ask free-form " +
-		"when the answer is not one of a small fixed set, such as a value, a path, or a name."
+	return "Ask the user a question, either with options that become buttons in Telegram, or " +
+		"free-form so they can answer in their own words."
 }
 func (q *QuestionTool) Schema() map[string]any {
 	return map[string]any{

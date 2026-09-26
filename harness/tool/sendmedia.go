@@ -45,9 +45,7 @@ func (s *SendMediaTool) Name() string { return "send_media" }
 
 func (s *SendMediaTool) Description() string {
 	return "Send a file to the user on Telegram: an image, a document, a video, or audio. " +
-		"Use this to deliver something you produced, such as a screenshot of a page you built, " +
-		"rather than only describing it or leaving a path. The destination is the chat you are " +
-		"already talking in, so name only the file."
+		"The destination is the chat you are already in, so name only the file."
 }
 
 func (s *SendMediaTool) Schema() map[string]any {

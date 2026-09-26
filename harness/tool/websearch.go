@@ -30,7 +30,7 @@ type WebSearchTool struct {
 
 func (w *WebSearchTool) Name() string { return "websearch" }
 func (w *WebSearchTool) Description() string {
-	return "Search the web using Exa or Parallel. Use this for current information beyond knowledge cutoff."
+	return "Search the web using Exa or Parallel."
 }
 
 func (w *WebSearchTool) Schema() map[string]any {

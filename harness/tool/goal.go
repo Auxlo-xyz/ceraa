@@ -13,7 +13,7 @@ type CreateGoalTool struct{}
 
 func (t *CreateGoalTool) Name() string { return "create_goal" }
 func (t *CreateGoalTool) Description() string {
-	return "Create a persistent active goal for long-running work."
+	return "Create a persistent active goal."
 }
 func (t *CreateGoalTool) Schema() map[string]any {
 	return map[string]any{

@@ -52,11 +52,8 @@ func (b *BrowserTool) Description() string {
 	// model still paired arguments with the wrong action 14 times in a row
 	// against the longer text. What is left is only what a schema cannot say,
 	// namely that the page is shared state across calls.
-	return "Drive a real Chromium browser. One page is shared across calls, so a " +
-		"sequence continues where the last call stopped and a new open replaces " +
-		"the current page. Use screenshot for visual checks, then view_image to " +
-		"inspect the result. Each argument belongs to the action named in its own " +
-		"description; passing one to a different action is rejected."
+	return "Drive a real Chromium browser. Each argument belongs to the action named in " +
+		"its own description; passing one to a different action is rejected."
 }
 
 func (b *BrowserTool) Schema() map[string]any {

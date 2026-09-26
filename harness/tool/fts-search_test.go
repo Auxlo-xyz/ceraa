@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,7 +15,12 @@ func TestFTSSearchPointsAtBashNotARemovedTool(t *testing.T) {
 	if strings.Contains(description, "use grep") {
 		t.Errorf("description still points at the removed grep tool: %q", description)
 	}
-	if !strings.Contains(description, "bash") {
-		t.Errorf("description does not say where exact regex search now goes: %q", description)
+	// The replacement guidance is prompt-side now, so assert it survived there.
+	prompt, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
+	}
+	if !strings.Contains(string(prompt), "rg via bash") {
+		t.Error("the prompt no longer points exact-regex search at rg via bash")
 	}
 }

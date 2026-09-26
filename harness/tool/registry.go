@@ -87,7 +87,7 @@ func (b *BashTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"command": map[string]any{"type": "string", "description": "Bash command to execute"},
-			"timeout": map[string]any{"type": "integer", "description": "Timeout in seconds for this command (default 900, max 3600). Raise it for builds, test suites, installs, or anything else that legitimately runs long."},
+			"timeout": map[string]any{"type": "integer", "description": "Timeout in seconds (default 900, max 3600)."},
 		},
 		"required": []string{"command"},
 	}

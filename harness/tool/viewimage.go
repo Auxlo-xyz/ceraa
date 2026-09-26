@@ -31,13 +31,9 @@ type ViewImageTool struct {
 func (v *ViewImageTool) Name() string { return "view_image" }
 
 func (v *ViewImageTool) Description() string {
-	return "Look at an image file and return what is actually in it: layout, visible text, " +
-		"alignment, and anything that looks broken, overlapping, or cut off. Use this to check " +
-		"your own work, such as after taking a screenshot, instead of asking the user whether it " +
-		"looks right. Prefer this over send_media when you need to know what is wrong with " +
-		"something; use send_media to hand a finished file to the user."
+	return "Look at an image file and return what is actually in it: layout, visible " +
+		"text, alignment, and anything broken, overlapping, or cut off."
 }
-
 func (v *ViewImageTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",

@@ -13,7 +13,7 @@ type TodoWriteTool struct{}
 
 func (t *TodoWriteTool) Name() string { return "todowrite" }
 func (t *TodoWriteTool) Description() string {
-	return "Manage todo list for the session. Use to track progress."
+	return "Manage the todo list for the session."
 }
 func (t *TodoWriteTool) Schema() map[string]any {
 	return map[string]any{
