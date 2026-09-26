@@ -397,12 +397,60 @@ type BrowserManager struct {
 	newDriver func(context.Context) (browserDriver, error)
 }
 
+// liveManagers tracks every manager that has been handed out, so process
+// shutdown can close the browsers they launched.
+//
+// Without this a Chromium outlives the daemon: it is a child process, so killing
+// Ceraa reparents the browser tree to init rather than terminating it, and it
+// then sits there indefinitely. Observed as 23 orphaned Chromium processes
+// surviving 21 restarts, one of them 14 hours old. The idle timeout does not
+// help, because a process that is no longer running never re-checks it.
+//
+// Managers are created per tool registry rather than once per process, so a
+// single global would not do; they are tracked and removed on Close instead.
+var (
+	liveManagersMu sync.Mutex
+	liveManagers   = map[*BrowserManager]struct{}{}
+)
+
+func trackManager(m *BrowserManager) {
+	liveManagersMu.Lock()
+	defer liveManagersMu.Unlock()
+	liveManagers[m] = struct{}{}
+}
+
+func untrackManager(m *BrowserManager) {
+	liveManagersMu.Lock()
+	defer liveManagersMu.Unlock()
+	delete(liveManagers, m)
+}
+
+// CloseLiveBrowsers closes every browser this process launched and reports how
+// many were still open. Safe to call with none.
+func CloseLiveBrowsers() int {
+	liveManagersMu.Lock()
+	managers := make([]*BrowserManager, 0, len(liveManagers))
+	for m := range liveManagers {
+		managers = append(managers, m)
+	}
+	liveManagersMu.Unlock()
+	closed := 0
+	for _, m := range managers {
+		if _, err := m.Close(); err == nil {
+			closed++
+		}
+	}
+	return closed
+}
+
 // NewBrowserManager builds a manager that launches a real Chromium on demand.
 func NewBrowserManager(idle time.Duration) *BrowserManager {
-	return &BrowserManager{
+	m := &BrowserManager{
 		idle:      idle,
 		newDriver: func(ctx context.Context) (browserDriver, error) { return newRodDriver(ctx) },
 	}
+	trackManager(m)
+	return m
 }
 
 // Driver returns the live browser, launching or replacing it as needed.
@@ -432,6 +480,7 @@ func (m *BrowserManager) Close() (string, error) {
 	}
 	err := m.driver.Close()
 	m.driver = nil
+	untrackManager(m)
 	if err != nil {
 		return "", fmt.Errorf("close browser: %w", err)
 	}

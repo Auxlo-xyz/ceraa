@@ -7,12 +7,14 @@ import (
 	"ceraa/harness/permission"
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
+	"ceraa/harness/tool"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/envs"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
+	"ceraa/internal/procfile"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/keyboard"
 	"ceraa/internal/telegram/menus"
@@ -24,10 +26,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -388,7 +392,34 @@ func resolveTelegramStartup(cfg *config.Config) (telegramStartup, error) {
 	return telegramStartup{token: token, providerReady: providerConfigured(cfg)}, nil
 }
 
+// shutdown is cancelled by SIGINT or SIGTERM. It is created here rather than
+// per-call so the poll loop and every backoff can share one deadline, and so a
+// signal arriving during a 30s long poll is acted on when the poll returns
+// instead of being lost.
+//
+// Without it, SIGTERM hit a process whose only exit path was an unconditional
+// for{}: the Go runtime terminated the process outright, so no deferred cleanup
+// ran, and a Chromium launched for a browser tool call survived as an orphan.
+// Signal handling is not the graceful option here, it is the only option.
+var shutdown, stopSignals = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+// sleepCtx waits for d, returning false if a shutdown was requested first.
+// A plain time.Sleep would make shutdown latency equal to the backoff.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func Run() error {
+	// Released when Run returns, so a second Run in the same process is not
+	// permanently wedged by a context that is already cancelled.
+	defer stopSignals()
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
 		return fmt.Errorf("load config: %w", cfgErr)
@@ -455,19 +486,65 @@ func Run() error {
 		}()
 	}
 	offset := getInitialOffset(token)
+
+	// Claim the daemon slot before the first poll, so a second start refuses
+	// rather than two daemons fighting over one Telegram offset and one state
+	// file. The record is removed by the deferred cleanup below, which is why
+	// registering it has to happen after the defers that remove it.
+	pidPath := procfile.Path(paths.DataDir())
+	if ticks, err := procfile.StartTicks(os.Getpid()); err == nil {
+		rec := procfile.Record{
+			PID:        os.Getpid(),
+			PGID:       syscall.Getpgrp(),
+			StartTicks: ticks,
+			Command:    "ceraa start",
+		}
+		if err := procfile.Write(pidPath, rec); err != nil {
+			return fmt.Errorf("claim daemon slot: %w", err)
+		}
+		defer procfile.Remove(pidPath)
+		defer func() {
+			// Close before the pid file is removed, so a stop that sees the file
+			// still gone knows the browser teardown already happened.
+			if closed := tool.CloseLiveBrowsers(); closed > 0 {
+				logger.Info(fmt.Sprintf("Closed %d live browser(s) on shutdown", closed))
+			}
+		}()
+		logger.Info(fmt.Sprintf("Recorded daemon pid %d (pgid %d)", rec.PID, rec.PGID))
+	}
+
 	fmt.Printf("telegram polling start offset=%d\n", offset)
+	// The poll loop is an unconditional for{} with no exit, so before a signal
+	// handler existed the deferred scheduler cancel and log flush above could
+	// never run and the process had to be killed outright. Every clean shutdown
+	// path depends on this check, and on every sleep in the loop becoming
+	// interruptible, because the 30s long-poll timeout is the worst-case latency
+	// between a signal arriving and the loop noticing.
 	for {
+		if shutdown.Err() != nil {
+			logger.Info("Shutdown requested; stopping Telegram polling")
+			return nil
+		}
 		resp, err := telegramPollClient.Get(api(fmt.Sprintf("getUpdates?timeout=30&offset=%d&allowed_updates=%s", offset, "%5B%22message%22%2C%22callback_query%22%5D"), token))
 		if err != nil {
+			if shutdown.Err() != nil {
+				logger.Info("Shutdown interrupted long poll; stopping Telegram polling")
+				return nil
+			}
 			logger.Warn("Telegram getUpdates request failed: " + err.Error())
-			time.Sleep(2 * time.Second)
+			if !sleepCtx(shutdown, 2*time.Second) {
+				logger.Info("Shutdown during backoff; stopping Telegram polling")
+				return nil
+			}
 			continue
 		}
 		raw, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
 			logger.Warn("Telegram getUpdates response read failed: " + readErr.Error())
-			time.Sleep(2 * time.Second)
+			if !sleepCtx(shutdown, 2*time.Second) {
+				return nil
+			}
 			continue
 		}
 		var out struct {
@@ -478,22 +555,30 @@ func Run() error {
 		}
 		if unmarshalErr := json.Unmarshal(raw, &out); unmarshalErr != nil {
 			logger.Warn("Telegram getUpdates response decode failed: " + unmarshalErr.Error())
-			time.Sleep(2 * time.Second)
+			if !sleepCtx(shutdown, 2*time.Second) {
+				return nil
+			}
 			continue
 		}
 		if !out.Ok && out.ErrorCode == 0 {
 			logger.Warn("Telegram getUpdates returned an unsuccessful response")
-			time.Sleep(2 * time.Second)
+			if !sleepCtx(shutdown, 2*time.Second) {
+				return nil
+			}
 			continue
 		}
 		if out.ErrorCode == 409 {
 			fmt.Printf("conflict 409 - backing off 5s: %s\n", out.Description)
-			time.Sleep(5 * time.Second)
+			if !sleepCtx(shutdown, 5*time.Second) {
+				return nil
+			}
 			continue
 		}
 		if !out.Ok && out.ErrorCode != 0 {
 			fmt.Printf("poll error %d: %s\n", out.ErrorCode, out.Description)
-			time.Sleep(2 * time.Second)
+			if !sleepCtx(shutdown, 2*time.Second) {
+				return nil
+			}
 			continue
 		}
 		for _, u := range out.Result {

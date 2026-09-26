@@ -4,11 +4,13 @@ import (
 	"ceraa/internal/agent"
 	"ceraa/internal/config"
 	"ceraa/internal/paths"
+	"ceraa/internal/procfile"
 	"ceraa/internal/telegram"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -39,6 +41,14 @@ var startCmd = &cobra.Command{
 	},
 }
 
+var stopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop a running Ceraa service",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runStop()
+	},
+}
+
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure Ceraa interactively",
@@ -53,6 +63,46 @@ var doctorCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDoctor()
 	},
+}
+
+// stopGrace is how long a stop waits for a SIGTERM to be honoured before it
+// escalates. Long enough for the poll loop to notice a cancelled context and run
+// its deferred teardown, short enough that a wedged daemon is not a long wait.
+const stopGrace = 8 * time.Second
+
+func runStop() error {
+	path := procfile.Path(paths.DataDir())
+	rec, err := procfile.Read(path)
+	if os.IsNotExist(err) {
+		fmt.Println("Ceraa is not running (no pid file).")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read pid file: %w", err)
+	}
+	// Clear a record left by a daemon that died without running its cleanup, so
+	// the next start is not blocked by a slot nobody holds.
+	matches, matchErr := procfile.Matches(rec)
+	if matchErr != nil || !matches {
+		if rmErr := procfile.Remove(path); rmErr != nil {
+			return rmErr
+		}
+		fmt.Printf("Ceraa is not running; cleared stale pid file for %d.\n", rec.PID)
+		return nil
+	}
+	outcome, termErr := procfile.Terminate(rec, stopGrace)
+	switch outcome {
+	case procfile.AlreadyGone:
+		procfile.Remove(path)
+		fmt.Println("Ceraa exited before the signal landed.")
+	case procfile.StoppedCleanly:
+		procfile.Remove(path)
+		fmt.Printf("Ceraa stopped (pid %d, SIGTERM).\n", rec.PID)
+	case procfile.StoppedKilled:
+		procfile.Remove(path)
+		fmt.Printf("Ceraa did not exit within %s; killed (pid %d).\n", stopGrace, rec.PID)
+	}
+	return termErr
 }
 
 var configCmd = &cobra.Command{
@@ -127,6 +177,7 @@ func maskToken(s string) string {
 func registerSubcommands() {
 	root.AddCommand(verCmd)
 	root.AddCommand(startCmd)
+	root.AddCommand(stopCmd)
 	root.AddCommand(setupCmd)
 	root.AddCommand(doctorCmd)
 	root.AddCommand(configCmd)
