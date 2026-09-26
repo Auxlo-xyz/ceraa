@@ -1225,19 +1225,20 @@ func handleCodexLogin(token string, chatID int64) {
 }
 
 func handleCodexStatus(token string, chatID int64) {
-	// Check if already authenticated
-	if val, err := secret.Get("codex_authenticated"); err == nil && val == "true" {
-		send(token, chatID, "✅ Codex is authenticated. Use /codex-login to re-authenticate.")
+	// A stored token is the real answer, rather than a marker a login happened to
+	// leave behind.
+	if codexauth.Authenticated() {
+		send(token, chatID, "✅ Codex is authenticated. Use /codex-login to sign in again.")
 		return
 	}
-	// Check in-flight auth flows
 	for _, flow := range authMgr.ListFlows() {
-		if flow.Status == "succeeded" {
-			send(token, chatID, "✅ Codex login completed! You can now use Codex.")
+		state := flow.Snapshot()
+		switch state.Status {
+		case codexauth.StatusSucceeded:
+			send(token, chatID, "✅ Codex login completed. Codex can now be used.")
 			return
-		}
-		if flow.Status == "waiting" || flow.Status == "checking" {
-			send(token, chatID, "🔄 Login in progress. User code: "+flow.UserCode)
+		case codexauth.StatusWaiting, codexauth.StatusApproved:
+			send(token, chatID, "🔄 Login in progress.\nCode: <code>"+state.UserCode+"</code>")
 			return
 		}
 	}

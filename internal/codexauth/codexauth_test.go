@@ -2,6 +2,12 @@ package codexauth
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,440 +18,560 @@ import (
 	"ceraa/internal/secret"
 )
 
-// fakeRunner stands in for the Codex CLI.
-//
-// The login is represented as a process that stays running and produces its code
-// after a delay, which is what the real one does: it prints a code and then blocks
-// until a human authorizes it.
-type fakeRunner struct {
+// fakeOpenAI stands in for auth.openai.com, so the whole flow can be exercised
+// without the real service and without a network.
+type fakeOpenAI struct {
 	mu sync.Mutex
-	// loginOutput is what the login command prints, delivered after loginDelay.
-	loginOutput string
-	loginDelay  time.Duration
-	// statusOutput is what the status command reports.
-	statusOutput string
-	// statusAfter makes the status report "logged in" only after N calls, which is
-	// how a human authorizing partway through is modelled.
-	statusAfter int
 
-	loginCalls  int
-	statusCalls int
-	process     *fakeProcess
-	killed      bool
+	// approveAfter is how many polls answer "pending" before approval.
+	approveAfter int
+	polls        int
+
+	// pendingStatus is what a pending poll answers with. OpenAI uses 403.
+	pendingStatus int
+	// terminalCode, when set, makes the poll fail terminally with that code.
+	terminalCode string
+	// failUserCode makes minting the code fail.
+	failUserCode bool
+
+	// captured request data
+	usercodeHits     int
+	usercodeRawBody  string
+	userCodeClientID string
+	pollDeviceID     string
+	pollUserCode     string
+	exchangeForm     url.Values
+
+	// rotatedRefresh is what the token endpoint hands back, standing in for the
+	// rotation OpenAI performs on every refresh.
+	rotatedRefresh string
+	accessToken    string
 }
 
-type fakeProcess struct {
-	mu     sync.Mutex
-	buf    strings.Builder
-	closed bool
-	killed bool
-}
-
-func (p *fakeProcess) Output() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.buf.String()
-}
-
-func (p *fakeProcess) Wait() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.closed = true
-	return nil
-}
-
-func (p *fakeProcess) Kill() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.killed = true
-	return nil
-}
-
-func (f *fakeRunner) StartDeviceAuth(ctx context.Context) (loginProcess, error) {
-	f.mu.Lock()
-	f.loginCalls++
-	process := &fakeProcess{}
-	f.process = process
-	output, delay := f.loginOutput, f.loginDelay
-	f.mu.Unlock()
-
-	// Delivered asynchronously, because the caller must be able to read an empty
-	// output and get a code later.
-	go func() {
-		if delay > 0 {
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return
-			}
-		}
-		process.mu.Lock()
-		process.buf.WriteString(output)
-		process.mu.Unlock()
-	}()
-	return process, nil
-}
-
-func (f *fakeRunner) LoginStatus(ctx context.Context) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.statusCalls++
-	if f.statusAfter > 0 && f.statusCalls >= f.statusAfter {
-		return f.statusOutput, nil
-	}
-	return "You are not logged in.", nil
-}
-
-func (f *fakeRunner) setStatusOutput(output string, after int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.statusOutput = output
-	f.statusAfter = after
-}
-
-func (f *fakeRunner) counts() (int, int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.loginCalls, f.statusCalls
-}
-
-func (f *fakeRunner) wasKilled() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.process == nil {
-		return false
-	}
-	return f.process.killed
-}
-
-func newManagerWithFake(t *testing.T, runner *fakeRunner) *Manager {
+func (f *fakeOpenAI) server(t *testing.T) *httptest.Server {
 	t.Helper()
-	// The credential marker is written on success, so give the test its own store.
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+
+	mux.HandleFunc("/usercode", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		fail := f.failUserCode
+		f.mu.Unlock()
+		if fail {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"forbidden","message":"no device auth"}}`))
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var payload struct {
+			ClientID string `json:"client_id"`
+		}
+		_ = json.Unmarshal(raw, &payload)
+		f.mu.Lock()
+		f.usercodeHits++
+		f.usercodeRawBody = string(raw)
+		f.userCodeClientID = payload.ClientID
+		f.mu.Unlock()
+		_, _ = w.Write([]byte(`{"device_auth_id":"dev-123","user_code":"ABCD-EFGH","expires_at":"` +
+			time.Now().Add(10*time.Minute).UTC().Format(time.RFC3339) + `","interval":1}`))
+	})
+
+	mux.HandleFunc("/deviceauth/token", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			DeviceAuthID string `json:"device_auth_id"`
+			UserCode     string `json:"user_code"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+
+		f.mu.Lock()
+		f.polls++
+		count := f.polls
+		approveAfter := f.approveAfter
+		terminal := f.terminalCode
+		pendingStatus := f.pendingStatus
+		f.pollDeviceID = payload.DeviceAuthID
+		f.pollUserCode = payload.UserCode
+		f.mu.Unlock()
+
+		if terminal != "" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"` + terminal + `","message":"device authorization is not enabled for this account"}}`))
+			return
+		}
+		if count <= approveAfter {
+			if pendingStatus == 0 {
+				pendingStatus = http.StatusForbidden
+			}
+			w.WriteHeader(pendingStatus)
+			_, _ = w.Write([]byte(`{"error":{"code":"deviceauth_authorization_pending","message":"waiting"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"authorization_code":"auth-code-1","code_verifier":"verifier-1","code_challenge":"challenge-1"}`))
+	})
+
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.exchangeForm = cloneValues(r.Form)
+		access := f.accessToken
+		rotated := f.rotatedRefresh
+		f.mu.Unlock()
+		if access == "" {
+			access = "access-1"
+		}
+		if rotated == "" {
+			rotated = "refresh-1"
+		}
+		_, _ = w.Write([]byte(`{"access_token":"` + access + `","refresh_token":"` + rotated +
+			`","expires_in":3600,"token_type":"Bearer"}`))
+	})
+	t.Cleanup(server.Close)
+	return server
+}
+
+func cloneValues(values url.Values) url.Values {
+	copied := url.Values{}
+	for key, list := range values {
+		copied[key] = append([]string(nil), list...)
+	}
+	return copied
+}
+
+func (f *fakeOpenAI) setApproveAfter(after int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.approveAfter = after
+}
+
+func (f *fakeOpenAI) pollCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.polls
+}
+
+func (f *fakeOpenAI) setTerminal(code string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminalCode = code
+}
+
+func newTestManager(t *testing.T) (*Manager, *fakeOpenAI) {
+	t.Helper()
+	// An isolated credential store, so a test never reads or writes real tokens.
 	t.Setenv("CERAA_HOME", t.TempDir())
 	dir := os.Getenv("CERAA_HOME")
 	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManagerWithRunner(runner)
-	// A tight cadence so the loop is exercised without multi-second waits.
-	manager.firstPoll = 15 * time.Millisecond
-	manager.pollStep = 30 * time.Millisecond
-	return manager
+	fake := &fakeOpenAI{}
+	server := fake.server(t)
+	manager := NewManagerWithOptions(
+		Endpoints{UserCode: server.URL + "/usercode", DeviceToken: server.URL + "/deviceauth/token", OAuthToken: server.URL + "/oauth/token"},
+		"app_test", server.Client())
+	// A tight cadence so the poll loop is exercised without real waits.
+	manager.firstPoll = 10 * time.Millisecond
+	return manager, fake
 }
 
-// TestStartReturnsWithoutWaitingForAuthorization is the bug that made the flow
-// impossible. The CLI prints a code and then blocks until a human authorizes it,
-// which is minutes; Start used to block on that, so the user never saw the code
-// before the flow timed out.
-func TestStartReturnsWithoutWaitingForAuthorization(t *testing.T) {
-	runner := &fakeRunner{
-		loginOutput:  "To sign in, open https://chatgpt.com/codex/device-auth\nYour code: WXYZ-1234\n",
-		loginDelay:   30 * time.Second,
-		statusOutput: "You are not logged in.",
-	}
-	manager := newManagerWithFake(t, runner)
+// TestFullDeviceLoginSucceeds is the flow the whole feature exists for: mint a
+// code, wait for approval, exchange it, and end up with a usable token.
+func TestFullDeviceLoginSucceeds(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.setApproveAfter(2)
 
-	done := make(chan struct{})
-	var state *AuthState
-	var startErr error
-	go func() {
-		state, startErr = manager.Start()
-		close(done)
-	}()
+	flow, err := manager.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if state := flow.Snapshot(); state.UserCode != "ABCD-EFGH" {
+		t.Fatalf("user code = %q, want it minted immediately", state.UserCode)
+	}
+	if state := flow.Snapshot(); !strings.Contains(state.AuthURL, "/codex/device") {
+		t.Fatalf("verification url = %q", state.AuthURL)
+	}
 
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Start blocked on the login process instead of returning")
+	waitForStatus(t, flow, StatusSucceeded)
+
+	if !Authenticated() {
+		t.Fatal("a usable token should be stored after a successful login")
 	}
-	if startErr != nil {
-		t.Fatal(startErr)
+	token, err := secret.Get(keyAccessToken)
+	if err != nil || token != "access-1" {
+		t.Fatalf("access token = %q, %v", token, err)
 	}
-	manager.Cancel(state.flowID)
+
+	fake.mu.Lock()
+	clientID := fake.userCodeClientID
+	deviceID, userCode := fake.pollDeviceID, fake.pollUserCode
+	form := cloneValues(fake.exchangeForm)
+	fake.mu.Unlock()
+
+	if clientID != "app_test" {
+		fake.mu.Lock()
+		hits, rawBody := fake.usercodeHits, fake.usercodeRawBody
+		fake.mu.Unlock()
+		t.Fatalf("client id = %q (hits=%d raw=%q), want the configured one; exchange form was %v", clientID, hits, rawBody, form)
+	}
+	if deviceID != "dev-123" || userCode != "ABCD-EFGH" {
+		t.Fatalf("poll sent device=%q user=%q", deviceID, userCode)
+	}
+	if form.Get("grant_type") != "authorization_code" {
+		t.Fatalf("grant type = %q", form.Get("grant_type"))
+	}
+	if form.Get("code") != "auth-code-1" {
+		t.Fatalf("authorization code = %q", form.Get("code"))
+	}
+	if form.Get("code_verifier") != "verifier-1" {
+		t.Fatalf("code verifier = %q", form.Get("code_verifier"))
+	}
+	if form.Get("redirect_uri") != redirectURI {
+		t.Fatalf("redirect uri = %q, want it bound to %q", form.Get("redirect_uri"), redirectURI)
+	}
 }
 
-// TestAuthorizationCodeReachesTheChat pins that the code the CLI printed is shown
-// to the user, which is the whole point of the flow.
-func TestAuthorizationCodeReachesTheChat(t *testing.T) {
-	runner := &fakeRunner{
-		loginOutput:  "Open https://chatgpt.com/codex/device-auth\ncode: ABCD-EFGH\n",
-		loginDelay:   20 * time.Millisecond,
-		statusOutput: "You are not logged in.",
-	}
-	manager := newManagerWithFake(t, runner)
-	state, err := manager.Start()
+// TestPendingPollsAreNotFailures pins that an unanswered poll keeps the flow
+// alive. Treating "not yet" as fatal would end every login immediately.
+func TestPendingPollsAreNotFailures(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.setApproveAfter(5)
+
+	flow, err := manager.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Cancel(state.flowID)
-
-	waitFor(t, func() bool { return state.Snapshot().UserCode == "ABCD-EFGH" },
-		"the user code never appeared")
-
-	message := state.ResultMessage()
-	if !strings.Contains(message, "ABCD-EFGH") {
-		t.Fatalf("message should carry the code: %q", message)
+	time.Sleep(120 * time.Millisecond)
+	if status := flow.Snapshot().Status; status == StatusFailed {
+		t.Fatalf("a pending poll must not fail the flow, got %q", flow.Snapshot().Message)
 	}
-	if !strings.Contains(message, "chatgpt.com/codex/device-auth") {
-		t.Fatalf("message should carry the url: %q", message)
+	if fake.pollCount() < 2 {
+		t.Fatalf("expected repeated polling, got %d polls", fake.pollCount())
 	}
+	_ = manager.Cancel(flow.Snapshot().FlowID)
 }
 
-// TestPollDetectsSuccess pins that authorising partway through is noticed, and
-// that the credential marker is written before the flow is reported done.
-func TestPollDetectsSuccess(t *testing.T) {
-	runner := &fakeRunner{
-		loginOutput: "code: ABCD-EFGH",
-		loginDelay:  10 * time.Millisecond,
-	}
-	runner.setStatusOutput("Logged in using ChatGPT", 2)
-	manager := newManagerWithFake(t, runner)
+// TestPendingOnDifferentStatuses pins that the pending code is honoured on 403
+// and on 404, because OpenAI does both.
+func TestPendingOnDifferentStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests} {
+		t.Run(fmt.Sprintf("status %d", status), func(t *testing.T) {
+			manager, fake := newTestManager(t)
+			fake.pendingStatus = status
+			fake.setApproveAfter(2)
 
-	state, err := manager.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return state.Snapshot().Status == StatusSucceeded },
-		"the successful login was never detected")
-
-	value, err := secret.Get("codex_authenticated")
-	if err != nil || value != "true" {
-		t.Fatalf("credential marker = %q, %v", value, err)
-	}
-}
-
-// TestUnrecognisedStatusKeepsWaiting pins that phrasing the CLI does not use
-// cannot be mistaken for a completed login. Reporting success that did not happen
-// is worse than waiting.
-func TestUnrecognisedStatusKeepsWaiting(t *testing.T) {
-	runner := &fakeRunner{loginOutput: "code: ABCD-EFGH", loginDelay: 10 * time.Millisecond}
-	runner.setStatusOutput("something entirely unexpected happened", 1)
-	manager := newManagerWithFake(t, runner)
-
-	state, err := manager.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.Cancel(state.flowID)
-
-	time.Sleep(150 * time.Millisecond)
-	if state.Snapshot().Status == StatusSucceeded {
-		t.Fatal("an unrecognised status must not be reported as a successful login")
-	}
-	if _, err := secret.Get("codex_authenticated"); err == nil {
-		t.Fatal("the credential marker must not be written for an unrecognised status")
-	}
-}
-
-// TestCancelIsSafeAfterSuccessAndTwice pins the crash. The cancel button stays on
-// screen after a flow finishes, so tapping it closed an already-closed channel and
-// took the bot down.
-func TestCancelIsSafeAfterSuccessAndTwice(t *testing.T) {
-	runner := &fakeRunner{loginOutput: "code: ABCD-EFGH", loginDelay: 10 * time.Millisecond}
-	runner.setStatusOutput("Logged in using ChatGPT", 1)
-	manager := newManagerWithFake(t, runner)
-
-	state, err := manager.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return state.Snapshot().Status == StatusSucceeded },
-		"login never succeeded")
-
-	// A finished flow is no longer listed, and cancelling it is a quiet no-op.
-	if err := manager.Cancel(state.flowID); err != nil {
-		t.Fatalf("cancelling a finished flow should be a no-op, got %v", err)
-	}
-	// Check is the strict one: an unknown id there is a real mistake.
-	if _, err := manager.Check("no-such-flow"); err == nil {
-		t.Fatal("Check should reject an unknown flow")
-	}
-
-	cancellable := &AuthState{
-		flowID:  "codex-test",
-		Status:  StatusWaiting,
-		done:    make(chan struct{}),
-		process: &fakeProcess{},
-		cancel:  func() {},
-	}
-	manager.mu.Lock()
-	manager.flows[cancellable.flowID] = cancellable
-	manager.mu.Unlock()
-
-	if err := manager.Cancel(cancellable.flowID); err != nil {
-		t.Fatalf("first cancel: %v", err)
-	}
-	// A second tap on a spent button must be a quiet no-op, not a panic and not
-	// a complaint shown to the user.
-	if err := manager.Cancel(cancellable.flowID); err != nil {
-		t.Fatalf("second cancel must be a quiet no-op, got %v", err)
-	}
-	if !cancellable.process.(*fakeProcess).killed {
-		t.Fatal("cancel should terminate the process")
-	}
-}
-
-// TestCancelTerminatesTheProcess pins that cancelling actually stops the CLI,
-// which it could not do before because the process handle was never stored.
-func TestCancelTerminatesTheProcess(t *testing.T) {
-	runner := &fakeRunner{loginOutput: "code: ABCD-EFGH", loginDelay: time.Minute}
-	manager := newManagerWithFake(t, runner)
-	state, err := manager.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Cancel(state.flowID); err != nil {
-		t.Fatal(err)
-	}
-	if !runner.wasKilled() {
-		t.Fatal("the login process was not terminated")
-	}
-}
-
-// TestPollingBacksOff pins that the status check does not spawn a process every
-// second for a quarter of an hour.
-func TestPollingBacksOff(t *testing.T) {
-	runner := &fakeRunner{loginOutput: "code: ABCD-EFGH", loginDelay: 10 * time.Millisecond}
-	manager := newManagerWithFake(t, runner)
-	state, err := manager.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.Cancel(state.flowID)
-
-	time.Sleep(400 * time.Millisecond)
-	_, statusCalls := runner.counts()
-	// The cadence is 15ms then 30ms, so a 400ms window must not produce a check
-	// per 15ms forever.
-	if statusCalls > 20 {
-		t.Fatalf("status was checked %d times in 400ms; the interval is not backing off", statusCalls)
-	}
-	if statusCalls < 1 {
-		t.Fatal("status was never checked")
-	}
-}
-
-// TestFlowExpires pins that a forgotten login does not poll forever.
-func TestFlowExpires(t *testing.T) {
-	runner := &fakeRunner{loginOutput: "code: ABCD-EFGH", loginDelay: 10 * time.Millisecond}
-	runner.setStatusOutput("You are not logged in.", 1)
-	manager := newManagerWithFake(t, runner)
-	state, err := manager.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.mu.Lock()
-	state.ExpiresAt = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	waitFor(t, func() bool { return state.Snapshot().Status == StatusFailed },
-		"an expired flow should fail rather than wait")
-}
-
-// TestParseLoginDetails pins the parsing, including that unrelated text cannot
-// masquerade as a code.
-func TestParseLoginDetails(t *testing.T) {
-	cases := []struct {
-		name, output, code, url string
-	}{
-		{
-			name:   "code and url on separate lines",
-			output: "Open https://chatgpt.com/codex/device-auth\nYour code: WXYZ-1234\n",
-			code:   "WXYZ-1234",
-			url:    "https://chatgpt.com/codex/device-auth",
-		},
-		{
-			name:   "terminal escapes are stripped",
-			output: "\x1b[1m\x1b[32mABCD-EFGH\x1b[0m\n",
-			code:   "ABCD-EFGH",
-		},
-		{
-			name:   "no code present",
-			output: "something else entirely",
-		},
-		{
-			name:   "lowercase is not a code",
-			output: "error: invalid-request",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			code, url := parseLoginDetails(stripVTControlCharacters(tc.output))
-			if code != tc.code {
-				t.Errorf("code = %q, want %q", code, tc.code)
+			flow, err := manager.Start()
+			if err != nil {
+				t.Fatal(err)
 			}
-			if tc.url != "" && url != tc.url {
-				t.Errorf("url = %q, want %q", url, tc.url)
-			}
+			waitForStatus(t, flow, StatusSucceeded)
 		})
 	}
 }
 
-// TestClassifyStatus pins that only clear wording counts, in either direction.
-func TestClassifyStatus(t *testing.T) {
-	cases := map[string]authStatus{
-		"Logged in using ChatGPT":   statusLoggedIn,
-		"you are logged in":         statusLoggedIn,
-		"You are not logged in":     statusLoggedOut,
-		"Not authenticated":         statusLoggedOut,
-		"no credentials found":      statusLoggedOut,
-		"":                          statusUnknown,
-		"error: something happened": statusUnknown,
+// TestTerminalPollFailsWithTheProvidersReason pins that a real refusal is
+// reported with what the provider said, and surfaces the account setting that
+// causes it. A generic failure here is what leaves a user stuck.
+func TestTerminalPollFailsWithTheProvidersReason(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.setTerminal("deviceauth_disabled")
+
+	flow, err := manager.Start()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for output, want := range cases {
-		if got := classifyStatus(output); got != want {
-			t.Errorf("classifyStatus(%q) = %v, want %v", output, got, want)
+	waitForStatus(t, flow, StatusFailed)
+
+	state := flow.Snapshot()
+	if !strings.Contains(state.Message, "not enabled") {
+		t.Fatalf("message should carry the provider's reason: %q", state.Message)
+	}
+	if !strings.Contains(state.Hint, "Enable device code authorization") {
+		t.Fatalf("hint should name the setting to change: %q", state.Hint)
+	}
+	if !strings.Contains(state.Hint, "security settings") {
+		t.Fatalf("hint should say where the setting lives: %q", state.Hint)
+	}
+}
+
+// TestDeviceSettingHintIsShownUpFront pins that the prerequisite is visible
+// before the user waits, because when the setting is off the poll never succeeds.
+func TestDeviceSettingHintIsShownUpFront(t *testing.T) {
+	manager, _ := newTestManager(t)
+	flow, err := manager.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Cancel(flow.Snapshot().FlowID)
+	message := flow.ResultMessage()
+	if !strings.Contains(message, "Enable device code authorization") {
+		t.Fatalf("the waiting message should carry the prerequisite: %q", message)
+	}
+	if !strings.Contains(message, "ABCD-EFGH") || !strings.Contains(message, "/codex/device") {
+		t.Fatalf("the waiting message should carry the code and page: %q", message)
+	}
+}
+
+// TestExpiredFlowFailsRatherThanHanging pins that an abandoned login ends.
+func TestExpiredFlowFailsRatherThanHanging(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.setApproveAfter(1_000_000)
+
+	flow, err := manager.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pull the deadline in, rather than waiting fifteen minutes for it.
+	flow.mu.Lock()
+	flow.expiresAt = time.Now().Add(-time.Second)
+	flow.mu.Unlock()
+
+	waitForStatus(t, flow, StatusFailed)
+	if Authenticated() {
+		t.Fatal("an expired flow must not leave a token behind")
+	}
+}
+
+// TestCancelIsIdempotentAndNeverPanics pins the crash: the cancel button stays on
+// screen after a flow ends, so a second tap must be a quiet no-op.
+func TestCancelIsIdempotentAndNeverPanics(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.setApproveAfter(0)
+
+	flow, err := manager.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, flow, StatusSucceeded)
+
+	// Cancelling a finished flow, and cancelling twice, must both be safe.
+	if err := manager.Cancel(flow.Snapshot().FlowID); err != nil {
+		t.Fatalf("cancelling a finished flow should be a no-op, got %v", err)
+	}
+	if err := manager.Cancel("no-such-flow"); err != nil {
+		t.Fatalf("cancelling an unknown flow should be a no-op, got %v", err)
+	}
+	if err := manager.Cancel(flow.Snapshot().FlowID); err != nil {
+		t.Fatalf("a third cancel must not error: %v", err)
+	}
+	// Check stays strict, because an unknown id there is a real mistake.
+	if _, err := manager.Check("no-such-flow"); err == nil {
+		t.Fatal("Check should reject an unknown flow")
+	}
+}
+
+// TestFailedMintIsReported pins that a refusal to mint a code surfaces at once,
+// rather than leaving the user with a login that will never work.
+func TestFailedMintIsReported(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.failUserCode = true
+	if _, err := manager.Start(); err == nil {
+		t.Fatal("expected an error when the code cannot be minted")
+	} else if !strings.Contains(err.Error(), "no device auth") {
+		t.Fatalf("error should carry the provider's reason, got %v", err)
+	}
+}
+
+// TestAccessTokenRefreshesBeforeExpiry pins that a token close to expiry is
+// renewed, and that the renewed one is stored.
+func TestAccessTokenRefreshesBeforeExpiry(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fake.accessToken = "access-1"
+	fake.rotatedRefresh = "refresh-1"
+
+	// An expiry inside the refresh margin, so a refresh is required.
+	expired := time.Now().Add(time.Minute).Unix()
+	if err := secret.Set(keyExpiresAt, fmt.Sprintf("%d", expired)); err != nil {
+		t.Fatal(err)
+	}
+	if err := secret.Set(keyAccessToken, "stale"); err != nil {
+		t.Fatal(err)
+	}
+	if err := secret.Set(keyRefreshToken, "refresh-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := manager.AccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if token != "access-1" {
+		t.Fatalf("token = %q, want the refreshed one", token)
+	}
+	stored, _ := secret.Get(keyRefreshToken)
+	if stored != "refresh-1" {
+		t.Fatalf("rotated refresh token = %q, want it stored", stored)
+	}
+}
+
+// TestExpiredTokenWithoutARefreshTokenStillReturnsWhatItHas pins that a token
+// which cannot be renewed is handed back rather than withheld. Throwing it away
+// would lock the user out on a transient refresh problem.
+func TestExpiredTokenWithoutARefreshTokenStillReturnsWhatItHas(t *testing.T) {
+	manager, _ := newTestManager(t)
+	lapsed := time.Now().Add(time.Minute).Unix()
+	if err := secret.Set(keyExpiresAt, fmt.Sprintf("%d", lapsed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := secret.Set(keyAccessToken, "lapsed-but-maybe-valid"); err != nil {
+		t.Fatal(err)
+	}
+	token, err := manager.AccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if token != "lapsed-but-maybe-valid" {
+		t.Fatalf("token = %q, want the existing one rather than nothing", token)
+	}
+}
+
+// TestRefreshWithoutStoredTokenIsAnError pins that a refresh asked for with
+// nothing stored says so, rather than reporting success.
+func TestRefreshWithoutStoredTokenIsAnError(t *testing.T) {
+	manager, _ := newTestManager(t)
+	if _, err := manager.RefreshToken(context.Background()); err == nil {
+		t.Fatal("expected an error when no refresh token is stored")
+	} else if ErrorCode(err) != "not_authenticated" {
+		t.Fatalf("error code = %q", ErrorCode(err))
+	}
+}
+
+// TestFreshTokenIsNotRefreshed pins that a valid token is used as-is, because
+// refreshing on every call would rotate the refresh token for no reason.
+func TestFreshTokenIsNotRefreshed(t *testing.T) {
+	manager, fake := newTestManager(t)
+	fresh := time.Now().Add(time.Hour).Unix()
+	if err := secret.Set(keyExpiresAt, fmt.Sprintf("%d", fresh)); err != nil {
+		t.Fatal(err)
+	}
+	if err := secret.Set(keyAccessToken, "fresh-token"); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.pollCount()
+	token, err := manager.AccessToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "fresh-token" {
+		t.Fatalf("token = %q, want the stored one", token)
+	}
+	if fake.pollCount() != before {
+		t.Fatal("a fresh token must not trigger a refresh")
+	}
+}
+
+// TestAccessTokenWithNothingStored pins that no credentials reads as empty rather
+// than as an error, so a caller can branch on it.
+func TestAccessTokenWithNothingStored(t *testing.T) {
+	manager, _ := newTestManager(t)
+	if Authenticated() {
+		t.Fatal("nothing should be authenticated in a fresh store")
+	}
+	token, err := manager.AccessToken(context.Background())
+	if err != nil || token != "" {
+		t.Fatalf("token = %q, err = %v; want empty and no error", token, err)
+	}
+}
+
+// TestForgetClearsCredentials pins that signing out leaves nothing behind.
+func TestForgetClearsCredentials(t *testing.T) {
+	newTestManager(t)
+	if err := secret.Set(keyAccessToken, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := secret.Set(keyRefreshToken, "y"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if Authenticated() {
+		t.Fatal("credentials should be gone after Forget")
+	}
+}
+
+// TestPendingDetection pins that only a pending error is treated as pending, so a
+// genuine failure is never mistaken for "not yet".
+func TestPendingDetection(t *testing.T) {
+	pending := newError(pendingCode, "waiting")
+	if !IsPending(pending) {
+		t.Fatal("a pending error should be recognised")
+	}
+	if IsPending(newError("deviceauth_disabled", "off")) {
+		t.Fatal("a disabled-account error is not pending")
+	}
+	if IsPending(context.Canceled) {
+		t.Fatal("a cancellation is not pending")
+	}
+	if ErrorCode(pending) != pendingCode {
+		t.Fatalf("ErrorCode = %q", ErrorCode(pending))
+	}
+}
+
+// TestPollIntervalParsing pins the cadence handling, because a garbled interval
+// must not turn into a hot loop or a hung one.
+func TestPollIntervalParsing(t *testing.T) {
+	cases := map[string]time.Duration{
+		"5":    5 * time.Second,
+		"0":    defaultPollSeconds * time.Second,
+		"":     defaultPollSeconds * time.Second,
+		"junk": defaultPollSeconds * time.Second,
+		"2.5":  2500 * time.Millisecond,
+	}
+	for input, want := range cases {
+		if got := pollInterval(input); got != want {
+			t.Errorf("pollInterval(%q) = %s, want %s", input, got, want)
 		}
 	}
-}
-
-// TestMissingCLIIsReportedActionably pins that a host without the CLI says so
-// plainly, rather than surfacing a raw exec error at the user. A login cannot
-// work without the binary, and the user is the one who has to fix it.
-func TestMissingCLIIsReportedActionably(t *testing.T) {
-	// Point PATH at an empty directory so the binary cannot be found.
-	t.Setenv("PATH", t.TempDir())
-	err := CodexAvailable()
-	if err == nil {
-		t.Skip("a codex binary is genuinely on this host")
-	}
-	if !strings.Contains(err.Error(), "not installed") {
-		t.Fatalf("error should say the CLI is missing, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "install it") {
-		t.Fatalf("error should say what to do, got %v", err)
-	}
-
-	// And the manager must surface the same thing rather than a raw exec error.
-	manager := NewManager()
-	if _, startErr := manager.Start(); startErr == nil {
-		t.Fatal("Start should fail without the CLI")
-	} else if !strings.Contains(startErr.Error(), "not installed") {
-		t.Fatalf("Start error = %v", startErr)
+	if got := pollInterval(3.0); got != 3*time.Second {
+		t.Errorf("pollInterval(3.0) = %s", got)
 	}
 }
 
-// TestResultMessageNeverClaimsSuccessWhileWaiting pins the failure mode that
-// started all of this: an agent being told a login finished when it had not.
+// TestReadProviderErrorToleratesJunk pins that an unreadable failure body reads as
+// transient, so a flow keeps waiting instead of failing on something it cannot
+// interpret.
+func TestReadProviderErrorToleratesJunk(t *testing.T) {
+	if code, message := readProviderError([]byte("<html>nope</html>"), 500); code != "" || message != "" {
+		t.Fatalf("junk should read as empty, got %q/%q", code, message)
+	}
+	code, message := readProviderError([]byte(`{"error":{"code":"x","message":"y"}}`), 403)
+	if code != "x" || message != "y" {
+		t.Fatalf("code=%q message=%q", code, message)
+	}
+	// A flat shape, which some providers use.
+	code, _ = readProviderError([]byte(`{"code":"flat","message":"m"}`), 400)
+	if code != "flat" {
+		t.Fatalf("flat code = %q", code)
+	}
+}
+
 func TestResultMessageNeverClaimsSuccessWhileWaiting(t *testing.T) {
-	state := &AuthState{Status: StatusWaiting, UserCode: "ABCD-EFGH", AuthURL: deviceURL, done: make(chan struct{})}
-	if message := state.ResultMessage(); strings.Contains(message, "successful") {
-		t.Fatalf("a waiting flow must not read as a success: %q", message)
+	waiting := renderStatus(State{Status: StatusWaiting, UserCode: "ABCD-EFGH", AuthURL: verificationURL})
+	if strings.Contains(waiting, "successful") {
+		t.Fatalf("a waiting flow must not read as a success: %q", waiting)
 	}
-	failed := &AuthState{Status: StatusFailed, Message: "expired", done: make(chan struct{})}
-	if message := failed.ResultMessage(); !strings.Contains(message, "expired") {
-		t.Fatalf("a failed flow should say why: %q", message)
+	failed := renderStatus(State{Status: StatusFailed, Message: "code expired"})
+	if !strings.Contains(failed, "code expired") {
+		t.Fatalf("a failed flow should say why: %q", failed)
 	}
 }
 
-func waitFor(t *testing.T, condition func() bool, message string) {
+func waitForStatus(t *testing.T, flow *Flow, want string) State {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
+	var last State
 	for time.Now().Before(deadline) {
-		if condition() {
-			return
+		last = flow.Snapshot()
+		if last.Status == want {
+			return last
+		}
+		if last.Status == StatusFailed && want != StatusFailed {
+			t.Fatalf("flow failed while waiting for %q: %s", want, last.Message)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal(message)
+	t.Fatalf("flow never reached %q; it is %q: %s", want, last.Status, last.Message)
+	return last
 }
