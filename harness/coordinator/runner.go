@@ -1042,17 +1042,13 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			hasSequential = true
 		}
 	}
-	if hasSequential {
-		for _, item := range authorized {
-			if err := start(item, hasSequential); err != nil {
-				return nil, nil, false, err
-			}
-		}
-	} else {
-		for _, item := range authorized {
-			if err := start(item, hasSequential); err != nil {
-				return nil, nil, false, err
-			}
+	// One sequential tool makes the whole batch sequential. That is coarse, but
+	// a batch is a single model turn, and the model cannot see one call's result
+	// before emitting the next, so anything it batches together is a pipeline it
+	// expects to run in order rather than independent work.
+	for _, item := range authorized {
+		if err := start(item, hasSequential); err != nil {
+			return nil, nil, false, err
 		}
 	}
 	return dispatched, results, corrective, nil

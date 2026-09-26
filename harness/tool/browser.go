@@ -51,7 +51,9 @@ func (b *BrowserTool) Description() string {
 		"optionally submitting), eval (run JavaScript in the page), status (current " +
 		"page and browser state), close (shut the browser down). The browser is shared " +
 		"between calls, so a sequence of actions continues where the last one stopped. " +
-		"Use screenshot for visual checks and view_image to inspect the result."
+		"Use screenshot for visual checks and view_image to inspect the result. " +
+		"Actions given together run in the order written, because one open page is shared. " +
+		"A new open replaces the current page, so take a screenshot before navigating elsewhere. "
 }
 
 func (b *BrowserTool) Schema() map[string]any {
