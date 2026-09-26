@@ -321,6 +321,12 @@ func handleCallback(token string, q *struct {
 		editCallback(token, chatID, q.Message.MessageID, "✅ Provider set to "+provider, menus.InlineForChat("model", 0, chatID, currentSessionID(chatID)))
 		return
 	}
+	if data == "provider:codex" {
+		// Same entry point as the onboarding button, so a configured user reaches
+		// Codex from the Provider / Model menu.
+		selectCodexProvider(token, chatID)
+		return
+	}
 	if data == "provider:custom" {
 		pendingProvider.Store(chatID, providerDraft{ID: "custom", Stage: "url"})
 		send(token, chatID, "Send the provider base URL for the custom profile.")

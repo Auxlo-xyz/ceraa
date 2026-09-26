@@ -8,6 +8,7 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/paths"
 	"context"
@@ -210,6 +211,19 @@ func modelMenu(chatID int64) map[string]any {
 		}
 		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_provider:" + id}})
 	}
+	// Codex is offered as a row rather than only as a profile, because a profile
+	// row can only exist once the profile does. Leaving it solely in the
+	// onboarding menu meant a configured user had no way to reach it at all.
+	codexLabel := "🧠 Codex (ChatGPT)"
+	switch {
+	case active == llm.CodexSubscription:
+		codexLabel = "✅ " + codexLabel
+	case codexauth.Authenticated():
+		codexLabel += " · switch to it"
+	default:
+		codexLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": codexLabel, "callback_data": "provider:codex"}})
 	rows = append(rows, []map[string]string{{"text": "🔎 Choose model", "callback_data": "menu:model_catalog"}, {"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}

@@ -2,10 +2,12 @@ package telegram
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"ceraa/harness/llm"
 	"ceraa/internal/config"
+	"ceraa/internal/telegram/menus"
 )
 
 // The provider menu offers Codex, so selecting it has to produce a config the
@@ -63,4 +65,39 @@ func TestProviderResolverLeavesOtherSubscriptionsAlone(t *testing.T) {
 	if model.CodexNative || model.CodexTokens != nil {
 		t.Error("a plain custom provider was routed to the Codex transport")
 	}
+}
+
+// The Provider / Model menu is the entry point a configured user actually sees;
+// the onboarding menu is not shown again once a provider is set. A Codex entry
+// that exists only in onboarding is unreachable, which is how it shipped.
+func TestProviderModelMenuOffersCodex(t *testing.T) {
+	markup := menus.Inline("model", 0)
+	rows, ok := markup["inline_keyboard"].([][]map[string]string)
+	if !ok {
+		t.Fatal("expected model inline keyboard")
+	}
+	var label string
+	for _, row := range rows {
+		for _, button := range row {
+			if button["callback_data"] == "provider:codex" {
+				label = button["text"]
+			}
+		}
+	}
+	if label == "" {
+		t.Fatalf("Provider / Model menu has no Codex entry; callbacks present: %v", collectCallbacks(rows))
+	}
+	if !strings.Contains(label, "Codex") {
+		t.Errorf("Codex button label = %q", label)
+	}
+}
+
+func collectCallbacks(rows [][]map[string]string) []string {
+	var out []string
+	for _, row := range rows {
+		for _, button := range row {
+			out = append(out, button["callback_data"])
+		}
+	}
+	return out
 }

@@ -1230,20 +1230,20 @@ func handleCodexStatus(token string, chatID int64) {
 	// leave behind. It is not on its own proof that inference works, so the
 	// message says which provider is actually active: a stored credential with
 	// another provider selected is not a usable Codex setup.
-	if codexauth.Authenticated() {
-		active := defaultState.provider()
-		_, activeModel, _ := defaultState.values()
+	authenticated := codexauth.Authenticated()
+	active := defaultState.provider()
+	_, activeModel, _ := defaultState.values()
+	// Which branch ran is the first question when a status reply looks stale, and
+	// it is invisible from the message alone.
+	logger.Info("codex status: authenticated=" + strconv.FormatBool(authenticated) +
+		" active_provider=" + active + " active_model=" + activeModel +
+		" expires=" + codexExpiryLabel())
+	if authenticated {
 		if active == llm.CodexSubscription {
-			expiry := "unknown"
-			if raw, err := secret.Get("codex_expires_at"); err == nil && raw != "" {
-				if seconds, convErr := strconv.ParseInt(raw, 10, 64); convErr == nil {
-					expiry = time.Unix(seconds, 0).UTC().Format(time.RFC3339)
-				}
-			}
-			send(token, chatID, "✅ Codex is authenticated and active.\nModel: "+activeModel+"\nAccess token expires: "+expiry+"\nUse /codex-login to sign in again.")
+			send(token, chatID, "✅ Codex is authenticated and active.\nModel: "+activeModel+"\nAccess token expires: "+codexExpiryLabel()+"\nUse /codex-login to sign in again.")
 			return
 		}
-		send(token, chatID, "✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\nIt is not the active provider — Ceraa is using <b>"+active+"</b>. Send /codex-login or pick 🧠 Codex (ChatGPT) in the provider menu to switch to it.")
+		send(token, chatID, "✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\nIt is not the active provider — Ceraa is using <b>"+active+"</b>. Send /codex-login or pick 🧠 Codex (ChatGPT) in the Provider / Model menu to switch to it.")
 		return
 	}
 	for _, flow := range authMgr.ListFlows() {
