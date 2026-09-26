@@ -468,14 +468,3 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	sess.Messages = newMessages
 	return true, nil
 }
-
-// TruncateToolOutput caps a single tool result for transmission to the model.
-//
-// Applied when a request is rendered, never written back to the session. See the
-// call site in contextbuilder for why mutating stored history is destructive.
-func TruncateToolOutput(output string) string {
-	if len(output) <= ToolOutputMaxChars {
-		return output
-	}
-	return output[:ToolOutputMaxChars] + "...[pruned]"
-}

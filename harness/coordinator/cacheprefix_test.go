@@ -64,9 +64,10 @@ func TestModelIdentitySurvivesResolverFlapping(t *testing.T) {
 	}
 }
 
-// The store must never be rewritten with a truncated tool result. Truncating
-// persisted history invalidates the cached prefix permanently, because the
-// shortened bytes are what a later request re-sends.
+// The store must never be rewritten, and the request must carry the stored
+// result verbatim. Capping happens once in formatOutput when the result is
+// captured; anything that shortens it afterwards invalidates the cached prefix
+// permanently, because the shortened bytes are what later requests re-send.
 func TestTruncateToolOutputLeavesTheStoreIntact(t *testing.T) {
 	long := strings.Repeat("x", 5000)
 	sess := &sessionstore.Session{Messages: []sessionstore.Message{{
@@ -79,20 +80,5 @@ func TestTruncateToolOutputLeavesTheStoreIntact(t *testing.T) {
 	if sess.Messages[0].ToolResult != long {
 		t.Errorf("stored tool result was mutated: %d bytes now, was %d",
 			len(sess.Messages[0].ToolResult), len(long))
-	}
-}
-
-func TestTruncateToolOutputCapsLongResultsOnly(t *testing.T) {
-	short := "small"
-	if got := truncateForTest(short); got != short {
-		t.Errorf("short result altered: %q", got)
-	}
-	long := strings.Repeat("y", 5000)
-	got := truncateForTest(long)
-	if len(got) >= len(long) {
-		t.Errorf("long result not truncated: %d bytes", len(got))
-	}
-	if !strings.HasSuffix(got, "...[pruned]") {
-		t.Errorf("truncation is not marked: %.30q", got)
 	}
 }

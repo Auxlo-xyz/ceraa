@@ -1,15 +1,13 @@
 package coordinator
 
 import (
-	"ceraa/harness/compaction"
 	"ceraa/harness/contextbuilder"
+	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
 )
 
-// renderForTest exercises the production render path, which is where a tool
-// result must be truncated.
-func renderForTest(sess *sessionstore.Session) any {
+// renderForTest exercises the production render path, which is where a stored
+// tool result must be passed through untouched.
+func renderForTest(sess *sessionstore.Session) []llm.Item {
 	return contextbuilder.New(sess, "system").Build().Messages
 }
-
-func truncateForTest(s string) string { return compaction.TruncateToolOutput(s) }
