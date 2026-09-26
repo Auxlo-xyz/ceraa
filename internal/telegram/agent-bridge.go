@@ -420,15 +420,3 @@ func needsPermission(toolName, args string) bool {
 	}
 	return false
 }
-
-func clearSession(sessionID string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	store, err := sessionstore.New(cfg.SessionFile)
-	if err != nil {
-		return err
-	}
-	return store.Clear(sessionID)
-}

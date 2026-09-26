@@ -495,7 +495,6 @@ func statusMenu(sessionID string) map[string]any {
 	_ = sessionID
 	rows := [][]map[string]string{
 		{{"text": "🗜️ Compact now", "callback_data": "compact:now"}},
-		{{"text": "🧹 Clear context", "callback_data": "context:clear"}},
 		{{"text": "💬 Recent messages", "callback_data": "menu:message_history"}},
 		{{"text": "✕ Close", "callback_data": "close"}},
 	}

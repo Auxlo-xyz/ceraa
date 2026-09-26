@@ -162,26 +162,3 @@ func TestDeleteRemovesSession(t *testing.T) {
 		t.Fatalf("session file still exists: %v", err)
 	}
 }
-
-func TestUpdatePersistsClear(t *testing.T) {
-	store, err := New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Update("clear", func(sess *Session) error {
-		sess.Messages = []Message{{Role: llm.RoleUser, Content: "old"}}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Clear("clear"); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := store.Load("clear")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.Messages) != 0 {
-		t.Fatalf("expected cleared session, got %+v", loaded.Messages)
-	}
-}

@@ -673,21 +673,16 @@ func handleCallback(token string, q *struct {
 		}
 		return
 	}
+	if data == "context:clear" {
+		// The clear-context action and its store method have been removed. The
+		// callback is still answered because keyboards already sitting in a chat
+		// carry this button, and silently ignoring the tap would look like a hung
+		// bot rather than a removed feature.
+		send(token, chatID, "Clear context has been removed. Use 🗜️ Compact now to shrink the context without discarding history.")
+		return
+	}
 	if strings.HasPrefix(data, "context:") {
-		action := strings.TrimPrefix(data, "context:")
-		if action == "clear" {
-			store, err := configuredStore()
-			if err == nil {
-				err = store.Clear(currentSessionID(chatID))
-			}
-			if err != nil {
-				send(token, chatID, "Context clear failed: "+err.Error())
-				return
-			}
-			send(token, chatID, "Context cleared for the active session")
-		} else {
-			handleContextCommand(token, chatID)
-		}
+		handleContextCommand(token, chatID)
 		return
 	}
 	if data == "compaction:auto_on" {

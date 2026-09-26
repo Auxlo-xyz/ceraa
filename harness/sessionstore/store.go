@@ -335,15 +335,6 @@ func (s *Store) Update(id string, update func(*Session) error) error {
 	return s.saveUnlocked(sess)
 }
 
-func (s *Store) Clear(id string) error {
-	return s.Update(id, func(sess *Session) error {
-		sess.Messages = []Message{}
-		sess.Operations = []Operation{}
-		sess.Runs = []Run{}
-		return nil
-	})
-}
-
 func Recover(sess *Session) bool {
 	changed := false
 	if sess.Messages == nil {
