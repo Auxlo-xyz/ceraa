@@ -371,6 +371,19 @@ func handleCallback(token string, q *struct {
 		editCallback(token, chatID, q.Message.MessageID, "✅ Agent set to "+agent, nil)
 		return
 	}
+	if strings.HasPrefix(data, "select_reasoning:") {
+		level := strings.TrimPrefix(data, "select_reasoning:")
+		// "default" clears the runtime override so the provider decides.
+		if level == "default" {
+			level = ""
+		}
+		if err := defaultState.setReasoning(level); err != nil {
+			send(token, chatID, "Failed to set thinking: "+err.Error())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "🧠 Thinking set to "+thinkingLabel(level), nil)
+		return
+	}
 	if strings.HasPrefix(data, "select_variant:") {
 		variant := strings.TrimPrefix(data, "select_variant:")
 		if err := defaultState.setVariant(variant); err != nil {
@@ -826,4 +839,13 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 func mustJSON(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
+}
+
+// thinkingLabel names a reasoning level for display, distinguishing the provider
+// default from an explicit choice.
+func thinkingLabel(level string) string {
+	if strings.TrimSpace(level) == "" {
+		return "default"
+	}
+	return level
 }

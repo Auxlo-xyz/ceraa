@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"ceraa/harness/llm"
 	"ceraa/internal/config"
 	"ceraa/internal/envs"
 	"ceraa/internal/paths"
@@ -25,6 +26,7 @@ type bridgeState struct {
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
 	Variant          string                            `json:"variant,omitempty"`
+	Reasoning        string                            `json:"reasoning,omitempty"`
 	ActiveSessions   map[string]string                 `json:"active_sessions,omitempty"`
 	Projects         map[string]string                 `json:"projects,omitempty"`
 	SessionProjects  map[string]string                 `json:"session_projects,omitempty"`
@@ -250,6 +252,27 @@ func (s *bridgeState) values() (string, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.Model, s.Agent, s.Variant
+}
+
+// reasoning returns the runtime reasoning level, empty when the provider's own
+// default should apply.
+func (s *bridgeState) reasoning() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Reasoning
+}
+
+// setReasoning records the runtime reasoning level. An empty value clears it and
+// restores the provider default.
+func (s *bridgeState) setReasoning(level string) error {
+	level = strings.TrimSpace(level)
+	if level != "" && !llm.ReasonLevel(level).Valid() {
+		return errors.New("unknown reasoning level " + level)
+	}
+	s.mu.Lock()
+	s.Reasoning = level
+	s.mu.Unlock()
+	return s.save()
 }
 
 func (s *bridgeState) provider() string {

@@ -22,7 +22,7 @@ import (
 )
 
 var All = []string{
-	"status", "session", "model", "agent", "variant", "project", "tools", "todos",
+	"status", "session", "model", "agent", "variant", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
 	"memory", "skill", "eval", "schedule",
@@ -34,6 +34,7 @@ type runtimeState struct {
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
 	Variant          string                            `json:"variant,omitempty"`
+	Reasoning        string                            `json:"reasoning,omitempty"`
 	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
 	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
 	Projects         map[string]string                 `json:"projects,omitempty"`
@@ -124,6 +125,8 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return agentMenu()
 	case "variant":
 		return variantMenu()
+	case "thinking":
+		return thinkingMenu()
 	case "session":
 		return sessionMenu(sessionID)
 	case "file_browser":
@@ -313,6 +316,37 @@ func variantMenu() map[string]any {
 		}
 		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_variant:" + value}})
 	}
+	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// thinkingMenu exposes the reasoning level. It is separate from the variant menu
+// because a variant changes how an answer reads, while this changes how much the
+// model thinks before producing one.
+func thinkingMenu() map[string]any {
+	current := runtimeValues().Reasoning
+	rows := [][]map[string]string{}
+	row := []map[string]string{}
+	for _, value := range []string{"off", "minimal", "low", "medium", "high", "max"} {
+		label := value
+		if value == current {
+			label = "✅ " + value
+		}
+		row = append(row, map[string]string{"text": label, "callback_data": "select_reasoning:" + value})
+		if len(row) == 3 {
+			rows = append(rows, row)
+			row = []map[string]string{}
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	// Default clears the runtime override so the provider's own default applies.
+	defaultLabel := "🌐 default"
+	if current == "" {
+		defaultLabel = "✅ 🌐 default"
+	}
+	rows = append(rows, []map[string]string{{"text": defaultLabel, "callback_data": "select_reasoning:default"}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }
@@ -669,7 +703,8 @@ func Root() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "📊 Status", "callback_data": "menu:status"}, {"text": "💬 Sessions", "callback_data": "menu:session"}},
 		{{"text": "🧠 Provider / Model", "callback_data": "menu:model"}, {"text": "🤖 Mode", "callback_data": "menu:agent"}},
-		{{"text": "💭 Variant", "callback_data": "menu:variant"}, {"text": "📁 Project", "callback_data": "menu:project"}},
+		{{"text": "💭 Variant", "callback_data": "menu:variant"}, {"text": "🧠 Thinking", "callback_data": "menu:thinking"}},
+		{{"text": "📁 Project", "callback_data": "menu:project"}},
 		{{"text": "🔧 Tools", "callback_data": "menu:tools"}, {"text": "✅ Todos", "callback_data": "menu:todos"}, {"text": "✕ Close", "callback_data": "close"}},
 	}}
 }
@@ -677,7 +712,7 @@ func Root() map[string]any {
 func Hub() map[string]any {
 	labels := map[string]string{
 		"status": "📊 Status", "session": "💬 Sessions", "model": "🧠 Provider / Model", "agent": "🤖 Mode",
-		"variant": "💭 Variant", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
+		"variant": "💭 Variant", "thinking": "🧠 Thinking", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",

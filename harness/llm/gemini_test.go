@@ -246,28 +246,92 @@ func TestSanitizeGeminiSchemaDropsUnsupportedKeywords(t *testing.T) {
 	}
 }
 
-// TestBuildGeminiRequestMapsGenerationConfig pins the reasoning and output
-// settings, including that thinking levels the API would reject are not sent.
+// TestBuildGeminiRequestMapsGenerationConfig pins the output token limit and
+// that thinking is not configured into a request that expressed no preference.
 func TestBuildGeminiRequestMapsGenerationConfig(t *testing.T) {
 	body := buildGeminiRequest(StreamRequest{
 		Messages:  []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
 		MaxTokens: 4096,
-		Reason:    ReasonHigh,
-	})
+	}, "gemini-3.5-flash-lite")
 	config := body.GenerationConfig
 	if config == nil || config.MaxOutputTokens != 4096 {
 		t.Fatalf("generationConfig = %#v", config)
 	}
-	if config.ThinkingConfig == nil || config.ThinkingConfig.ThinkingLevel != "high" || !config.ThinkingConfig.IncludeThoughts {
+	// No level chosen means the model's own documented default applies, but
+	// thought summaries are still requested so reasoning can be shown.
+	if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
 		t.Fatalf("thinkingConfig = %#v", config.ThinkingConfig)
 	}
-	minimal := buildGeminiRequest(StreamRequest{Reason: ReasonMinimal})
-	if minimal.GenerationConfig.ThinkingConfig.ThinkingLevel != "low" {
-		t.Fatalf("minimal must collapse onto a supported level, got %q", minimal.GenerationConfig.ThinkingConfig.ThinkingLevel)
+	if config.ThinkingConfig.ThinkingLevel != "" {
+		t.Fatalf("no level was chosen, so none may be sent: %q", config.ThinkingConfig.ThinkingLevel)
 	}
-	off := buildGeminiRequest(StreamRequest{Reason: ReasonOff})
-	if off.GenerationConfig != nil {
-		t.Fatalf("reasoning off must send no generationConfig, got %#v", off.GenerationConfig)
+}
+
+// TestGeminiThinkingLevelPerModel pins Google's documented support table. Sending
+// an unsupported level is a hard 400, so an unlisted level must be clamped to
+// something the model accepts rather than forwarded.
+func TestGeminiThinkingLevelPerModel(t *testing.T) {
+	cases := []struct {
+		model     string
+		requested ReasonLevel
+		want      string
+	}{
+		// Flash-Lite accepts all four levels.
+		{"gemini-3.5-flash-lite", ReasonMinimal, "minimal"},
+		{"gemini-3.5-flash-lite", ReasonLow, "low"},
+		{"gemini-3.5-flash-lite", ReasonMedium, "medium"},
+		{"gemini-3.5-flash-lite", ReasonHigh, "high"},
+		// Ceraa's finer levels collapse onto Gemini's highest.
+		{"gemini-3.5-flash-lite", ReasonXHigh, "high"},
+		{"gemini-3.5-flash-lite", ReasonMax, "high"},
+		// 3.7 and 3.8 Flash reject minimal outright.
+		{"gemini-3.7-flash", ReasonMinimal, "low"},
+		{"gemini-3.8-flash", ReasonMinimal, "low"},
+		// Pro models never accept minimal, and thinking cannot be disabled.
+		{"gemini-3.1-pro-preview", ReasonMinimal, "low"},
+		{"gemini-3.1-pro-preview", ReasonMedium, "medium"},
+		{"gemini-3-pro-preview", ReasonMedium, "high"},
+		{"gemini-3-pro-preview", ReasonLow, "low"},
+		// Unknown Gemini 3 model gets the full set.
+		{"gemini-3.9-flash", ReasonMedium, "medium"},
+	}
+	for _, tc := range cases {
+		got := buildGeminiThinkingConfig(tc.model, tc.requested)
+		if got == nil || got.ThinkingLevel != tc.want {
+			t.Errorf("buildGeminiThinkingConfig(%q, %q).ThinkingLevel = %v, want %q", tc.model, tc.requested, got, tc.want)
+		}
+	}
+}
+
+// TestGeminiThinkingLevelOffStillRequestsThoughts pins that turning thinking off
+// is the only thing that suppresses thought summaries.
+func TestGeminiThinkingLevelOffStillRequestsThoughts(t *testing.T) {
+	off := buildGeminiThinkingConfig("gemini-3.5-flash-lite", ReasonOff)
+	if off == nil {
+		t.Fatal("a config is always sent so the choice is explicit")
+	}
+	if off.IncludeThoughts {
+		t.Fatal("thinking off must not request thought summaries")
+	}
+	if off.ThinkingLevel != "" || off.ThinkingBudget != nil {
+		t.Fatalf("thinking off must not pin a level: %#v", off)
+	}
+}
+
+// TestGemini25UsesThinkingBudget pins that the 2.5 series is sent a token budget
+// rather than a level, since it does not support levels at all, and that the two
+// are never sent together.
+func TestGemini25UsesThinkingBudget(t *testing.T) {
+	config := buildGeminiThinkingConfig("gemini-2.5-pro", ReasonHigh)
+	if config.ThinkingLevel != "" {
+		t.Fatalf("2.5 rejects thinkingLevel: %q", config.ThinkingLevel)
+	}
+	if config.ThinkingBudget == nil || *config.ThinkingBudget != -1 {
+		t.Fatalf("budget = %#v, want dynamic thinking", config.ThinkingBudget)
+	}
+	minimal := buildGeminiThinkingConfig("gemini-2.5-flash", ReasonMinimal)
+	if minimal.ThinkingBudget == nil || *minimal.ThinkingBudget != 0 {
+		t.Fatalf("minimal budget = %#v", minimal.ThinkingBudget)
 	}
 }
 
@@ -275,13 +339,13 @@ func TestBuildGeminiRequestMapsGenerationConfig(t *testing.T) {
 // translated; an automatic choice needs no toolConfig at all.
 func TestBuildGeminiRequestMapsToolChoice(t *testing.T) {
 	tools := []ToolDef{{Name: "bash", Description: "run", Parameters: map[string]any{"type": "object"}}}
-	if body := buildGeminiRequest(StreamRequest{Tools: tools, ToolChoice: "auto"}); body.ToolConfig != nil {
+	if body := buildGeminiRequest(StreamRequest{Tools: tools, ToolChoice: "auto"}, "gemini-3.5-flash-lite"); body.ToolConfig != nil {
 		t.Fatalf("auto must send no toolConfig, got %#v", body.ToolConfig)
 	}
-	if body := buildGeminiRequest(StreamRequest{Tools: tools, ToolChoice: "required"}); body.ToolConfig == nil || body.ToolConfig.FunctionCallingConfig["mode"] != "ANY" {
+	if body := buildGeminiRequest(StreamRequest{Tools: tools, ToolChoice: "required"}, "gemini-3.5-flash-lite"); body.ToolConfig == nil || body.ToolConfig.FunctionCallingConfig["mode"] != "ANY" {
 		t.Fatalf("required = %#v", body.ToolConfig)
 	}
-	if body := buildGeminiRequest(StreamRequest{Tools: tools, ToolChoice: "none"}); body.ToolConfig == nil || body.ToolConfig.FunctionCallingConfig["mode"] != "NONE" {
+	if body := buildGeminiRequest(StreamRequest{Tools: tools, ToolChoice: "none"}, "gemini-3.5-flash-lite"); body.ToolConfig == nil || body.ToolConfig.FunctionCallingConfig["mode"] != "NONE" {
 		t.Fatalf("none = %#v", body.ToolConfig)
 	}
 }

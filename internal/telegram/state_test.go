@@ -102,3 +102,24 @@ func TestBridgeStateRuntimeValues(t *testing.T) {
 		t.Fatal("expected automatic compaction to be disabled")
 	}
 }
+
+// TestSetReasoningValidatesAndPersists pins that a bad level is rejected instead
+// of being sent to the provider, and that "default" clears the override.
+func TestSetReasoningValidatesAndPersists(t *testing.T) {
+	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
+	if err := state.setReasoning("high"); err != nil {
+		t.Fatalf("setReasoning: %v", err)
+	}
+	if state.reasoning() != "high" {
+		t.Fatalf("reasoning = %q", state.reasoning())
+	}
+	if err := state.setReasoning("turbo"); err == nil {
+		t.Fatal("an unknown level must be rejected")
+	}
+	if err := state.setReasoning(""); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if state.reasoning() != "" {
+		t.Fatalf("reasoning = %q, want cleared", state.reasoning())
+	}
+}

@@ -634,6 +634,7 @@ func handleSettings(token string, chatID int64) {
 		providers = append(providers, name+":"+kind)
 	}
 	provider := activeProviderConfig(cfg, defaultState.provider())
+	_ = provider
 	text := fmt.Sprintf("⚙️ Safe settings\n• Provider: %s\n• Model: %s\n• Endpoint: %s\n• Context limit: %d\n• Max output: %d\n• Session store: %s\n• Telegram user: configured\n• Subscriptions: %s", defaultState.provider(), provider.Model, provider.URL, provider.ContextLimit, provider.MaxOutputTokens, cfg.SessionFile, strings.Join(providers, ", "))
 	sendMessageWithMarkup(token, chatID, text, map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "🧠 Model", "callback_data": "menu:model"}},

@@ -42,8 +42,13 @@ type Config struct {
 
 // LLMProvider holds LLM API settings.
 type LLMProvider struct {
-	URL             string `json:"url"`
-	Model           string `json:"model"`
+	URL   string `json:"url"`
+	Model string `json:"model"`
+	// Reasoning selects how much the model thinks before answering: off,
+	// minimal, low, medium, high, xhigh, or max. It is advisory; a provider
+	// clamps it to what its model supports. Empty leaves the provider on its
+	// own default.
+	Reasoning       string `json:"reasoning,omitempty"`
 	APIKey          string `json:"api_key,omitempty"`
 	ContextLimit    int    `json:"context_limit,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
@@ -57,6 +62,7 @@ type ProviderProfile struct {
 	URL             string `json:"url"`
 	APIKey          string `json:"api_key,omitempty"`
 	Model           string `json:"model"`
+	Reasoning       string `json:"reasoning,omitempty"`
 	ContextLimit    int    `json:"context_limit,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
@@ -152,6 +158,9 @@ func (c *Config) ActiveLLM() LLMProvider {
 	}
 	if profile.Model != "" {
 		result.Model = profile.Model
+	}
+	if profile.Reasoning != "" {
+		result.Reasoning = profile.Reasoning
 	}
 	if profile.ContextLimit > 0 {
 		result.ContextLimit = profile.ContextLimit

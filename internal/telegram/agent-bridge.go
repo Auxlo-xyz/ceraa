@@ -105,6 +105,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	skillContext, _ := skillStore.ActiveContext(2000)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
+		Reasoning:           llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState)),
 		SystemPrompt:        prompt.System,
 		Model:               modelConfig,
 		ResolveModel:        resolveModel,
@@ -205,6 +206,19 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	return err
 }
 
+// effectiveReasoning picks the reasoning level for a run. A provider profile may
+// pin one; otherwise the runtime value chosen from the Thinking menu applies, and
+// an empty result leaves the provider on its own default.
+func effectiveReasoning(provider config.LLMProvider, state *bridgeState) string {
+	if trimmed := strings.TrimSpace(provider.Reasoning); trimmed != "" {
+		return trimmed
+	}
+	if state != nil {
+		return state.reasoning()
+	}
+	return ""
+}
+
 // telegramProviderUsesGeminiThoughtSignatures is kept as a named seam for the
 // runner's tests, but the rule itself lives in the transport and depends only
 // on the model and host. It used to return false for the "default" provider,
@@ -232,6 +246,9 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 	}
 	if profile.Model != "" {
 		result.Model = profile.Model
+	}
+	if profile.Reasoning != "" {
+		result.Reasoning = profile.Reasoning
 	}
 	if profile.ContextLimit > 0 {
 		result.ContextLimit = profile.ContextLimit

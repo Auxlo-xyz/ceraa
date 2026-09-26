@@ -64,6 +64,9 @@ type geminiToolConfig struct {
 type geminiThinkingConfig struct {
 	IncludeThoughts bool   `json:"includeThoughts"`
 	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
+	// ThinkingBudget is the Gemini 2.5 mechanism. The two are mutually
+	// exclusive: sending both is a 400.
+	ThinkingBudget *int `json:"thinkingBudget,omitempty"`
 }
 
 type geminiGenerationConfig struct {
@@ -333,20 +336,135 @@ func encodeGeminiTools(tools []ToolDef) []geminiTool {
 	return []geminiTool{{FunctionDeclarations: declarations}}
 }
 
-// geminiThinkingLevel maps Ceraa's reasoning level onto Gemini's thinking level.
-// Gemini 3 exposes low and high, so the finer Ceraa levels collapse onto them
-// rather than being sent as values the API would reject.
-func geminiThinkingLevel(level ReasonLevel) string {
+// geminiThinkingLevels lists the thinking levels a model accepts, ascending.
+// Google rejects an unsupported value outright, so an unknown model is given
+// the full Gemini 3 set and a known one its documented subset.
+func geminiThinkingLevels(model string) []string {
+	name := strings.ToLower(model)
+	switch {
+	case name == "":
+		return nil
+	case strings.Contains(name, "2.5"):
+		// The 2.5 series has no thinking level at all; it uses a token budget.
+		return nil
+	case strings.Contains(name, "pro-image"):
+		return []string{"high"}
+	case strings.Contains(name, "image"):
+		return []string{"minimal", "high"}
+	case strings.Contains(name, "3-pro"):
+		return []string{"low", "high"}
+	case strings.Contains(name, "pro"):
+		return []string{"low", "medium", "high"}
+	case strings.Contains(name, "3.7-flash"), strings.Contains(name, "3.8-flash"):
+		return []string{"low", "medium", "high"}
+	}
+	return []string{"minimal", "low", "medium", "high"}
+}
+
+// geminiRequestedLevel maps Ceraa's reasoning level onto the closest Gemini
+// thinking level. Gemini has four levels, so the finer Ceraa levels collapse
+// onto high rather than being sent as values the API would reject.
+func geminiRequestedLevel(level ReasonLevel) string {
 	switch level {
-	case ReasonMinimal, ReasonLow:
+	case ReasonMinimal:
+		return "minimal"
+	case ReasonLow:
 		return "low"
-	case ReasonMedium, ReasonHigh, ReasonXHigh, ReasonMax:
+	case ReasonMedium:
+		return "medium"
+	case ReasonHigh, ReasonXHigh, ReasonMax:
 		return "high"
 	}
 	return ""
 }
 
-func buildGeminiRequest(req StreamRequest) geminiRequest {
+// geminiLevelOrder is Gemini's own ordering of thinking levels, from least to most
+// reasoning. It is what makes clamping by position rather than by membership
+// possible: a model that omits one level still has a well defined neighbourhood.
+var geminiLevelOrder = []string{"minimal", "low", "medium", "high"}
+
+func geminiLevelIndex(level string) int {
+	for i, candidate := range geminiLevelOrder {
+		if candidate == level {
+			return i
+		}
+	}
+	return -1
+}
+
+// clampGeminiLevel picks the supported level nearest the request: the next level
+// up that the model accepts, or its highest when the request exceeds everything
+// available. Without this, asking for minimal on a Pro model is a 400, while
+// dropping the level silently substitutes the model default, which for Pro is
+// higher reasoning than the user asked for.
+func clampGeminiLevel(supported []string, requested string) string {
+	if requested == "" || len(supported) == 0 {
+		return ""
+	}
+	wanted := geminiLevelIndex(requested)
+	if wanted < 0 {
+		return supported[len(supported)-1]
+	}
+	best := ""
+	bestIndex := -1
+	for _, level := range supported {
+		index := geminiLevelIndex(level)
+		if index >= wanted && (bestIndex < 0 || index < bestIndex) {
+			best, bestIndex = level, index
+		}
+	}
+	if best == "" {
+		// The request is above everything this model supports.
+		highest := supported[0]
+		highestIndex := geminiLevelIndex(highest)
+		for _, level := range supported {
+			if index := geminiLevelIndex(level); index > highestIndex {
+				highest, highestIndex = level, index
+			}
+		}
+		return highest
+	}
+	return best
+}
+
+// geminiThinkingBudgets maps Ceraa's levels onto a Gemini 2.5 token budget.
+// Google documents -1 as dynamic thinking and 0 as thinking off; 2.5 has no
+// minimal level, so the Ceraa minimal level is the nearest equivalent.
+var geminiThinkingBudgets = map[ReasonLevel]int{
+	ReasonMinimal: 0,
+	ReasonLow:     1024,
+	ReasonMedium:  8192,
+	ReasonHigh:    -1,
+	ReasonXHigh:   -1,
+	ReasonMax:     -1,
+}
+
+// buildGeminiThinkingConfig decides how a request controls thinking.
+//
+// includeThoughts is what makes reasoning visible at all, so it is on unless
+// thinking was explicitly turned off. The level itself is only sent when one was
+// chosen: an unset level leaves the model on its own documented default, which
+// is the behaviour to respect when the user has expressed no preference.
+func buildGeminiThinkingConfig(model string, level ReasonLevel) *geminiThinkingConfig {
+	config := &geminiThinkingConfig{IncludeThoughts: level != ReasonOff}
+	if level == ReasonOff || level == "" {
+		return config
+	}
+	if supported := geminiThinkingLevels(model); len(supported) > 0 {
+		if clamped := clampGeminiLevel(supported, geminiRequestedLevel(level)); clamped != "" {
+			config.ThinkingLevel = clamped
+		}
+		return config
+	}
+	if strings.Contains(strings.ToLower(model), "2.5") {
+		if budget, ok := geminiThinkingBudgets[level]; ok {
+			config.ThinkingBudget = &budget
+		}
+	}
+	return config
+}
+
+func buildGeminiRequest(req StreamRequest, model string) geminiRequest {
 	contents, system := encodeGeminiContents(req.Messages)
 	body := geminiRequest{Contents: contents, SystemInstruction: system, Tools: encodeGeminiTools(req.Tools)}
 	if len(body.Tools) > 0 {
@@ -363,13 +481,7 @@ func buildGeminiRequest(req StreamRequest) geminiRequest {
 	if req.MaxTokens > 0 {
 		config.MaxOutputTokens = req.MaxTokens
 	}
-	if req.Reason != "" && req.Reason != ReasonOff {
-		thinking := &geminiThinkingConfig{IncludeThoughts: true}
-		if level := geminiThinkingLevel(req.Reason); level != "" {
-			thinking.ThinkingLevel = level
-		}
-		config.ThinkingConfig = thinking
-	}
+	config.ThinkingConfig = buildGeminiThinkingConfig(model, req.Reason)
 	if *config != (geminiGenerationConfig{}) {
 		body.GenerationConfig = config
 	}
@@ -526,7 +638,7 @@ func (c *StreamingClient) readGeminiStream(r io.Reader, onDelta func(ProviderRes
 // streamGemini performs one native Gemini request, including retries. It
 // mirrors the chat-completions path so both transports surface the same errors.
 func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
-	body := buildGeminiRequest(req)
+	body := buildGeminiRequest(req, c.cfg.Model)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("encode gemini request: %w", err)
