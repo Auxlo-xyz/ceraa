@@ -14,15 +14,26 @@ type QuestionTool struct{}
 
 func (q *QuestionTool) Name() string { return "question" }
 func (q *QuestionTool) Description() string {
-	return "Ask user a question with options. Use when you need clarification. Shows buttons in Telegram."
+	return "Ask user a question with options, or with a free-form answer field. Use when you need " +
+		"clarification. Options become buttons in Telegram; a free-form question lets the user " +
+		"reply with their own words instead of being limited to what you offered. Ask free-form " +
+		"when the answer is not one of a small fixed set, such as a value, a path, or a name."
 }
 func (q *QuestionTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"question": map[string]any{"type": "string", "description": "Question to ask"},
-			"options":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Answer options (2-4)"},
-			"header":   map[string]any{"type": "string", "description": "Header for question"},
+			"options": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Answer options (2-4). Omit, or pass free_form, when the user should be able to answer in their own words.",
+			},
+			"free_form": map[string]any{
+				"type":        "boolean",
+				"description": "Let the user type any answer instead of choosing one of the options. The options, if any, are then offered as suggestions.",
+			},
+			"header": map[string]any{"type": "string", "description": "Header for question"},
 		},
 		"required": []string{"question"},
 	}
@@ -38,6 +49,16 @@ func (q *QuestionTool) Translate(args map[string]any) (operation.Spec, error) {
 	}
 	if v, ok := args["header"]; ok {
 		spec.Args["header"] = v
+	}
+	if v, ok := args["free_form"]; ok {
+		if enabled, isBool := v.(bool); isBool && enabled {
+			spec.Args["free_form"] = true
+		}
+	}
+	// Free-form is the default when no options are given, because a question with
+	// only Yes and No is rarely what was meant.
+	if _, hasOptions := spec.Args["options"]; !hasOptions {
+		spec.Args["free_form"] = true
 	}
 	// Pass sessionID if available in args (set by agent-bridge)
 	if v, ok := args["session_id"]; ok {

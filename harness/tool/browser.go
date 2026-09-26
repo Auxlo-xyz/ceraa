@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,8 +66,11 @@ func (b *BrowserTool) Schema() map[string]any {
 				"enum":        []string{"open", "screenshot", "text", "html", "click", "type", "eval", "status", "close"},
 				"description": "The browser action to perform.",
 			},
-			"url":      map[string]any{"type": "string", "description": "URL to open. Required for action=open."},
-			"path":     map[string]any{"type": "string", "description": "Where to write a screenshot. Defaults to a file in the Ceraa data directory."},
+			"url": map[string]any{"type": "string", "description": "Web address to open, http or https. Use with action=open."},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "For action=open, a local file to render, which is usually what you want after writing HTML. For action=screenshot, where to write the image, defaulting to the Ceraa data directory.",
+			},
 			"selector": map[string]any{"type": "string", "description": "CSS selector for screenshot, text, html, click, or type."},
 			"text":     map[string]any{"type": "string", "description": "Text to type for action=type."},
 			"script":   map[string]any{"type": "string", "description": "JavaScript source for action=eval. The page's result is returned as JSON."},
@@ -93,7 +97,7 @@ var browserArgSpec = map[string]struct {
 	required []string
 	optional []string
 }{
-	"open":       {required: []string{"url"}, optional: []string{"wait_ms"}},
+	"open":       {required: []string{}, optional: []string{"url", "path", "wait_ms"}},
 	"screenshot": {optional: []string{"path", "selector", "full_page", "wait_ms"}},
 	"text":       {optional: []string{"selector", "wait_ms"}},
 	"html":       {optional: []string{"selector", "wait_ms"}},
@@ -141,6 +145,16 @@ func (b *BrowserTool) Translate(args map[string]any) (operation.Spec, error) {
 			return operation.Spec{}, fmt.Errorf("browser action %q requires %q", action, key)
 		}
 	}
+	// open needs a target, and accepts either a web address or a local file. A
+	// separate path argument rather than a file:// URL keeps the URL check
+	// honest: web addresses are still restricted to http and https.
+	if action == "open" {
+		_, hasURL := translated["url"]
+		_, hasPath := translated["path"]
+		if hasURL == hasPath {
+			return operation.Spec{}, errors.New("browser action \"open\" requires exactly one of \"url\" or \"path\"")
+		}
+	}
 	return operation.Spec{Type: "browser", Args: translated}, nil
 }
 
@@ -167,6 +181,13 @@ func validateBrowserArg(action, key string, value any) error {
 		}
 		if key == "url" {
 			if err := validateBrowserURL(strings.TrimSpace(text)); err != nil {
+				return err
+			}
+		}
+		if key == "path" && action == "open" {
+			// Checked here so an unusable target is refused before the call is
+			// dispatched, rather than failing after a browser has been launched.
+			if _, err := localFileURL(strings.TrimSpace(text)); err != nil {
 				return err
 			}
 		}
@@ -246,7 +267,11 @@ func performBrowserAction(ctx context.Context, driver browserDriver, args map[st
 	action, _ := args["action"].(string)
 	switch action {
 	case "open":
-		info, err := driver.Navigate(ctx, stringArg("url"))
+		target, err := browserOpenTarget(args)
+		if err != nil {
+			return "", err
+		}
+		info, err := driver.Navigate(ctx, target)
 		if err != nil {
 			return "", err
 		}
@@ -429,3 +454,50 @@ func (m *BrowserManager) closeIfIdleLocked() {
 // one page, so two actions at once would interleave on the same document and
 // produce results neither caller asked for.
 func (b *BrowserTool) Sequential() bool { return true }
+
+// browserOpenTarget resolves what to navigate to.
+//
+// A local file is served from disk through a file URL rather than being copied
+// anywhere or read into memory. A web address still has to be http or https:
+// those are the schemes a browser may be pointed at, and a javascript: URL in
+// particular would execute in the page rather than navigate to one.
+func browserOpenTarget(args map[string]any) (string, error) {
+	if raw, ok := args["url"].(string); ok && strings.TrimSpace(raw) != "" {
+		target := strings.TrimSpace(raw)
+		if err := validateBrowserURL(target); err != nil {
+			return "", err
+		}
+		return target, nil
+	}
+	raw, _ := args["path"].(string)
+	target, err := localFileURL(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// localFileURL turns a path into a file URL a browser can render.
+func localFileURL(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("open requires either \"url\" or \"path\"")
+	}
+	resolved, err := ResolvePath(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	if info.IsDir() {
+		// A directory has no index document to render, and guessing one would
+		// open something other than what was asked for.
+		return "", fmt.Errorf("open %s: that is a directory, name a file inside it", path)
+	}
+	absolute, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String(), nil
+}

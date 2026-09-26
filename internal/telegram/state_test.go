@@ -123,3 +123,23 @@ func TestSetReasoningValidatesAndPersists(t *testing.T) {
 		t.Fatalf("reasoning = %q, want cleared", state.reasoning())
 	}
 }
+
+// TestExpectAnswerRoutesTheNextMessageToTheQuestion pins that a typed answer is
+// claimed by the question that asked for it, and only once.
+//
+// Without this, a free-form answer is indistinguishable from a new task, so the
+// answer would be run as a prompt and the question would time out.
+func TestExpectAnswerRoutesTheNextMessageToTheQuestion(t *testing.T) {
+	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
+	state.expectAnswer("q-1", 4242)
+
+	if _, waiting := state.takeAnswer(9999); waiting {
+		t.Fatal("another chat must not claim this answer")
+	}
+	if requestID, waiting := state.takeAnswer(4242); !waiting || requestID != "q-1" {
+		t.Fatalf("takeAnswer = %q, %v", requestID, waiting)
+	}
+	if _, waiting := state.takeAnswer(4242); waiting {
+		t.Fatal("a second message must be treated as a new task, not another answer")
+	}
+}

@@ -27,12 +27,13 @@ type bridgeState struct {
 	Agent            string                            `json:"agent,omitempty"`
 	Variant          string                            `json:"variant,omitempty"`
 	Reasoning        string                            `json:"reasoning,omitempty"`
-	ActiveSessions   map[string]string                 `json:"active_sessions,omitempty"`
-	Projects         map[string]string                 `json:"projects,omitempty"`
-	SessionProjects  map[string]string                 `json:"session_projects,omitempty"`
-	AlwaysAllow      map[string]bool                   `json:"always_allow,omitempty"`
-	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
-	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
+	answerRequests   map[string]int64
+	ActiveSessions   map[string]string `json:"active_sessions,omitempty"`
+	Projects         map[string]string `json:"projects,omitempty"`
+	SessionProjects  map[string]string `json:"session_projects,omitempty"`
+	AlwaysAllow      map[string]bool   `json:"always_allow,omitempty"`
+	AutoCompaction   bool              `json:"auto_compaction,omitempty"`
+	AutoSet          bool              `json:"auto_compaction_set,omitempty"`
 }
 
 var defaultState = loadBridgeState()
@@ -369,4 +370,30 @@ func requestForcedCompaction(sessionID string) {
 func consumeForcedCompaction(sessionID string) bool {
 	_, loaded := forcedCompactions.LoadAndDelete(sessionID)
 	return loaded
+}
+
+// awaitingAnswer records that the user's next plain message answers a question
+// rather than starting a new task. Without this, a typed answer would be run as
+// if it were a prompt.
+func (s *bridgeState) expectAnswer(requestID string, chatID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.answerRequests == nil {
+		s.answerRequests = make(map[string]int64)
+	}
+	s.answerRequests[requestID] = chatID
+}
+
+// takeAnswer returns the chat a typed answer belongs to, and clears it so a
+// second message is treated as a task again.
+func (s *bridgeState) takeAnswer(chatID int64) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for requestID, owner := range s.answerRequests {
+		if owner == chatID {
+			delete(s.answerRequests, requestID)
+			return requestID, true
+		}
+	}
+	return "", false
 }

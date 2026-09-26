@@ -363,3 +363,107 @@ func TestBrowserOutputIsBounded(t *testing.T) {
 		t.Fatal("truncated output should say so")
 	}
 }
+
+// TestBrowserOpenRendersLocalFile pins that a file the agent just wrote can be
+// rendered, which is the common case and was previously rejected as a file://
+// URL with no supported alternative.
+func TestBrowserOpenRendersLocalFile(t *testing.T) {
+	tool := NewBrowserTool()
+	dir := t.TempDir()
+	page := dir + "/landing.html"
+	if err := os.WriteFile(page, []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := tool.Translate(map[string]any{"action": "open", "path": page})
+	if err != nil {
+		t.Fatalf("open by path should be accepted: %v", err)
+	}
+	target, err := browserOpenTarget(spec.Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(target, "file://") || !strings.HasSuffix(target, "landing.html") {
+		t.Fatalf("target = %q", target)
+	}
+
+	if _, err := tool.Translate(map[string]any{"action": "open", "path": dir}); err == nil {
+		t.Fatal("opening a directory should be refused rather than guessing an index file")
+	}
+	if _, err := tool.Translate(map[string]any{"action": "open", "path": dir + "/missing.html"}); err == nil {
+		t.Fatal("opening a missing file should fail at translate time")
+	}
+}
+
+// TestBrowserOpenRequiresExactlyOneTarget pins that open is never left without a
+// destination or given two conflicting ones.
+func TestBrowserOpenRequiresExactlyOneTarget(t *testing.T) {
+	tool := NewBrowserTool()
+	if _, err := tool.Translate(map[string]any{"action": "open"}); err == nil {
+		t.Fatal("open with no target should fail")
+	}
+	if _, err := tool.Translate(map[string]any{"action": "open", "url": "https://example.com", "path": "a.html"}); err == nil {
+		t.Fatal("open with both url and path should fail")
+	}
+}
+
+// TestBrowserStillRejectsNonWebSchemes pins that adding a local path did not
+// loosen which web schemes a browser may be pointed at.
+func TestBrowserStillRejectsNonWebSchemes(t *testing.T) {
+	tool := NewBrowserTool()
+	for _, url := range []string{"javascript:alert(1)", "data:text/html,<b>x", "ftp://host/f"} {
+		if _, err := tool.Translate(map[string]any{"action": "open", "url": url}); err == nil {
+			t.Errorf("url %q should still be rejected", url)
+		}
+	}
+}
+
+// TestPrefersSystemBrowserOverDownload pins that a browser already on the host is
+// used, so the tool does not download a private copy it does not need.
+func TestPrefersSystemBrowserOverDownload(t *testing.T) {
+	found, err := resolveBrowserBinary(context.Background())
+	if err != nil {
+		t.Skipf("no browser available on this host: %v", err)
+	}
+	if _, installed := executableExists(found); !installed {
+		// The downloaded fallback is legitimate when nothing is installed.
+		t.Skip("no system browser, so the private download is the only option")
+	}
+	for _, candidate := range systemBrowserCandidates {
+		if expected, ok := executableExists(candidate); ok {
+			if expected != found {
+				t.Fatalf("resolved %q but %q is installed", found, expected)
+			}
+			t.Logf("using system browser %s", found)
+			return
+		}
+	}
+	t.Fatalf("resolved %q but none of the known system paths matched", found)
+}
+
+// TestQuestionIsFreeFormWithoutOptions pins that a question with no options is
+// answerable in the user's own words, rather than silently becoming Yes or No.
+func TestQuestionIsFreeFormWithoutOptions(t *testing.T) {
+	tool := &QuestionTool{}
+	spec, err := tool.Translate(map[string]any{"question": "Which path should I use?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Args["free_form"] != true {
+		t.Fatalf("a question with no options must be free-form, got %#v", spec.Args)
+	}
+
+	chosen, err := tool.Translate(map[string]any{"question": "Ship it?", "options": []any{"Yes", "No"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := chosen.Args["free_form"]; present {
+		t.Fatal("explicit options stay button-only unless free_form is set")
+	}
+	both, err := tool.Translate(map[string]any{"question": "Ship it?", "options": []any{"Yes", "No"}, "free_form": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if both.Args["free_form"] != true {
+		t.Fatal("free_form with options must be honoured, so the options become suggestions")
+	}
+}

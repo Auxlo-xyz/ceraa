@@ -45,21 +45,18 @@ type rodDriver struct {
 	page    *rod.Page
 }
 
-// newRodDriver downloads Chromium on first use and launches it headless.
+// newRodDriver launches a browser, preferring one already installed on the host.
 //
-// The binary lives in the Ceraa data directory rather than the user's project or
-// rod's default cache, so it is removed with the rest of Ceraa's state and never
-// shows up as an untracked file in a repository.
+// Downloading a browser is a large, slow, and unnecessary step when the host
+// already has a working one. rod is used to drive whichever binary is found, so
+// the library is not tied to the browser it controls.
 func newRodDriver(ctx context.Context) (browserDriver, error) {
 	launchCtx, cancel := context.WithTimeout(ctx, browserLaunchTimeout)
 	defer cancel()
 
-	fetcher := launcher.NewBrowser()
-	fetcher.RootDir = browserDownloadDir()
-	fetcher.Context = launchCtx
-	binary, err := fetcher.Get()
+	binary, err := resolveBrowserBinary(launchCtx)
 	if err != nil {
-		return nil, fmt.Errorf("prepare chromium: %w", err)
+		return nil, err
 	}
 
 	control := launcher.New().
@@ -74,7 +71,7 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 
 	controlURL, err := control.Launch()
 	if err != nil {
-		return nil, fmt.Errorf("launch chromium: %w", err)
+		return nil, fmt.Errorf("launch %s: %w", binary, err)
 	}
 
 	// The launch context is only for starting up. Binding the browser to it would
@@ -92,6 +89,51 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 	// cannot stall a whole run.
 	page = page.Timeout(pageActionTimeout)
 	return &rodDriver{browser: browser, page: page}, nil
+}
+
+// resolveBrowserBinary returns a usable browser, preferring one already on the
+// host over downloading a private copy.
+func resolveBrowserBinary(ctx context.Context) (string, error) {
+	for _, candidate := range systemBrowserCandidates {
+		if path, ok := executableExists(candidate); ok {
+			return path, nil
+		}
+	}
+	fetcher := launcher.NewBrowser()
+	fetcher.RootDir = browserDownloadDir()
+	fetcher.Context = ctx
+	binary, err := fetcher.Get()
+	if err != nil {
+		return "", fmt.Errorf("no browser found on this host and downloading one failed: %w", err)
+	}
+	return binary, nil
+}
+
+// systemBrowserCandidates are checked in order. The packaged Google Chrome path
+// comes first because it is the most common single-package install; the rest
+// cover the usual names and locations.
+var systemBrowserCandidates = []string{
+	"/opt/google/chrome/chrome",
+	"/usr/bin/google-chrome",
+	"/usr/bin/google-chrome-stable",
+	"/usr/bin/chromium",
+	"/usr/bin/chromium-browser",
+	"/snap/bin/chromium",
+	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+	"/Applications/Chromium.app/Contents/MacOS/Chromium",
+}
+
+// executableExists resolves a candidate only when it is a runnable file, so a
+// dangling symlink or an unreadable path is skipped rather than launched.
+func executableExists(path string) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", false
+	}
+	return path, true
 }
 
 // browserDownloadDir keeps the browser binary with the rest of Ceraa's data.

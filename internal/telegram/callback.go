@@ -565,6 +565,14 @@ func handleCallback(token string, q *struct {
 		}
 		return
 	}
+	if strings.HasPrefix(data, "qtype:") {
+		requestID := strings.TrimPrefix(data, "qtype:")
+		// A question with no options is already free-form, so the prompt is just a
+		// reminder; one with options now allows an answer outside them.
+		defaultState.expectAnswer(requestID, chatID)
+		editCallback(token, chatID, q.Message.MessageID, "✍️ Reply with your answer.", nil)
+		return
+	}
 	if strings.HasPrefix(data, "qans:") {
 		parts := strings.SplitN(data, ":", 3)
 		if len(parts) < 3 {

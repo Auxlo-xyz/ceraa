@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"ceraa/harness/event"
 	"ceraa/harness/permission"
+	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
@@ -446,6 +447,19 @@ func Run() error {
 				send(token, u.Message.Chat.ID, "Unauthorized.")
 				continue
 			}
+			// A pending question takes precedence over a new task: the user was
+			// asked something, so their next message is the answer.
+			if text := strings.TrimSpace(u.Message.Text); text != "" {
+				if requestID, waiting := defaultState.takeAnswer(u.Message.Chat.ID); waiting {
+					GetDefaultInbox().CheckAndRecord(u.UpdateID)
+					if question.Default.Answer(currentSessionID(u.Message.Chat.ID), requestID, text) {
+						send(token, u.Message.Chat.ID, "✓ Answered: "+text)
+					} else {
+						send(token, u.Message.Chat.ID, "That question already expired.")
+					}
+					continue
+				}
+			}
 			// media handlers -> map to soraacode app/services/file-browser-service + document-extractor + stt-service
 			if len(u.Message.Photo) > 0 {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
@@ -760,15 +774,24 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 								}
 							}
 						}
-						if len(opts) == 0 {
-							opts = []string{"Yes", "No"}
-						}
+						freeForm, _ := e.Data["free_form"].(bool)
 						var rows [][]map[string]string
 						for _, opt := range opts {
 							rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + reqID + ":" + opt}})
 						}
+						// Without a way to type, the user is limited to the exact
+						// strings offered, which is wrong whenever the answer is a
+						// value, a path, or a name.
+						if freeForm || len(opts) == 0 {
+							rows = append(rows, []map[string]string{{"text": "✍️ Type an answer", "callback_data": "qtype:" + reqID}})
+						}
 						rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 						kb := map[string]any{"inline_keyboard": rows}
+						if freeForm {
+							// Mark the message as one whose next plain reply is an
+							// answer, so the typed text is not mistaken for a task.
+							defaultState.expectAnswer(reqID, chatID)
+						}
 						sendMessageWithMarkup(token, chatID, "❓ "+ques, kb)
 					}
 				case <-idleTimer.C:
