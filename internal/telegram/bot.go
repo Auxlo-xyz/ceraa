@@ -1260,6 +1260,15 @@ func handleCodexStatus(token string, chatID int64) {
 	authenticated := codexauth.Authenticated()
 	active := defaultState.provider()
 	_, activeModel, _ := defaultState.values()
+	// The runtime override above is empty unless the user set one, so it reports
+	// a blank model and hides which model is actually answering. The profile
+	// backing the active provider is the source of truth.
+	if _, profile, ok := defaultState.activeProviderProfile(); ok && profile.Model != "" {
+		activeModel = profile.Model
+	}
+	if activeModel == "" {
+		activeModel = "unknown"
+	}
 	// Which branch ran is the first question when a status reply looks stale, and
 	// it is invisible from the message alone.
 	logger.Info("codex status: authenticated=" + strconv.FormatBool(authenticated) +

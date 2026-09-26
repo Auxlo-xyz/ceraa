@@ -224,6 +224,7 @@ func modelMenu(chatID int64) map[string]any {
 		codexLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": codexLabel, "callback_data": "provider:codex"}})
+	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "🔎 Choose model", "callback_data": "menu:model_catalog"}, {"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
@@ -742,5 +743,38 @@ func Hub() map[string]any {
 		}
 	}
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// RemoveProviderMenu lists the providers that can actually be deleted.
+//
+// "default" is excluded because it is the base configuration rather than a
+// stored profile, and sessions may still be running against the active provider,
+// so the active one is marked rather than hidden.
+func RemoveProviderMenu(active string) map[string]any {
+	state := runtimeValues()
+	ids := make([]string, 0, len(state.ProviderProfiles))
+	for id := range state.ProviderProfiles {
+		if id == "default" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	if len(ids) == 0 {
+		return map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}},
+		}}
+	}
+	rows := make([][]map[string]string, 0, len(ids)+1)
+	for _, id := range ids {
+		label := "🗑 " + id
+		if id == active {
+			label = "⚠️ " + label + " (active)"
+		}
+		rows = append(rows, []map[string]string{{"text": label, "callback_data": "provider:remove:" + id}})
+	}
+	rows = append(rows, []map[string]string{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }

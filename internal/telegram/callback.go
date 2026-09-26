@@ -3,6 +3,7 @@ package telegram
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -319,6 +320,37 @@ func handleCallback(token string, q *struct {
 			return
 		}
 		editCallback(token, chatID, q.Message.MessageID, "✅ Provider set to "+provider, menus.InlineForChat("model", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if data == "provider:remove_menu" {
+		editCallback(token, chatID, q.Message.MessageID, "🗑 Remove provider", menus.RemoveProviderMenu(defaultState.provider()))
+		return
+	}
+	if strings.HasPrefix(data, "provider:remove:") {
+		providerID := strings.TrimPrefix(data, "provider:remove:")
+		// Confirmation before deleting: removal switches the active provider to
+		// default, which changes where the next task goes.
+		editCallback(token, chatID, q.Message.MessageID,
+			"Remove provider <b>"+html.EscapeString(providerID)+"</b>?\n\nIf it is the active provider, Ceraa switches to <b>default</b>.",
+			map[string]any{"inline_keyboard": [][]map[string]string{{
+				{"text": "✅ Remove", "callback_data": "provider:remove_confirm:" + providerID},
+				{"text": "✕ Cancel", "callback_data": "menu:model"},
+			}}})
+		return
+	}
+	if strings.HasPrefix(data, "provider:remove_confirm:") {
+		providerID := strings.TrimPrefix(data, "provider:remove_confirm:")
+		wasActive := defaultState.provider() == providerID
+		if err := defaultState.removeProviderProfile(providerID); err != nil {
+			editCallback(token, chatID, q.Message.MessageID, "Could not remove provider: "+err.Error(), nil)
+			return
+		}
+		logger.Info("provider removed: id=" + providerID + " was_active=" + strconv.FormatBool(wasActive))
+		note := ""
+		if wasActive {
+			note = "\n\nIt was active, so Ceraa is now on <b>default</b>."
+		}
+		editCallback(token, chatID, q.Message.MessageID, "🗑 Removed provider <b>"+html.EscapeString(providerID)+"</b>."+note, nil)
 		return
 	}
 	if data == "provider:codex" {

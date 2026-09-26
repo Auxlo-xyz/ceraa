@@ -339,6 +339,53 @@ func (s *bridgeState) setProviderProfile(name string, profile config.ProviderPro
 	return s.save()
 }
 
+// removeProviderProfile deletes a stored profile.
+//
+// "default" is refused: it is not a stored profile but the top-level provider
+// settings, so deleting it would have nothing to remove and would leave the
+// bot with no provider at all.
+func (s *bridgeState) removeProviderProfile(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("provider name is empty")
+	}
+	if name == "default" {
+		return errors.New("the default provider is the base configuration and cannot be removed; switch to another provider instead")
+	}
+	s.mu.Lock()
+	if _, ok := s.ProviderProfiles[name]; !ok {
+		s.mu.Unlock()
+		return errors.New("no provider named " + name)
+	}
+	delete(s.ProviderProfiles, name)
+	// Removing the active provider must not leave the bot pointing at a profile
+	// that no longer exists, so fall back to default.
+	if s.Provider == name {
+		s.Provider = "default"
+	}
+	s.mu.Unlock()
+	return s.save()
+}
+
+// activeProviderProfile returns the profile backing the active provider, and
+// whether one was found.
+//
+// The runtime model override is deliberately not consulted here: it is empty
+// unless the user set one, so reading it alone reports a blank model and hides
+// which model is actually answering.
+func (s *bridgeState) activeProviderProfile() (string, config.ProviderProfile, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id := s.Provider
+	if id == "" {
+		id = "default"
+	}
+	if profile, ok := s.ProviderProfiles[id]; ok {
+		return id, profile, true
+	}
+	return id, config.ProviderProfile{}, false
+}
+
 func (s *bridgeState) setModel(model string) error {
 	s.mu.Lock()
 	s.Model = model
