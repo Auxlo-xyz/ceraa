@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -64,22 +63,6 @@ func TestStopActiveRunWithNoRun(t *testing.T) {
 	}
 }
 
-// A Stop button left over from a finished run must not cancel the next one.
-func TestActiveRunMatchesGuardsStaleStopButton(t *testing.T) {
-	activeRuns.Store(int64(43), &activeRun{
-		cancel:    func() {},
-		sessionID: "sess-new",
-	})
-	t.Cleanup(func() { activeRuns.Delete(int64(43)) })
-
-	if activeRunMatches(43, "sess-old") {
-		t.Error("a stale button matched the current run")
-	}
-	if !activeRunMatches(43, "sess-new") {
-		t.Error("the current run did not match its own session")
-	}
-}
-
 // The stop path must go through the renderer's stop, because that is what sets
 // the stopped flag the run reports on.
 func TestStopUsesRendererStopNotRawCancel(t *testing.T) {
@@ -98,17 +81,5 @@ func TestStopUsesRendererStopNotRawCancel(t *testing.T) {
 	}
 	if cancelled {
 		t.Error("raw cancel was called directly; stop() owns cancellation")
-	}
-}
-
-func TestRunStopCallbackPrefixIsRecognised(t *testing.T) {
-	// The callback data carries a session suffix, so the handler matches a prefix.
-	data := "run:stop:tg-123"
-	if !strings.HasPrefix(data, "run:stop") {
-		t.Error("callback data does not match the handled prefix")
-	}
-	requested := strings.TrimPrefix(strings.TrimPrefix(data, "run:stop"), ":")
-	if requested != "tg-123" {
-		t.Errorf("session parsed as %q, want tg-123", requested)
 	}
 }

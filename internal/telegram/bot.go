@@ -320,9 +320,6 @@ type activeRun struct {
 	// stopped rather than as a failure.
 	stop      func()
 	sessionID string
-	// stopMessageID is the companion "Stop" message, cleared when the run ends so
-	// a stale button cannot sit in the chat pointing at a finished run.
-	stopMessageID int
 }
 
 // stopActiveRun cancels the chat's current run, if there is one. It reports
@@ -346,36 +343,8 @@ func stopActiveRun(chatID int64) (bool, string) {
 	return true, run.sessionID
 }
 
-// activeRunMatches reports whether the chat's current run is the given session.
-// An empty requested session matches anything, for a button that predates the
-// session suffix.
-func activeRunMatches(chatID int64, sessionID string) bool {
-	value, ok := activeRuns.Load(chatID)
-	if !ok {
-		return false
-	}
-	run, ok := value.(*activeRun)
-	if !ok || run == nil {
-		return false
-	}
-	return run.sessionID == sessionID
-}
-
-// clearStopMessage removes the Stop button from a finished run's message.
-func clearStopMessage(token string, chatID int64, messageID int) {
-	if messageID == 0 {
-		return
-	}
-	editCallback(token, chatID, messageID, "", map[string]any{"inline_keyboard": [][]map[string]string{}})
-}
-
-// sendStopMessage posts the companion control for a run in progress.
-func sendStopMessage(token string, chatID int64, sessionID string) int {
-	keyboard := map[string]any{"inline_keyboard": [][]map[string]string{{
-		{"text": "🛑 Stop", "callback_data": "run:stop:" + sessionID},
-	}}}
-	return sendMessageWithMarkup(token, chatID, "⏳ Working — tap Stop to cancel this run.", keyboard)
-}
+// clearStopMessage is gone along with the companion Stop message. Cancelling is
+// reached with /stop, /cancel or /abort.
 
 // defaultRunCeiling bounds a single agent run.
 //
@@ -822,19 +791,16 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	renderer.setCancel(cancelRun)
 	defer renderer.close()
 
-	// A companion control rather than a button on the streamed message: the
-	// streaming path edits a rich message, which carries no reply markup.
+	// Cancelling is by command only: /stop, /cancel or /abort. A companion Stop
+	// button was tried and removed; the typing indicator already shows that work is
+	// happening, so the extra message was noise.
 	active := &activeRun{
-		cancel:        cancelRun,
-		stop:          renderer.stop,
-		sessionID:     sessionID,
-		stopMessageID: sendStopMessage(token, chatID, sessionID),
+		cancel:    cancelRun,
+		stop:      renderer.stop,
+		sessionID: sessionID,
 	}
 	activeRuns.Store(chatID, active)
-	defer func() {
-		activeRuns.Delete(chatID)
-		clearStopMessage(token, chatID, active.stopMessageID)
-	}()
+	defer activeRuns.Delete(chatID)
 
 	// SSE-like event subscription -> maps to soraacode soraacode/events.js subscribeToEvents + event-subscription-service.js
 	// Subscribe to harness event bus for this session, with reconnect like soraacode 1s->15s backoff, 30s idle

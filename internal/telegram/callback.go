@@ -674,19 +674,11 @@ func handleCallback(token string, q *struct {
 		return
 	}
 	if strings.HasPrefix(data, "run:stop") {
-		requested := strings.TrimPrefix(strings.TrimPrefix(data, "run:stop"), ":")
-		// The session is checked before anything is cancelled. Deciding afterwards
-		// would mean a stale button had already killed the run it did not belong to.
-		if requested != "" && !activeRunMatches(chatID, requested) {
-			editHTML(token, chatID, q.Message.MessageID,
-				"That run already finished, so there is nothing to stop.", nil)
-			return
-		}
-		if stopped, _ := stopActiveRun(chatID); !stopped {
-			editHTML(token, chatID, q.Message.MessageID, "Nothing is running any more.", nil)
-			return
-		}
-		editHTML(token, chatID, q.Message.MessageID, "🛑 Stopped.", nil)
+		// The Stop button has been removed; /stop is the way to cancel. Buttons
+		// from before the removal are still sitting in chats, so the tap is answered
+		// with the replacement rather than ignored.
+		editHTML(token, chatID, q.Message.MessageID,
+			"That button is gone. Send /stop to cancel a running task.", nil)
 		return
 	}
 	if data == "context:clear" {
