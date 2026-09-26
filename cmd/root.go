@@ -16,6 +16,11 @@ import (
 var root = &cobra.Command{
 	Use:   "ceraa [prompt]",
 	Short: "Ceraa - coding harness",
+	// Without this, cobra's default for a command that has subcommands rejects
+	// any first argument that is not a subcommand name, so the documented
+	// `ceraa "do something"` failed with `unknown command "do something"`. A known
+	// subcommand still wins, so `ceraa start` and `ceraa doctor` are unaffected.
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()
@@ -114,13 +119,22 @@ func maskToken(s string) string {
 	return "set"
 }
 
-func Execute() {
+// registerSubcommands attaches the built-in subcommands to root.
+//
+// It is separate from Execute so the wiring is testable: registering inside
+// Execute meant the subcommands did not exist until the binary ran, so nothing
+// could assert that they still resolve.
+func registerSubcommands() {
 	root.AddCommand(verCmd)
 	root.AddCommand(startCmd)
 	root.AddCommand(setupCmd)
 	root.AddCommand(doctorCmd)
 	root.AddCommand(configCmd)
 	root.AddCommand(configInitCmd)
+}
+
+func Execute() {
+	registerSubcommands()
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
