@@ -339,6 +339,12 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	return compactor
 }
 
+// needsPermission decides which calls must be approved before they run.
+//
+// The browser tool is deliberately absent. It reads and renders pages, and the
+// approval prompt would fire on every screenshot, which makes UI work unusable;
+// a browser cannot modify this host's filesystem, and a page can only be fetched
+// over http or https, which is checked when the call is translated.
 func needsPermission(toolName, args string) bool {
 	switch toolName {
 	case "write", "edit", "delete", "move", "copy":

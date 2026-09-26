@@ -69,6 +69,8 @@ func primaryToolArg(tool string) (string, bool) {
 		return "pattern", true
 	case "webfetch":
 		return "url", false
+	case "browser":
+		return "action", false
 	}
 	return "", false
 }

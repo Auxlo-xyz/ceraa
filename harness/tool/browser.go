@@ -1,0 +1,429 @@
+package tool
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"ceraa/harness/operation"
+	"ceraa/internal/paths"
+)
+
+// BrowserTool drives a real Chromium through go-rod.
+//
+// The driver sits behind an interface so the tool layer can be tested without a
+// browser, and so a browser crash surfaces as an ordinary tool error instead of
+// taking the process down.
+type BrowserTool struct {
+	manager *BrowserManager
+}
+
+const (
+	// browserIdleTimeout closes a browser that has been unused for this long, so
+	// a forgotten page does not keep a Chromium process alive forever.
+	browserIdleTimeout = 5 * time.Minute
+	// browserLaunchTimeout bounds the first launch, which includes downloading
+	// Chromium the very first time.
+	browserLaunchTimeout = 10 * time.Minute
+	// pageActionTimeout bounds a single page interaction, so a hung navigation
+	// fails the call instead of stalling the run.
+	pageActionTimeout = 60 * time.Second
+	browserMaxOutput  = 20_000
+)
+
+// NewBrowserTool returns a tool bound to a fresh manager. One manager owns one
+// browser, which is what makes a sequence of actions meaningful.
+func NewBrowserTool() *BrowserTool {
+	return &BrowserTool{manager: NewBrowserManager(browserIdleTimeout)}
+}
+
+func (b *BrowserTool) Name() string { return "browser" }
+
+func (b *BrowserTool) Description() string {
+	return "Drive a real Chromium browser. Actions: open (navigate to a URL), " +
+		"screenshot (capture a PNG and return its path), text (read visible text), " +
+		"html (read page HTML), click (click a CSS selector), type (fill an input, " +
+		"optionally submitting), eval (run JavaScript in the page), status (current " +
+		"page and browser state), close (shut the browser down). The browser is shared " +
+		"between calls, so a sequence of actions continues where the last one stopped. " +
+		"Use screenshot for visual checks and view_image to inspect the result."
+}
+
+func (b *BrowserTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"enum":        []string{"open", "screenshot", "text", "html", "click", "type", "eval", "status", "close"},
+				"description": "The browser action to perform.",
+			},
+			"url":      map[string]any{"type": "string", "description": "URL to open. Required for action=open."},
+			"path":     map[string]any{"type": "string", "description": "Where to write a screenshot. Defaults to a file in the Ceraa data directory."},
+			"selector": map[string]any{"type": "string", "description": "CSS selector for screenshot, text, html, click, or type."},
+			"text":     map[string]any{"type": "string", "description": "Text to type for action=type."},
+			"script":   map[string]any{"type": "string", "description": "JavaScript source for action=eval. The page's result is returned as JSON."},
+			"full_page": map[string]any{
+				"type":        "boolean",
+				"description": "Capture the whole scrollable page rather than the viewport. action=screenshot only.",
+			},
+			"submit": map[string]any{
+				"type":        "boolean",
+				"description": "Press Enter after typing. action=type only.",
+			},
+			"wait_ms": map[string]any{
+				"type":        "integer",
+				"description": "Milliseconds to wait after the action before returning, for pages that render late.",
+			},
+		},
+		"required": []string{"action"},
+	}
+}
+
+// browserArgSpec documents the arguments each action accepts, so a call with a
+// meaningless argument is reported as a mistake rather than silently ignored.
+var browserArgSpec = map[string]struct {
+	required []string
+	optional []string
+}{
+	"open":       {required: []string{"url"}, optional: []string{"wait_ms"}},
+	"screenshot": {optional: []string{"path", "selector", "full_page", "wait_ms"}},
+	"text":       {optional: []string{"selector", "wait_ms"}},
+	"html":       {optional: []string{"selector", "wait_ms"}},
+	"click":      {required: []string{"selector"}, optional: []string{"wait_ms"}},
+	"type":       {required: []string{"selector", "text"}, optional: []string{"submit", "wait_ms"}},
+	"eval":       {required: []string{"script"}, optional: []string{"wait_ms"}},
+	"status":     {},
+	"close":      {},
+}
+
+func (b *BrowserTool) Translate(args map[string]any) (operation.Spec, error) {
+	action, _ := args["action"].(string)
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "" {
+		return operation.Spec{}, errors.New("action is required")
+	}
+	spec, known := browserArgSpec[action]
+	if !known {
+		return operation.Spec{}, fmt.Errorf("unknown browser action %q; use one of open, screenshot, text, html, click, type, eval, status, close", action)
+	}
+	// The action selector itself is always allowed; everything else must be one
+	// this action can actually use.
+	allowed := map[string]bool{"action": true}
+	for _, key := range append(append([]string{}, spec.required...), spec.optional...) {
+		allowed[key] = true
+	}
+	for key := range args {
+		if !allowed[key] {
+			return operation.Spec{}, fmt.Errorf("browser action %q does not accept %q", action, key)
+		}
+	}
+	translated := map[string]any{"action": action}
+	for _, key := range append(append([]string{}, spec.required...), spec.optional...) {
+		value, present := args[key]
+		if !present || value == nil {
+			continue
+		}
+		if err := validateBrowserArg(action, key, value); err != nil {
+			return operation.Spec{}, err
+		}
+		translated[key] = value
+	}
+	for _, key := range spec.required {
+		if _, ok := translated[key]; !ok {
+			return operation.Spec{}, fmt.Errorf("browser action %q requires %q", action, key)
+		}
+	}
+	return operation.Spec{Type: "browser", Args: translated}, nil
+}
+
+// validateBrowserArg rejects arguments of the wrong shape. Validating here means
+// a malformed call is refused before a browser is ever launched.
+func validateBrowserArg(action, key string, value any) error {
+	switch key {
+	case "full_page", "submit":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s must be true or false", key)
+		}
+	case "wait_ms":
+		number, ok := value.(float64)
+		if !ok || number < 0 || number > 60_000 {
+			return fmt.Errorf("wait_ms must be between 0 and 60000")
+		}
+	case "url", "path", "selector", "text", "script":
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", key)
+		}
+		if strings.ContainsRune(text, 0) {
+			return fmt.Errorf("%s must not contain a null byte", key)
+		}
+		if key == "url" {
+			if err := validateBrowserURL(strings.TrimSpace(text)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateBrowserURL keeps the browser to the web. A file:// or javascript: URL
+// would let a page read this host's filesystem, which is well beyond browsing.
+func validateBrowserURL(raw string) error {
+	if raw == "" {
+		return errors.New("url is required")
+	}
+	lowered := strings.ToLower(raw)
+	if !strings.HasPrefix(lowered, "http://") && !strings.HasPrefix(lowered, "https://") {
+		return errors.New("url must start with http:// or https://")
+	}
+	return nil
+}
+
+func (b *BrowserTool) TranslateResult(op operation.Operation) string {
+	if op.Error != "" && op.Output == "" {
+		return "Error: " + op.Error
+	}
+	return op.Output
+}
+
+// Run satisfies tool.Runner. A browser is stateful, so the action runs in the
+// process and not through a shell.
+func (b *BrowserTool) Run(spec operation.Spec) (string, error) {
+	return b.RunContext(context.Background(), spec)
+}
+
+// RunContext performs one browser action.
+func (b *BrowserTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
+	action, _ := spec.Args["action"].(string)
+	switch action {
+	case "close":
+		return b.manager.Close()
+	case "status":
+		// Status must not launch a browser just to report that none exists.
+		return b.manager.Status()
+	}
+	driver, err := b.manager.Driver(ctx)
+	if err != nil {
+		return "", err
+	}
+	output, err := performBrowserAction(ctx, driver, spec.Args)
+	if err != nil {
+		return "", err
+	}
+	if output != "" && len(output) > browserMaxOutput {
+		output = output[:browserMaxOutput] + "\n… truncated"
+	}
+	return output, nil
+}
+
+// performBrowserAction dispatches one validated action against the driver.
+func performBrowserAction(ctx context.Context, driver browserDriver, args map[string]any) (string, error) {
+	stringArg := func(key string) string {
+		value, _ := args[key].(string)
+		return strings.TrimSpace(value)
+	}
+	waitMS := 0
+	if value, ok := args["wait_ms"].(float64); ok {
+		waitMS = int(value)
+	}
+	settle := func() {
+		if waitMS > 0 {
+			select {
+			case <-time.After(time.Duration(waitMS) * time.Millisecond):
+			case <-ctx.Done():
+			}
+		}
+	}
+
+	action, _ := args["action"].(string)
+	switch action {
+	case "open":
+		info, err := driver.Navigate(ctx, stringArg("url"))
+		if err != nil {
+			return "", err
+		}
+		settle()
+		return formatPageInfo(info), nil
+	case "screenshot":
+		path := stringArg("path")
+		if path == "" {
+			path = defaultScreenshotPath()
+		}
+		if err := ensureParentDir(path); err != nil {
+			return "", err
+		}
+		fullPage, _ := args["full_page"].(bool)
+		if err := driver.Screenshot(ctx, path, fullPage, stringArg("selector")); err != nil {
+			return "", err
+		}
+		settle()
+		return fmt.Sprintf("screenshot saved to %s", path), nil
+	case "text":
+		settle()
+		text, err := driver.Text(ctx, stringArg("selector"))
+		if err != nil {
+			return "", err
+		}
+		return text, nil
+	case "html":
+		settle()
+		return driver.HTML(ctx, stringArg("selector"))
+	case "click":
+		settle()
+		if err := driver.Click(ctx, stringArg("selector")); err != nil {
+			return "", err
+		}
+		settle()
+		info, err := driver.Info(ctx)
+		if err == nil {
+			return "clicked " + stringArg("selector") + "\n" + formatPageInfo(info), nil
+		}
+		return "clicked " + stringArg("selector"), nil
+	case "type":
+		submit, _ := args["submit"].(bool)
+		settle()
+		if err := driver.Type(ctx, stringArg("selector"), args["text"].(string), submit); err != nil {
+			return "", err
+		}
+		settle()
+		return "typed into " + stringArg("selector"), nil
+	case "eval":
+		settle()
+		result, err := driver.Eval(ctx, stringArg("script"))
+		if err != nil {
+			return "", err
+		}
+		return result, nil
+	}
+	return "", fmt.Errorf("unsupported browser action %q", action)
+}
+
+func formatPageInfo(info pageInfo) string {
+	var builder strings.Builder
+	if info.URL != "" {
+		fmt.Fprintf(&builder, "url: %s\n", info.URL)
+	}
+	if info.Title != "" {
+		fmt.Fprintf(&builder, "title: %s\n", info.Title)
+	}
+	if info.Status != 0 {
+		fmt.Fprintf(&builder, "status: %d\n", info.Status)
+	}
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+// defaultScreenshotPath writes into the data directory so a screenshot never
+// lands in the user's project as an untracked file.
+func defaultScreenshotPath() string {
+	name := fmt.Sprintf("shot-%s.png", time.Now().UTC().Format("20060102-150405"))
+	return filepath.Join(paths.DataDir(), "browser-shots", name)
+}
+
+func ensureParentDir(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create screenshot directory: %w", err)
+	}
+	return nil
+}
+
+// BrowserManager owns at most one browser and hands it to sequential callers.
+//
+// Ceraa dispatches independent tools concurrently, and a browser is shared
+// mutable state, so access is serialised here. The browser is closed after an
+// idle period, and a crashed browser is discarded rather than reused.
+type BrowserManager struct {
+	mu        sync.Mutex
+	driver    browserDriver
+	lastUsed  time.Time
+	idle      time.Duration
+	newDriver func(context.Context) (browserDriver, error)
+}
+
+// NewBrowserManager builds a manager that launches a real Chromium on demand.
+func NewBrowserManager(idle time.Duration) *BrowserManager {
+	return &BrowserManager{
+		idle:      idle,
+		newDriver: func(ctx context.Context) (browserDriver, error) { return newRodDriver(ctx) },
+	}
+}
+
+// Driver returns the live browser, launching or replacing it as needed.
+func (m *BrowserManager) Driver(ctx context.Context) (browserDriver, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closeIfIdleLocked()
+	if m.driver != nil {
+		m.lastUsed = time.Now()
+		return m.driver, nil
+	}
+	driver, err := m.newDriver(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m.driver = driver
+	m.lastUsed = time.Now()
+	return driver, nil
+}
+
+// Close shuts the browser down. The manager can launch a fresh one afterwards.
+func (m *BrowserManager) Close() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.driver == nil {
+		return "no browser is open", nil
+	}
+	err := m.driver.Close()
+	m.driver = nil
+	if err != nil {
+		return "", fmt.Errorf("close browser: %w", err)
+	}
+	return "browser closed", nil
+}
+
+// Status reports browser state without launching anything.
+func (m *BrowserManager) Status() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.driver == nil {
+		return "no browser is open; use action=open to start one", nil
+	}
+	info, err := m.driver.Info(context.Background())
+	if err != nil {
+		return "", err
+	}
+	return "browser is open\n" + formatPageInfo(info), nil
+}
+
+// Discard drops a driver that has failed, so the next call starts clean rather
+// than reusing a dead browser.
+func (m *BrowserManager) Discard() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.driver != nil {
+		_ = m.driver.Close()
+		m.driver = nil
+	}
+}
+
+func (m *BrowserManager) closeIfIdleLocked() {
+	if m.driver == nil || m.idle <= 0 {
+		return
+	}
+	if time.Since(m.lastUsed) < m.idle {
+		return
+	}
+	_ = m.driver.Close()
+	m.driver = nil
+}
+
+// Sequential reports that browser actions must not run concurrently. They share
+// one page, so two actions at once would interleave on the same document and
+// produce results neither caller asked for.
+func (b *BrowserTool) Sequential() bool { return true }

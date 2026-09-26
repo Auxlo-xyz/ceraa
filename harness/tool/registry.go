@@ -331,6 +331,9 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&GrepTool{})
 	r.Register(&ViewImageTool{})
 	r.Register(&WebFetchTool{})
+	// One manager per registry, so a run keeps a single browser and a sequence of
+	// actions continues where the last one stopped.
+	r.Register(NewBrowserTool())
 	r.Register(&FTSSearchTool{})
 	r.Register(&QuestionTool{})
 	r.Register(&SkillsCatalogTool{})
