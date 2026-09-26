@@ -17,6 +17,7 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/logger"
 	"ceraa/internal/telegram/menus"
@@ -176,6 +177,13 @@ func handleCallback(token string, q *struct {
 			draft.URL = "https://inference.poolside.ai/v1"
 		case "hermes":
 			draft.URL = ""
+		case "codex":
+			// Codex needs no URL and no key: the endpoint is fixed and the
+			// credential comes from the device login. Selecting it either
+			// activates immediately or starts that login, so there is nothing to
+			// ask the user for here.
+			selectCodexProvider(token, chatID)
+			return
 		case "custom":
 			draft.Stage = "url"
 		default:
@@ -674,6 +682,15 @@ func handleCallback(token string, q *struct {
 		if err != nil {
 			send(token, chatID, "Login check failed: "+err.Error())
 			return
+		}
+		// A chat that picked Codex from the provider menu is waiting on this
+		// approval, so completing the login switches the provider instead of
+		// leaving the user to tap again.
+		if state.Snapshot().Status == codexauth.StatusSucceeded {
+			if waiting, ok := pendingCodexActivation.Load(chatID); ok && waiting.(bool) {
+				activateCodexProvider(token, chatID)
+				return
+			}
 		}
 		editCallback(token, chatID, q.Message.MessageID, state.ResultMessage(), map[string]any{"inline_keyboard": [][]any{}})
 		return

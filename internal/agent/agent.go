@@ -14,6 +14,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/prompt"
@@ -74,6 +75,14 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 	resolveModel := func(ctx context.Context) (llm.ProviderConfig, error) {
 		switch provider.Subscription {
+		case llm.CodexSubscription:
+			if provider.URL == "" {
+				provider.URL = llm.CodexBaseURL
+			}
+			modelConfig.BaseURL = provider.URL
+			modelConfig.CodexNative = true
+			modelConfig.CodexTokens = codexauth.NewManager()
+			return modelConfig, nil
 		case "hermes":
 			credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
 			if err != nil {

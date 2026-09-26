@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"ceraa/harness/event"
+	"ceraa/harness/llm"
 	"ceraa/harness/permission"
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
@@ -1226,9 +1227,23 @@ func handleCodexLogin(token string, chatID int64) {
 
 func handleCodexStatus(token string, chatID int64) {
 	// A stored token is the real answer, rather than a marker a login happened to
-	// leave behind.
+	// leave behind. It is not on its own proof that inference works, so the
+	// message says which provider is actually active: a stored credential with
+	// another provider selected is not a usable Codex setup.
 	if codexauth.Authenticated() {
-		send(token, chatID, "✅ Codex is authenticated. Use /codex-login to sign in again.")
+		active := defaultState.provider()
+		_, activeModel, _ := defaultState.values()
+		if active == llm.CodexSubscription {
+			expiry := "unknown"
+			if raw, err := secret.Get("codex_expires_at"); err == nil && raw != "" {
+				if seconds, convErr := strconv.ParseInt(raw, 10, 64); convErr == nil {
+					expiry = time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+				}
+			}
+			send(token, chatID, "✅ Codex is authenticated and active.\nModel: "+activeModel+"\nAccess token expires: "+expiry+"\nUse /codex-login to sign in again.")
+			return
+		}
+		send(token, chatID, "✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\nIt is not the active provider — Ceraa is using <b>"+active+"</b>. Send /codex-login or pick 🧠 Codex (ChatGPT) in the provider menu to switch to it.")
 		return
 	}
 	for _, flow := range authMgr.ListFlows() {
@@ -1243,4 +1258,93 @@ func handleCodexStatus(token string, chatID int64) {
 		}
 	}
 	send(token, chatID, "❌ Not authenticated. Use /codex-login to start.")
+}
+
+// codexExpiryLabel renders the stored expiry for humans, without leaking the
+// token itself.
+func codexExpiryLabel() string {
+	raw, err := secret.Get("codex_expires_at")
+	if err != nil || raw == "" {
+		return "unknown"
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return "unknown"
+	}
+	return time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+}
+
+// selectCodexProvider handles 🧠 Codex in the provider menu. With a credential
+// already stored it activates Codex straight away; otherwise it starts the
+// device login and activates as soon as the code is approved.
+func selectCodexProvider(token string, chatID int64) {
+	if codexauth.Authenticated() {
+		activateCodexProvider(token, chatID)
+		return
+	}
+	flow, err := authMgr.Start()
+	if err != nil {
+		send(token, chatID, "Failed to start Codex login: "+err.Error())
+		return
+	}
+	kb, err := flow.InlineKeyboardJSON()
+	if err != nil {
+		send(token, chatID, "Failed to encode Codex login menu: "+err.Error())
+		return
+	}
+	var markup map[string]any
+	if json.Unmarshal(kb, &markup) != nil {
+		send(token, chatID, "Failed to encode Codex login menu.")
+		return
+	}
+	pendingCodexActivation.Store(chatID, true)
+	sendMessageWithMarkup(token, chatID,
+		"Sign in to ChatGPT to use Codex. Open the link, approve the code, and Ceraa will switch to Codex automatically.\n\n"+flow.ResultMessage(),
+		markup)
+}
+
+// activateCodexProvider saves the Codex profile and makes it active. The model
+// is one this account can actually serve, because the endpoint rejects anything
+// else outright.
+func activateCodexProvider(token string, chatID int64) {
+	model := llm.DefaultCodexModel
+	if configured := codexModelForAccount(); configured != "" {
+		model = configured
+	}
+	profile := config.ProviderProfile{
+		URL:             llm.CodexBaseURL,
+		Model:           model,
+		ContextLimit:    codexContextLimit,
+		MaxOutputTokens: 8192,
+		Subscription:    llm.CodexSubscription,
+	}
+	if err := defaultState.setProviderProfile(llm.CodexSubscription, profile); err != nil {
+		send(token, chatID, "Codex profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider(llm.CodexSubscription); err != nil {
+		send(token, chatID, "Codex provider activation failed: "+err.Error())
+		return
+	}
+	pendingCodexActivation.Delete(chatID)
+	send(token, chatID, "✅ Codex provider activated with model <code>"+model+"</code>.\nSend a task to use it.")
+}
+
+// pendingCodexActivation records the chats that asked for Codex and are waiting
+// on a device login, so approval can switch the provider without another tap.
+var pendingCodexActivation sync.Map
+
+// codexContextLimit is a conservative local budget. The endpoint does not
+// advertise a context size, so this is a safety margin for compaction rather
+// than a verified figure.
+const codexContextLimit = 200000
+
+// codexModelForAccount returns a configured Codex model when one is already
+// known to work, so a re-login keeps the user's choice.
+func codexModelForAccount() string {
+	_, model, _ := defaultState.values()
+	if llm.IsCodexModel(model) {
+		return model
+	}
+	return ""
 }

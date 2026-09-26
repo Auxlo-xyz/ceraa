@@ -28,12 +28,19 @@ type ProviderConfig struct {
 	Model                   string
 	GeminiNative            bool
 	GeminiThoughtSignatures bool
-	MaxRetries              int
-	Timeout                 time.Duration
-	ToolChoice              string
-	PromptCacheMode         string
-	PromptCacheTTL          string
-	Compatibility           *Compatibility
+	// CodexNative selects the Codex subscription transport, which speaks the
+	// Responses API against ChatGPT rather than chat completions.
+	CodexNative bool
+	// CodexTokens supplies the credential for CodexNative. Required when
+	// CodexNative is set; without it the transport refuses the request instead of
+	// sending an unauthenticated one.
+	CodexTokens     CodexTokenSource
+	MaxRetries      int
+	Timeout         time.Duration
+	ToolChoice      string
+	PromptCacheMode string
+	PromptCacheTTL  string
+	Compatibility   *Compatibility
 	// ExtraBody is merged into every chat-completions request body. Used by
 	// providers that require extra top-level fields. Set by the caller; never
 	// mutated here.
@@ -677,6 +684,15 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// explicitly configured OpenAI-compatibility URL uses the adapter below.
 	if c.cfg.GeminiNative {
 		return c.streamGemini(ctx, req, onDelta)
+	}
+	// Codex is served by ChatGPT's own endpoint, which is neither Gemini's native
+	// API nor an OpenAI-compatible chat-completions host, so it gets its own
+	// transport rather than a compatibility mode.
+	if c.cfg.CodexNative {
+		if strings.TrimSpace(c.cfg.BaseURL) == "" {
+			c.cfg.BaseURL = CodexBaseURL
+		}
+		return c.streamCodex(ctx, req, onDelta)
 	}
 	compatibility := compatibilityFor(c.cfg)
 	url := chatCompletionsURL(c.cfg.BaseURL)

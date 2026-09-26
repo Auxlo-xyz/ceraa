@@ -22,6 +22,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
@@ -329,11 +330,25 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 }
 
 func providerModelResolver(provider config.LLMProvider) func(context.Context) (llm.ProviderConfig, error) {
+	// One manager for the process: it owns the in-flight login flows and the
+	// refresh lock, so a per-request instance would let two refreshes race and
+	// revoke each other's rotated token.
+	codexTokens := codexauth.NewManager()
 	return func(ctx context.Context) (llm.ProviderConfig, error) {
 		model := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 		model.PromptCacheMode = provider.PromptCacheMode
 		model.PromptCacheTTL = provider.PromptCacheTTL
 		switch provider.Subscription {
+		case llm.CodexSubscription:
+			// The credential comes from the encrypted store, not the profile, and
+			// the transport refuses to run without it.
+			if provider.URL == "" {
+				provider.URL = llm.CodexBaseURL
+			}
+			model.BaseURL = provider.URL
+			model.CodexNative = true
+			model.CodexTokens = codexTokens
+			return model, nil
 		case "hermes":
 			credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
 			if err != nil {

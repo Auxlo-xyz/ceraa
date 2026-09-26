@@ -206,7 +206,7 @@ func TestOnboardingMenuUsesInlineProviderChoices(t *testing.T) {
 			found[button["callback_data"]] = true
 		}
 	}
-	for _, callback := range []string{"onboarding:provider:openrouter", "onboarding:provider:poolside", "onboarding:provider:custom", "onboarding:claim"} {
+	for _, callback := range []string{"onboarding:provider:openrouter", "onboarding:provider:poolside", "onboarding:provider:custom", "onboarding:provider:hermes", "onboarding:provider:codex", "onboarding:claim"} {
 		if !found[callback] {
 			t.Fatalf("missing onboarding button %q", callback)
 		}

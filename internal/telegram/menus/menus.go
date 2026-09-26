@@ -694,7 +694,8 @@ func simpleMenu(name, msg string) map[string]any {
 func Onboarding() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "🟣 OpenRouter", "callback_data": "onboarding:provider:openrouter"}, {"text": "🟠 Poolside", "callback_data": "onboarding:provider:poolside"}},
-		{{"text": "🔐 Hermes subscription", "callback_data": "onboarding:provider:hermes"}, {"text": "➕ Custom provider", "callback_data": "onboarding:provider:custom"}},
+		{{"text": "🔐 Hermes subscription", "callback_data": "onboarding:provider:hermes"}, {"text": "🧠 Codex (ChatGPT)", "callback_data": "onboarding:provider:codex"}},
+		{{"text": "➕ Custom provider", "callback_data": "onboarding:provider:custom"}},
 		{{"text": "🔒 Lock bot to this account", "callback_data": "onboarding:claim"}, {"text": "✕ Close", "callback_data": "close"}},
 	}}
 }
