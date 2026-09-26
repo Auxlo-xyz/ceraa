@@ -387,9 +387,6 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			} else {
 				result.Status = StatusCompleted
 			}
-		case "view_image":
-			result.Output = "image-view: (stub) - view via Telegram"
-			result.Status = StatusCompleted
 		case "question":
 			// Maps to soraacode tool/question.ts + question-manager poll with buttons
 			ques, _ := op.Spec.Args["question"].(string)

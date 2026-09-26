@@ -112,6 +112,10 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// what was asked for.
 	logger.Info(fmt.Sprintf("agent run: provider=%s model=%s reasoning=%q native_gemini=%v",
 		providerID, providerConfig.Model, string(reasoning), llm.UsesGeminiNative(providerConfig.Model, providerConfig.URL)))
+	registry := telegramRegistry(cfg, user, memoryStore, skillStore)
+	// view_image follows the same resolved provider as the run, so a media call
+	// cannot drift onto a different model than the one doing the work.
+	attachVisionToRegistry(registry, resolveModel)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		Reasoning:           reasoning,
@@ -210,7 +214,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 				}
 			},
 		},
-	}, store, telegramRegistry(cfg, user, memoryStore, skillStore))
+	}, store, registry)
 	_, err = runner.Run(parent, userText)
 	return err
 }
@@ -245,6 +249,13 @@ func telegramRegistry(cfg *config.Config, user string, memoryStore *memory.Store
 		registry.Register(&tool.SendMediaTool{Sender: newTelegramMediaSender(token, chatID)})
 	}
 	return registry
+}
+
+// attachVisionToRegistry gives view_image the run's resolved model, so a media
+// call follows the active provider instead of whatever was configured at build
+// time.
+func attachVisionToRegistry(registry *tool.Registry, resolve func(ctx context.Context) (llm.ProviderConfig, error)) {
+	attachVision(registry, resolve, func(string) string { return "" })
 }
 
 // effectiveReasoning picks the reasoning level for a run. A provider profile may

@@ -1275,3 +1275,36 @@ func backoff(attempt int) time.Duration {
 	jitter := time.Duration(rand.Int63n(int64(250 * time.Millisecond)))
 	return delay + jitter
 }
+
+// newAuthorizedRequest builds a request with the provider's credentials applied.
+// Shared by the one-shot media path so it cannot drift from the streaming one.
+func newAuthorizedRequest(ctx context.Context, url string, body []byte, apiKey string, extra map[string]string) (*http.Request, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		// Gemini authenticates with its own header; the compatibility layer uses
+		// a bearer token.
+		if strings.Contains(url, "generativelanguage.googleapis.com") {
+			request.Header.Set("x-goog-api-key", apiKey)
+		} else {
+			request.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
+	for key, value := range extra {
+		request.Header.Set(key, value)
+	}
+	return request, nil
+}
+
+// readLimited reads a response body under a cap, so a large error page cannot
+// be pulled into memory whole.
+func readLimited(r io.Reader) (string, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}

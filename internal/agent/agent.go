@@ -94,6 +94,9 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		}
 	}
 	compactor.ResolveModel = resolveModel
+	registry := tool.DefaultRegistryForUser(user, memoryStore, skillStore)
+	// The CLI has a provider too, so a media view works the same way there.
+	attachVisionToRegistry(registry, resolveModel)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
@@ -122,7 +125,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			},
 			OnCompactionStart: func() { fmt.Println("⚡ Compacting context...") },
 		},
-	}, store, tool.DefaultRegistryForUser(user, memoryStore, skillStore))
+	}, store, registry)
 	_, err = runner.Run(ctx, user)
 	return err
 }

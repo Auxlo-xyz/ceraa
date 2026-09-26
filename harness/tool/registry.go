@@ -283,38 +283,6 @@ func (g *GrepTool) TranslateResult(op operation.Operation) string {
 	return op.Output
 }
 
-// ViewImageTool - views images (stubs for now, returns placeholder).
-type ViewImageTool struct{}
-
-func (v *ViewImageTool) Name() string        { return "view_image" }
-func (v *ViewImageTool) Description() string { return "View an image file and return a description." }
-func (v *ViewImageTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Absolute path to image file (JPEG/PNG/BMP/TIFF/WebP)"},
-		},
-		"required": []string{"path"},
-	}
-}
-func (v *ViewImageTool) Translate(args map[string]any) (operation.Spec, error) {
-	p, ok := args["path"].(string)
-	if !ok || p == "" {
-		return operation.Spec{}, fmt.Errorf("path is required")
-	}
-	workDir, _ := args["workdir"].(string)
-	if !filepath.IsAbs(p) && workDir != "" {
-		p = filepath.Join(workDir, p)
-	}
-	if _, err := os.Stat(p); err != nil {
-		return operation.Spec{}, fmt.Errorf("image not found: %s", p)
-	}
-	return operation.Spec{Type: "view_image", Args: map[string]any{"path": p, "workdir": workDir}}, nil
-}
-func (v *ViewImageTool) TranslateResult(op operation.Operation) string {
-	return op.Output
-}
-
 // DefaultRegistry returns a registry with all built-in tools.
 func DefaultRegistry() *Registry {
 	return DefaultRegistryWithStores(nil, nil)
@@ -329,8 +297,11 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&LsTool{})
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
-	r.Register(&ViewImageTool{})
+
 	r.Register(&WebFetchTool{})
+	// Registered without a client and attached later by whoever knows the active
+	// provider, so the tool layer stays free of configuration.
+	r.Register(&ViewImageTool{})
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	r.Register(NewBrowserTool())
