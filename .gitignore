@@ -4,6 +4,11 @@
 *.env
 !ceraa.env.example
 *.local
+# Encrypted secret stores. A test that initialises the store with a relative
+# path writes these next to the package; they hold real, decryptable tokens.
+secret.key
+secrets.json
+*.secret.key
 
 # Build/local artifacts
 dist/
