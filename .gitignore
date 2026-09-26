@@ -11,3 +11,7 @@ sessions/
 bin/
 .lock
 testdata-fuzz/
+
+# The agent's scratch output. It writes here by default, and a screenshot or a
+# generated file must never end up as a tracked repository file.
+/workspace/workspace/
