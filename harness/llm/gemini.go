@@ -534,8 +534,8 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 	url := geminiStreamURL(c.cfg.BaseURL, c.cfg.Model)
 
 	stats := geminiSignatureStats(req.Messages)
-	note := fmt.Sprintf("gemini-native model=%s contents=%d signed_calls=%d unsigned_calls=%d turn=%s\n",
-		c.cfg.Model, len(body.Contents), stats.signed, stats.unsigned, describeGeminiTurn(body.Contents))
+	note := fmt.Sprintf("gemini-native model=%s host=%s contents=%d signed_calls=%d unsigned_calls=%d turn=%s\n",
+		c.cfg.Model, requestHost(c.cfg.BaseURL), len(body.Contents), stats.signed, stats.unsigned, describeGeminiTurn(body.Contents))
 	fmt.Fprint(os.Stderr, "ceraa: "+note)
 	writeDebugNote("gemini.log", note)
 

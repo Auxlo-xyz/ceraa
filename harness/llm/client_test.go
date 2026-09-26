@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -408,5 +409,30 @@ func TestDescribeEncodedTurnRevealsSignaturePlacement(t *testing.T) {
 		if strings.Contains(got, leak) {
 			t.Fatalf("turn leaked message content %q: %s", leak, got)
 		}
+	}
+}
+
+// TestStreamFailsFastWithoutEndpoint pins that a missing base URL is reported as
+// a configuration problem, not as "unsupported protocol scheme" after three
+// pointless retries.
+func TestStreamFailsFastWithoutEndpoint(t *testing.T) {
+	client := New(ProviderConfig{Model: "gemini-3.5-flash-lite", MaxRetries: 3})
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	}, func(ProviderResponse) {})
+	if err == nil {
+		t.Fatal("expected an error when no endpoint is configured")
+	}
+	if !strings.Contains(err.Error(), "no provider endpoint configured") {
+		t.Fatalf("error = %v, want a configuration error naming the missing endpoint", err)
+	}
+	if strings.Contains(err.Error(), "unsupported protocol scheme") {
+		t.Fatalf("error still leaks the transport symptom: %v", err)
+	}
+}
+
+func TestRequestHostNamesEndpointOnly(t *testing.T) {
+	if got := requestHost("https://generativelanguage.googleapis.com/v1beta"); got != "generativelanguage.googleapis.com" {
+		t.Fatalf("requestHost = %q", got)
 	}
 }

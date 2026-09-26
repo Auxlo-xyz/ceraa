@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -662,6 +663,15 @@ func addPromptCacheFields(body map[string]any, cfg ProviderConfig, req StreamReq
 }
 
 func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+	// An empty endpoint used to surface as "unsupported protocol scheme \"\""
+	// after three pointless retries, which reads like a network fault instead of
+	// a missing provider. Name the actual problem instead.
+	if strings.TrimSpace(c.cfg.BaseURL) == "" {
+		note := fmt.Sprintf("gemini-no-endpoint model=%s gemini=%v items=%d\n", c.cfg.Model, c.cfg.GeminiNative, len(req.Messages))
+		fmt.Fprint(os.Stderr, "ceraa: "+note)
+		writeDebugNote("gemini.log", note)
+		return fmt.Errorf("no provider endpoint configured for model %q: set a base URL via provider onboarding or CERAA_API_URL", c.cfg.Model)
+	}
 	// Gemini is served by Google's native API, where a thought signature is a
 	// first-class field rather than an ad-hoc extra_content field. Only an
 	// explicitly configured OpenAI-compatibility URL uses the adapter below.
@@ -728,8 +738,8 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// each one whether a signature is present. Message content is never logged.
 	if c.cfg.GeminiThoughtSignatures {
 		stats := geminiSignatureStats(req.Messages)
-		note := fmt.Sprintf("gemini-compat model=%s items=%d signed_calls=%d unsigned_calls=%d turn=%s\n",
-			c.cfg.Model, len(req.Messages), stats.signed, stats.unsigned, describeEncodedTurn(msgs))
+		note := fmt.Sprintf("gemini-compat model=%s host=%s items=%d signed_calls=%d unsigned_calls=%d turn=%s\n",
+			c.cfg.Model, requestHost(c.cfg.BaseURL), len(req.Messages), stats.signed, stats.unsigned, describeEncodedTurn(msgs))
 		// Written to the data log as well as stderr: a CLI run's stderr belongs to
 		// whatever terminal launched it, so a file is the only place a diagnostic
 		// can be read from afterwards.
@@ -1045,6 +1055,16 @@ func toolCallNames(items []Item) map[string]string {
 		}
 	}
 	return names
+}
+
+// requestHost returns just the host of a base URL, so a diagnostic can name the
+// endpoint without recording the full URL or any credential.
+func requestHost(baseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "unparseable"
+	}
+	return parsed.Host
 }
 
 // writeDebugNote appends a diagnostic line to the data directory's log folder.
