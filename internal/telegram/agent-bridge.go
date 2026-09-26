@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -208,9 +210,41 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 				}
 			},
 		},
-	}, store, tool.DefaultRegistryForUser(user, memoryStore, skillStore))
+	}, store, telegramRegistry(cfg, user, memoryStore, skillStore))
 	_, err = runner.Run(parent, userText)
 	return err
+}
+
+// telegramRegistry builds the tool set for a Telegram run.
+//
+// send_media is added here and not to the default registry: it needs a
+// destination, and on the command line there is nowhere to send to. The sender
+// closes over the token and the chat, so the model is handed a tool that can
+// deliver a file without ever being able to read either.
+//
+// The destination is the authorised user, which for a single-user bot is the
+// chat the user is already in. Resolving it here rather than threading it
+// through the run means there is exactly one place that decides where output
+// goes.
+func telegramRegistry(cfg *config.Config, user string, memoryStore *memory.Store, skillStore *skills.Store) *tool.Registry {
+	registry := tool.DefaultRegistryForUser(user, memoryStore, skillStore)
+	token := cfg.Telegram.BotToken
+	if token == "" {
+		token = os.Getenv("TELEGRAM_BOT_TOKEN")
+	}
+	chatID := cfg.Telegram.AllowedUserID
+	if chatID == 0 {
+		chatID = defaultState.allowedUserID()
+	}
+	if chatID == 0 {
+		if parsed, err := strconv.ParseInt(os.Getenv("TELEGRAM_ALLOWED_USER_ID"), 10, 64); err == nil {
+			chatID = parsed
+		}
+	}
+	if token != "" && chatID != 0 {
+		registry.Register(&tool.SendMediaTool{Sender: newTelegramMediaSender(token, chatID)})
+	}
+	return registry
 }
 
 // effectiveReasoning picks the reasoning level for a run. A provider profile may
