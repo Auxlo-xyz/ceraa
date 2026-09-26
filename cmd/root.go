@@ -113,9 +113,24 @@ var configCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Provider URL: %s\n", cfg.LLM.URL)
-		fmt.Printf("Model:        %s\n", cfg.LLM.Model)
-		fmt.Printf("API Key:      %s\n", maskKey(cfg.LLM.APIKey))
+		// Report the provider that would actually be used, not the base block.
+		// Reading cfg.LLM directly reported an empty provider for an install whose
+		// provider had been chosen from the Telegram menu, so this command said
+		// "no provider" while a session was demonstrably running on one.
+		active := cfg.ActiveLLM()
+		if active.URL == "" {
+			fmt.Println("Provider URL: (none configured)")
+		} else {
+			fmt.Printf("Provider URL: %s\n", active.URL)
+		}
+		fmt.Printf("Model:        %s\n", active.Model)
+		fmt.Printf("API Key:      %s\n", maskKey(active.APIKey))
+		if id := cfg.ActiveProvider; id != "" {
+			fmt.Printf("Profile:      %s\n", id)
+		}
+		if state, err := config.LoadRuntimeState(); err == nil && state.Provider != "" {
+			fmt.Printf("Runtime:      %s (set from the Telegram menu)\n", state.Provider)
+		}
 		fmt.Printf("Telegram:     %s\n", maskToken(cfg.Telegram.BotToken))
 		fmt.Printf("User ID:      %d\n", cfg.Telegram.AllowedUserID)
 		fmt.Printf("Session File: %s\n", cfg.SessionFile)

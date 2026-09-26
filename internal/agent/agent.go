@@ -18,7 +18,9 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
+	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
+	"ceraa/internal/secret"
 )
 
 func Run(user string) error {
@@ -34,6 +36,17 @@ func RunWithConfig(user string, cfg *config.Config) error {
 }
 
 func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) error {
+	// Open the encrypted credential store before anything can need a credential.
+	//
+	// The Telegram daemon does this, the CLI did not, so a provider profile chosen
+	// in Telegram was visible here but its stored token was not: the CLI resolved
+	// the provider and then failed with no credential, which reads as a broken
+	// login rather than an uninitialised store. Subscription transports read their
+	// tokens from here, so without it no subscription provider can work from the
+	// CLI at all.
+	if err := secret.Init(filepath.Join(paths.DataDir(), "secret.key"), filepath.Join(paths.DataDir(), "secrets.json")); err != nil {
+		return fmt.Errorf("secret store: %w", err)
+	}
 	if cfg.MemoryFile == "" {
 		cfg.MemoryFile = "memory"
 	}

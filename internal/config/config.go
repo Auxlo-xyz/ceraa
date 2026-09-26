@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"ceraa/internal/paths"
 )
@@ -145,6 +146,53 @@ func (c *Config) WorkspaceRootPath() string {
 	return abs
 }
 
+// mergeProfile overlays a profile onto a base provider, field by field.
+//
+// Field-by-field rather than wholesale so an unset field in the profile keeps the
+// base value. The runtime state and config.json are written by different code and
+// do not populate the same fields.
+func mergeProfile(base LLMProvider, profile ProviderProfile) LLMProvider {
+	if profile.URL != "" {
+		base.URL = profile.URL
+	}
+	if profile.APIKey != "" {
+		base.APIKey = profile.APIKey
+	}
+	if profile.Model != "" {
+		base.Model = profile.Model
+	}
+	if profile.Reasoning != "" {
+		base.Reasoning = profile.Reasoning
+	}
+	if profile.ContextLimit > 0 {
+		base.ContextLimit = profile.ContextLimit
+	}
+	if profile.MaxOutputTokens > 0 {
+		base.MaxOutputTokens = profile.MaxOutputTokens
+	}
+	if profile.PromptCacheMode != "" {
+		base.PromptCacheMode = profile.PromptCacheMode
+	}
+	if profile.PromptCacheTTL != "" {
+		base.PromptCacheTTL = profile.PromptCacheTTL
+	}
+	if profile.Subscription != "" {
+		base.Subscription = profile.Subscription
+	}
+	if profile.HermesProvider != "" {
+		base.HermesProvider = profile.HermesProvider
+	}
+	return base
+}
+
+// ActiveLLM resolves the provider to serve with.
+//
+// Precedence is deliberate. A provider written in config.json wins, because it is
+// something the user typed and can see. Only when config.json names no endpoint
+// does the runtime selection apply, so a provider activated from the Telegram menu
+// is honoured by every entry point rather than only the one that wrote it. That
+// ordering also means adding a config.json provider later takes effect immediately,
+// without having to remember to clear the runtime selection.
 func (c *Config) ActiveLLM() LLMProvider {
 	id := c.ActiveProvider
 	if id == "" {
@@ -152,40 +200,36 @@ func (c *Config) ActiveLLM() LLMProvider {
 	}
 	profile, ok := c.ProviderProfile(id)
 	if !ok {
-		return c.LLM
+		return c.withRuntimeSelection(c.LLM)
 	}
-	result := c.LLM
-	if profile.URL != "" {
-		result.URL = profile.URL
+	return c.withRuntimeSelection(mergeProfile(c.LLM, profile))
+}
+
+// withRuntimeSelection adopts the provider the running service selected, but only
+// when nothing else named an endpoint.
+//
+// The trigger is an unresolved endpoint rather than a missing profile, because
+// ProviderProfile synthesises a profile from the base block for the "default" id
+// and so reports success even when that block is empty. Keying the fallback on
+// !ok left it unreachable on the common path, which is the shape of bug this whole
+// change exists to fix.
+func (c *Config) withRuntimeSelection(base LLMProvider) LLMProvider {
+	if strings.TrimSpace(base.URL) != "" {
+		return base
 	}
-	if profile.APIKey != "" {
-		result.APIKey = profile.APIKey
+	state, profile, found := activeRuntimeSelection()
+	if !found || strings.TrimSpace(profile.URL) == "" {
+		return base
 	}
-	if profile.Model != "" {
-		result.Model = profile.Model
+	merged := mergeProfile(base, profile)
+	// Reasoning lives beside the profile in the runtime state rather than inside
+	// it, and is a session setting the menu maintains, so it has to be picked up
+	// separately or the CLI silently runs at the provider default while the daemon
+	// runs at the level the user chose.
+	if strings.TrimSpace(merged.Reasoning) == "" {
+		merged.Reasoning = state.Reasoning
 	}
-	if profile.Reasoning != "" {
-		result.Reasoning = profile.Reasoning
-	}
-	if profile.ContextLimit > 0 {
-		result.ContextLimit = profile.ContextLimit
-	}
-	if profile.MaxOutputTokens > 0 {
-		result.MaxOutputTokens = profile.MaxOutputTokens
-	}
-	if profile.PromptCacheMode != "" {
-		result.PromptCacheMode = profile.PromptCacheMode
-	}
-	if profile.PromptCacheTTL != "" {
-		result.PromptCacheTTL = profile.PromptCacheTTL
-	}
-	if profile.Subscription != "" {
-		result.Subscription = profile.Subscription
-	}
-	if profile.HermesProvider != "" {
-		result.HermesProvider = profile.HermesProvider
-	}
-	return result
+	return merged
 }
 
 func (c *Config) ProviderProfile(id string) (ProviderProfile, bool) {
@@ -378,4 +422,59 @@ func Save(cfg *Config) error {
 // config, and a Ceraa config always takes precedence over a pre-rename one.
 func candidatePaths() []string {
 	return paths.ConfigCandidates()
+}
+
+// RuntimeState is the provider selection the running service persists.
+//
+// It lives in bridge-state.json and is written by the Telegram menu and by /model,
+// so a provider chosen there is a real, deliberate choice by the user. It is a
+// separate file from config.json because the service updates it at runtime while
+// config.json is edited by hand, and conflating the two meant a provider activated
+// from Telegram was invisible to the CLI: the CLI reported no endpoint configured
+// for a provider that was working a moment earlier.
+type RuntimeState struct {
+	Provider         string                     `json:"provider,omitempty"`
+	Model            string                     `json:"model,omitempty"`
+	Reasoning        string                     `json:"reasoning,omitempty"`
+	ProviderProfiles map[string]ProviderProfile `json:"provider_profiles,omitempty"`
+}
+
+// runtimeStateFile is the on-disk name of the runtime selection.
+const runtimeStateFile = "bridge-state.json"
+
+// LoadRuntimeState reads the provider selection the service persisted.
+//
+// A missing or unreadable file is not an error: a fresh install has no service
+// state yet, and that is a normal condition rather than a failure.
+func LoadRuntimeState() (RuntimeState, error) {
+	var state RuntimeState
+	raw, err := os.ReadFile(filepath.Join(paths.DataDir(), runtimeStateFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return state, nil
+		}
+		return state, err
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return RuntimeState{}, fmt.Errorf("parse %s: %w", runtimeStateFile, err)
+	}
+	return state, nil
+}
+
+// activeRuntimeSelection returns the provider the service is currently serving,
+// along with the state it came from.
+func activeRuntimeSelection() (RuntimeState, ProviderProfile, bool) {
+	state, err := LoadRuntimeState()
+	if err != nil || len(state.ProviderProfiles) == 0 {
+		return RuntimeState{}, ProviderProfile{}, false
+	}
+	id := state.Provider
+	if id == "" {
+		id = "default"
+	}
+	profile, ok := state.ProviderProfiles[id]
+	if !ok {
+		return RuntimeState{}, ProviderProfile{}, false
+	}
+	return state, profile, true
 }
