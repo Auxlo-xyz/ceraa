@@ -1,13 +1,18 @@
-// Package codexauth implements OAuth device login flow for Codex CLI,
-// presenting the authorization URL and user code via Telegram inline keyboards.
+// Package codexauth implements the Codex OAuth device login flow, presenting the
+// authorization URL and user code through Telegram.
+//
+// The flow is driven by the `codex` CLI, which is spawned once for the login and
+// then polled for status. Both commands run through an injectable seam, because
+// the flow's real difficulty is concurrency and timing, and that is exactly what
+// cannot be tested against a real binary or a real network.
 package codexauth
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -18,219 +23,459 @@ import (
 )
 
 const (
-	deviceURL      = "https://chatgpt.com/codex/device-auth"
-	startupTimeout = 30 * time.Second
-	authLifetime   = 15 * time.Minute
-	pollInterval   = 5 * time.Second
+	// deviceURL is the page a user opens when the CLI did not print one.
+	deviceURL = "https://chatgpt.com/codex/device-auth"
+	// authLifetime bounds a flow. The upstream device code expires too, so there
+	// is no point waiting longer.
+	authLifetime = 15 * time.Minute
+	// firstPoll is short so the user code reaches the chat quickly, then the
+	// interval relaxes to avoid spawning a process every few seconds for a quarter
+	// of an hour.
+	firstPoll = 1 * time.Second
+	pollStep  = 5 * time.Second
+	// codexBinary is the CLI that performs the device handshake.
+	codexBinary = "codex"
 )
 
 var (
-	userCodeRe = regexp.MustCompile(`[A-Z0-9]{4,8}\-[A-Z0-9]{4,8}`)
-	authURLRe  = regexp.MustCompile(`https://chatgpt\.com/codex/device-auth`)
+	userCodeRe = regexp.MustCompile(`\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b`)
+	authURLRe  = regexp.MustCompile(`https://(?:chatgpt\.com|auth\.openai\.com)/\S*device\S*`)
 )
 
-// AuthState tracks an in-progress device login.
+// Status values for a flow.
+const (
+	StatusWaiting   = "waiting"
+	StatusChecking  = "checking"
+	StatusSucceeded = "succeeded"
+	StatusFailed    = "failed"
+	StatusCanceled  = "canceled"
+)
+
+// loginProcess is the long-running device-auth command.
+type loginProcess interface {
+	// Output returns everything the process has produced so far.
+	Output() string
+	// Wait blocks until the process exits, returning its error.
+	Wait() error
+	// Kill terminates it.
+	Kill() error
+}
+
+// Runner starts the device-auth command and asks for login status. Both are
+// seams so the flow can be tested without the CLI or a network.
+type Runner interface {
+	// StartDeviceAuth begins a device login and returns once the process is
+	// running. It must not wait for the process to finish.
+	StartDeviceAuth(ctx context.Context) (loginProcess, error)
+	// LoginStatus reports the current authentication state as the CLI words it.
+	LoginStatus(ctx context.Context) (string, error)
+}
+
+// AuthState tracks one in-progress or finished device login.
 type AuthState struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+
 	flowID    string
 	UserCode  string
 	AuthURL   string
-	Status    string // "waiting", "checking", "succeeded", "failed"
+	Status    string
 	Message   string
 	ExpiresAt time.Time
-	cmd       *exec.Cmd
-	done      chan struct{}
+
+	process loginProcess
+	cancel  context.CancelFunc
+	done    chan struct{}
+	// finished guards the close, so a cancel after a success cannot panic. The
+	// flow is reachable from a Telegram button, and a double close would take the
+	// whole bot down.
+	finished bool
 }
 
-// Manager coordinates auth flows with Telegram callbacks.
+// Manager coordinates flows.
 type Manager struct {
 	mu     sync.Mutex
 	flows  map[string]*AuthState
-	cancel map[string]context.CancelFunc
+	runner Runner
+	// firstPoll and pollStep are fields rather than constants so the cadence is
+	// inspectable and a test can exercise the loop without waiting seconds per
+	// tick. Zero means the default.
+	firstPoll time.Duration
+	pollStep  time.Duration
 }
 
-// NewManager creates a new auth manager.
+// NewManager creates a manager that drives the real Codex CLI.
 func NewManager() *Manager {
-	return &Manager{
-		flows:  make(map[string]*AuthState),
-		cancel: make(map[string]context.CancelFunc),
-	}
+	return &Manager{flows: make(map[string]*AuthState), runner: execRunner{}}
 }
 
-// Start initiates a Codex device login flow.
-func (m *Manager) Start() (*AuthState, error) {
-	home := os.Getenv("HOME")
-	codexHome := os.Getenv("CODEX_HOME")
-	if codexHome == "" {
-		codexHome = home + "/.codex"
+// NewManagerWithRunner creates a manager with an injected runner, for tests.
+func NewManagerWithRunner(runner Runner) *Manager {
+	return &Manager{flows: make(map[string]*AuthState), runner: runner}
+}
+
+// CodexAvailable reports whether the CLI can be found, so a caller can say
+// something useful before a user starts a flow that cannot work.
+func CodexAvailable() error {
+	if _, err := exec.LookPath(codexBinary); err != nil {
+		return CodexUnavailable()
 	}
+	return nil
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
-	defer cancel()
+// CodexUnavailable is the actionable message for a host without the CLI. A login
+// cannot work without it, and a raw exec error tells the user nothing.
+func CodexUnavailable() error {
+	return fmt.Errorf("the %q CLI is not installed on this host, so device login cannot start; "+
+		"install it and restart Ceraa, or run the login from a machine that has it", codexBinary)
+}
 
-	cmd := exec.CommandContext(ctx, "codex", "login", "--device-auth")
-	cmd.Env = append(os.Environ(),
-		"CODEX_HOME="+codexHome,
-		"HOME="+home,
-	)
-
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	if err := cmd.Start(); err != nil {
+// Start begins a device login and returns as soon as the process is running.
+//
+// It deliberately does not wait for the process. The CLI prints a code and then
+// blocks until a human authorizes it, which is minutes; blocking here would mean
+// the user never saw the code until the flow had already timed out.
+func (m *Manager) Start() (*AuthState, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	process, err := m.runner.StartDeviceAuth(ctx)
+	if err != nil {
+		cancel()
+		if errors.Is(err, errNoCodexBinary) {
+			return nil, fmt.Errorf("start codex login: %w", CodexUnavailable())
+		}
 		return nil, fmt.Errorf("start codex login: %w", err)
 	}
 
-	// Parse output in a goroutine
-	go func() {
-		// Give it a moment to produce output
-		time.Sleep(2 * time.Second)
-	}()
-
-	if err := cmd.Wait(); err != nil {
-		// Even if exit code is non-zero, output may contain the code
-	}
-
-	output := stdout.String() + stderr.String()
-	cleanOutput := stripVTControlCharacters(output)
-
 	state := &AuthState{
 		flowID:    fmt.Sprintf("codex-%d", time.Now().UnixNano()),
-		done:      make(chan struct{}),
+		Status:    StatusWaiting,
+		Message:   "Waiting for the authorization code",
 		ExpiresAt: time.Now().Add(authLifetime),
+		cancel:    cancel,
+		process:   process,
+		done:      make(chan struct{}),
 	}
-
-	// Parse auth URL and user code
-	lines := strings.Split(cleanOutput, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if userCodeRe.MatchString(line) {
-			state.UserCode = line
-		}
-		if authURLRe.MatchString(line) {
-			state.AuthURL = line
-		}
-	}
-
-	if state.UserCode == "" {
-		// Fallback: generate a code from output
-		code := userCodeRe.FindString(cleanOutput)
-		if code != "" {
-			state.UserCode = code
-		}
-	}
-
-	if state.AuthURL == "" {
-		state.AuthURL = deviceURL
-	}
-
-	state.Status = "waiting"
-	state.Message = "Enter code on ChatGPT device auth page"
+	state.refreshDetails()
 
 	m.mu.Lock()
 	m.flows[state.flowID] = state
-	m.cancel[state.flowID] = cancel
 	m.mu.Unlock()
 
-	// Start polling in background
-	go m.pollLogin(state)
-
+	go m.watch(state)
 	return state, nil
 }
 
-func (m *Manager) pollLogin(state *AuthState) {
-	ticker := time.NewTicker(pollInterval)
+// watch polls until the login succeeds, the flow expires, or it is cancelled.
+func (m *Manager) watch(state *AuthState) {
+	first, step := m.pollCadence()
+	interval := first
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
-			state.mu.Lock()
-			if time.Now().After(state.ExpiresAt) {
-				state.Status = "failed"
-				state.Message = "Authorization expired"
-				state.mu.Unlock()
-				return
-			}
-			state.mu.Unlock()
-
-			// Check login status
-			home := os.Getenv("HOME")
-			codexHome := os.Getenv("CODEX_HOME")
-			if codexHome == "" {
-				codexHome = home + "/.codex"
-			}
-
-			cmd := exec.Command("codex", "login", "status")
-			cmd.Env = append(os.Environ(),
-				"CODEX_HOME="+codexHome,
-				"HOME="+home,
-			)
-			output, _ := cmd.CombinedOutput()
-
-			state.mu.Lock()
-			if strings.Contains(string(output), "logged in") && strings.Contains(string(output), "chatgpt") {
-				state.Status = "succeeded"
-				state.Message = "Login successful"
-				close(state.done)
-				// Store credential marker
-				_ = secret.Set("codex_authenticated", "true")
-				state.mu.Unlock()
-				return
-			} else if strings.Contains(string(output), "not logged in") {
-				state.Status = "waiting"
-				state.Message = "Waiting for authorization..."
-			}
-			state.mu.Unlock()
-
 		case <-state.done:
 			return
+		case <-ticker.C:
+			if interval < step {
+				interval = step
+				ticker.Reset(interval)
+			}
+			if state.isExpired() {
+				m.finish(state, StatusFailed, "Authorization expired; start a new login")
+				return
+			}
+			// The CLI prints the code shortly after starting, so re-reading it
+			// each poll keeps the chat accurate without another goroutine.
+			state.refreshDetails()
+
+			state.setStatus(StatusChecking, "Checking with Codex")
+			output, err := m.runner.LoginStatus(context.Background())
+			if err != nil {
+				state.setStatus(StatusWaiting, "Waiting for authorization")
+				continue
+			}
+			switch classifyStatus(output) {
+			case statusLoggedIn:
+				// The marker is written before the flow is marked finished, so a
+				// status check that races the completion still sees it.
+				if secretErr := secret.Set("codex_authenticated", "true"); secretErr != nil {
+					m.finish(state, StatusFailed, "Logged in, but the credential marker could not be stored: "+secretErr.Error())
+					return
+				}
+				m.finish(state, StatusSucceeded, "Login successful")
+				return
+			case statusLoggedOut:
+				state.setStatus(StatusWaiting, "Waiting for authorization")
+			default:
+				state.setStatus(StatusWaiting, "Waiting for authorization")
+			}
 		}
 	}
 }
 
-// ListFlows returns all active auth flows.
-func (m *Manager) ListFlows() []*AuthState {
+func (m *Manager) pollCadence() (first, step time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	flows := make([]*AuthState, 0, len(m.flows))
-	for _, f := range m.flows {
-		flows = append(flows, f)
+	first, step = m.firstPoll, m.pollStep
+	if first <= 0 {
+		first = firstPoll
 	}
-	return flows
+	if step <= 0 {
+		step = pollStep
+	}
+	return first, step
 }
 
-// Check returns the current auth status.
-func (m *Manager) Check(flowID string) (*AuthState, error) {
+type authStatus int
+
+const (
+	statusUnknown authStatus = iota
+	statusLoggedIn
+	statusLoggedOut
+)
+
+// classifyStatus reads the CLI's wording. Treated as unknown unless it clearly
+// says one thing or the other, so an unrecognised phrasing keeps waiting rather
+// than reporting a login that did not happen.
+func classifyStatus(output string) authStatus {
+	lowered := strings.ToLower(output)
+	switch {
+	case strings.Contains(lowered, "not logged in"), strings.Contains(lowered, "not authenticated"), strings.Contains(lowered, "no credentials"):
+		return statusLoggedOut
+	case strings.Contains(lowered, "logged in") && !strings.Contains(lowered, "not logged in"):
+		return statusLoggedIn
+	}
+	return statusUnknown
+}
+
+// finish marks a flow terminal and releases the process exactly once.
+func (m *Manager) finish(state *AuthState, status, message string) {
+	state.mu.Lock()
+	if state.finished {
+		state.mu.Unlock()
+		return
+	}
+	state.finished = true
+	state.Status = status
+	state.Message = message
+	if state.cancel != nil {
+		state.cancel()
+	}
+	if state.process != nil {
+		_ = state.process.Kill()
+	}
+	close(state.done)
+	state.mu.Unlock()
+
 	m.mu.Lock()
-	state, ok := m.flows[flowID]
+	delete(m.flows, state.flowID)
 	m.mu.Unlock()
+}
+
+// Cancel terminates an in-progress login.
+//
+// It is idempotent and safe after completion. The cancel button stays on screen
+// after a flow ends, so a second tap is a normal thing for a user to do, not an
+// error to report, and closing an already-closed channel would take the bot down.
+// Check stays strict, because an unknown id there is a real mistake.
+func (m *Manager) Cancel(flowID string) error {
+	state, err := m.lookup(flowID)
+	if err != nil {
+		return nil
+	}
+	m.finish(state, StatusCanceled, "Login cancelled")
+	return nil
+}
+
+func (m *Manager) lookup(flowID string) (*AuthState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.flows[flowID]
 	if !ok {
 		return nil, fmt.Errorf("flow %q not found", flowID)
 	}
 	return state, nil
 }
 
-// Cancel terminates an in-progress login.
-func (m *Manager) Cancel(flowID string) error {
+// ListFlows returns flows that are still live, which is what a status check wants.
+func (m *Manager) ListFlows() []*AuthState {
 	m.mu.Lock()
-	state, ok := m.flows[flowID]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("flow %q not found", flowID)
+	defer m.mu.Unlock()
+	flows := make([]*AuthState, 0, len(m.flows))
+	for _, state := range m.flows {
+		flows = append(flows, state)
 	}
-	if state.cmd != nil {
-		_ = state.cmd.Process.Kill()
-	}
-	close(state.done)
-	return nil
+	return flows
 }
 
+// Check returns a flow's current state.
+func (m *Manager) Check(flowID string) (*AuthState, error) {
+	return m.lookup(flowID)
+}
+
+// isExpired reports whether a flow has outlived its authorization window. It
+// takes the lock, because the expiry is read from the polling goroutine while
+// the flow is otherwise being written.
+func (s *AuthState) isExpired() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().After(s.ExpiresAt)
+}
+
+// refreshDetails pulls the user code and URL out of whatever the CLI has printed
+// so far. A code printed after the first read is picked up on a later poll.
+func (s *AuthState) refreshDetails() {
+	if s.process == nil {
+		return
+	}
+	output := stripVTControlCharacters(s.process.Output())
+	if output == "" {
+		return
+	}
+	code, url := parseLoginDetails(output)
+	s.mu.Lock()
+	if code != "" {
+		s.UserCode = code
+	}
+	if url != "" {
+		s.AuthURL = url
+	} else if s.AuthURL == "" && s.UserCode != "" {
+		s.AuthURL = deviceURL
+	}
+	s.mu.Unlock()
+}
+
+func (s *AuthState) setStatus(status, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.Status = status
+	s.Message = message
+}
+
+// parseLoginDetails extracts the code and URL from CLI output. The code is
+// matched on its own so a line of unrelated text cannot be mistaken for one.
+func parseLoginDetails(output string) (code, url string) {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if url == "" {
+			if match := authURLRe.FindString(trimmed); match != "" {
+				url = match
+			}
+		}
+		if code == "" {
+			if match := userCodeRe.FindString(trimmed); match != "" {
+				code = match
+			}
+		}
+	}
+	return code, url
+}
+
+// InlineKeyboardJSON returns the Telegram keyboard for a flow.
+func (s *AuthState) InlineKeyboardJSON() ([]byte, error) {
+	s.mu.Lock()
+	flowID, authURL := s.flowID, s.AuthURL
+	s.mu.Unlock()
+	if authURL == "" {
+		authURL = deviceURL
+	}
+	return json.Marshal(map[string]any{
+		"inline_keyboard": [][]map[string]any{
+			{{"text": "🔗 Open Authorization URL", "url": authURL}},
+			{
+				{"text": "✓ Check Login Status", "callback_data": "codex:check:" + flowID},
+				{"text": "✗ Cancel", "callback_data": "codex:cancel:" + flowID},
+			},
+		},
+	})
+}
+
+// Snapshot is a consistent copy of the state fields, for callers that need to
+// read several of them together.
+type Snapshot struct {
+	FlowID    string
+	UserCode  string
+	AuthURL   string
+	Status    string
+	Message   string
+	ExpiresAt time.Time
+}
+
+// Snapshot returns the current state.
+//
+// The accessors below all take the lock, so a caller must never hold it across
+// one of them; the lock is not reentrant and doing so deadlocks. This exists so
+// reading the whole state at once does not tempt anyone into that.
+func (s *AuthState) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Snapshot{
+		FlowID:    s.flowID,
+		UserCode:  s.UserCode,
+		AuthURL:   s.AuthURL,
+		Status:    s.Status,
+		Message:   s.Message,
+		ExpiresAt: s.ExpiresAt,
+	}
+}
+
+// ResultMessage renders the flow state for a chat.
+func (s *AuthState) ResultMessage() string {
+	return renderStatus(s.Snapshot())
+}
+
+// renderStatus is separated so rendering never has to reason about locking.
+func renderStatus(state Snapshot) string {
+	switch state.Status {
+	case StatusSucceeded:
+		return fmt.Sprintf("✅ Codex login successful!\nUser code: %s\n\nCodex can now be used as an agent.", state.UserCode)
+	case StatusFailed:
+		return fmt.Sprintf("❌ Login failed: %s", state.Message)
+	case StatusCanceled:
+		return "✗ Login cancelled."
+	case StatusChecking:
+		return fmt.Sprintf("🔄 Checking…\nCode: <code>%s</code>", state.UserCode)
+	default:
+		lines := []string{"🔐 Codex Device Login", ""}
+		if state.AuthURL != "" {
+			lines = append(lines, "1. Open: "+state.AuthURL)
+		} else {
+			lines = append(lines, "1. Open: "+deviceURL)
+		}
+		if state.UserCode != "" {
+			lines = append(lines, "2. Enter code: <code>"+state.UserCode+"</code>")
+		} else {
+			lines = append(lines, "2. Waiting for the code from the Codex CLI…")
+		}
+		lines = append(lines, "3. Tap 'Check Login Status' after authorizing")
+		return strings.Join(lines, "\n")
+	}
+}
+
+// ansiSequence matches a terminal escape sequence, which the CLI uses for colour.
+// Only dropping the control character is not enough: what follows the escape is
+// ordinary text, and leaving it in place glues onto the authorization code and
+// hides it from the parser.
+var ansiSequence = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*\x07|[@-Z\\-_])`)
+
+// stripVTControlCharacters removes terminal escapes and other control characters
+// so the CLI's drawing does not end up in a chat message.
 func stripVTControlCharacters(s string) string {
+	cleaned := ansiSequence.ReplaceAllString(s, "")
 	var buf bytes.Buffer
-	for _, r := range s {
-		if r < 32 && r != '\n' && r != '\t' && r != '\r' {
+	for _, r := range cleaned {
+		switch r {
+		case '\n', '\t', '\r':
+			buf.WriteRune(r)
+			continue
+		}
+		if r < 32 || r == 0x7f {
 			continue
 		}
 		buf.WriteRune(r)
@@ -238,44 +483,5 @@ func stripVTControlCharacters(s string) string {
 	return buf.String()
 }
 
-// InlineKeyboardJSON returns the Telegram inline keyboard for auth flow.
-func (s *AuthState) InlineKeyboardJSON() ([]byte, error) {
-	keyboard := map[string]any{
-		"inline_keyboard": [][]map[string]any{
-			{
-				{
-					"text": "🔗 Open Authorization URL",
-					"url":  s.AuthURL,
-				},
-			},
-			{
-				{
-					"text":          "✓ Check Login Status",
-					"callback_data": "codex:check:" + s.flowID,
-				},
-				{
-					"text":          "✗ Cancel",
-					"callback_data": "codex:cancel:" + s.flowID,
-				},
-			},
-		},
-	}
-	return json.Marshal(keyboard)
-}
-
-// ResultMessage returns the current auth status as a Telegram message.
-func (s *AuthState) ResultMessage() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	switch s.Status {
-	case "succeeded":
-		return fmt.Sprintf("✅ Codex login successful!\nUser code: %s\n\nYou can now use Codex as an agent.", s.UserCode)
-	case "failed":
-		return fmt.Sprintf("❌ Login failed: %s\n\nTry again.", s.Message)
-	case "waiting":
-		return fmt.Sprintf("🔐 Codex Device Login\n\n1. Open: %s\n2. Enter code: <code>%s</code>\n3. Tap 'Check Login Status' after authorizing", s.AuthURL, s.UserCode)
-	default:
-		return fmt.Sprintf("Status: %s", s.Status)
-	}
-}
+// errNoCodexBinary is what a missing CLI looks like to the runner.
+var errNoCodexBinary = errors.New("codex CLI not found")
