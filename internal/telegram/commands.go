@@ -268,11 +268,28 @@ func handleContextCommand(token string, chatID int64) {
 			cacheReadPercent = int(sess.Runs[len(sess.Runs)-1].Usage.CacheReadRatio() * 100)
 		}
 	}
-	percent := 0
-	if cfg.LLM.ContextLimit > 0 {
-		percent = tokens * 100 / cfg.LLM.ContextLimit
+	// The base config is not what is serving this session: a provider activated
+	// from the menu lives in a profile, so reading cfg.LLM here reported an empty
+	// model and the wrong context limit, which is worse than showing nothing.
+	model := cfg.LLM.Model
+	contextLimit := cfg.LLM.ContextLimit
+	if _, profile, ok := defaultState.activeProviderProfile(); ok {
+		if strings.TrimSpace(profile.Model) != "" {
+			model = profile.Model
+		}
+		if profile.ContextLimit > 0 {
+			contextLimit = profile.ContextLimit
+		}
 	}
-	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nModel: %s", tokens, cfg.LLM.ContextLimit, percent, cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, cfg.LLM.Model)
+	activeProvider := defaultState.provider()
+	percent := 0
+	if contextLimit > 0 {
+		percent = tokens * 100 / contextLimit
+	}
+	if strings.TrimSpace(model) == "" {
+		model = "unknown"
+	}
+	text := fmt.Sprintf("📊 Context\n~%d / %d tokens (%d%%)\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`", tokens, contextLimit, percent, cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 

@@ -101,3 +101,29 @@ func collectCallbacks(rows [][]map[string]string) []string {
 	}
 	return out
 }
+
+// The Context menu is how a user checks what is actually serving them, so it has
+// to read the active profile. Reading the base config reported an empty model and
+// the wrong context limit whenever the provider came from a profile.
+func TestActiveProfileSuppliesModelAndContextLimit(t *testing.T) {
+	state := newTestState(t)
+	if err := state.setProviderProfile("codex", config.ProviderProfile{
+		Model:        "gpt-5.6-luna",
+		ContextLimit: 200000,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := state.setProvider("codex"); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_, profile, ok := state.activeProviderProfile()
+	if !ok {
+		t.Fatal("no active profile")
+	}
+	if profile.Model != "gpt-5.6-luna" {
+		t.Errorf("model = %q, want the profile's, not the base config's", profile.Model)
+	}
+	if profile.ContextLimit != 200000 {
+		t.Errorf("context limit = %d, want the profile's 200000", profile.ContextLimit)
+	}
+}
