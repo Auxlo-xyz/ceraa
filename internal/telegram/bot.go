@@ -833,6 +833,12 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	}()
 	<-eventReady
 	doneCh := make(chan string, 1)
+	// Kept alive for the whole run. A single sendChatAction expires after about
+	// five seconds, so a long task would otherwise appear to hang with no
+	// feedback. Stopped on every exit path below, including the timeout.
+	typing := newTypingIndicator(token, chatID)
+	typing.Start()
+	defer typing.Stop()
 	go func() {
 		err := runWithThinkingContext(runCtx, sessionID, prompt, renderer.content, renderer.reasoning, renderer.tool, func(answer string) {
 			doneCh <- answer
@@ -847,6 +853,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	}()
 	select {
 	case ans := <-doneCh:
+		typing.Stop()
 		cancelRun()
 		close(eventDone)
 		if renderer.isStopped() {
@@ -857,6 +864,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 			renderer.fail()
 		}
 	case <-time.After(10 * time.Minute):
+		typing.Stop()
 		cancelRun()
 		<-doneCh
 		close(eventDone)
