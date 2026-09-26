@@ -1403,7 +1403,8 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 		send(token, chatID, "✅ Hermes login saved. Send /model <model-id> to activate the provider.")
 		return
 	}
-	profile := config.ProviderProfile{Model: model, ContextLimit: 236000, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: "hermes", HermesProvider: "nous"}
+	// ContextLimit left unset so the catalog supplies the model's real window.
+	profile := config.ProviderProfile{Model: model, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: "hermes", HermesProvider: "nous"}
 	if err := defaultState.setProviderProfile("hermes", profile); err != nil {
 		send(token, chatID, "Hermes profile save failed: "+err.Error())
 		return

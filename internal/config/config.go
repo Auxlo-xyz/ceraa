@@ -111,7 +111,12 @@ func defaultWorkspaceRoot() string {
 func DefaultConfig() *Config {
 	base := paths.DataDir()
 	return &Config{
-		LLM:                      LLMProvider{ContextLimit: 236000, MaxOutputTokens: 8192, PromptCacheMode: "auto"},
+		// ContextLimit is deliberately left unset. It used to default to 236000,
+		// which made an absent limit indistinguishable from a deliberate one, so the
+		// runner could never fall back to the model catalog's advertised window. Zero
+		// means "ask the catalog"; the resolver supplies a conservative default when
+		// the catalog is silent.
+		LLM:                      LLMProvider{MaxOutputTokens: 8192, PromptCacheMode: "auto"},
 		ProviderProfiles:         map[string]ProviderProfile{},
 		SessionFile:              "sessions",
 		WorkspaceRoot:            defaultWorkspaceRoot(),

@@ -160,3 +160,94 @@ func TestConcurrentDuplicateAddLeavesOneEntry(t *testing.T) {
 		t.Fatalf("temporary memory files remain: %v", matches)
 	}
 }
+
+func TestLiveRendersTheFileAndStoreTogether(t *testing.T) {
+	dir := t.TempDir()
+	store, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add("proj", "", "from the store"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("from the file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	live := Live(store, "proj", "", path, 4000)
+	got, err := live()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "from the file") || !strings.Contains(got, "from the store") {
+		t.Errorf("live render lost a source: %q", got)
+	}
+}
+
+// The point of Live: an edit between calls must be picked up.
+func TestLiveRereadsOnEveryCall(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	os.WriteFile(path, []byte("before"), 0o644)
+	live := Live(nil, "proj", "", path, 4000)
+
+	first, err := live()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first, "before") {
+		t.Fatalf("first render = %q", first)
+	}
+	os.WriteFile(path, []byte("after"), 0o644)
+	second, err := live()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(second, "after") || strings.Contains(second, "before") {
+		t.Errorf("second render did not observe the edit: %q", second)
+	}
+}
+
+// A missing memory file is the normal case and must not read as an error.
+func TestLiveToleratesAMissingFile(t *testing.T) {
+	live := Live(nil, "proj", "", filepath.Join(t.TempDir(), "nope.md"), 4000)
+	got, err := live()
+	if err != nil {
+		t.Fatalf("missing memory file returned an error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("missing memory file rendered %q, want empty", got)
+	}
+}
+
+// Truncated, not dropped: a large file degrades to a bounded prefix.
+func TestRenderFileBoundsAnOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 10000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RenderFile(path, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > 600 {
+		t.Errorf("render is %d bytes, want it bounded near 500", len(got))
+	}
+	if !strings.HasPrefix(got, "<memory-file>") || !strings.HasSuffix(strings.TrimSpace(got), "</memory-file>") {
+		t.Errorf("truncation broke the block framing: %q", got[:60])
+	}
+}
+
+func TestRenderFileEmptyBody(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	os.WriteFile(path, []byte("   \n\n"), 0o644)
+	got, err := RenderFile(path, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("whitespace-only file rendered %q, want empty", got)
+	}
+}

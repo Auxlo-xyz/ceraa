@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -105,7 +106,11 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	compactor := newCompactor(cfg, providerID, sessionID)
 	resolveModel := providerModelResolver(providerConfig)
 	compactor.ResolveModel = resolveModel
+	// Startup snapshot, kept as a fallback and as the first render. The live
+	// renderer below re-reads the file every turn, so an edit to
+	// memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
+	liveMemory := memory.Live(memoryStore, projectRoot, sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
 	// Recorded because a provider may reject or ignore a level, and the only way
@@ -134,6 +139,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
+		MemoryContextFunc:   liveMemory,
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,

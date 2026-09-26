@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"ceraa/harness/compaction"
@@ -67,7 +68,10 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.CacheKey = "ceraa-compaction-cli"
+	// Startup snapshot, kept as a fallback and as the first render. The live
+	// renderer below re-reads the file every turn.
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
+	liveMemory := memory.Live(memoryStore, "cli", "cli", filepath.Join(cfg.WorkspaceRootPath(), memory.DefaultMemoryFile), 4000)
 	skillContext, _ := skillStore.ActiveContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
@@ -121,6 +125,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
+		MemoryContextFunc:   liveMemory,
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,

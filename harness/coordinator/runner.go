@@ -22,6 +22,7 @@ import (
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
+	"ceraa/internal/logger"
 )
 
 type RunnerConfig struct {
@@ -41,17 +42,26 @@ type RunnerConfig struct {
 	ModelCatalogCache   string
 	ModelCatalogRefresh time.Duration
 	MemoryContext       string
-	SkillContext        string
-	EvaluationStore     *evaluation.Store
-	Inbox               *inbox.Inbox
-	OperationPool       *operation.LocalManager
-	Compactor           *compaction.Compactor
-	ResolveModel        func(context.Context) (llm.ProviderConfig, error)
-	ForcedCompaction    func() bool
-	AuthorizeTool       func(context.Context, string, string, map[string]any) (bool, error)
-	NeedsAuthorization  func(string, map[string]any) bool
-	AdjustSpec          func(*operation.Spec)
-	Callbacks           Callbacks
+	// MemoryContextFunc renders memory for the current turn and is preferred over
+	// MemoryContext when set.
+	//
+	// Memory used to be rendered once, here, at construction. An edit to the
+	// memory file therefore did not reach the model until the agent was rebuilt,
+	// so for a long-lived daemon the file on disk and the memory in the prompt
+	// diverged with nothing logging it. A per-turn function makes the file the
+	// source of truth rather than a startup snapshot of it.
+	MemoryContextFunc  func() (string, error)
+	SkillContext       string
+	EvaluationStore    *evaluation.Store
+	Inbox              *inbox.Inbox
+	OperationPool      *operation.LocalManager
+	Compactor          *compaction.Compactor
+	ResolveModel       func(context.Context) (llm.ProviderConfig, error)
+	ForcedCompaction   func() bool
+	AuthorizeTool      func(context.Context, string, string, map[string]any) (bool, error)
+	NeedsAuthorization func(string, map[string]any) bool
+	AdjustSpec         func(*operation.Spec)
+	Callbacks          Callbacks
 }
 
 type Config = RunnerConfig
@@ -89,6 +99,90 @@ type Runner struct {
 	// use and then held for the life of the run.
 	identityOnce sync.Once
 	identity     string
+
+	// contextLimit is the effective budget, recalibrated whenever the model
+	// changes rather than fixed at construction. Guarded because a model switch
+	// can arrive on a different goroutine from the run reading it.
+	contextMu     sync.RWMutex
+	contextLimit  int
+	contextSource llm.ContextWindowSource
+	contextLogged bool
+}
+
+// ContextLimit reports the effective context budget and where it came from.
+func (r *Runner) ContextLimit() (int, llm.ContextWindowSource) {
+	r.contextMu.RLock()
+	defer r.contextMu.RUnlock()
+	if r.contextLimit > 0 {
+		return r.contextLimit, r.contextSource
+	}
+	// Before the first calibration, fall back to the configured value so a caller
+	// that asks early gets a real number rather than zero.
+	if r.cfg.ContextLimit > 0 {
+		return r.cfg.ContextLimit, llm.ContextFromProfile
+	}
+	return llm.FallbackContextWindow, llm.ContextFromDefault
+}
+
+// effectiveContextLimit is the budget messages are assembled against.
+func (r *Runner) effectiveContextLimit() int {
+	limit, _ := r.ContextLimit()
+	return limit
+}
+
+// recalibrateContextLimit re-resolves the budget for the current model and pushes
+// it into the compactor.
+//
+// This exists because the limit is a property of the model, not of the process.
+// It used to be a constant baked in at construction, so switching to a model with
+// a different window left the runner budgeting against the old one, and the
+// catalog entry carrying the real window was recorded on the run and never read.
+// That is the worst of both: the truth was fetched and discarded.
+func (r *Runner) recalibrateContextLimit(meta llm.ModelMetadata, lookupErr error) llm.ContextWindowDecision {
+	model := r.cfg.Model.Model
+	decision := llm.ContextWindowDecision{Model: model, Configured: r.cfg.ContextLimit}
+	if lookupErr == nil {
+		decision.AdvertisedWindow = meta.ContextWindow
+	}
+	limit, source := llm.ResolveContextWindow(r.cfg.ContextLimit, meta)
+	decision.Limit, decision.Source = limit, source
+
+	r.contextMu.Lock()
+	changed := limit != r.contextLimit
+	r.contextLimit, r.contextSource = limit, source
+	first := !r.contextLogged
+	r.contextLogged = true
+	r.contextMu.Unlock()
+
+	if r.cfg.Compactor != nil {
+		r.cfg.Compactor.ContextLimit = limit
+	}
+	// Log the first resolution and every change. A silent recalibration is how a
+	// budget ends up wrong with nothing to explain it.
+	if first || changed {
+		logger.Info("Context budget recalibrated: " + decision.String())
+	}
+	return decision
+}
+
+// memoryContext renders memory for this turn, falling back to the startup
+// snapshot when no live renderer is configured.
+//
+// Placed after the static prompt and the date on purpose. Memory is the most
+// likely thing to change mid-session, so it belongs in the varying suffix where an
+// edit invalidates only the tail rather than the whole cached prefix.
+func (r *Runner) memoryContext() string {
+	if r.cfg.MemoryContextFunc != nil {
+		rendered, err := r.cfg.MemoryContextFunc()
+		if err != nil {
+			// A memory read failure must not fail the turn, and must not silently
+			// look like "there is no memory".
+			logger.Warn("Memory render failed, using startup snapshot: " + err.Error())
+		} else if strings.TrimSpace(rendered) != "" {
+			return strings.TrimSpace(rendered)
+		}
+	}
+	return strings.TrimSpace(r.cfg.MemoryContext)
 }
 
 // promptCacheKey identifies the reusable prefix for the provider's cache router.
@@ -111,9 +205,6 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	if cfg.Model.BaseURL == "" {
 		cfg.Model = llm.DefaultConfig()
 	}
-	if cfg.ContextLimit <= 0 {
-		cfg.ContextLimit = 236000
-	}
 	if cfg.MaxOutputTokens <= 0 {
 		cfg.MaxOutputTokens = 8192
 	}
@@ -135,7 +226,17 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	}
 	opMgr.SetConcurrencyLimit(cfg.MaxConcurrentTools)
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
-	return &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
+	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
+	// Seed the budget from what is known without a network call, and push it into
+	// the compactor now. The run refines this from the catalog, but between
+	// construction and that lookup the compactor must not be holding whatever
+	// default it was constructed with.
+	seed, seedSource := llm.ResolveContextWindow(cfg.ContextLimit, llm.ModelMetadata{})
+	r.contextLimit, r.contextSource = seed, seedSource
+	if cfg.Compactor != nil {
+		cfg.Compactor.ContextLimit = seed
+	}
+	return r
 }
 
 type toolRunner struct {
@@ -197,6 +298,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		r.catalog = llm.NewCatalogClient(r.cfg.ModelCatalogURL, r.cfg.ModelCatalogCache, r.cfg.ModelCatalogRefresh)
 	}
 	pricingMetadata, pricingErr := r.catalog.Lookup(ctx, r.cfg.Model.Model)
+	r.recalibrateContextLimit(pricingMetadata, pricingErr)
 	pricingStatus := pricingMetadata.PricingStatus(pricingErr)
 	pricingUsable := pricingStatus == "current"
 	for i := range sess.Runs {
@@ -659,12 +761,15 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	if len(history.Messages) > 0 && history.Messages[0].Role == llm.RoleSystem && history.Messages[0].Compaction == nil {
 		history.Messages = history.Messages[1:]
 	}
-	limit := r.cfg.ContextLimit - r.cfg.MaxOutputTokens - llm.EstimateToolDefinitionTokens(tools)
+	budget := r.effectiveContextLimit()
+	limit := budget - r.cfg.MaxOutputTokens - llm.EstimateToolDefinitionTokens(tools)
 	if limit <= 0 {
-		limit = r.cfg.ContextLimit - r.cfg.MaxOutputTokens
+		limit = budget - r.cfg.MaxOutputTokens
 	}
 	if limit <= 0 {
-		limit = 216000
+		// The model window is smaller than our own reserve. Budget whatever is
+		// left rather than a remembered constant that may be larger still.
+		limit = budget / 2
 	}
 	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
@@ -760,8 +865,8 @@ func (r *Runner) systemPrompt() string {
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
 	}
-	if strings.TrimSpace(r.cfg.MemoryContext) != "" {
-		parts = append(parts, strings.TrimSpace(r.cfg.MemoryContext))
+	if rendered := r.memoryContext(); rendered != "" {
+		parts = append(parts, rendered)
 	}
 	return strings.Join(parts, "\n\n")
 }

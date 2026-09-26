@@ -292,3 +292,84 @@ func truncateUTF8(value string, maxBytes int) string {
 	}
 	return value
 }
+
+// DefaultMemoryFile is the workspace-relative path that holds durable memory.
+//
+// A markdown file rather than only store entries, because memory that can be
+// edited with an ordinary editor is memory that gets edited. Entries added by the
+// model are still kept; the file is the part a human maintains.
+const DefaultMemoryFile = "memory/AGENTS.md"
+
+// Live returns a renderer that re-reads memory on every call.
+//
+// Memory used to be rendered once, at startup, into the runner config. An edit to
+// the memory file then did not reach the model until the surrounding agent was
+// rebuilt, which for a long-running daemon meant not at all: the file on disk and
+// the memory in the prompt silently diverged, and the divergence was invisible
+// because nothing logged either side.
+//
+// Reading per turn costs a small file read. The result sits after the static
+// prompt and the date, so an edit invalidates only the varying suffix.
+func Live(store *Store, projectID, sessionID, filePath string, maxBytes int) func() (string, error) {
+	return func() (string, error) {
+		var parts []string
+		if filePath != "" {
+			if rendered, err := RenderFile(filePath, maxBytes); err != nil {
+				// A missing memory file is the normal case, not an error worth
+				// propagating into the turn.
+				if !os.IsNotExist(err) {
+					return "", err
+				}
+			} else if rendered != "" {
+				parts = append(parts, rendered)
+			}
+		}
+		if store != nil {
+			entries, err := store.List(projectID, sessionID)
+			if err != nil {
+				return "", err
+			}
+			if rendered := RenderContext(entries, remainingBytes(maxBytes, parts)); rendered != "" {
+				parts = append(parts, strings.TrimSuffix(rendered, "\n"))
+			}
+		}
+		if len(parts) == 0 {
+			return "", nil
+		}
+		return strings.Join(parts, "\n") + "\n", nil
+	}
+}
+
+func remainingBytes(maxBytes int, used []string) int {
+	if maxBytes <= 0 {
+		return 0
+	}
+	spent := 0
+	for _, part := range used {
+		spent += len(part)
+	}
+	if spent >= maxBytes {
+		return 0
+	}
+	return maxBytes - spent
+}
+
+// RenderFile wraps a memory markdown file in the memory block, bounded by
+// maxBytes. A file over the limit is truncated whole rather than dropped, so a
+// large memory file degrades to a stale-but-present one instead of to nothing.
+func RenderFile(path string, maxBytes int) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	body := strings.TrimSpace(string(raw))
+	if body == "" {
+		return "", nil
+	}
+	const open = "<memory-file>\n"
+	entry := open + html.EscapeString(body) + "\n</memory-file>\n"
+	if maxBytes > 0 && len(entry) > maxBytes {
+		return open + truncateUTF8(html.EscapeString(body), maxBytes-len(open)-len("\n</memory-file>\n")) + "\n</memory-file>\n", nil
+	}
+	return entry, nil
+}

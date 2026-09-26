@@ -8,8 +8,6 @@ import (
 	"ceraa/harness/sessionstore"
 )
 
-const maxTotalTokens = 236000 // 256k - safety margin
-
 // PruneResult reports what was cut when building context.
 type PruneResult struct {
 	OmittedMessages []int // indices dropped from the front
@@ -43,8 +41,13 @@ func (b *Builder) Pinned(items ...llm.Item) {
 }
 
 // Build returns the final Request with a system message prepended.
+//
+// The fallback here is the shared conservative default rather than a
+// model-specific constant. A builder used without an explicit limit has no idea
+// which model it is assembling for, and guessing a large window is how a small
+// model ends up handed a prompt it cannot accept.
 func (b *Builder) Build() Request {
-	return b.BuildWithLimit(maxTotalTokens)
+	return b.BuildWithLimit(llm.FallbackContextWindow)
 }
 
 func (b *Builder) BuildWithLimit(limit int) Request {

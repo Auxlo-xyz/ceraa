@@ -15,7 +15,11 @@ const (
 	DefaultKeepTokens   = 8000
 	ToolOutputMaxChars  = 2000
 	SummaryOutputTokens = 4096
-	MaxTotalTokens      = 236000 // 256k - margin, matches contextbuilder
+	// MaxTotalTokens is the fallback budget when no model-specific limit has been
+	// supplied. It is the shared conservative default, not a per-model figure: a
+	// real limit arrives from the catalog via the runner, and DefaultContextLimit
+	// exists only so an unconfigured compactor still refuses to overrun.
+	MaxTotalTokens = llm.FallbackContextWindow
 )
 
 // Settings mirrors soraacode Config.Document.info.compaction

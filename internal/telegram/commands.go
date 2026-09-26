@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"ceraa/harness/llm"
 	"context"
 	"fmt"
 	"os"
@@ -289,6 +290,9 @@ func handleContextCommand(token string, chatID int64) {
 		}
 	}
 	activeProvider := defaultState.provider()
+	if contextLimit <= 0 {
+		contextLimit = displayContextLimit(cfg)
+	}
 	percent := 0
 	if contextLimit > 0 {
 		percent = tokens * 100 / contextLimit
@@ -790,10 +794,7 @@ func handleCompaction(token string, chatID int64, text string) {
 		if !configured {
 			auto = true
 		}
-		limit := 0
-		if cfg != nil {
-			limit = cfg.LLM.ContextLimit
-		}
+		limit := displayContextLimit(cfg)
 		text := fmt.Sprintf("🗜️ Compaction status\n• Tokens: ~%d / %d\n• Auto: %t\n• Compactions: %d\n• Keep: 8k recent tokens", tokens, limit, auto, compactions)
 		sendMenuMarkup(token, chatID, text, menus.Inline("compaction_level", 0))
 		return
@@ -1205,4 +1206,23 @@ func handleFullHelp(token string, chatID int64) {
 	}
 	lines = append(lines, "", "Send any other text to run the agent.")
 	send(token, chatID, strings.Join(lines, "\n"))
+}
+
+// displayContextLimit reports the budget in force for a model whose profile does
+// not state one.
+//
+// An unset profile limit means "the catalog decides", so rendering the raw zero
+// would tell the user the model has no context window at all, which is both wrong
+// and alarming. The runner may have recalibrated from live catalog data by now;
+// this mirrors the resolver's fallback for the cases where it has not.
+func displayContextLimit(cfg *config.Config) int {
+	if cfg != nil {
+		if _, profile, ok := defaultState.activeProviderProfile(); ok && profile.ContextLimit > 0 {
+			return profile.ContextLimit
+		}
+		if cfg.LLM.ContextLimit > 0 {
+			return cfg.LLM.ContextLimit
+		}
+	}
+	return llm.FallbackContextWindow
 }
