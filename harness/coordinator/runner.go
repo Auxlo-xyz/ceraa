@@ -731,6 +731,17 @@ func normalizeLegacyRunToolCallRef(call llm.ToolCall) llm.ToolCall {
 	return call
 }
 
+// todayContext tells the model the current date.
+//
+// It was a literal "This is year 2026" in the prompt file, which is correct
+// exactly until 1 January and silently wrong after that. The model also needs
+// more than a year: "is that certificate expiring" is unanswerable without a
+// month and day.
+func todayContext() string {
+	now := time.Now()
+	return fmt.Sprintf("<current-date>\nToday is %s.\n</current-date>", now.Format("2006-01-02"))
+}
+
 func (r *Runner) systemPrompt() string {
 	parts := []string{r.cfg.SystemPrompt}
 	// Identity comes before the vendored prompt text: the model has to be able to
@@ -738,6 +749,13 @@ func (r *Runner) systemPrompt() string {
 	// and it cannot know that unless it is told.
 	if identity := strings.TrimSpace(r.modelIdentity()); identity != "" {
 		parts = append([]string{identity}, parts...)
+	}
+	// The date goes after the static prompt rather than beside the identity block.
+	// Prefix caching is positional, so a fact placed later costs less: when the
+	// date rolls over, everything before it still hits and only the remainder is
+	// re-read. At the very front it would invalidate the whole prefix once a day.
+	if date := todayContext(); date != "" {
+		parts = append(parts, date)
 	}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")

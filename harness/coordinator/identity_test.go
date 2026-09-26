@@ -2,8 +2,11 @@ package coordinator
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ceraa/harness/llm"
 )
@@ -89,5 +92,42 @@ func TestProviderHost(t *testing.T) {
 		if got := providerHost(tc.in); got != tc.want {
 			t.Errorf("providerHost(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The prompt used to carry a literal "This is year 2026", which is correct
+// exactly until 1 January and silently wrong after that.
+func TestCurrentDateIsInjectedNotHardcoded(t *testing.T) {
+	// Read the file by path, not through prompt.System: that is resolved
+	// relative to the working directory, so from this package it silently falls
+	// back and the assertion would pass against text the model never sees.
+	raw, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatalf("read prompt file: %v", err)
+	}
+	if strings.Contains(string(raw), "This is year") {
+		t.Error("the prompt file still hardcodes a year; it will be wrong after 31 December")
+	}
+	context := todayContext()
+	if !strings.Contains(context, time.Now().Format("2006-01-02")) {
+		t.Errorf("todayContext() = %q, want today's date", context)
+	}
+	if !strings.HasPrefix(context, "<current-date>") || !strings.HasSuffix(strings.TrimSpace(context), "</current-date>") {
+		t.Errorf("todayContext() is not wrapped in a tag: %q", context)
+	}
+}
+
+// The date must sit after the static prompt. Prefix caching is positional, so a
+// fact at the front would invalidate the whole prefix every time the day rolls.
+func TestCurrentDateSitsAfterTheStaticPrompt(t *testing.T) {
+	runner := &Runner{cfg: RunnerConfig{SystemPrompt: "STATIC"}}
+	prompt := runner.systemPrompt()
+	staticAt := strings.Index(prompt, "STATIC")
+	dateAt := strings.Index(prompt, "<current-date>")
+	if staticAt < 0 || dateAt < 0 {
+		t.Fatalf("prompt is missing a part: %q", prompt)
+	}
+	if dateAt < staticAt {
+		t.Errorf("the date precedes the static prompt, so a daily rollover would invalidate everything:\n%s", prompt)
 	}
 }
