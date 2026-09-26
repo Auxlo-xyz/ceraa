@@ -1,9 +1,13 @@
 package llm
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 )
 
@@ -19,6 +23,13 @@ func (c *StreamingClient) DescribeMedia(ctx context.Context, media []*MediaAttac
 	}
 	if c.cfg.GeminiNative {
 		return c.describeMediaGemini(ctx, media, prompt)
+	}
+	// Codex serves neither Gemini's native API nor OpenAI chat completions. Routing
+	// it to the compatibility path below POSTed to a URL that does not exist with
+	// stream:false and max_tokens, both of which the endpoint rejects, so every
+	// view_image on Codex failed with a challenge page instead of a description.
+	if c.cfg.CodexNative {
+		return c.describeMediaCodex(ctx, media, prompt)
 	}
 	return c.describeMediaOpenAI(ctx, media, prompt)
 }
@@ -52,6 +63,94 @@ func (c *StreamingClient) describeMediaGemini(ctx context.Context, media []*Medi
 		},
 	}
 	return c.streamGeminiOnce(ctx, body)
+}
+
+// describeMediaCodex asks the Codex endpoint about an attachment.
+//
+// The shape mirrors the streaming transport: Responses API `input`, store false,
+// stream true, and no max_output_tokens, because the endpoint rejects that field
+// outright. It streams rather than asking for a single response, since stream
+// must be true and the field is not optional there.
+func (c *StreamingClient) describeMediaCodex(ctx context.Context, media []*MediaAttachment, prompt string) (string, error) {
+	if strings.TrimSpace(prompt) == "" {
+		prompt = mediaPrompt
+	}
+	content := []map[string]any{}
+	for _, item := range media {
+		content = append(content, map[string]any{
+			"type": "input_text",
+			"text": "File: " + item.Describe(),
+		})
+		content = append(content, map[string]any{
+			"type":      "input_image",
+			"image_url": "data:" + item.MimeType + ";base64," + item.Base64Data(),
+		})
+	}
+	content = append(content, map[string]any{"type": "input_text", "text": prompt})
+
+	body := map[string]any{
+		"model": c.cfg.Model,
+		"input": []map[string]any{{
+			"role":    "user",
+			"content": content,
+		}},
+		"store":  false,
+		"stream": true,
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("encode codex media request: %w", err)
+	}
+	token, err := c.codexToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesURL(c.cfg.BaseURL), bytes.NewReader(encoded))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
+	}
+	defer resp.Body.Close()
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", &ProviderError{Status: resp.StatusCode, Body: codexErrorMessage(raw)}
+	}
+	if readErr != nil {
+		return "", readErr
+	}
+	var answer strings.Builder
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil {
+			continue
+		}
+		if event.Type == "response.output_text.delta" {
+			answer.WriteString(event.Delta)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(answer.String())
+	if trimmed == "" {
+		return "", fmt.Errorf("the model returned no description of the attachment")
+	}
+	return trimmed, nil
 }
 
 // describeMediaOpenAI uses the compatibility layer's content-part shape, which

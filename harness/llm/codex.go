@@ -245,16 +245,27 @@ type codexStreamEvent struct {
 // about it: `store` must be false, `stream` must be true, and parameters such
 // as `temperature` and `max_output_tokens` are rejected outright. Those
 // constraints were established against the live endpoint, not assumed.
-func (c *StreamingClient) streamCodex(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+// codexToken returns a currently valid Codex access token, or an error naming the
+// command that obtains one. Shared by the streaming transport and the media
+// description path so both fail the same way when nothing is stored.
+func (c *StreamingClient) codexToken(ctx context.Context) (string, error) {
 	if c.cfg.CodexTokens == nil {
-		return fmt.Errorf("codex provider selected but no Codex credential is available: run /codex-login")
+		return "", fmt.Errorf("codex provider selected but no Codex credential is available: run /codex-login")
 	}
 	token, err := c.cfg.CodexTokens.AccessToken(ctx)
 	if err != nil {
-		return fmt.Errorf("codex credential unavailable: %w", err)
+		return "", fmt.Errorf("codex credential unavailable: %w", err)
 	}
 	if strings.TrimSpace(token) == "" {
-		return fmt.Errorf("no Codex credential stored: run /codex-login to sign in")
+		return "", fmt.Errorf("no Codex credential stored: run /codex-login to sign in")
+	}
+	return token, nil
+}
+
+func (c *StreamingClient) streamCodex(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+	token, err := c.codexToken(ctx)
+	if err != nil {
+		return err
 	}
 
 	input, instructions := codexInput(req.Messages)

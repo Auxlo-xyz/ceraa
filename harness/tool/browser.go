@@ -64,7 +64,7 @@ func (b *BrowserTool) Schema() map[string]any {
 			"action": map[string]any{
 				"type":        "string",
 				"enum":        []string{"open", "screenshot", "text", "html", "click", "type", "eval", "status", "close"},
-				"description": "The browser action to perform.",
+				"description": "The single browser action to perform. Exactly one action per call: to open a page and then act on it, make a separate call for each step. Sending arguments that belong to a different action is rejected.",
 			},
 			"url": map[string]any{"type": "string", "description": "Web address to open, http or https. Use with action=open."},
 			"path": map[string]any{
@@ -108,6 +108,29 @@ var browserArgSpec = map[string]struct {
 	"close":      {},
 }
 
+// describeBrowserArgs renders what an action accepts, for the rejection message.
+//
+// Naming only the offending argument left the model with no way to recover: it
+// retried the same call shape until it concluded the tool was unavailable, and
+// then told the user the browser tools were missing. Naming what is accepted,
+// and stating the one-action-per-call rule, is what lets it try again correctly.
+func describeBrowserArgs(spec struct {
+	required []string
+	optional []string
+}) string {
+	switch {
+	case len(spec.required) > 0 && len(spec.optional) > 0:
+		return "it requires " + strings.Join(spec.required, " and ") +
+			", and also accepts " + strings.Join(spec.optional, ", ")
+	case len(spec.required) > 0:
+		return "it requires " + strings.Join(spec.required, " and ")
+	case len(spec.optional) > 0:
+		return "it accepts " + strings.Join(spec.optional, ", ")
+	default:
+		return "it takes no arguments"
+	}
+}
+
 func (b *BrowserTool) Translate(args map[string]any) (operation.Spec, error) {
 	action, _ := args["action"].(string)
 	action = strings.ToLower(strings.TrimSpace(action))
@@ -126,7 +149,9 @@ func (b *BrowserTool) Translate(args map[string]any) (operation.Spec, error) {
 	}
 	for key := range args {
 		if !allowed[key] {
-			return operation.Spec{}, fmt.Errorf("browser action %q does not accept %q", action, key)
+			return operation.Spec{}, fmt.Errorf(
+				"browser action %q does not accept %q; %s. Each call performs exactly one action, so a sequence needs separate calls: for example action=open with url, then action=eval with script, then action=screenshot with full_page.",
+				action, key, describeBrowserArgs(spec))
 		}
 	}
 	translated := map[string]any{"action": action}
