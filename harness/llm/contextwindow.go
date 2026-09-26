@@ -29,24 +29,20 @@ const (
 // one.
 const FallbackContextWindow = 128000
 
-// ContextSafetyMargin is the most that is held back from a catalog-advertised
-// window for output, tool definitions and estimation error. It is the same
-// allowance the previous hardcoded budget used when it took 256k and called the
-// result 236k, and it is a ceiling rather than a fixed deduction: for a window
-// small enough that the full margin would dominate it, a quarter of the window is
-// used instead.
-const ContextSafetyMargin = 20000
-
-// maxReserveDivisor caps the reserve at this fraction of the window, so a
-// resolved budget is always at least three quarters of what the model accepts.
-const maxReserveDivisor = 4
-
 // ResolveContextWindow picks the effective context limit for a model.
 //
 // configured is the provider profile's limit, which is zero when unset. A nonzero
 // value wins, because it encodes a decision somebody made. Otherwise the
-// catalog's advertised window is used, less the safety margin. Only when both are
-// silent does the fallback apply.
+// catalog's advertised window is used. Only when both are silent does the
+// fallback apply.
+//
+// The result is the window, not a budget carved out of it. An earlier version
+// subtracted a safety margin here, and the compactor then subtracted a buffer of
+// its own, so two flat reservations stacked: a 200k model compacted at 80% of its
+// window and a 32k model at 12%. Headroom is an absolute requirement, not a
+// proportional one, so it belongs with the code that needs it. Callers that
+// assemble a request subtract output and tool tokens; the compactor reserves
+// through ReserveContextTokens.
 //
 // The catalog is consulted even for models it has never heard of, and returns
 // whatever it has, so the caller must pass metadata from the model it is actually
@@ -55,19 +51,10 @@ func ResolveContextWindow(configured int, meta ModelMetadata) (int, ContextWindo
 	if configured > 0 {
 		return configured, ContextFromProfile
 	}
-	window := meta.ContextWindow
-	if window <= 0 {
-		return FallbackContextWindow, ContextFromDefault
+	if meta.ContextWindow > 0 {
+		return meta.ContextWindow, ContextFromCatalog
 	}
-	// The reserve scales down for a small window rather than being subtracted
-	// flat. A flat margin turns a 20,001-token window into a 1-token budget,
-	// which is worse than no budget at all: the first turn fails and the failure
-	// looks like a provider error rather than a budgeting bug.
-	margin := ContextSafetyMargin
-	if window/maxReserveDivisor < margin {
-		margin = window / maxReserveDivisor
-	}
-	return window - margin, ContextFromCatalog
+	return FallbackContextWindow, ContextFromDefault
 }
 
 // ContextWindowDecision is a resolved limit plus its provenance, for logging.

@@ -20,16 +20,18 @@ func TestRecalibrateUsesTheCatalogWindow(t *testing.T) {
 	r.recalibrateContextLimit(llm.ModelMetadata{ContextWindow: 32000}, nil)
 
 	limit, source := r.ContextLimit()
-	if limit != 24000 {
-		t.Errorf("limit = %d, want 24000 (32k window less a quarter reserve)", limit)
+	if limit != 32000 {
+		t.Errorf("limit = %d, want 32000, the advertised window unchanged", limit)
 	}
 	if source != llm.ContextFromCatalog {
 		t.Errorf("source = %s, want %s", source, llm.ContextFromCatalog)
 	}
 	// The compactor is a separate budget holder and has to follow, or compaction
-	// keeps summarising against a window the model does not have.
-	if compactor.ContextLimit != 24000 {
-		t.Errorf("compactor limit = %d, want 24000", compactor.ContextLimit)
+	// keeps summarising against a window the model does not have. It receives the
+	// window, not a reduced budget: the headroom is subtracted once, inside
+	// NeedsCompaction, and shaving it here too counted it twice.
+	if compactor.ContextLimit != 32000 {
+		t.Errorf("compactor limit = %d, want 32000", compactor.ContextLimit)
 	}
 }
 

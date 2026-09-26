@@ -20,6 +20,22 @@ const (
 	// real limit arrives from the catalog via the runner, and DefaultContextLimit
 	// exists only so an unconfigured compactor still refuses to overrun.
 	MaxTotalTokens = llm.FallbackContextWindow
+
+	// ReserveContextTokens is the headroom kept beyond the conversation: room for
+	// the model's own reply, the tool definitions, and token estimation error.
+	//
+	// Absolute rather than proportional, because none of those three shrink with
+	// the window. A 1M-token model needs about this much; a 32k one needs it just
+	// as much and cannot spare a percentage of itself instead.
+	ReserveContextTokens = 16000
+
+	// CompactAtWindowPercent is the fraction of the window compaction waits for
+	// before starting, on any window large enough to afford the absolute reserve.
+	//
+	// Ninety percent rather than something smaller, because the reserve is already
+	// accounted for separately: holding back another slice of a large window just
+	// discards headroom the model could have used.
+	CompactAtWindowPercent = 90
 )
 
 // Settings mirrors soraacode Config.Document.info.compaction
@@ -357,19 +373,55 @@ func (c *Compactor) outputReserve() int {
 }
 
 // NeedsCompaction checks pre-flight like soraacode compactIfNeeded
+// compactAt is the context size at which compaction begins.
+//
+// The earlier form subtracted a flat buffer from the limit, which combined with
+// the margin the resolver also subtracted to trigger absurdly early on small
+// windows: 12% of a 32k window, 80% of a 200k one. Neither figure was chosen;
+// both were the same flat reservation counted twice.
+//
+// The trigger is now the lesser of a 90% fill and the point where the absolute
+// reserve would be consumed. A large window therefore uses 90% of itself, and a
+// window too small to hold the reserve still stops before the model's reply no
+// longer fits.
+func (c *Compactor) compactAt() int {
+	window := c.contextLimit()
+	if window <= 0 {
+		return 0
+	}
+	proportional := window * CompactAtWindowPercent / 100
+	absolute := window - c.reserve()
+	if absolute < proportional {
+		// A window smaller than the reserve cannot satisfy it. Triggering at the
+		// raw difference would be negative, and every turn would then exceed it and
+		// compact, forever, with nothing gained. Fall back to half the window,
+		// which at least leaves the turn room to happen.
+		if floor := window / 2; absolute < floor {
+			return floor
+		}
+		return absolute
+	}
+	return proportional
+}
+
+// reserve is the headroom to keep, never less than the reply itself needs.
+func (c *Compactor) reserve() int {
+	reserve := c.Settings.Buffer
+	if reserve < ReserveContextTokens {
+		reserve = ReserveContextTokens
+	}
+	if output := c.outputReserve(); reserve < output {
+		reserve = output
+	}
+	return reserve
+}
+
 func (c *Compactor) NeedsCompaction(sess *sessionstore.Session) bool {
 	if !c.Settings.Auto {
 		return false
 	}
-	used := estimatedContext(sess)
 	// Estimate request size including system prompt overhead
-	contextLimit := c.contextLimit()
-	buffer := c.Settings.Buffer
-	if buffer == 0 {
-		buffer = DefaultBuffer
-	}
-	// If used + buffer exceeds context, need compaction
-	return used > (contextLimit - buffer)
+	return estimatedContext(sess) > c.compactAt()
 }
 
 // IsOverflow checks like soraacode overflow.ts isOverflow

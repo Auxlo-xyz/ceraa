@@ -88,10 +88,10 @@ func TestRunBudgetsFromTheCatalogRatherThanAConstant(t *testing.T) {
 	if catalogRequests.Load() == 0 {
 		t.Fatal("the catalog was never consulted, so nothing could have recalibrated")
 	}
-	// 32k advertised, reserve capped at a quarter, so 24k.
-	want := advertised - advertised/4
-	if got := compactor.ContextLimit; got != want {
-		t.Errorf("compactor budget = %d, want %d from the advertised window", got, want)
+	// The advertised window, unchanged. The headroom is the compactor's business
+	// and is applied once, where it is needed.
+	if got := compactor.ContextLimit; got != advertised {
+		t.Errorf("compactor budget = %d, want %d, the advertised window", got, advertised)
 	}
 	// And emphatically not the old constant.
 	if compactor.ContextLimit == 236000 {

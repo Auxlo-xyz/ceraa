@@ -17,11 +17,11 @@ func TestResolveContextWindowUsesTheAdvertisedWindow(t *testing.T) {
 		wantSource ContextWindowSource
 	}{
 		{"profile wins when stated", 200000, 400000, 200000, ContextFromProfile},
-		{"catalog supplies an unset profile", 0, 400000, 380000, ContextFromCatalog},
-		// A flat 20k margin would leave 12k here, which is usable but throws away
-		// a third of a small model's window for no reason.
-		{"small model reserves a quarter, not the flat margin", 0, 32000, 24000, ContextFromCatalog},
-		{"a 1M model is not clamped", 0, 1000000, 980000, ContextFromCatalog},
+		// The window is returned whole. Headroom is an absolute requirement and is
+		// subtracted by whoever needs it, not proportionally shaved off here.
+		{"catalog supplies an unset profile", 0, 400000, 400000, ContextFromCatalog},
+		{"small window is not padded", 0, 32000, 32000, ContextFromCatalog},
+		{"a 1M model is not clamped", 0, 1000000, 1000000, ContextFromCatalog},
 		{"unknown model gets the fallback", 0, 0, FallbackContextWindow, ContextFromDefault},
 	}
 	for _, tc := range cases {
@@ -35,27 +35,18 @@ func TestResolveContextWindowUsesTheAdvertisedWindow(t *testing.T) {
 	}
 }
 
-// The reserve must never consume the window. A flat margin fails this at
-// 20,001 tokens, where it leaves a single token of budget, and the resulting
-// failure surfaces as a provider error on the first turn rather than as a
-// budgeting mistake here.
-func TestResolveContextWindowNeverStarvesTheBudget(t *testing.T) {
-	for _, window := range []int{1, 512, 4096, 8192, 20000, 20001, 32000, 65536, 131072, 200000, 1000000} {
+// A window must be reported as-is, including one small enough that a reserve
+// would swallow it. Returning a reduced figure here double-counted headroom
+// against the compactor's own buffer, which is what made a 32k model compact at
+// 12% of its window.
+func TestResolveContextWindowNeverReducesTheWindow(t *testing.T) {
+	for _, window := range []int{1, 512, 4096, 8192, 20001, 32000, 200000, 1000000} {
 		got, source := ResolveContextWindow(0, ModelMetadata{ContextWindow: window})
+		if got != window {
+			t.Errorf("window %d resolved to %d, want it unchanged", window, got)
+		}
 		if source != ContextFromCatalog {
 			t.Errorf("window %d: source = %s, want %s", window, source, ContextFromCatalog)
-			continue
-		}
-		if got <= 0 {
-			t.Errorf("window %d produced a budget of %d", window, got)
-			continue
-		}
-		// At least three quarters of the window, by the reserve cap.
-		if minimum := window - window/maxReserveDivisor; got < minimum {
-			t.Errorf("window %d: budget %d is below the %d floor", window, got, minimum)
-		}
-		if got > window {
-			t.Errorf("window %d: budget %d exceeds the window", window, got)
 		}
 	}
 }
