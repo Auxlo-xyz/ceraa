@@ -46,15 +46,17 @@ func NewBrowserTool() *BrowserTool {
 func (b *BrowserTool) Name() string { return "browser" }
 
 func (b *BrowserTool) Description() string {
-	return "Drive a real Chromium browser. Actions: open (navigate to a URL), " +
-		"screenshot (capture a PNG and return its path), text (read visible text), " +
-		"html (read page HTML), click (click a CSS selector), type (fill an input, " +
-		"optionally submitting), eval (run JavaScript in the page), status (current " +
-		"page and browser state), close (shut the browser down). The browser is shared " +
-		"between calls, so a sequence of actions continues where the last one stopped. " +
-		"Use screenshot for visual checks and view_image to inspect the result. " +
-		"Actions given together run in the order written, because one open page is shared. " +
-		"A new open replaces the current page, so take a screenshot before navigating elsewhere. "
+	// The action list, and what each argument belongs to, are carried by the
+	// `action` enum and the per-argument descriptions. Repeating them here made
+	// this the most expensive schema in the registry, and it did not help: a
+	// model still paired arguments with the wrong action 14 times in a row
+	// against the longer text. What is left is only what a schema cannot say,
+	// namely that the page is shared state across calls.
+	return "Drive a real Chromium browser. One page is shared across calls, so a " +
+		"sequence continues where the last call stopped and a new open replaces " +
+		"the current page. Use screenshot for visual checks, then view_image to " +
+		"inspect the result. Each argument belongs to the action named in its own " +
+		"description; passing one to a different action is rejected."
 }
 
 func (b *BrowserTool) Schema() map[string]any {

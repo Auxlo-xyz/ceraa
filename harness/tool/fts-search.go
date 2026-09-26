@@ -18,7 +18,10 @@ type FTSSearchTool struct {
 
 func (f *FTSSearchTool) Name() string { return "fts_search" }
 func (f *FTSSearchTool) Description() string {
-	return "Indexed full-text search via SQLite FTS5. Use for conceptual/semantic queries (e.g. session persistence, tool_call) - returns ranked candidate files without scanning entire workspace. For exact regex use grep."
+	return "Indexed full-text search via SQLite FTS5. Use for conceptual/semantic " +
+		"queries (e.g. session persistence, tool_call) - returns ranked candidate " +
+		"files without scanning entire workspace. For exact regex or literal text, " +
+		"use rg via bash instead."
 }
 func (f *FTSSearchTool) Schema() map[string]any {
 	return map[string]any{

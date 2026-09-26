@@ -467,3 +467,55 @@ func TestQuestionIsFreeFormWithoutOptions(t *testing.T) {
 		t.Fatal("free_form with options must be honoured, so the options become suggestions")
 	}
 }
+
+// The browser description used to enumerate all nine actions and what each
+// argument belonged to, which the per-argument descriptions already carry. That
+// redundancy made browser the most expensive tool in the registry and did not
+// stop a model pairing arguments with the wrong action 14 times running, so the
+// description now holds only what a schema cannot express: the page is shared
+// state across calls.
+func TestBrowserDescriptionOmitsTheActionList(t *testing.T) {
+	description := (&BrowserTool{}).Description()
+	if len(description) > 400 {
+		t.Errorf("description is %d chars; the action list belongs in the schema", len(description))
+	}
+	for _, leaked := range []string{"navigate to a URL", "capture a PNG", "read page HTML", "shut the browser down"} {
+		if strings.Contains(description, leaked) {
+			t.Errorf("description still enumerates actions (%q)", leaked)
+		}
+	}
+	// The non-obvious behaviour has to survive.
+	if !strings.Contains(description, "shared") {
+		t.Error("description dropped the shared-page rule, which the schema cannot state")
+	}
+	// The action enum and per-action argument ownership must still be present,
+	// since that is where the model actually reads them.
+	schema := (&BrowserTool{}).Schema()
+	action, _ := schema["properties"].(map[string]any)["action"].(map[string]any)
+	if action == nil {
+		t.Fatal("action property missing")
+	}
+	actions, _ := action["enum"].([]string)
+	if len(actions) != 9 {
+		t.Errorf("action enum has %d entries, want 9", len(actions))
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	// Every argument must still name the actions it belongs to, since that is
+	// where the model reads that. `selector` is shared by five actions, so it
+	// lists them rather than using the "action=x only" form.
+	for name, markers := range map[string][]string{
+		"url":       {"action=open"},
+		"script":    {"action=eval"},
+		"full_page": {"action=screenshot"},
+		"submit":    {"action=type"},
+		"selector":  {"screenshot", "click", "type"},
+	} {
+		property, _ := properties[name].(map[string]any)
+		text, _ := property["description"].(string)
+		for _, marker := range markers {
+			if !strings.Contains(text, marker) {
+				t.Errorf("%s description no longer states %q: %q", name, marker, text)
+			}
+		}
+	}
+}
