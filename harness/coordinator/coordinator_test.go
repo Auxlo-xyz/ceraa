@@ -614,3 +614,59 @@ func TestCoordinatorDispatchesTools(t *testing.T) {
 		t.Fatalf("expected two model requests, got %d", requests.Load())
 	}
 }
+
+// TestInProcessToolIsOfferedAndDispatched pins the whole path an in-process tool
+// travels: it is offered to the model, translated, and executed through the
+// operation manager.
+//
+// This is the seam that let a newly added tool be advertised to the model and
+// then fail on every call, because the manager dispatched by a hardcoded list of
+// type names rather than asking the registry. Testing the tool in isolation
+// cannot catch that; only going through the manager can.
+func TestInProcessToolIsOfferedAndDispatched(t *testing.T) {
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tool.DefaultRegistry()
+	opMgr := operation.NewWithBuffer(&toolRunner{reg: registry}, 8)
+	runner := &Runner{reg: registry, store: store, opMgr: opMgr, cfg: RunnerConfig{SessionID: "inproc"}}
+
+	// The model must be able to see it, or it can never be chosen.
+	offered := false
+	for _, def := range runner.toolDefs() {
+		if def.Name == "browser" {
+			offered = true
+		}
+	}
+	if !offered {
+		t.Fatal("browser must be offered to the model")
+	}
+
+	sess := &sessionstore.Session{ID: "inproc", Version: 2}
+	prepared, _, _, err := runner.prepareTools(context.Background(), sess, "run1", []llm.StreamedToolCall{
+		{ID: "b1", Name: "browser", Arguments: `{"action":"status"}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared) != 1 || prepared[0].tool.Name() != "browser" {
+		t.Fatalf("prepared = %#v", prepared)
+	}
+	if prepared[0].spec.Type != "browser" {
+		t.Fatalf("spec type = %q", prepared[0].spec.Type)
+	}
+	// Status needs no browser, so the call can run here. The result is read from
+	// the manager, which is the path that used to reject the tool by name.
+	select {
+	case result := <-opMgr.Results():
+		if result.Status != operation.StatusCompleted {
+			t.Fatalf("status = %v, error = %q", result.Status, result.Error)
+		}
+		if result.Output == "" {
+			t.Fatal("expected some status output")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the in-process tool never produced a result")
+	}
+}

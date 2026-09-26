@@ -87,6 +87,11 @@ func New(runner ToolRunner) *LocalManager {
 	return NewWithBuffer(runner, 64)
 }
 
+// defaultRunnerTimeout bounds an in-process tool the manager does not know
+// natively. It is generous because such a tool may start a browser or fetch a
+// large resource, and the coordinator imposes its own outer deadline anyway.
+const defaultRunnerTimeout = 150 * time.Second
+
 func NewWithBuffer(runner ToolRunner, capacity int) *LocalManager {
 	if capacity < 1 {
 		capacity = 1
@@ -467,8 +472,32 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				result.Status = StatusFailed
 			}
 		default:
-			result.Error = "unknown operation type: " + op.Spec.Type
-			result.Status = StatusFailed
+			// A tool that executes in process is dispatched through the
+			// configured runner. This used to be a hardcoded list of type names,
+			// which meant a new in-process tool was rejected with "unknown
+			// operation type" until the executor was also edited. Anything the
+			// manager does not handle natively is the runner's business.
+			if m.runner != nil {
+				to := defaultRunnerTimeout
+				if t, ok := op.Spec.Args["timeout"]; ok {
+					if ts, ok := t.(int); ok && ts > 0 {
+						to = time.Duration(ts) * time.Second
+					}
+				}
+				tctx, tcancel := context.WithTimeout(ctx, to)
+				defer tcancel()
+				out, err := m.runner.RunTool(tctx, op.Spec)
+				result.Output = out
+				if err != nil {
+					result.Error = err.Error()
+					result.Status = StatusFailed
+				} else {
+					result.Status = StatusCompleted
+				}
+			} else {
+				result.Error = "unknown operation type: " + op.Spec.Type
+				result.Status = StatusFailed
+			}
 		}
 	}
 
