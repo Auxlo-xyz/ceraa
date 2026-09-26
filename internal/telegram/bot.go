@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
@@ -265,6 +266,30 @@ func sendMessageWithMarkup(token string, chatID int64, text string, markup map[s
 		return 0
 	}
 	return messageID
+}
+
+// sendHTML sends text with Telegram HTML formatting.
+//
+// send() passes no parse_mode, so a message carrying <code> or <b> renders the
+// tags literally. HTML mode is all-or-nothing though: one unescaped < or > makes
+// Telegram reject the whole message, and interpolated values such as a model ID
+// or a device code are not guaranteed to be tag-free. So a parse failure retries
+// as plain text rather than dropping the message.
+func sendHTML(token string, chatID int64, text string, kb map[string]any) int {
+	messageID, err := sendMessagePayload(token, chatID, text, "HTML", kb)
+	if err == nil {
+		return messageID
+	}
+	if isTelegramParseError(err) {
+		fallbackID, fallbackErr := sendMessagePayload(token, chatID, text, "", kb)
+		if fallbackErr == nil {
+			return fallbackID
+		}
+		logger.Warn("Telegram HTML fallback failed: " + fallbackErr.Error())
+		return 0
+	}
+	logger.Warn("Telegram HTML sendMessage failed: " + err.Error())
+	return 0
 }
 
 func sendPlainMessage(token string, chatID int64, text string) int {
@@ -1170,7 +1195,9 @@ func handleHermesLogin(token string, chatID int64, text string) {
 		send(token, chatID, "Failed to encode Hermes login menu: "+err.Error())
 		return
 	}
-	sendMessageWithMarkup(token, chatID, flow.ResultMessage(), markup)
+	// Hermes renders <code> in its login message too, so it needs HTML mode for
+	// the same reason.
+	sendHTML(token, chatID, flow.ResultMessage(), markup)
 }
 
 func handleHermesStatus(token string, chatID int64) {
@@ -1222,7 +1249,7 @@ func handleCodexLogin(token string, chatID int64) {
 		send(token, chatID, "Failed to encode Codex login menu: "+err.Error())
 		return
 	}
-	sendMessageWithMarkup(token, chatID, state.ResultMessage(), markup)
+	sendHTML(token, chatID, state.ResultMessage(), markup)
 }
 
 func handleCodexStatus(token string, chatID int64) {
@@ -1243,7 +1270,7 @@ func handleCodexStatus(token string, chatID int64) {
 			send(token, chatID, "✅ Codex is authenticated and active.\nModel: "+activeModel+"\nAccess token expires: "+codexExpiryLabel()+"\nUse /codex-login to sign in again.")
 			return
 		}
-		send(token, chatID, "✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\nIt is not the active provider — Ceraa is using <b>"+active+"</b>. Send /codex-login or pick 🧠 Codex (ChatGPT) in the Provider / Model menu to switch to it.")
+		sendHTML(token, chatID, "✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\nIt is not the active provider — Ceraa is using <b>"+html.EscapeString(active)+"</b>. Send /codex-login or pick 🧠 Codex (ChatGPT) in the Provider / Model menu to switch to it.", nil)
 		return
 	}
 	for _, flow := range authMgr.ListFlows() {
@@ -1253,7 +1280,7 @@ func handleCodexStatus(token string, chatID int64) {
 			send(token, chatID, "✅ Codex login completed. Codex can now be used.")
 			return
 		case codexauth.StatusWaiting, codexauth.StatusApproved:
-			send(token, chatID, "🔄 Login in progress.\nCode: <code>"+state.UserCode+"</code>")
+			sendHTML(token, chatID, "🔄 Login in progress.\nCode: <code>"+html.EscapeString(state.UserCode)+"</code>", nil)
 			return
 		}
 	}
@@ -1298,7 +1325,7 @@ func selectCodexProvider(token string, chatID int64) {
 		return
 	}
 	pendingCodexActivation.Store(chatID, true)
-	sendMessageWithMarkup(token, chatID,
+	sendHTML(token, chatID,
 		"Sign in to ChatGPT to use Codex. Open the link, approve the code, and Ceraa will switch to Codex automatically.\n\n"+flow.ResultMessage(),
 		markup)
 }
@@ -1327,7 +1354,7 @@ func activateCodexProvider(token string, chatID int64) {
 		return
 	}
 	pendingCodexActivation.Delete(chatID)
-	send(token, chatID, "✅ Codex provider activated with model <code>"+model+"</code>.\nSend a task to use it.")
+	sendHTML(token, chatID, "✅ Codex provider activated with model <code>"+html.EscapeString(model)+"</code>.\nSend a task to use it.", nil)
 }
 
 // pendingCodexActivation records the chats that asked for Codex and are waiting
