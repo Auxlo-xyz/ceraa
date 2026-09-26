@@ -38,10 +38,27 @@ func answerCallback(token, id string) {
 	}()
 }
 
+// editCallback replaces a message's text and keyboard.
+//
+// Like send(), it sets no parse_mode, so markup in the text renders literally.
+// HTML mode is all-or-nothing and an unescaped < makes Telegram reject the whole
+// edit, so a parse failure falls back to plain text rather than leaving the old
+// message on screen.
 func editCallback(token string, chatID int64, messageID int, text string, markup map[string]any) {
+	editMessageText(token, chatID, messageID, text, markup, "")
+}
+
+func editHTML(token string, chatID int64, messageID int, text string, markup map[string]any) {
+	editMessageText(token, chatID, messageID, text, markup, "HTML")
+}
+
+func editMessageText(token string, chatID int64, messageID int, text string, markup map[string]any, parseMode string) {
 	payload := map[string]any{"chat_id": chatID, "message_id": messageID}
 	if text != "" {
 		payload["text"] = text
+		if parseMode != "" {
+			payload["parse_mode"] = parseMode
+		}
 	}
 	if markup == nil {
 		payload["reply_markup"] = map[string]any{"inline_keyboard": [][]any{}}
@@ -50,9 +67,29 @@ func editCallback(token string, chatID int64, messageID int, text string, markup
 	}
 	body, _ := json.Marshal(payload)
 	resp, err := doTelegramPost(api("editMessageText", token), body)
-	if err != nil {
-		logger.Warn("Telegram editMessageText failed: " + err.Error())
+	if err == nil {
+		discardTelegramResponse(resp)
+		return
 	}
+	if parseMode != "" && isTelegramParseError(err) {
+		fallback := map[string]any{"chat_id": chatID, "message_id": messageID}
+		if text != "" {
+			fallback["text"] = text
+		}
+		if markup == nil {
+			fallback["reply_markup"] = map[string]any{"inline_keyboard": [][]any{}}
+		} else {
+			fallback["reply_markup"] = markup
+		}
+		fallbackBody, _ := json.Marshal(fallback)
+		fallbackResp, fallbackErr := doTelegramPost(api("editMessageText", token), fallbackBody)
+		if fallbackErr == nil {
+			discardTelegramResponse(fallbackResp)
+			return
+		}
+		err = fallbackErr
+	}
+	logger.Warn("Telegram editMessageText failed: " + err.Error())
 	discardTelegramResponse(resp)
 }
 
@@ -330,7 +367,7 @@ func handleCallback(token string, q *struct {
 		providerID := strings.TrimPrefix(data, "provider:remove:")
 		// Confirmation before deleting: removal switches the active provider to
 		// default, which changes where the next task goes.
-		editCallback(token, chatID, q.Message.MessageID,
+		editHTML(token, chatID, q.Message.MessageID,
 			"Remove provider <b>"+html.EscapeString(providerID)+"</b>?\n\nIf it is the active provider, Ceraa switches to <b>default</b>.",
 			map[string]any{"inline_keyboard": [][]map[string]string{{
 				{"text": "✅ Remove", "callback_data": "provider:remove_confirm:" + providerID},
@@ -350,7 +387,11 @@ func handleCallback(token string, q *struct {
 		if wasActive {
 			note = "\n\nIt was active, so Ceraa is now on <b>default</b>."
 		}
-		editCallback(token, chatID, q.Message.MessageID, "🗑 Removed provider <b>"+html.EscapeString(providerID)+"</b>."+note, nil)
+		// Return to the provider menu rather than stranding the user on a dead
+		// keyboard: the point of removing a provider is usually to pick another.
+		editHTML(token, chatID, q.Message.MessageID,
+			"🗑 Removed provider <b>"+html.EscapeString(providerID)+"</b>."+note,
+			menus.Inline("model", 0))
 		return
 	}
 	if data == "provider:codex" {

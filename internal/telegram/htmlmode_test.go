@@ -14,11 +14,15 @@ import (
 // plainSendHelpers send text with no parse_mode, so a Telegram HTML tag in their
 // arguments reaches the chat as literal text. That is what a user sees when
 // <code> appears unrendered in a bubble.
+// Both the send and the edit path render text without a parse_mode, so markup
+// handed to either one reaches the chat with the tags visible. editCallback was
+// missing from this list, which is how a <b> survived in a removal confirmation.
 var plainSendHelpers = map[string]bool{
 	"send":                  true,
 	"sendWithKeyboard":      true,
 	"sendMessageWithMarkup": true,
 	"sendPlainMessage":      true,
+	"editCallback":          true,
 }
 
 var htmlTags = []string{"<code>", "<b>", "<i>", "<pre>", "<a "}

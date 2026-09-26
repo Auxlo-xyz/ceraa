@@ -726,6 +726,12 @@ func normalizeLegacyRunToolCallRef(call llm.ToolCall) llm.ToolCall {
 
 func (r *Runner) systemPrompt() string {
 	parts := []string{r.cfg.SystemPrompt}
+	// Identity comes before the vendored prompt text: the model has to be able to
+	// answer "which model am I" from its own instructions rather than guessing,
+	// and it cannot know that unless it is told.
+	if identity := strings.TrimSpace(r.modelIdentity()); identity != "" {
+		parts = append([]string{identity}, parts...)
+	}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
 	}
@@ -733,6 +739,62 @@ func (r *Runner) systemPrompt() string {
 		parts = append(parts, strings.TrimSpace(r.cfg.MemoryContext))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// modelIdentity names the model and provider serving this run.
+//
+// ResolveModel is consulted rather than the static Model config because the
+// provider is resolved per run: a session that switches provider mid-flight
+// would otherwise be told it is the model it started on.
+func (r *Runner) modelIdentity() string {
+	model := r.cfg.Model.Model
+	provider := r.cfg.Model.BaseURL
+	codex := r.cfg.Model.CodexNative
+	// Resolved once: ResolveModel can read the credential store, so calling it
+	// twice per run does real work twice.
+	if r.cfg.ResolveModel != nil {
+		if resolved, err := r.cfg.ResolveModel(context.Background()); err == nil {
+			if strings.TrimSpace(resolved.Model) != "" {
+				model = resolved.Model
+			}
+			if strings.TrimSpace(resolved.BaseURL) != "" {
+				provider = resolved.BaseURL
+			}
+			codex = resolved.CodexNative
+		}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString("<model-identity>\n")
+	out.WriteString("You are running as model `" + model + "`")
+	if codex {
+		out.WriteString(" on the ChatGPT Codex subscription")
+	} else if host := providerHost(provider); host != "" {
+		out.WriteString(" served by " + host)
+	}
+	out.WriteString(".\n")
+	out.WriteString("Answer questions about which model or provider is running from this, and do not guess. If a tool result contradicts it, trust this line and say so.\n")
+	out.WriteString("</model-identity>")
+	return out.String()
+}
+
+// providerHost reduces a base URL to a host for display.
+func providerHost(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return ""
+	}
+	rest := trimmed
+	if index := strings.Index(rest, "://"); index >= 0 {
+		rest = rest[index+3:]
+	}
+	if index := strings.IndexAny(rest, "/?#"); index >= 0 {
+		rest = rest[:index]
+	}
+	return rest
 }
 
 func toolCatalogArguments(schema map[string]any) string {
