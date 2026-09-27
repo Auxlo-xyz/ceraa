@@ -71,6 +71,17 @@ func installStub() {
 			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"rich edit is unavailable"}`))
 			return
 		}
+		// A token carrying the rich-fail marker makes rich sends fail too, so the
+		// plain fallback path is exercisable. Production rejects rich edits but
+		// accepts rich sends, which would otherwise hide the fallback entirely:
+		// every test would take the rich branch and the code that publishes the
+		// final answer would have no coverage at all.
+		if strings.HasSuffix(r.URL.Path, "sendRichMessage") && strings.Contains(r.URL.Path, "rich-fail-test-token") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"rich message unavailable"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
 	}))

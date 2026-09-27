@@ -292,56 +292,34 @@ func TestKeyboardResetEndsWithAVisibleCarryingMessage(t *testing.T) {
 	}
 }
 
-// An edit replaces a message's reply_markup rather than inheriting it. The
-// keyboard was attached when the assistant message was created, and the final
-// answer is an edit of that same message, so an edit without reply_markup
-// stripped the keyboard a moment after it was set.
+// Attaching a reply keyboard to editMessageText fails about 75% of the time in
+// production (601 of 805 traced calls, all "inline keyboard expected"), while a
+// fresh send succeeds every time (339 of 339). So edits carry no markup, and the
+// keyboard rides on sends plus the markup-only editMessageReplyMarkup call.
 //
-// This is why /keyboard appeared to work while prompts did not: the keyboard
-// command finishes with a fresh send, and nothing strips a fresh send, whereas
-// the answer is written by an edit. Asserted on the edit itself, since that is
-// the call that decides whether the answer keeps the keyboard.
-func TestTheFinalAnswerEditCarriesTheReplyKeyboard(t *testing.T) {
+// These tests assert the absence on purpose: the previous version of this file
+// asserted the opposite, pinning the bug in place and costing every streaming
+// tick a wasted 400 round trip.
+func TestContentEditsCarryNoReplyMarkup(t *testing.T) {
 	cap := beginCapture(t)
-	if err := editTelegramMessageWithKeyboard("test-token", 1, 42, "the final answer"); err != nil {
+	if err := editTelegramMessage("test-token", 1, 42, "the final answer"); err != nil {
 		t.Fatalf("edit failed: %v", err)
 	}
-
-	var edit map[string]any
-	for _, call := range cap.calls {
-		if strings.HasSuffix(call.Method, "editMessageText") {
-			edit = call.Body
-		}
-	}
-	if edit == nil {
-		t.Fatalf("no editMessageText was sent: %v", cap.methods())
-	}
-	markup, _ := edit["reply_markup"].(map[string]any)
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the edit publishing the final answer carries no reply keyboard, so it strips the one set at creation")
-	}
-}
-
-// The HTML edit has the same defect and is the path used when the answer needs
-// formatting.
-func TestTheHTMLEditCarriesTheReplyKeyboard(t *testing.T) {
-	cap := beginCapture(t)
 	if err := editTelegramHTMLMessage("test-token", 1, 42, "<b>answer</b>"); err != nil {
-		t.Fatalf("edit failed: %v", err)
+		t.Fatalf("html edit failed: %v", err)
 	}
 
-	var edit map[string]any
+	edits := 0
 	for _, call := range cap.calls {
 		if strings.HasSuffix(call.Method, "editMessageText") {
-			edit = call.Body
+			edits++
+			if _, present := call.Body["reply_markup"]; present {
+				t.Errorf("editMessageText carries reply_markup, which fails ~75%% in production: %#v", call.Body["reply_markup"])
+			}
 		}
 	}
-	if edit == nil {
-		t.Fatalf("no editMessageText was sent: %v", cap.methods())
-	}
-	markup, _ := edit["reply_markup"].(map[string]any)
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the HTML edit strips the reply keyboard")
+	if edits != 2 {
+		t.Fatalf("expected 2 edits, got %d: %v", edits, cap.methods())
 	}
 }
 
@@ -411,5 +389,44 @@ func TestTheKeyboardIsAttachedToARichMessageSeparately(t *testing.T) {
 	}
 	if _, isReply := markup["keyboard"]; !isReply {
 		t.Error("editMessageReplyMarkup did not carry the reply keyboard")
+	}
+}
+
+// The final answer is the message the user reads, and the one that has to end up
+// carrying the keyboard. A suite that only exercised message creation passed
+// while this path stopped attaching anything, because no test drove it.
+func TestTheFinalAnswerEndsWithTheKeyboardAttached(t *testing.T) {
+	cap := beginCapture(t)
+	r := &runRenderer{token: "rich-fail-test-token", chatID: 1}
+	r.publishFinalAnswer("the final answer", 42)
+
+	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
+		t.Fatalf("the final answer attached no keyboard: %v", cap.methods())
+	}
+	var markup map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			markup, _ = call.Body["reply_markup"].(map[string]any)
+		}
+	}
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the final answer's attach did not carry the reply keyboard")
+	}
+}
+
+// When there is no existing message, the answer is a fresh send, which carries
+// the keyboard on its own. Asserted so a future refactor cannot route this case
+// through an edit that strips it.
+func TestTheFinalAnswerWithoutAMessageIsAFreshSend(t *testing.T) {
+	cap := beginCapture(t)
+	r := &runRenderer{token: "rich-fail-test-token", chatID: 1}
+	r.publishFinalAnswer("the final answer", 0)
+
+	sends := cap.sends()
+	if len(sends) == 0 {
+		t.Fatalf("the answer was never sent: %v", cap.methods())
+	}
+	if !carriesReplyKeyboard(sends[len(sends)-1].Body) {
+		t.Error("the fresh-send fallback did not carry the keyboard")
 	}
 }

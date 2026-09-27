@@ -296,6 +296,16 @@ func (r *runRenderer) finish(answer string) {
 			logger.Warn("Telegram final thought publication failed")
 		}
 	}
+	r.publishFinalAnswer(answer, messageID)
+}
+
+// publishFinalAnswer delivers the answer and makes sure the keyboard follows it.
+//
+// Extracted so the contract is testable: the answer is the message the user
+// reads, and the one that has to end up carrying the keyboard. A green suite that
+// only exercised message creation passed while this path silently stopped
+// attaching anything.
+func (r *runRenderer) publishFinalAnswer(answer string, messageID int) {
 	if answer != "" {
 		runes := []rune(answer)
 		if len(runes) <= telegramRichMessageLimit {
@@ -303,13 +313,19 @@ func (r *runRenderer) finish(answer string) {
 				if messageID == 0 {
 					sendPlainMessage(r.token, r.chatID, answer)
 				} else {
-					if err := editTelegramMessageWithKeyboard(r.token, r.chatID, messageID, answer); err != nil {
+					if err := editTelegramMessage(r.token, r.chatID, messageID, answer); err != nil {
 						logger.Warn("Telegram final message fallback failed: " + err.Error())
 						// The edit failed, so nothing is carrying the keyboard. Fall
 						// back to a fresh send, which does.
 						if sendPlainMessage(r.token, r.chatID, answer) == 0 {
 							logger.Warn("Telegram final answer could not be delivered")
 						}
+					} else if err := attachReplyKeyboard(r.token, r.chatID, messageID); err != nil {
+						// The answer landed but the keyboard did not. Reported rather
+						// than retried: editMessageReplyMarkup succeeds about 85% of
+						// the time, and hammering a rejection here turns one wasted
+						// call into several.
+						logger.Warn("reply keyboard attach failed: " + err.Error())
 					}
 				}
 			}
@@ -426,23 +442,6 @@ func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
 
 const telegramRichMessageLimit = 32768
 
-// editTelegramMessageWithKeyboard publishes the final answer and leaves the reply
-// keyboard attached.
-//
-// An edit that omits reply_markup does not inherit the message's existing markup,
-// it replaces it. The keyboard attached when the message was created was therefore
-// stripped by the very edit that published the answer, which is why a run finished
-// with no keyboard while /keyboard worked: its final message is a fresh send, and
-// nothing strips that.
-func editTelegramMessageWithKeyboard(token string, chatID int64, messageID int, text string) error {
-	return postTelegramEditMessage(token, map[string]any{
-		"chat_id":      chatID,
-		"message_id":   messageID,
-		"text":         text,
-		"reply_markup": keyboard.Main(),
-	})
-}
-
 func editTelegramMessage(token string, chatID int64, messageID int, text string) error {
 	return postTelegramEditMessage(token, map[string]any{
 		"chat_id":    chatID,
@@ -502,16 +501,16 @@ func attachReplyKeyboard(token string, chatID int64, messageID int) error {
 	return nil
 }
 
-// editTelegramHTMLMessage carries the reply keyboard for the same reason
-// editTelegramMessageWithKeyboard does: an edit replaces the message's markup
-// rather than inheriting it, so an edit without reply_markup strips the keyboard.
+// editTelegramHTMLMessage carries no reply markup. Attaching a reply keyboard
+// to editMessageText fails about 75% of the time, and thought messages are
+// collapsible rather than carriers, so there is nothing to gain and a wasted call
+// to lose on every streaming tick.
 func editTelegramHTMLMessage(token string, chatID int64, messageID int, text string) error {
 	return postTelegramEditMessage(token, map[string]any{
-		"chat_id":      chatID,
-		"message_id":   messageID,
-		"text":         text,
-		"parse_mode":   "HTML",
-		"reply_markup": keyboard.Main(),
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+		"parse_mode": "HTML",
 	})
 }
 
