@@ -1965,3 +1965,77 @@ func clineModelForAccount(flowID string) (string, string) {
 	}
 	return flowID, llm.DefaultClineModel
 }
+
+// selectSubscriptionModel writes a chosen model into a subscription profile.
+//
+// The model catalog is a shared list keyed on OpenAI-compatible hosts, so it
+// never carried these providers' models and there was no way to change the
+// default one a provider activated with. The lists behind this picker are the
+// same ones the transports validate against, so a choice cannot be one the
+// endpoint rejects.
+//
+// Switching is left to a separate press: picking a model is a common thing to do
+// while comparing, and making every tap also change the answering provider would
+// surprise someone mid-sentence.
+func selectSubscriptionModel(token string, chatID int64, providerID, model string) {
+	marker := subscriptionMarkerFor(providerID)
+	if marker == "" {
+		send(token, chatID, "Unknown provider: "+providerID)
+		return
+	}
+	// Only a model this provider is known to serve, so a crafted callback cannot
+	// write a profile the endpoint will reject.
+	if !llm.IsSubscriptionModel(marker, model) {
+		send(token, chatID, "That is not a "+providerID+" model.")
+		return
+	}
+	profile := config.ProviderProfile{Model: model, Subscription: marker}
+	if existing, ok := currentProfile(providerID); ok {
+		profile = existing
+		profile.Model = model
+		profile.Subscription = marker
+	}
+	profile.MaxOutputTokens = 8192
+	profile.PromptCacheMode = "auto"
+	if err := defaultState.setProviderProfile(providerID, profile); err != nil {
+		send(token, chatID, "Model save failed: "+err.Error())
+		return
+	}
+	active := defaultState.provider()
+	verb := "saved for"
+	if active == providerID {
+		verb = "applied to"
+	}
+	send(token, chatID, "✅ Model "+model+" "+verb+" "+providerID+". Use 🔌 Provider to switch to it.")
+}
+
+// subscriptionMarkerFor maps a profile id to its subscription marker.
+func subscriptionMarkerFor(providerID string) string {
+	switch providerID {
+	case "codex":
+		return llm.CodexSubscription
+	case "hermes":
+		return llm.HermesSubscription
+	case "xai":
+		return llm.XAISubscription
+	case "minimax":
+		return llm.MiniMaxSubscription
+	case "cline":
+		return llm.ClineSubscription
+	default:
+		return ""
+	}
+}
+
+// currentProfile reads a provider's stored profile.
+//
+// Reads the bridge state rather than config.Load, because that is where provider
+// profiles actually live. Reading the config file returned nothing, so the
+// existence check failed and choosing a model rebuilt the profile from scratch,
+// discarding its URL and context limit.
+func currentProfile(providerID string) (config.ProviderProfile, bool) {
+	defaultState.mu.Lock()
+	defer defaultState.mu.Unlock()
+	profile, ok := defaultState.ProviderProfiles[providerID]
+	return profile, ok
+}

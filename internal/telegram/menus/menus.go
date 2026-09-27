@@ -154,6 +154,8 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("MiniMax", "🎬", minimaxauth.SignedIn(minimaxauth.RegionGlobal), runtimeValues().Provider == llm.MiniMaxSubscription, "provider:minimax")
 	case "cline":
 		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), runtimeValues().Provider == llm.ClineSubscription, "provider:cline")
+	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models":
+		return subscriptionModelMenu(strings.TrimSuffix(name, ":models"))
 	case "settings":
 		return settingsMenu()
 	case "title_settings":
@@ -1008,11 +1010,13 @@ func subscriptionMenu(label, icon string, signedIn, active bool, entry string) m
 	case active:
 		rows = append(rows, []map[string]string{
 			row("✅ "+label+" is active", "noop"),
+			row("🧠 Model", entry+":models"),
 			row("🔁 Sign in again", entry),
 		})
 	case signedIn:
 		rows = append(rows, []map[string]string{
 			row("✅ Switch to "+label, entry),
+			row("🧠 Model", entry+":models"),
 			row("🔁 Sign in again", entry),
 		})
 	default:
@@ -1021,6 +1025,69 @@ func subscriptionMenu(label, icon string, signedIn, active bool, entry string) m
 	rows = append(rows, []map[string]string{row("◀️ Back", "menu:hub")})
 	return map[string]any{"inline_keyboard": rows}
 }
+
+// subscriptionModelMenu lists the models a subscription provider is known to
+// serve, so the model can be chosen rather than left at a hardcoded default.
+func subscriptionModelMenu(providerID string) map[string]any {
+	subscription := subscriptionForProvider(providerID)
+	models := llm.SubscriptionModels(subscription)
+	if len(models) == 0 {
+		return map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "◀️ Back", "callback_data": "menu:" + providerID}},
+		}}
+	}
+	label := subscriptionLabel(providerID)
+	active := runtimeValues().Provider
+	rows := make([][]map[string]string, 0, len(models)/2+2)
+	for i, model := range models {
+		text := model
+		if active == subscription && currentModel() == model {
+			text = "✅ " + model
+		}
+		_ = i
+		rows = append(rows, []map[string]string{{"text": text, "callback_data": "provider:" + providerID + ":model:" + model}})
+	}
+	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:" + providerID}})
+	_ = label
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// subscriptionForProvider maps a profile id to its subscription marker.
+func subscriptionForProvider(providerID string) string {
+	switch providerID {
+	case "codex":
+		return llm.CodexSubscription
+	case "hermes":
+		return llm.HermesSubscription
+	case "xai":
+		return llm.XAISubscription
+	case "minimax":
+		return llm.MiniMaxSubscription
+	case "cline":
+		return llm.ClineSubscription
+	default:
+		return ""
+	}
+}
+
+func subscriptionLabel(providerID string) string {
+	switch providerID {
+	case "codex":
+		return "Codex"
+	case "hermes":
+		return "Hermes"
+	case "xai":
+		return "xAI"
+	case "minimax":
+		return "MiniMax"
+	case "cline":
+		return "Cline"
+	default:
+		return providerID
+	}
+}
+
+func currentModel() string { return runtimeValues().Model }
 
 func CodexMenu(authenticated bool, active string) map[string]any {
 	isActive := active == llm.CodexSubscription

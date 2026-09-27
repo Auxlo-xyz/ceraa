@@ -216,3 +216,71 @@ func IsClineModel(model string) bool {
 	}
 	return false
 }
+
+// SubscriptionModels returns the model ids a subscription provider is known to
+// serve, in the order they should be offered.
+//
+// The remote model catalog is not usable for these. It is a shared list keyed on
+// OpenAI-compatible hosts and it only filters by a poolside prefix, so every
+// subscription provider's models were absent from it and there was no way to
+// pick one: the provider activated with a hardcoded default and nothing could
+// change it. The lists here are the ones the transports already validate
+// against, so a picker offers exactly what the endpoint will accept.
+func SubscriptionModels(subscription string) []string {
+	switch subscription {
+	case CodexSubscription:
+		return append([]string(nil), CodexModels...)
+	case HermesSubscription:
+		return append([]string(nil), HermesModels...)
+	case XAISubscription:
+		out := make([]string, 0, len(XaiModels))
+		for _, model := range XaiModels {
+			out = append(out, model.ID)
+		}
+		return out
+	case MiniMaxSubscription:
+		return append([]string(nil), MiniMaxModels...)
+	case ClineSubscription:
+		out := make([]string, 0, len(ClineModels))
+		for _, model := range ClineModels {
+			out = append(out, model.ID)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// IsSubscriptionModel reports whether a model belongs to a subscription provider.
+//
+// Kept separate from IsClineModel and friends because a caller picking a model is
+// asking "does this provider serve it", not "is it the default".
+func IsSubscriptionModel(subscription, model string) bool {
+	for _, known := range SubscriptionModels(subscription) {
+		if strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(known)) {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultModelFor returns a subscription provider's default model.
+//
+// One place, so a picker and an activation cannot disagree about what the default
+// is. Returns empty for a provider that is not a subscription.
+func DefaultModelFor(subscription string) string {
+	switch subscription {
+	case CodexSubscription:
+		return DefaultCodexModel
+	case HermesSubscription:
+		return DefaultHermesModel
+	case XAISubscription:
+		return DefaultXaiModel
+	case MiniMaxSubscription:
+		return DefaultMiniMaxModel
+	case ClineSubscription:
+		return DefaultClineModel
+	default:
+		return ""
+	}
+}

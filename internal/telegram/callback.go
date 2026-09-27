@@ -428,6 +428,15 @@ func handleCallback(token string, q *callbackQuery) {
 		selectCodexProvider(token, chatID)
 		return
 	}
+	// Per-provider model selection for the subscription providers. Checked before
+	// the bare provider ids so a longer callback is not mistaken for a prefix.
+	for _, providerID := range []string{"codex", "hermes", "xai", "minimax", "cline"} {
+		prefix := "provider:" + providerID + ":model:"
+		if strings.HasPrefix(data, prefix) {
+			selectSubscriptionModel(token, chatID, providerID, strings.TrimPrefix(data, prefix))
+			return
+		}
+	}
 	if data == "provider:cline" {
 		// Same entry point as the onboarding button, so a configured user reaches
 		// Cline from the Provider / Model menu.
