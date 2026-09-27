@@ -187,9 +187,10 @@ type Manager struct {
 	mu    sync.Mutex
 	flows map[string]*Flow
 
-	client    *http.Client
-	endpoints Endpoints
-	clientID  string
+	client     *http.Client
+	endpoints  Endpoints
+	onComplete func(State)
+	clientID   string
 	// now and sleep are seams so expiry and the poll cadence can be tested without
 	// waiting in real time.
 	now   func() time.Time
@@ -577,7 +578,24 @@ func (m *Manager) finish(flow *Flow, status, message, hint string) {
 
 	m.mu.Lock()
 	delete(m.flows, flow.flowID)
+	onComplete := m.onComplete
 	m.mu.Unlock()
+
+	// Report the terminal state before returning.
+	//
+	// This has to be a callback rather than something a caller polls for, because
+	// the flow is removed from the registry the instant it finishes. A poller
+	// therefore never observes a completed login: it either misses it entirely or
+	// finds the flow gone and concludes nothing happened. That is not a race to be
+	// tuned, it is a certainty, and it is why a "check the status" handler can
+	// never report success.
+	//
+	// Invoked outside both locks so a callback that touches the manager cannot
+	// deadlock, and synchronously so the outcome is delivered before the watching
+	// goroutine exits.
+	if onComplete != nil {
+		onComplete(flow.Snapshot())
+	}
 }
 
 func (f *Flow) snapshotInterval() time.Duration {
@@ -606,7 +624,23 @@ func (m *Manager) Cancel(flowID string) error {
 	return nil
 }
 
+// SetOnComplete registers a callback invoked once when a flow reaches a terminal
+// state: succeeded, failed or cancelled.
+//
+// A caller that needs to know how a login ended must use this. Polling Check
+// cannot work, because a finished flow is no longer in the registry, so the
+// poller sees either "in progress" or "no such flow" and never the outcome.
+func (m *Manager) SetOnComplete(fn func(State)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onComplete = fn
+}
+
 // Check returns a live flow.
+//
+// A flow that has already finished is not live and returns an error. Callers
+// wanting the terminal state should have kept the State delivered to their
+// SetOnComplete callback.
 func (m *Manager) Check(flowID string) (*Flow, error) { return m.lookup(flowID) }
 
 func (m *Manager) lookup(flowID string) (*Flow, error) {
@@ -656,8 +690,42 @@ func renderStatus(state State) string {
 }
 
 // InlineKeyboardJSON is the Telegram keyboard for a flow.
+//
+// Every state gets a way forward. The keyboard used to be cleared on failure and
+// on cancel, which left the user looking at a dead message with nothing to press
+// and no route back to the provider menu except typing a command.
 func (f *Flow) InlineKeyboardJSON() ([]byte, error) {
-	state := f.Snapshot()
+	return KeyboardJSONForState(f.Snapshot())
+}
+
+// KeyboardJSONForState renders the keyboard for a state.
+//
+// Exported because a caller holding a State rather than a Flow still needs to
+// offer the right buttons, and because the state-to-keyboard mapping is the part
+// worth testing directly: it is where a dead end hides.
+func KeyboardJSONForState(state State) ([]byte, error) {
+	switch state.Status {
+	case StatusSucceeded:
+		// Nothing left to approve. Offer the switch rather than a check that
+		// would report success again.
+		return json.Marshal(map[string]any{
+			"inline_keyboard": [][]map[string]any{
+				{{"text": "✅ Use Codex now", "callback_data": "codex:activate"}},
+			},
+		})
+	case StatusFailed:
+		return json.Marshal(map[string]any{
+			"inline_keyboard": [][]map[string]any{
+				{{"text": "🔁 Try again", "callback_data": "codex:login"}},
+			},
+		})
+	case StatusCanceled:
+		return json.Marshal(map[string]any{
+			"inline_keyboard": [][]map[string]any{
+				{{"text": "🔁 Start sign-in again", "callback_data": "codex:login"}},
+			},
+		})
+	}
 	return json.Marshal(map[string]any{
 		"inline_keyboard": [][]map[string]any{
 			{{"text": "🔗 Open Authorization Page", "url": state.AuthURL}},

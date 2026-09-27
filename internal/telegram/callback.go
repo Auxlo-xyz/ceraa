@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"ceraa/harness/llm"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -758,28 +759,63 @@ func handleCallback(token string, q *struct {
 		editCallback(token, chatID, q.Message.MessageID, "Hermes login cancelled.", nil)
 		return
 	}
+	if data == "codex:login" {
+		// Start a login from a button. Records the owner so the watcher reports
+		// the outcome to this chat whether or not anyone presses Check.
+		handleCodexLogin(token, chatID)
+		return
+	}
+	if data == "codex:activate" {
+		activateCodexProvider(token, chatID)
+		return
+	}
+	if data == "codex:status" {
+		handleCodexStatus(token, chatID)
+		return
+	}
 	if strings.HasPrefix(data, "codex:check:") {
 		flowID := strings.TrimPrefix(data, "codex:check:")
-		state, err := authMgr.Check(flowID)
+		flow, err := authMgr.Check(flowID)
 		if err != nil {
-			send(token, chatID, "Login check failed: "+err.Error())
-			return
-		}
-		// A chat that picked Codex from the provider menu is waiting on this
-		// approval, so completing the login switches the provider instead of
-		// leaving the user to tap again.
-		if state.Snapshot().Status == codexauth.StatusSucceeded {
-			if waiting, ok := pendingCodexActivation.Load(chatID); ok && waiting.(bool) {
-				activateCodexProvider(token, chatID)
+			// A finished flow is not in the registry, which is expected rather than
+			// a failure. By now the completion callback has reported the outcome, so
+			// say what actually holds and offer the button that moves things on.
+			if codexauth.Authenticated() {
+				editCallback(token, chatID, q.Message.MessageID,
+					"✅ This sign-in already completed. The outcome was reported when it finished.",
+					codexStatusKeyboard(true, defaultState.provider() == llm.CodexSubscription))
 				return
 			}
+			editCallback(token, chatID, q.Message.MessageID,
+				"This sign-in is no longer active. Start a new one below.",
+				map[string]any{"inline_keyboard": [][]map[string]string{
+					{{"text": "🔁 Start sign-in again", "callback_data": "codex:login"}},
+				}})
+			return
 		}
-		editCallback(token, chatID, q.Message.MessageID, state.ResultMessage(), map[string]any{"inline_keyboard": [][]any{}})
+		state := flow
+		// Completion is reported by the manager's callback, so there is nothing to
+		// activate here. A tap while the login is still in flight just refreshes
+		// the message.
+		// Keep the flow's own keyboard, which now offers a retry or a switch
+		// rather than being emptied. An emptied keyboard is a dead message.
+		markup, kbErr := flow.InlineKeyboardJSON()
+		var kb map[string]any
+		if kbErr != nil || json.Unmarshal(markup, &kb) != nil {
+			kb = codexStatusKeyboard(codexauth.Authenticated(), defaultState.provider() == llm.CodexSubscription)
+		}
+		editCallback(token, chatID, q.Message.MessageID, state.ResultMessage(), kb)
 		return
 	}
 	if strings.HasPrefix(data, "codex:cancel:") {
-		authMgr.Cancel(strings.TrimPrefix(data, "codex:cancel:"))
-		editCallback(token, chatID, q.Message.MessageID, "Login cancelled.", map[string]any{"inline_keyboard": [][]any{}})
+		flowID := strings.TrimPrefix(data, "codex:cancel:")
+		authMgr.Cancel(flowID)
+		clearCodexFlow(flowID)
+		// Leave a way back. Cancelling used to remove every button.
+		sendHTML(token, chatID, "Login cancelled.",
+			map[string]any{"inline_keyboard": [][]map[string]string{
+				{{"text": "🔁 Start sign-in again", "callback_data": "codex:login"}},
+			}})
 		return
 	}
 }

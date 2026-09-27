@@ -503,6 +503,9 @@ func Run() error {
 			}
 		}()
 	}
+	// Report completed device logins to the chat that started them.
+	registerCodexCompletion(token)
+
 	offset := getInitialOffset(token)
 
 	// Claim the daemon slot before the first poll, so a second start refuses
@@ -1428,7 +1431,39 @@ func handleCodexLogin(token string, chatID int64) {
 		send(token, chatID, "Failed to encode Codex login menu: "+err.Error())
 		return
 	}
-	sendHTML(token, chatID, state.ResultMessage(), markup)
+	// Record the owner so the watcher can post the outcome to this chat without
+	// the user having to tap Check. A login started from the typed command goes
+	// through here too, which is what it did not do before: pendingCodexActivation
+	// was only set by the provider menu, so a command-started login could never
+	// finish on its own.
+	trackCodexFlow(state.Snapshot().FlowID, chatID, true)
+	sendHTML(token, chatID, codexProgressHTML(state.Snapshot()), markup)
+}
+
+// codexStatusKeyboard is the action row for a Codex status report.
+//
+// The status replies used to instruct the user to type /codex-login. That is a
+// dead end for anyone driving the bot from its menus, which is the only surface
+// available on a phone, so every state now carries the button that does whatever
+// the text would have asked for.
+func codexStatusKeyboard(authenticated, active bool) map[string]any {
+	row := func(text, data string) map[string]string {
+		return map[string]string{"text": text, "callback_data": data}
+	}
+	switch {
+	case !authenticated:
+		return map[string]any{"inline_keyboard": [][]map[string]string{
+			{row("🔑 Sign in to ChatGPT", "codex:login")},
+		}}
+	case !active:
+		return map[string]any{"inline_keyboard": [][]map[string]string{
+			{row("✅ Switch to Codex", "codex:activate"), row("🔁 Sign in again", "codex:login")},
+		}}
+	default:
+		return map[string]any{"inline_keyboard": [][]map[string]string{
+			{row("🔁 Sign in again", "codex:login")},
+		}}
+	}
 }
 
 func handleCodexStatus(token string, chatID int64) {
@@ -1437,7 +1472,7 @@ func handleCodexStatus(token string, chatID int64) {
 	// message says which provider is actually active: a stored credential with
 	// another provider selected is not a usable Codex setup.
 	authenticated := codexauth.Authenticated()
-	active := defaultState.provider()
+	active := defaultState.provider() == llm.CodexSubscription
 	_, activeModel, _ := defaultState.values()
 	// The runtime override above is empty unless the user set one, so it reports
 	// a blank model and hides which model is actually answering. The profile
@@ -1451,28 +1486,54 @@ func handleCodexStatus(token string, chatID int64) {
 	// Which branch ran is the first question when a status reply looks stale, and
 	// it is invisible from the message alone.
 	logger.Info("codex status: authenticated=" + strconv.FormatBool(authenticated) +
-		" active_provider=" + active + " active_model=" + activeModel +
+		" active_provider=" + defaultState.provider() + " active_model=" + activeModel +
 		" expires=" + codexExpiryLabel())
-	if authenticated {
-		if active == llm.CodexSubscription {
-			send(token, chatID, "✅ Codex is authenticated and active.\nModel: "+activeModel+"\nAccess token expires: "+codexExpiryLabel()+"\nUse /codex-login to sign in again.")
-			return
-		}
-		sendHTML(token, chatID, "✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\nIt is not the active provider — Ceraa is using <b>"+html.EscapeString(active)+"</b>. Send /codex-login or pick 🧠 Codex (ChatGPT) in the Provider / Model menu to switch to it.", nil)
-		return
-	}
-	for _, flow := range authMgr.ListFlows() {
+
+	// A login already in flight is reported with that flow's own keyboard, so the
+	// buttons offered match the state the user is actually in.
+	if flow := codexFlowForChat(chatID); flow != nil {
 		state := flow.Snapshot()
 		switch state.Status {
-		case codexauth.StatusSucceeded:
-			send(token, chatID, "✅ Codex login completed. Codex can now be used.")
-			return
 		case codexauth.StatusWaiting, codexauth.StatusApproved:
-			sendHTML(token, chatID, "🔄 Login in progress.\nCode: <code>"+html.EscapeString(state.UserCode)+"</code>", nil)
-			return
+			markup, err := flow.InlineKeyboardJSON()
+			if err == nil {
+				var kb map[string]any
+				if json.Unmarshal(markup, &kb) == nil {
+					sendHTML(token, chatID, codexProgressHTML(state), kb)
+					return
+				}
+			}
 		}
 	}
-	send(token, chatID, "❌ Not authenticated. Use /codex-login to start.")
+
+	if authenticated && active {
+		sendHTML(token, chatID,
+			"✅ Codex is authenticated and active.\nModel: <code>"+html.EscapeString(activeModel)+"</code>\nAccess token expires: "+codexExpiryLabel(),
+			codexStatusKeyboard(true, true))
+		return
+	}
+	if authenticated {
+		sendHTML(token, chatID,
+			"✅ Codex is authenticated (access token valid until "+codexExpiryLabel()+").\n\n"+
+				"It is not the active provider — Ceraa is using <b>"+html.EscapeString(defaultState.provider())+"</b>.",
+			codexStatusKeyboard(true, false))
+		return
+	}
+	sendHTML(token, chatID,
+		"❌ Not authenticated. Codex needs a ChatGPT sign-in before it can be used.",
+		codexStatusKeyboard(false, false))
+}
+
+// codexProgressHTML renders an in-flight login for the chat that started it.
+func codexProgressHTML(state codexauth.State) string {
+	head := "🔄 Sign-in in progress.\nOpen the link, approve the code, and this will finish on its own."
+	if state.UserCode != "" {
+		head += "\n\nCode: <code>" + html.EscapeString(state.UserCode) + "</code>"
+	}
+	if state.Hint != "" {
+		head += "\n\n" + html.EscapeString(state.Hint)
+	}
+	return head
 }
 
 // codexExpiryLabel renders the stored expiry for humans, without leaking the
@@ -1512,9 +1573,9 @@ func selectCodexProvider(token string, chatID int64) {
 		send(token, chatID, "Failed to encode Codex login menu.")
 		return
 	}
-	pendingCodexActivation.Store(chatID, true)
+	trackCodexFlow(flow.Snapshot().FlowID, chatID, true)
 	sendHTML(token, chatID,
-		"Sign in to ChatGPT to use Codex. Open the link, approve the code, and Ceraa will switch to Codex automatically.\n\n"+flow.ResultMessage(),
+		"Sign in to ChatGPT to use Codex. Open the link, approve the code, and Ceraa will switch to Codex on its own — no need to press Check.\n\n"+codexProgressHTML(flow.Snapshot()),
 		markup)
 }
 
@@ -1533,16 +1594,30 @@ func activateCodexProvider(token string, chatID int64) {
 		MaxOutputTokens: 8192,
 		Subscription:    llm.CodexSubscription,
 	}
+	// Every outcome goes through codexNotify, so a caller that already reported a
+	// completed login does not produce two different-looking messages, and a
+	// failure is still delivered with a Codex keyboard rather than the main menu.
+	//
+	// The failure branches matter: the credential is already stored by the time
+	// activation runs, so failing to switch leaves a usable Codex behind an
+	// inactive provider. Saying so, with the switch button attached, is the only
+	// way the user finds out.
 	if err := defaultState.setProviderProfile(llm.CodexSubscription, profile); err != nil {
-		send(token, chatID, "Codex profile save failed: "+err.Error())
+		codexNotify(token, chatID,
+			"⚠️ Codex sign-in succeeded and the credential is stored, but saving the Codex profile failed: "+
+				html.EscapeString(err.Error())+"\n\nCodex is not active. Use the button below to try again.",
+			codexStatusKeyboard(true, false))
 		return
 	}
 	if err := defaultState.setProvider(llm.CodexSubscription); err != nil {
-		send(token, chatID, "Codex provider activation failed: "+err.Error())
+		codexNotify(token, chatID,
+			"⚠️ Codex sign-in succeeded and the credential is stored, but switching the active provider failed: "+
+				html.EscapeString(err.Error())+"\n\nUse the button below to try again.",
+			codexStatusKeyboard(true, false))
 		return
 	}
 	pendingCodexActivation.Delete(chatID)
-	sendHTML(token, chatID, "✅ Codex provider activated with model <code>"+html.EscapeString(model)+"</code>.\nSend a task to use it.", nil)
+	codexNotify(token, chatID, "✅ Codex provider activated with model <code>"+html.EscapeString(model)+"</code>.\nSend a task to use it.", nil)
 }
 
 // pendingCodexActivation records the chats that asked for Codex and are waiting

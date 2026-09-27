@@ -26,7 +26,7 @@ var All = []string{
 	"status", "session", "model", "agent", "variant", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
-	"memory", "skill", "eval", "schedule",
+	"memory", "skill", "eval", "schedule", "codex",
 }
 
 type runtimeState struct {
@@ -138,6 +138,8 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return toolsMenu()
 	case "todos":
 		return todosMenu(sessionID)
+	case "codex":
+		return CodexMenu(codexauth.Authenticated(), runtimeValues().Provider)
 	case "settings":
 		return settingsMenu()
 	case "title_settings":
@@ -732,6 +734,7 @@ func Hub() map[string]any {
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
 		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
+		"codex": codexHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	for i, name := range All {
@@ -742,6 +745,46 @@ func Hub() map[string]any {
 		}
 	}
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// codexHubLabel names the Codex entry by state, so the hub answers "is Codex
+// ready" without being opened.
+func codexHubLabel() string {
+	switch {
+	case codexauth.Authenticated() && runtimeValues().Provider == llm.CodexSubscription:
+		return "🧠 Codex · active"
+	case codexauth.Authenticated():
+		return "🧠 Codex · signed in"
+	default:
+		return "🧠 Codex · sign in"
+	}
+}
+
+// CodexMenu is the Codex management screen: the button that does whatever the
+// current state calls for.
+//
+// The authenticated flag is a parameter rather than read here, so the state to
+// button mapping can be tested without arranging a real credential.
+//
+// Codex status used to be reachable only by typing /codex-status, which made the
+// whole auth flow unusable from the menus, since a phone user has no reason to
+// know a command exists.
+func CodexMenu(authenticated bool, active string) map[string]any {
+	isActive := active == llm.CodexSubscription
+	var rows [][]map[string]string
+	switch {
+	case !authenticated:
+		rows = append(rows, []map[string]string{{"text": "🔑 Sign in to ChatGPT", "callback_data": "codex:login"}})
+	case !isActive:
+		rows = append(rows, []map[string]string{
+			{"text": "✅ Switch to Codex", "callback_data": "codex:activate"},
+			{"text": "🔁 Sign in again", "callback_data": "codex:login"},
+		})
+	default:
+		rows = append(rows, []map[string]string{{"text": "🔁 Sign in again", "callback_data": "codex:login"}})
+	}
+	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}})
 	return map[string]any{"inline_keyboard": rows}
 }
 
