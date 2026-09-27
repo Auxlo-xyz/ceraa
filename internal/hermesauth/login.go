@@ -328,6 +328,10 @@ func (s *Store) postDeviceJSON(ctx context.Context, endpoint string, form url.Va
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
+	// The portal sits behind the same WAF as the inference endpoint, so an
+	// authorization call goes out with the same client identity rather than
+	// relying on that host happening to be less strict today.
+	request.Header.Set(HeaderUserAgent, ClientUserAgent)
 	client := s.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}

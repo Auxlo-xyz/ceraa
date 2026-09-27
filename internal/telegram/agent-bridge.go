@@ -438,6 +438,10 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			}
 			model.BaseURL = credential.BaseURL
 			model.APIKey = credential.AccessToken
+			// Without this, Go's default User-Agent draws a Cloudflare 403 from the
+			// Nous Portal's inference host, so the run dies on a web page instead of
+			// reaching the API. A profile's own headers win.
+			model.ExtraHeaders = hermesauth.WithClientHeaders(model.ExtraHeaders)
 			// The transport depends on the resolved host, which the native Hermes
 			// adapter may have changed.
 			model.GeminiNative = llm.UsesGeminiNative(model.Model, model.BaseURL)

@@ -2,12 +2,14 @@ package telegram
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"ceraa/harness/llm"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/config"
+	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
@@ -56,6 +58,46 @@ func TestTelegramResolverAuthenticatesEachSubscription(t *testing.T) {
 				t.Errorf("API key = %q, want %q; the request would be unauthenticated", model.APIKey, tc.wantKey)
 			}
 		})
+	}
+}
+
+// The Nous Portal's inference host sits behind a WAF that answers 403 with a
+// Cloudflare page for a default Go client, so the resolved model must carry the
+// Hermes client identity or every run fails on a web page.
+func TestTelegramResolverGivesHermesItsClientIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatalf("secret store: %v", err)
+	}
+	store := hermesauth.NewStore()
+	store.Home = filepath.Join(dir, "hermes")
+	if err := os.MkdirAll(store.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Home, "auth.json"), []byte(`{
+		"active_provider": "nous",
+		"providers": {"nous": {
+			"access_token": "hermes-token",
+			"refresh_token": "hermes-refresh",
+			"base_url": "https://inference.example/v1",
+			"expires_at_ms": 4102444800000
+		}}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERMES_HOME", store.Home)
+
+	profile := config.LLMProvider{
+		URL: llm.HermesBaseURL, Model: llm.DefaultHermesModel,
+		Subscription: llm.HermesSubscription, HermesProvider: "nous",
+	}
+	model, err := providerModelResolver(profile, "tg-hermes-ua")(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if model.ExtraHeaders["User-Agent"] != hermesauth.ClientUserAgent {
+		t.Errorf("User-Agent = %q, want %q; the WAF would answer 403", model.ExtraHeaders["User-Agent"], hermesauth.ClientUserAgent)
 	}
 }
 

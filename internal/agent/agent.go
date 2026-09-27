@@ -114,6 +114,10 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			}
 			modelConfig.BaseURL = credential.BaseURL
 			modelConfig.APIKey = credential.AccessToken
+			// Without this, Go's default User-Agent draws a Cloudflare 403 from the
+			// Nous Portal's inference host, so the run dies on a web page instead of
+			// reaching the API. A profile's own headers win.
+			modelConfig.ExtraHeaders = hermesauth.WithClientHeaders(modelConfig.ExtraHeaders)
 			// The transport depends on the resolved host, which the native Hermes
 			// adapter may have changed.
 			modelConfig.GeminiNative = llm.UsesGeminiNative(modelConfig.Model, modelConfig.BaseURL)
