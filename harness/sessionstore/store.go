@@ -99,23 +99,31 @@ func (m Message) AllToolCalls() []ToolCallRef {
 }
 
 type Run struct {
-	ID                 string             `json:"id"`
-	User               string             `json:"user,omitempty"`
-	Status             RunStatus          `json:"status"`
-	Step               int                `json:"step"`
-	Requests           int                `json:"requests"`
-	Usage              llm.UsageInfo      `json:"usage,omitempty"`
-	Cost               llm.CostInfo       `json:"cost"`
-	InputBreakdown     llm.TokenBreakdown `json:"input_breakdown,omitempty"`
-	PricingModel       string             `json:"pricing_model,omitempty"`
-	PricingStatus      string             `json:"pricing_status,omitempty"`
-	PricingFetchedAt   time.Time          `json:"pricing_fetched_at,omitempty"`
-	ModelContextWindow int                `json:"model_context_window,omitempty"`
-	ModelMaxTokens     int                `json:"model_max_tokens,omitempty"`
-	ReasoningOptions   []string           `json:"reasoning_options,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	Error              string             `json:"error,omitempty"`
+	ID             string             `json:"id"`
+	User           string             `json:"user,omitempty"`
+	Status         RunStatus          `json:"status"`
+	Step           int                `json:"step"`
+	Requests       int                `json:"requests"`
+	Usage          llm.UsageInfo      `json:"usage,omitempty"`
+	Cost           llm.CostInfo       `json:"cost"`
+	InputBreakdown llm.TokenBreakdown `json:"input_breakdown,omitempty"`
+	// UsageTrust records whether the provider's token counts describe these
+	// requests. Some endpoints report a running total instead, which makes both
+	// the cache ratio and the cost fiction, so cost is left unpriced when it does
+	// not.
+	UsageTrust   llm.UsageTrust `json:"usage_trust,omitempty"`
+	PricingModel string         `json:"pricing_model,omitempty"`
+	// ProviderHost is the endpoint the run was billed by, so cache behaviour can
+	// be attributed to a route rather than only to a model name.
+	ProviderHost       string    `json:"provider_host,omitempty"`
+	PricingStatus      string    `json:"pricing_status,omitempty"`
+	PricingFetchedAt   time.Time `json:"pricing_fetched_at,omitempty"`
+	ModelContextWindow int       `json:"model_context_window,omitempty"`
+	ModelMaxTokens     int       `json:"model_max_tokens,omitempty"`
+	ReasoningOptions   []string  `json:"reasoning_options,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	Error              string    `json:"error,omitempty"`
 }
 
 type Session struct {

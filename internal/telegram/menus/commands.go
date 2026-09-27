@@ -29,6 +29,7 @@ func Commands() []CommandSpec {
 		{"tools", "List available harness tools"},
 		{"todos", "Show session todos"},
 		{"context", "Show context usage"},
+		{"cache", "Show cache hit rate by endpoint"},
 		{"compaction", "Show or run compaction"},
 		{"compaction_level", "Show compaction controls"},
 		{"search", "Search the workspace index"},

@@ -293,6 +293,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 	var runUsage llm.UsageInfo
 	var runBreakdown llm.TokenBreakdown
+	// runTrust is the verdict on whether the provider's counts describe these
+	// requests. Held per run so cost and the reported cache ratio can be withheld
+	// when they do not. Starts trusted because an unmeasured run is not evidence
+	// of a bad provider.
+	var runTrust = llm.UsageTrust{Trusted: true}
 	var runCost llm.CostInfo
 	if r.catalog == nil {
 		r.catalog = llm.NewCatalogClient(r.cfg.ModelCatalogURL, r.cfg.ModelCatalogCache, r.cfg.ModelCatalogRefresh)
@@ -301,9 +306,14 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	r.recalibrateContextLimit(pricingMetadata, pricingErr)
 	pricingStatus := pricingMetadata.PricingStatus(pricingErr)
 	pricingUsable := pricingStatus == "current"
+
+	// accounting owns the run's totals and the decision about whether they may be
+	// priced. See runAccounting for why an untrustworthy run yields no cost.
+	accounting := newRunAccounting(pricingMetadata, pricingUsable)
 	for i := range sess.Runs {
 		if sess.Runs[i].ID == runID {
 			sess.Runs[i].PricingModel = r.cfg.Model.Model
+			sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 			sess.Runs[i].PricingStatus = pricingStatus
 			sess.Runs[i].PricingFetchedAt = pricingMetadata.PricingFetchedAt
 			sess.Runs[i].ModelContextWindow = pricingMetadata.ContextWindow
@@ -316,12 +326,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 	if r.cfg.Compactor != nil {
 		r.cfg.Compactor.OnUsage = func(delta llm.UsageInfo) {
-			runUsage.Add(delta)
-			if pricingUsable {
-				if cost, ok := pricingMetadata.Cost(delta); ok {
-					runCost.Add(cost)
-				}
-			}
+			accounting.Add(delta, runBreakdown)
+			runUsage, runCost, runTrust = accounting.Usage(), accounting.Cost(), accounting.Trust()
 			if r.cb.OnUsage != nil {
 				r.cb.OnUsage(runUsage)
 			}
@@ -339,6 +345,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Usage = runUsage
 				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].UsageTrust = runTrust
+				sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 				sess.Runs[i].PricingStatus = pricingStatus
 				sess.Runs[i].PricingFetchedAt = pricingMetadata.PricingFetchedAt
 				if runErr != nil {
@@ -391,6 +399,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Usage = runUsage
 				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].UsageTrust = runTrust
+				sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 				sess.Runs[i].UpdatedAt = time.Now()
 			}
 		}
@@ -420,6 +430,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						if sess.Runs[i].ID == runID {
 							sess.Runs[i].Usage = runUsage
 							sess.Runs[i].InputBreakdown = runBreakdown
+							sess.Runs[i].UsageTrust = runTrust
+							sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 						}
 					}
 					if err := r.store.Save(sess); err != nil {
@@ -478,17 +490,13 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			}
 			if delta.Usage != nil {
 				usage.Add(*delta.Usage)
-				runUsage.Add(*delta.Usage)
+				accounting.Add(*delta.Usage, runBreakdown)
+				runUsage, runCost, runTrust = accounting.Usage(), accounting.Cost(), accounting.Trust()
 				if r.cb.OnUsage != nil {
 					r.cb.OnUsage(runUsage)
 				}
 			}
 		})
-		if pricingUsable {
-			if cost, ok := pricingMetadata.Cost(usage); ok {
-				runCost.Add(cost)
-			}
-		}
 		if r.cb.OnCost != nil {
 			r.cb.OnCost(runCost, pricingStatus)
 		}
@@ -498,6 +506,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Usage = runUsage
 				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].UsageTrust = runTrust
+				sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 			}
 		}
 		if saveErr := r.store.Save(sess); saveErr != nil {
@@ -518,6 +528,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						if sess.Runs[i].ID == runID {
 							sess.Runs[i].Usage = runUsage
 							sess.Runs[i].InputBreakdown = runBreakdown
+							sess.Runs[i].UsageTrust = runTrust
+							sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 						}
 					}
 					if saveErr := r.store.Save(sess); saveErr != nil {

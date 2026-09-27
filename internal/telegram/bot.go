@@ -803,6 +803,9 @@ func Run() error {
 			case "/schedule":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleScheduleCommand(token, u.Message.Chat.ID, txt)
+			case "/cache":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleCacheCommand(token, u.Message.Chat.ID)
 			case "/context", "/context_control":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)

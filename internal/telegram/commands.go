@@ -246,7 +246,10 @@ func statusReport(chatID int64) (string, error) {
 		return "", fmt.Errorf("session store error: %w", err)
 	}
 	tokens, messages := 0, 0
-	cacheReadPercent := 0
+	// cacheRead is a rendered string, not a number. The provider did not always
+	// report counts that describe the request, and 0% is a claim while "unknown"
+	// is the truth, so the two must not share a field.
+	cacheRead := "unavailable (provider token counts do not describe this request)"
 	sessionTitle := "Untitled session"
 	// Cumulative usage across the whole session, summed from each message. This is
 	// billing, not a single request: a session of 66 turns reports millions of
@@ -262,7 +265,14 @@ func statusReport(chatID int64) (string, error) {
 			usageReasoning += message.Usage.ReasoningTokens
 		}
 		if len(sess.Runs) > 0 {
-			cacheReadPercent = int(sess.Runs[len(sess.Runs)-1].Usage.CacheReadRatio() * 100)
+			// Only report a cache percentage when the provider's token counts
+			// describe this request. Some endpoints report a running total, and
+			// dividing that by itself produces a ratio that drifts toward 1 and
+			// looks like excellent caching while describing nothing.
+			last := sess.Runs[len(sess.Runs)-1]
+			if last.UsageTrust.Trusted {
+				cacheRead = fmt.Sprintf("%d%%", int(last.Usage.CacheReadRatioFor(last.UsageTrust)*100))
+			}
 		}
 	}
 	// The base config is not what is serving this session: a provider activated
@@ -302,16 +312,33 @@ func statusReport(chatID int64) (string, error) {
 		agent = "build"
 	}
 	endpoint := providerHost(activeProviderURL(cfg))
-	return fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
+	return fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %s\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
 		groupDigits(tokens), groupDigits(contextLimit), percent,
 		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
-		cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
+		cacheRead, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
 		endpoint, agent), nil
 }
 
 // handleContextCommand shows the status report. Kept as a distinct command because
 // it is what people reach for when they mean "how full is the context", but it is
 // the same report, so the two cannot drift apart again.
+// handleCacheCommand reports cache behaviour per endpoint, which is the only way
+// to tell a route that caches from one that does not: a session mixes providers
+// and an aggregate hides which one is at fault.
+func handleCacheCommand(token string, chatID int64) {
+	store, err := configuredStore()
+	if err != nil {
+		send(token, chatID, "Failed to open sessions: "+err.Error())
+		return
+	}
+	sess, err := store.Load(currentSessionID(chatID))
+	if err != nil {
+		send(token, chatID, "Failed to load session: "+err.Error())
+		return
+	}
+	send(token, chatID, cacheReport(sess))
+}
+
 func handleContextCommand(token string, chatID int64) {
 	text, err := statusReport(chatID)
 	if err != nil {
