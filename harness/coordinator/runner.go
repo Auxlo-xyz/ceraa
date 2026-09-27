@@ -285,6 +285,20 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 	if len(sess.Messages) == 0 {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleSystem, Content: r.systemPrompt()})
+	} else if sess.Messages[0].Role == llm.RoleSystem && sess.Messages[0].Compaction == nil {
+		// The system prompt carries the model-identity block, so a session opened
+		// on one provider kept naming that provider after a switch: the stored copy
+		// said Hermes while the run was on xAI. Nothing forced a rewrite, because
+		// this was written only when the session was empty.
+		//
+		// Refreshed rather than appended, and only when it actually differs. The
+		// runner strips this message from every request (see messages), so the
+		// stored copy is a record rather than an input, which is what makes a stale
+		// record safe to correct and a rewritten one free of cache cost. Guarding on
+		// inequality keeps an unchanged prompt from rewriting the file every turn.
+		if current := r.systemPrompt(); sess.Messages[0].Content != current {
+			sess.Messages[0].Content = current
+		}
 	}
 	if user != "" {
 		sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: user})
