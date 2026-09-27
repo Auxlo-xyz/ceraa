@@ -59,3 +59,23 @@ func (a *runAccounting) Trust() llm.UsageTrust { return a.trust }
 func (a *runAccounting) CacheReadRatio() float64 {
 	return a.usage.CacheReadRatioFor(a.trust)
 }
+
+// countRequestBeforeUse folds a request's prompt estimate into the running total
+// used to reconcile provider-reported usage.
+//
+// The ordering is the entire point. The usage delta for a request arrives from
+// inside the stream callback, and reconciliation compares that running usage
+// against this total. Counting the request after its delta lands means the total
+// is missing the request being reported on, so a healthy provider's summed
+// figures are compared against a partial local count.
+//
+// This was live: a two-request run reported 71,162 input tokens against a local
+// count of 34,060, a 2.09x gap that cleared the tolerance and marked the run
+// REJECTED. The provider's own dashboard disproved it, its per-call rows summing
+// 35,654 + 35,508 to exactly the 71,162 we reported, which placed the fault here.
+//
+// Extracted so the ordering is testable without driving the whole run loop, which
+// is what let the mistake survive a green suite in the first place.
+func countRequestBeforeUse(total *llm.TokenBreakdown, request llm.TokenBreakdown) {
+	total.Add(request)
+}

@@ -474,6 +474,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			SessionID:       r.cfg.SessionID,
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
+		countRequestBeforeUse(&runBreakdown, breakdown)
 		var content strings.Builder
 		var reasoning strings.Builder
 		var reasoningDetails []json.RawMessage
@@ -510,7 +511,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if r.cb.OnCost != nil {
 			r.cb.OnCost(runCost, pricingStatus)
 		}
-		runBreakdown.Add(breakdown)
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
 				sess.Runs[i].Usage = runUsage
