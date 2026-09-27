@@ -13,6 +13,7 @@ import (
 	"ceraa/internal/envs"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
+	"ceraa/internal/minimaxauth"
 	"ceraa/internal/oauthdevice"
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
@@ -545,6 +546,7 @@ func Run() error {
 	registerCodexCompletion(token)
 	registerHermesCompletion(token)
 	registerXaiCompletion(token)
+	registerMinimaxCompletion(token)
 
 	offset := getInitialOffset(token)
 
@@ -1821,4 +1823,74 @@ func xaiModelForAccount(flowID string) (string, string) {
 		return flowID, current
 	}
 	return flowID, llm.DefaultXaiModel
+}
+
+// selectMinimaxProvider is the MiniMax entry point, mirroring the other
+// subscription providers.
+//
+// A stored credential switches provider immediately; otherwise a device login
+// starts. Reaching MiniMax from the provider menu asks to use it, so the flow is
+// tracked with activate set and the completion callback switches provider on its
+// own once the code is approved.
+func selectMinimaxProvider(token string, chatID int64) {
+	minimaxEntryPoint(token, chatID)
+}
+
+// minimaxEntryPoint is the real entry point, indirected so a test can assert the
+// provider menu routes provider:minimax here without starting a device login
+// against the live service.
+var minimaxEntryPoint = func(token string, chatID int64) {
+	if minimaxauth.SignedIn(minimaxauth.RegionGlobal) {
+		activateMinimaxProvider(token, chatID, "")
+		return
+	}
+	flow, err := minimaxLogin.Start(context.Background())
+	if err != nil {
+		send(token, chatID, "Failed to start MiniMax login: "+err.Error())
+		return
+	}
+	snapshot := flow.Snapshot()
+	trackMinimaxFlow(snapshot.ID, chatID, true)
+	sendHTML(token, chatID,
+		"Sign in to MiniMax to use it. Open the link, enter the code, approve, and Ceraa will switch to MiniMax on its own — no need to press Check.\n\n"+
+			"🔐 MiniMax Device Login\n\n1. Open: "+snapshot.VerificationURL+"\n2. Enter code: <code>"+snapshot.UserCode+"</code>\n3. Approve in the browser, then it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": snapshot.VerificationURL}},
+			{{"text": "✗ Cancel", "callback_data": "minimax:cancel:" + snapshot.ID}},
+		}})
+}
+
+// activateMinimaxProvider saves the MiniMax profile and makes it active.
+func activateMinimaxProvider(token string, chatID int64, flowID string) {
+	model, _ := minimaxModelForAccount(flowID)
+	// The profile URL is for display: agent.go resolves the credential per run and
+	// uses its own base URL, which is the same host.
+	profile := config.ProviderProfile{
+		URL:             llm.MiniMaxBaseURL,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.MiniMaxSubscription,
+	}
+	if err := defaultState.setProviderProfile("minimax", profile); err != nil {
+		send(token, chatID, "MiniMax profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider("minimax"); err != nil {
+		send(token, chatID, "MiniMax provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ MiniMax provider activated with model "+model+". Send a task to use it.")
+}
+
+// minimaxModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the subscription serves, so a model
+// left over from another provider cannot produce a profile the endpoint rejects.
+func minimaxModelForAccount(flowID string) (string, string) {
+	_, current := defaultState.values()
+	if llm.IsMiniMaxModel(current) {
+		return flowID, current
+	}
+	return flowID, llm.DefaultMiniMaxModel
 }

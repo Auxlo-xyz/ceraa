@@ -19,6 +19,7 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
+	"ceraa/internal/minimaxauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
@@ -117,6 +118,18 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			modelConfig.GeminiNative = llm.UsesGeminiNative(modelConfig.Model, modelConfig.BaseURL)
 			modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(modelConfig.Model, modelConfig.BaseURL)
 			return modelConfig, nil
+		case "minimax":
+			credential, err := minimaxauth.Resolve(ctx, minimaxauth.NewStore(regionForProvider(provider)))
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			modelConfig.BaseURL = firstNonEmptyStr(credential.BaseURL, llm.MiniMaxBaseURL)
+			modelConfig.APIKey = credential.AccessToken
+			// Served by the Messages API, so it needs the Anthropic transport
+			// rather than chat completions.
+			modelConfig.AnthropicNative = true
+			modelConfig.AnthropicTokens = minimaxauth.NewTokenSource(credential.Region)
+			return modelConfig, nil
 		case "xai":
 			credential, err := xaiauth.Resolve(ctx, nil)
 			if err != nil {
@@ -176,4 +189,16 @@ func firstNonEmptyStr(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// regionForProvider reads the MiniMax region from a profile.
+//
+// Defaults to global, which is the deployment most accounts use. A CN account has
+// to be told, because the two are separate account systems and a credential does
+// not work on the other's host.
+func regionForProvider(provider config.LLMProvider) minimaxauth.Region {
+	if strings.EqualFold(strings.TrimSpace(provider.URL), llm.MiniMaxCNBaseURL) {
+		return minimaxauth.RegionCN
+	}
+	return minimaxauth.RegionGlobal
 }

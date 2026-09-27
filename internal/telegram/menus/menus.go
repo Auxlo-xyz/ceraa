@@ -11,6 +11,7 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
+	"ceraa/internal/minimaxauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/xaiauth"
 	"context"
@@ -29,7 +30,7 @@ var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
-	"memory", "skill", "eval", "schedule", "codex", "hermes", "xai",
+	"memory", "skill", "eval", "schedule", "codex", "hermes", "xai", "minimax",
 }
 
 type runtimeState struct {
@@ -299,6 +300,17 @@ func ProviderMenu() map[string]any {
 		xaiLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": xaiLabel, "callback_data": "provider:xai"}})
+	// MiniMax is a row for the same reason as the other subscription providers.
+	minimaxLabel := "🎬 MiniMax"
+	switch {
+	case active == llm.MiniMaxSubscription:
+		minimaxLabel = "✅ " + minimaxLabel
+	case minimaxauth.SignedIn(minimaxauth.RegionGlobal):
+		minimaxLabel += " · switch to it"
+	default:
+		minimaxLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": minimaxLabel, "callback_data": "provider:minimax"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -871,7 +883,7 @@ func Hub() map[string]any {
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
 		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
-		"codex": codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(),
+		"codex": codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	for i, name := range All {
@@ -909,6 +921,18 @@ func xaiHubLabel() string {
 		return "✳️ xAI · signed in"
 	default:
 		return "✳️ xAI · sign in"
+	}
+}
+
+// minimaxHubLabel names the MiniMax entry by state.
+func minimaxHubLabel() string {
+	switch {
+	case minimaxauth.SignedIn(minimaxauth.RegionGlobal) && runtimeValues().Provider == llm.MiniMaxSubscription:
+		return "🎬 MiniMax · active"
+	case minimaxauth.SignedIn(minimaxauth.RegionGlobal):
+		return "🎬 MiniMax · signed in"
+	default:
+		return "🎬 MiniMax · sign in"
 	}
 }
 

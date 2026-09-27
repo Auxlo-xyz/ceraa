@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription:
 		return true
 	default:
 		return false
@@ -126,4 +126,46 @@ func XaiContextWindow(model string) int {
 		}
 	}
 	return 0
+}
+
+// MiniMaxSubscription identifies a MiniMax subscription profile.
+//
+// Distinct from the MiniMax API-key provider: this one authenticates with an OAuth
+// credential from an account login and is served by the Messages API, so it needs
+// the Anthropic transport rather than chat completions.
+const MiniMaxSubscription = "minimax"
+
+// MiniMaxBaseURL is the global subscription inference endpoint.
+//
+// The /anthropic suffix is not optional and not a preference. The subscription is
+// served by the Messages API, while the plain /v1 host is the OpenAI-compatible
+// endpoint that belongs to the API-key provider. Sending a Messages request to the
+// wrong one is a 404 that looks like a bad model id.
+const MiniMaxBaseURL = "https://api.minimax.io/anthropic"
+
+// MiniMaxCNBaseURL is the Chinese service. It is a separate account system, so a
+// credential is not interchangeable between the two.
+const MiniMaxCNBaseURL = "https://api.minimaxi.com/anthropic"
+
+// DefaultMiniMaxModel is the model selected when MiniMax is chosen without one.
+//
+// M3 on the /anthropic path. M2.7 exists but is served by the OpenAI-compatible
+// /v1 host, so it belongs to the API-key provider rather than this one.
+const DefaultMiniMaxModel = "MiniMax-M3"
+
+// MiniMaxModels lists the model ids the subscription is known to serve.
+var MiniMaxModels = []string{
+	"MiniMax-M3",
+	"MiniMax-M2.7",
+}
+
+// IsMiniMaxModel reports whether a model id is one the subscription serves.
+func IsMiniMaxModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range MiniMaxModels {
+		if trimmed == strings.ToLower(known) {
+			return true
+		}
+	}
+	return false
 }

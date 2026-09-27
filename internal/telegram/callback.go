@@ -428,6 +428,21 @@ func handleCallback(token string, q *callbackQuery) {
 		selectCodexProvider(token, chatID)
 		return
 	}
+	if data == "provider:minimax" {
+		// Same entry point as the onboarding button, so a configured user reaches
+		// MiniMax from the Provider / Model menu.
+		selectMinimaxProvider(token, chatID)
+		return
+	}
+	if strings.HasPrefix(data, "minimax:cancel:") {
+		flowID := strings.TrimPrefix(data, "minimax:cancel:")
+		if err := minimaxLogin.Manager().Cancel(flowID); err != nil {
+			send(token, chatID, "MiniMax login could not be cancelled: "+err.Error())
+			return
+		}
+		editHTML(token, chatID, q.Message.MessageID, "✗ MiniMax login cancelled.", menus.Inline("provider", 0))
+		return
+	}
 	if data == "provider:xai" {
 		// Same entry point as the onboarding button, so a configured user reaches
 		// xAI from the Provider / Model menu.

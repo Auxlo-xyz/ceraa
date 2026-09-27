@@ -64,3 +64,23 @@ func TestHubNamesXai(t *testing.T) {
 		t.Errorf("the hub has no human-readable xAI label: %s", raw)
 	}
 }
+
+func TestProviderMenuOffersMinimaxLikeCodex(t *testing.T) {
+	raw, _ := json.Marshal(ProviderMenu())
+	if !strings.Contains(string(raw), "provider:minimax") {
+		t.Errorf("the provider menu has no minimax button: %s", raw)
+	}
+	if !strings.Contains(string(raw), "MiniMax") {
+		t.Errorf("the minimax button does not name MiniMax: %s", raw)
+	}
+}
+
+func TestHubNamesMinimax(t *testing.T) {
+	raw, _ := json.Marshal(Hub())
+	if !strings.Contains(string(raw), "menu:minimax") {
+		t.Errorf("the hub has no minimax row: %s", raw)
+	}
+	if !strings.Contains(string(raw), "MiniMax") {
+		t.Errorf("the hub has no human-readable MiniMax label: %s", raw)
+	}
+}

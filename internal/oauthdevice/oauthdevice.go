@@ -439,7 +439,13 @@ func (m *Manager) requestDeviceCode(ctx context.Context) (deviceCodeResponse, er
 	if code == "" || userCode == "" {
 		return deviceCodeResponse{}, errors.New("device authorization response is incomplete")
 	}
+	// The verification URI is what the user actually opens, and it was being
+	// dropped: switching the parse to a map kept the code but not the URL, so the
+	// login produced a code the user had nowhere to enter. Only a live probe found
+	// this, because a stub that happens to include the field still parses.
 	result := deviceCodeResponse{DeviceCode: code, UserCode: userCode}
+	result.VerificationURI, _ = device["verification_uri"].(string)
+	result.VerificationURIComplete, _ = device["verification_uri_complete"].(string)
 	// The interval is a duration in seconds everywhere except one provider, which
 	// returns milliseconds. Reading 3000 as seconds is a fifty minute poll.
 	result.Interval = int(durationSeconds(device["interval"], dialect.IntervalIsMilliseconds))
