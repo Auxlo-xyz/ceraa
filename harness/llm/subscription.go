@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription:
 		return true
 	default:
 		return false
@@ -63,4 +63,67 @@ func IsHermesModel(model string) bool {
 		}
 	}
 	return false
+}
+
+// XAISubscription identifies an xAI/Grok subscription profile.
+//
+// Distinct from the plain xAI API-key provider: this one authenticates with an
+// OAuth credential from a SuperGrok or X Premium subscription and is served by
+// the Responses API rather than chat/completions.
+const XAISubscription = "xai"
+
+// XaiBaseURL is the Grok inference endpoint.
+//
+// Read from the OpenClaw xAI plugin manifest rather than guessed. It is not the
+// public xAI console URL that a plain API key uses, which is the kind of
+// near-miss that produces an authenticated request answered by a 404.
+const XaiBaseURL = "https://api.x.ai/v1"
+
+// XaiModels lists the model IDs the xAI provider is known to serve, with their
+// context windows.
+//
+// From the same manifest. The default is grok-4.7, which is also what OpenClaw
+// selects when no model is named, so an account that works there works here.
+var XaiModels = []struct {
+	ID            string
+	ContextWindow int
+}{
+	{"grok-4.7", 500_000},
+	{"grok-4.6", 500_000},
+	{"grok-4.5", 500_000},
+	{"grok-build-0.1", 256_000},
+	{"grok-4.3", 1_000_000},
+	{"grok-4.20-0309-reasoning", 1_000_000},
+	{"grok-4.20-0309-non-reasoning", 1_000_000},
+}
+
+// DefaultXaiModel is the model selected when xAI is chosen without one.
+const DefaultXaiModel = "grok-4.7"
+
+// XaiMaxOutputTokens is the output cap OpenClaw uses for xAI.
+const XaiMaxOutputTokens = 64_000
+
+// IsXaiModel reports whether a model ID is one the xAI endpoint is known to serve.
+func IsXaiModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range XaiModels {
+		if trimmed == known.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// XaiContextWindow returns a model's context window, or 0 when it is unknown.
+//
+// Zero rather than a guess: an invented window either triggers compaction far
+// too early or lets a request grow past what the endpoint accepts.
+func XaiContextWindow(model string) int {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range XaiModels {
+		if trimmed == known.ID {
+			return known.ContextWindow
+		}
+	}
+	return 0
 }

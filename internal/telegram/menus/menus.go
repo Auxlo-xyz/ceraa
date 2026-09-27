@@ -12,6 +12,7 @@ import (
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/paths"
+	"ceraa/internal/xaiauth"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,7 @@ var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
-	"memory", "skill", "eval", "schedule", "codex", "hermes",
+	"memory", "skill", "eval", "schedule", "codex", "hermes", "xai",
 }
 
 type runtimeState struct {
@@ -285,6 +286,19 @@ func ProviderMenu() map[string]any {
 		hermesLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": hermesLabel, "callback_data": "provider:hermes"}})
+	// xAI is a row for the same reason: a subscription profile cannot appear as a
+	// profile row until it exists, so without this a signed-in user could not
+	// reach it from here.
+	xaiLabel := "✳️ xAI (Grok)"
+	switch {
+	case active == llm.XAISubscription:
+		xaiLabel = "✅ " + xaiLabel
+	case xaiauth.SignedIn():
+		xaiLabel += " · switch to it"
+	default:
+		xaiLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": xaiLabel, "callback_data": "provider:xai"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -857,7 +871,7 @@ func Hub() map[string]any {
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
 		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
-		"codex": codexHubLabel(), "hermes": hermesHubLabel(),
+		"codex": codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	for i, name := range All {
@@ -883,6 +897,18 @@ func hermesHubLabel() string {
 		return "🔐 Hermes · signed in"
 	default:
 		return "🔐 Hermes · sign in"
+	}
+}
+
+// xaiHubLabel names the xAI entry by state.
+func xaiHubLabel() string {
+	switch {
+	case xaiauth.SignedIn() && runtimeValues().Provider == llm.XAISubscription:
+		return "✳️ xAI · active"
+	case xaiauth.SignedIn():
+		return "✳️ xAI · signed in"
+	default:
+		return "✳️ xAI · sign in"
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ceraa/harness/compaction"
@@ -21,6 +22,7 @@ import (
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
+	"ceraa/internal/xaiauth"
 )
 
 func Run(user string) error {
@@ -115,6 +117,16 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			modelConfig.GeminiNative = llm.UsesGeminiNative(modelConfig.Model, modelConfig.BaseURL)
 			modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(modelConfig.Model, modelConfig.BaseURL)
 			return modelConfig, nil
+		case "xai":
+			credential, err := xaiauth.Resolve(ctx, nil)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			modelConfig.BaseURL = firstNonEmptyStr(credential.BaseURL, llm.XaiBaseURL)
+			modelConfig.APIKey = credential.AccessToken
+			modelConfig.XaiNative = true
+			modelConfig.XaiTokens = xaiauth.NewTokenSource()
+			return modelConfig, nil
 		default:
 			return modelConfig, nil
 		}
@@ -155,4 +167,13 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	}, store, registry)
 	_, err = runner.Run(ctx, user)
 	return err
+}
+
+func firstNonEmptyStr(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

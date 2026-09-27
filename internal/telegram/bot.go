@@ -13,11 +13,13 @@ import (
 	"ceraa/internal/envs"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
+	"ceraa/internal/oauthdevice"
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/keyboard"
 	"ceraa/internal/telegram/menus"
+	"ceraa/internal/xaiauth"
 	"context"
 	"encoding/json"
 	"errors"
@@ -542,6 +544,7 @@ func Run() error {
 	// Report completed device logins to the chat that started them.
 	registerCodexCompletion(token)
 	registerHermesCompletion(token)
+	registerXaiCompletion(token)
 
 	offset := getInitialOffset(token)
 
@@ -1745,4 +1748,77 @@ var selectHermesProviderImpl = func(token string, chatID int64) {
 	sendHTML(token, chatID,
 		"Sign in to Nous Portal to use Hermes. Open the link, approve the code, and Ceraa will switch to Hermes on its own — no need to press Check.\n\n"+flow.ResultMessage(),
 		markup)
+}
+
+// selectXaiProvider is the xAI entry point, mirroring selectCodexProvider.
+//
+// A stored credential switches provider immediately; otherwise a device login
+// starts. Reaching xAI from the provider menu asks to use it, so the flow is
+// tracked with activate set and the completion callback switches provider on its
+// own once the code is approved.
+func selectXaiProvider(token string, chatID int64) { xaiEntryPoint(token, chatID) }
+
+// xaiEntryPoint is the real xAI entry point, indirected so a test can assert the
+// provider menu routes provider:xai here without starting a device login against
+// the live xAI issuer.
+var xaiEntryPoint = func(token string, chatID int64) {
+	if xaiauth.SignedIn() {
+		activateXaiProvider(token, chatID, "")
+		return
+	}
+	flow, err := xaiLogin.Start(context.Background())
+	if err != nil {
+		send(token, chatID, "Failed to start xAI login: "+err.Error())
+		return
+	}
+	snapshot := flow.Snapshot()
+	trackXaiFlow(snapshot.ID, chatID, true)
+	sendHTML(token, chatID,
+		"Sign in to xAI to use Grok. Open the link, approve the code, and Ceraa will switch to xAI on its own — no need to press Check.\n\n"+
+			"🔐 xAI Device Login\n\n1. Open: "+snapshot.VerificationURL+"\n2. Enter code: <code>"+snapshot.UserCode+"</code>\n3. Approve in the browser, then it activates by itself",
+		xaiLoginKeyboard(flow))
+}
+
+func xaiLoginKeyboard(flow *oauthdevice.Flow) map[string]any {
+	snapshot := flow.Snapshot()
+	return map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text": "🔗 Open Authorization URL", "url": snapshot.VerificationURL}},
+		{{"text": "✗ Cancel", "callback_data": "xai:cancel:" + snapshot.ID}},
+	}}
+}
+
+// activateXaiProvider saves the xAI profile and makes it active.
+func activateXaiProvider(token string, chatID int64, flowID string) {
+	model, _ := xaiModelForAccount(flowID)
+	// The profile URL is for display: agent.go resolves the credential per run and
+	// uses its own base URL, which is the same host.
+	profile := config.ProviderProfile{
+		URL:             llm.XaiBaseURL,
+		Model:           model,
+		ContextLimit:    llm.XaiContextWindow(model),
+		MaxOutputTokens: llm.XaiMaxOutputTokens,
+		Subscription:    llm.XAISubscription,
+	}
+	if err := defaultState.setProviderProfile("xai", profile); err != nil {
+		send(token, chatID, "xAI profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider("xai"); err != nil {
+		send(token, chatID, "xAI provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ xAI/Grok provider activated with model "+model+". Send a task to use it.")
+}
+
+// xaiModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the Grok endpoint is known to
+// serve, so a model left over from another provider cannot produce a profile the
+// endpoint rejects. Same rule as the Codex and Hermes paths.
+func xaiModelForAccount(flowID string) (string, string) {
+	_, current := defaultState.values()
+	if llm.IsXaiModel(current) {
+		return flowID, current
+	}
+	return flowID, llm.DefaultXaiModel
 }

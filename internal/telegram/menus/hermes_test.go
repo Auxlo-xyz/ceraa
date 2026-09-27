@@ -41,3 +41,26 @@ func TestHubNamesHermes(t *testing.T) {
 		t.Errorf("the hub has no human-readable Hermes label: %s", raw)
 	}
 }
+
+// xAI gets a dedicated row for the same reason as Codex and Hermes: a
+// subscription profile cannot appear as a profile row until it exists, so without
+// this a signed-in user has no way to reach it from the provider menu.
+func TestProviderMenuOffersXaiLikeCodex(t *testing.T) {
+	raw, _ := json.Marshal(ProviderMenu())
+	if !strings.Contains(string(raw), "provider:xai") {
+		t.Errorf("the provider menu has no xai button: %s", raw)
+	}
+	if !strings.Contains(string(raw), "xAI") {
+		t.Errorf("the xai button does not name xAI: %s", raw)
+	}
+}
+
+func TestHubNamesXai(t *testing.T) {
+	raw, _ := json.Marshal(Hub())
+	if !strings.Contains(string(raw), "menu:xai") {
+		t.Errorf("the hub has no xai row: %s", raw)
+	}
+	if !strings.Contains(string(raw), "xAI") {
+		t.Errorf("the hub has no human-readable xAI label: %s", raw)
+	}
+}

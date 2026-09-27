@@ -428,6 +428,21 @@ func handleCallback(token string, q *callbackQuery) {
 		selectCodexProvider(token, chatID)
 		return
 	}
+	if data == "provider:xai" {
+		// Same entry point as the onboarding button, so a configured user reaches
+		// xAI from the Provider / Model menu.
+		selectXaiProvider(token, chatID)
+		return
+	}
+	if strings.HasPrefix(data, "xai:cancel:") {
+		flowID := strings.TrimPrefix(data, "xai:cancel:")
+		if err := xaiLogin.Manager().Cancel(flowID); err != nil {
+			send(token, chatID, "xAI login could not be cancelled: "+err.Error())
+			return
+		}
+		editHTML(token, chatID, q.Message.MessageID, "✗ xAI login cancelled.", menus.Inline("provider", 0))
+		return
+	}
 	if data == "provider:hermes" {
 		// Same entry point as the onboarding button, so a configured user reaches
 		// Hermes from the Provider / Model menu. Without this the only route was

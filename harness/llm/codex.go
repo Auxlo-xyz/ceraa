@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -263,7 +264,70 @@ func (c *StreamingClient) codexToken(ctx context.Context) (string, error) {
 }
 
 func (c *StreamingClient) streamCodex(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
-	token, err := c.codexToken(ctx)
+	return c.streamResponses(ctx, req, onDelta, responsesProfile{
+		name:      "codex",
+		token:     c.codexToken,
+		refresher: codexRefresher(c.cfg.CodexTokens),
+		logName:   "codex",
+		header:    "no Codex credential stored: run /codex-login to sign in",
+	})
+}
+
+// streamXai is the same Responses API transport pointed at Grok.
+//
+// It is a profile rather than a copy. The request shape, the event parsing, the
+// retry and the one-shot forced refresh on a 401 are all identical; only the
+// credential and the log labels differ. Duplicating a hundred lines of SSE
+// parsing to change a token source is how the two drift apart.
+func (c *StreamingClient) streamXai(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+	return c.streamResponses(ctx, req, onDelta, responsesProfile{
+		name:      "xai",
+		token:     c.xaiToken,
+		refresher: codexRefresher(c.cfg.XaiTokens),
+		logName:   "xai",
+		header:    "no xAI credential stored: run /xai-login to sign in",
+	})
+}
+
+// xaiToken resolves the Grok credential, refreshing it when it is close to expiry.
+func (c *StreamingClient) xaiToken(ctx context.Context) (string, error) {
+	if c.cfg.XaiTokens == nil {
+		return "", errors.New("xai provider selected but no xAI credential is available: run /xai-login")
+	}
+	token, err := c.cfg.XaiTokens.AccessToken(ctx)
+	if err != nil {
+		return "", fmt.Errorf("xai credential unavailable: %w", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("no xAI credential stored: run /xai-login to sign in")
+	}
+	return token, nil
+}
+
+// codexRefresher narrows a token source to the optional refresher capability.
+func codexRefresher(source CodexTokenSource) CodexRefresher {
+	if refresher, ok := source.(CodexRefresher); ok {
+		return refresher
+	}
+	return nil
+}
+
+// responsesProfile is the provider-specific part of the Responses transport.
+type responsesProfile struct {
+	// name identifies the provider in errors.
+	name string
+	// token resolves the credential.
+	token func(context.Context) (string, error)
+	// refresher is optional; when present a 401 triggers one forced exchange.
+	refresher CodexRefresher
+	// logName prefixes debug notes.
+	logName string
+	// header is the message used when no credential is stored.
+	header string
+}
+
+func (c *StreamingClient) streamResponses(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse), profile responsesProfile) error {
+	token, err := profile.token(ctx)
 	if err != nil {
 		return err
 	}
@@ -307,14 +371,14 @@ func (c *StreamingClient) streamCodex(ctx context.Context, req StreamRequest, on
 
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("encode codex request: %w", err)
+		return fmt.Errorf("encode %s request: %w", profile.name, err)
 	}
 	url := codexResponsesURL(c.cfg.BaseURL)
 
-	note := fmt.Sprintf("codex model=%s host=%s input=%d tools=%d effort=%q\n",
+	note := fmt.Sprintf("%s model=%s host=%s input=%d tools=%d effort=%q\n", profile.logName,
 		c.cfg.Model, requestHost(c.cfg.BaseURL), len(input), len(req.Tools), string(req.Reason))
 	fmt.Fprint(os.Stderr, "ceraa: "+note)
-	writeDebugNote("codex.log", note)
+	writeDebugNote(profile.logName+".log", note)
 
 	var lastErr error
 	forced := false
@@ -338,17 +402,15 @@ func (c *StreamingClient) streamCodex(ctx context.Context, req StreamRequest, on
 			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 			resp.Body.Close()
 			message := codexErrorMessage(raw)
-			writeDebugNote("codex.log", fmt.Sprintf("codex status=%d detail=%s\n", resp.StatusCode, message))
+			writeDebugNote(profile.logName+".log", fmt.Sprintf("%s status=%d detail=%s\n", profile.logName, resp.StatusCode, message))
 
 			// A credential rejected before its recorded expiry is recoverable:
 			// force one exchange and replay the request once.
-			if resp.StatusCode == http.StatusUnauthorized && !forced {
-				if refresher, ok := c.cfg.CodexTokens.(CodexRefresher); ok {
-					forced = true
-					if refreshed, rerr := refresher.RefreshToken(ctx); rerr == nil && refreshed != "" {
-						token = refreshed
-						continue
-					}
+			if resp.StatusCode == http.StatusUnauthorized && !forced && profile.refresher != nil {
+				forced = true
+				if refreshed, rerr := profile.refresher.RefreshToken(ctx); rerr == nil && refreshed != "" {
+					token = refreshed
+					continue
 				}
 			}
 			perr := &ProviderError{

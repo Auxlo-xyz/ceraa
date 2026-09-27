@@ -37,7 +37,18 @@ type ProviderConfig struct {
 	// CodexNative is set; without it the transport refuses the request instead of
 	// sending an unauthenticated one.
 	CodexTokens CodexTokenSource
-	MaxRetries  int
+	// XaiNative selects the xAI/Grok subscription transport.
+	//
+	// It speaks the same Responses API as Codex and differs only in where the
+	// credential comes from, so it shares the transport rather than repeating it.
+	// Verified from the xAI provider manifest: the base URL, the model list and
+	// the transport choice. The request body itself is standard Responses API and
+	// has not been exercised against a live Grok credential.
+	XaiNative bool
+	// XaiTokens supplies the credential for XaiNative. Required when XaiNative is
+	// set, for the same reason CodexTokens is required for CodexNative.
+	XaiTokens  CodexTokenSource
+	MaxRetries int
 	// RetryBackoff scales the delay between attempts. Zero uses the production
 	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
 	RetryBackoff    time.Duration
@@ -739,6 +750,12 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			c.cfg.BaseURL = CodexBaseURL
 		}
 		return c.streamCodex(ctx, req, onDelta)
+	}
+	if c.cfg.XaiNative {
+		if strings.TrimSpace(c.cfg.BaseURL) == "" {
+			c.cfg.BaseURL = XaiBaseURL
+		}
+		return c.streamXai(ctx, req, onDelta)
 	}
 	compatibility := compatibilityFor(c.cfg)
 	url := chatCompletionsURL(c.cfg.BaseURL)
