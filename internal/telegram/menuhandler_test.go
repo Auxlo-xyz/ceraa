@@ -54,6 +54,16 @@ func installStub() {
 			holder.calls = append(holder.calls, capturedCall{Method: r.URL.Path, Body: body})
 			holder.mu.Unlock()
 		}
+		// sendRichMessage is a private endpoint that rejects every payload we have
+		// been able to construct, and the real API answers 400. The stub used to
+		// claim success, which sent every test down the rich path and hid the fact
+		// that the fallback replies carried no reply keyboard at all.
+		if strings.HasSuffix(r.URL.Path, "sendRichMessage") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"rich message must be non-empty"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
 	}))

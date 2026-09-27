@@ -13,6 +13,7 @@ import (
 	"ceraa/harness/operation"
 	"ceraa/harness/redact"
 	"ceraa/internal/logger"
+	"ceraa/internal/telegram/keyboard"
 )
 
 type toolActivity struct {
@@ -53,7 +54,11 @@ func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRendere
 	if messageID, err := sendRichMessage(token, chatID, "▌"); err == nil {
 		renderer.messageID = messageID
 	} else {
-		renderer.messageID = sendWithKeyboard(token, chatID, "💬", nil)
+		// Carry the reply keyboard from creation. Every later step of the run only
+		// edits this message, and an edit that omits reply_markup leaves the
+		// existing one in place, so this one call covers the streamed text, the
+		// final answer, and the rich-message replacement.
+		renderer.messageID = sendWithKeyboard(token, chatID, "💬", keyboard.Main())
 	}
 	go renderer.runStream()
 	return renderer

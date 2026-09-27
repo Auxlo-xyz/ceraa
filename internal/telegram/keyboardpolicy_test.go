@@ -154,3 +154,63 @@ func TestTheReplyKeyboardIsPersistent(t *testing.T) {
 		}
 	}
 }
+
+// The answer to an actual prompt is the message a user reads, and it used to be
+// the one reply sent with no keyboard at all: send() attached it, but the agent
+// answer goes out through the streaming renderer and the plain-text fallback,
+// which both passed nil markup. So /help looked correct while the real answer had
+// no keyboard. This is the regression that produced a screenshot of a perfectly
+// good reply sitting on top of a missing keyboard.
+func TestTheAgentAnswerCarriesTheReplyKeyboard(t *testing.T) {
+	cap := beginCapture(t)
+	sendPlainMessage("test-token", 1, "here is the answer to your prompt")
+
+	sends := cap.sends()
+	if len(sends) != 1 {
+		t.Fatalf("expected one message, got %d: %v", len(sends), cap.methods())
+	}
+	if !carriesReplyKeyboard(sends[0].Body) {
+		t.Error("the agent's answer did not carry the reply keyboard")
+	}
+}
+
+// The run renderer creates the assistant message once and then only ever edits it.
+// Telegram keeps the existing reply_markup when an edit omits it, so attaching the
+// keyboard at creation is what carries it through the streamed text and the final
+// answer. If this regresses, every run finishes with a keyboard-less message even
+// though the first frame had one.
+func TestTheRunRendererAttachesTheKeyboardAtCreation(t *testing.T) {
+	cap := beginCapture(t)
+	newRunRenderer("test-token", 1)
+
+	sends := cap.sends()
+	if len(sends) == 0 {
+		t.Fatalf("the renderer sent nothing: %v", cap.methods())
+	}
+	if !carriesReplyKeyboard(sends[0].Body) {
+		t.Error("the assistant message was created without the reply keyboard")
+	}
+}
+
+// Every carrier is a reason the keyboard survives. The keyboard is only lost when
+// all messages carrying it are deleted, so spreading it across the command reply,
+// the answer, and the assistant message means deleting any one message cannot take
+// it away. This is what makes the keyboard effectively deletion-proof without
+// needing a deletion event, which Telegram does not send to bots.
+func TestEveryUserFacingReplyIsACarrier(t *testing.T) {
+	cap := beginCapture(t)
+	send("test-token", 1, "command reply")
+	sendPlainMessage("test-token", 1, "answer to the prompt")
+	newRunRenderer("test-token", 1)
+
+	carriers := 0
+	for _, call := range cap.sends() {
+		if carriesReplyKeyboard(call.Body) {
+			carriers++
+		}
+	}
+	if carriers < 3 {
+		t.Errorf("only %d of 3 user-facing messages carry the keyboard, so deleting the rest would still take it away: %v",
+			carriers, cap.methods())
+	}
+}

@@ -283,8 +283,15 @@ func sendHTML(token string, chatID int64, text string, kb map[string]any) int {
 	return 0
 }
 
+// sendPlainMessage carries the reply keyboard.
+//
+// send() was the only sender that attached it, so the answer to an actual prompt
+// went out with no keyboard at all, while /help and other command replies looked
+// fine. Every bot message that carries the keyboard is another carrier, and the
+// keyboard only disappears once all of them are gone, which is what makes it
+// survive the deletion of any single command message.
 func sendPlainMessage(token string, chatID int64, text string) int {
-	messageID, err := sendMessagePayload(token, chatID, text, "", nil)
+	messageID, err := sendMessagePayload(token, chatID, text, "", keyboard.Main())
 	if err != nil {
 		logger.Warn("Telegram sendMessage failed: " + err.Error())
 		return 0
