@@ -1,0 +1,81 @@
+package menus
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// A hub entry with no menu case renders as a bare Close button, which is a dead
+// end indistinguishable from a broken button. Four subscription providers shipped
+// that way: Hermes, xAI, MiniMax and Cline were all listed in the hub and all
+// resolved to Close.
+func TestEveryHubEntryResolvesToARealMenu(t *testing.T) {
+	for _, name := range All {
+		keyboard := InlineForChat(name, 0, 1, "")
+		raw, err := json.Marshal(keyboard)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		// A Close-only keyboard is the dead end. Anything with a second row, or a
+		// different button, is a real menu.
+		rows := keyboard["inline_keyboard"].([][]map[string]string)
+		dead := true
+		for _, row := range rows {
+			for _, button := range row {
+				if button["callback_data"] != "close" {
+					dead = false
+				}
+			}
+		}
+		if dead {
+			t.Errorf("/%s resolves to a bare Close button: %s", name, raw)
+		}
+	}
+}
+
+// The subscription providers need a real menu with a route into the flow, not
+// just a Back row, or the hub row is decorative.
+func TestSubscriptionProvidersOfferTheirEntryPoint(t *testing.T) {
+	cases := map[string]string{
+		"hermes":  "provider:hermes",
+		"xai":     "provider:xai",
+		"minimax": "provider:minimax",
+		"cline":   "provider:cline",
+	}
+	labels := map[string]string{"hermes": "Hermes", "xai": "xAI", "minimax": "MiniMax", "cline": "Cline"}
+	for name, entry := range cases {
+		raw, _ := json.Marshal(InlineForChat(name, 0, 1, ""))
+		// The label names the provider, so a menu reached by tapping Cline says
+		// Cline rather than something the user has to decode.
+		if !strings.Contains(string(raw), labels[name]) {
+			t.Errorf("/%s does not name %s on its buttons: %s", name, labels[name], raw)
+		}
+		if !strings.Contains(string(raw), entry) {
+			t.Errorf("/%s has no route to %s: %s", name, entry, raw)
+		}
+		if !strings.Contains(string(raw), "menu:hub") {
+			t.Errorf("/%s offers no way back: %s", name, raw)
+		}
+	}
+}
+
+// The hub label and the menu must agree about state, or tapping through changes
+// the answer.
+func TestSubscriptionMenuStates(t *testing.T) {
+	if !strings.Contains(mustJSON(subscriptionMenu("Test", "🔑", false, false, "provider:x")), "Sign in") {
+		t.Error("an unsigned provider does not offer sign-in")
+	}
+	if !strings.Contains(mustJSON(subscriptionMenu("Test", "🔑", true, false, "provider:x")), "Switch to") {
+		t.Error("a signed-in but inactive provider does not offer a switch")
+	}
+	if !strings.Contains(mustJSON(subscriptionMenu("Test", "🔑", true, true, "provider:x")), "is active") {
+		t.Error("an active provider does not say so")
+	}
+}
+
+func mustJSON(v any) string {
+	raw, _ := json.Marshal(v)
+	return string(raw)
+}

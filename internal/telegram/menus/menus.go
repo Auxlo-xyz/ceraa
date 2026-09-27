@@ -146,6 +146,14 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return todosMenu(sessionID)
 	case "codex":
 		return CodexMenu(codexauth.Authenticated(), runtimeValues().Provider)
+	case "hermes":
+		return subscriptionMenu("Hermes", "🔐", hermesauth.SignedIn(), runtimeValues().Provider == llm.HermesSubscription, "provider:hermes")
+	case "xai":
+		return subscriptionMenu("xAI", "✳️", xaiauth.SignedIn(), runtimeValues().Provider == llm.XAISubscription, "provider:xai")
+	case "minimax":
+		return subscriptionMenu("MiniMax", "🎬", minimaxauth.SignedIn(minimaxauth.RegionGlobal), runtimeValues().Provider == llm.MiniMaxSubscription, "provider:minimax")
+	case "cline":
+		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), runtimeValues().Provider == llm.ClineSubscription, "provider:cline")
 	case "settings":
 		return settingsMenu()
 	case "title_settings":
@@ -177,6 +185,11 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 	case "schedule":
 		return scheduleMenu()
 	default:
+		// No fallback here on purpose. One was added while chasing this bug and a
+		// test showed nothing reaches it, so it was untestable code wearing a
+		// comment about dead ends. The regression guard is the test that walks All
+		// and fails if any entry resolves to a bare Close, which is what would
+		// catch the next provider added without a menu.
 		return closeMenu()
 	}
 }
@@ -980,6 +993,35 @@ func codexHubLabel() string {
 // Codex status used to be reachable only by typing /codex-status, which made the
 // whole auth flow unusable from the menus, since a phone user has no reason to
 // know a command exists.
+// subscriptionMenu is the menu for a subscription provider.
+//
+// These three were listed in the hub and had no case in the menu resolver, so both
+// the hub row and the typed command fell through to a bare Close button. Codex was
+// the only one that ever worked, and the same shape is what makes the others
+// consistent with it.
+func subscriptionMenu(label, icon string, signedIn, active bool, entry string) map[string]any {
+	row := func(text, data string) map[string]string {
+		return map[string]string{"text": text, "callback_data": data}
+	}
+	var rows [][]map[string]string
+	switch {
+	case active:
+		rows = append(rows, []map[string]string{
+			row("✅ "+label+" is active", "noop"),
+			row("🔁 Sign in again", entry),
+		})
+	case signedIn:
+		rows = append(rows, []map[string]string{
+			row("✅ Switch to "+label, entry),
+			row("🔁 Sign in again", entry),
+		})
+	default:
+		rows = append(rows, []map[string]string{row("🔑 Sign in to "+label, entry)})
+	}
+	rows = append(rows, []map[string]string{row("◀️ Back", "menu:hub")})
+	return map[string]any{"inline_keyboard": rows}
+}
+
 func CodexMenu(authenticated bool, active string) map[string]any {
 	isActive := active == llm.CodexSubscription
 	var rows [][]map[string]string
