@@ -214,7 +214,7 @@ func TestOnboardingMenuUsesInlineProviderChoices(t *testing.T) {
 }
 
 func TestModelMenuOffersProviderButtons(t *testing.T) {
-	markup := menus.Inline("model", 0)
+	markup := menus.Inline("provider", 0)
 	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)
 	if !ok {
 		t.Fatal("expected model inline keyboard")

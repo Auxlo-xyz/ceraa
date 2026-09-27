@@ -339,23 +339,23 @@ func (s *bridgeState) setProviderProfile(name string, profile config.ProviderPro
 	return s.save()
 }
 
-// removeProviderProfile deletes a stored profile.
+// removeProviderProfile deletes a stored profile, reporting whether one was there.
 //
 // "default" is refused: it is not a stored profile but the top-level provider
 // settings, so deleting it would have nothing to remove and would leave the
 // bot with no provider at all.
-func (s *bridgeState) removeProviderProfile(name string) error {
+func (s *bridgeState) removeProviderProfile(name string) (bool, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return errors.New("provider name is empty")
+		return false, errors.New("provider name is empty")
 	}
 	if name == "default" {
-		return errors.New("the default provider is the base configuration and cannot be removed; switch to another provider instead")
+		return false, errors.New("the default provider is the base configuration and cannot be removed; switch to another provider instead")
 	}
 	s.mu.Lock()
 	if _, ok := s.ProviderProfiles[name]; !ok {
 		s.mu.Unlock()
-		return errors.New("no provider named " + name)
+		return false, errors.New("no provider named " + name)
 	}
 	delete(s.ProviderProfiles, name)
 	// Removing the active provider must not leave the bot pointing at a profile
@@ -364,7 +364,7 @@ func (s *bridgeState) removeProviderProfile(name string) error {
 		s.Provider = "default"
 	}
 	s.mu.Unlock()
-	return s.save()
+	return true, s.save()
 }
 
 // activeProviderProfile returns the profile backing the active provider, and

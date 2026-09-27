@@ -206,6 +206,29 @@ func (c *Config) EffectiveProviderID() string {
 	return "config"
 }
 
+// RemoveProviderProfile deletes a stored profile from config.json.
+//
+// Needed because the menus read both config.json and bridge-state.json. Removal
+// that only cleared the runtime store left a config.json copy in place, so the
+// provider was still listed immediately after being removed.
+func (c *Config) RemoveProviderProfile(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("provider name is empty")
+	}
+	if id == "default" {
+		return fmt.Errorf("the default provider is the base configuration and cannot be removed")
+	}
+	if _, ok := c.ProviderProfiles[id]; !ok {
+		return fmt.Errorf("no provider named %s", id)
+	}
+	delete(c.ProviderProfiles, id)
+	if strings.TrimSpace(c.ActiveProvider) == id {
+		c.ActiveProvider = ""
+	}
+	return Save(c)
+}
+
 // ActiveLLM resolves the provider to serve with.
 //
 // Precedence is deliberate. A provider written in config.json wins, because it is

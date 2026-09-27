@@ -71,7 +71,7 @@ func TestProviderResolverLeavesOtherSubscriptionsAlone(t *testing.T) {
 // the onboarding menu is not shown again once a provider is set. A Codex entry
 // that exists only in onboarding is unreachable, which is how it shipped.
 func TestProviderModelMenuOffersCodex(t *testing.T) {
-	markup := menus.Inline("model", 0)
+	markup := menus.Inline("provider", 0)
 	rows, ok := markup["inline_keyboard"].([][]map[string]string)
 	if !ok {
 		t.Fatal("expected model inline keyboard")

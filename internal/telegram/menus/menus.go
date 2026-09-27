@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,7 +24,7 @@ import (
 )
 
 var All = []string{
-	"status", "session", "model", "agent", "variant", "thinking", "project", "tools", "todos",
+	"status", "session", "provider", "model", "agent", "variant", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
 	"memory", "skill", "eval", "schedule", "codex",
@@ -96,8 +97,10 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 			return simpleMenu("Files", "Choose a project before browsing files")
 		}
 		return fileBrowserMenu(root)
+	case "provider":
+		return ProviderMenu()
 	case "model":
-		return modelMenu(chatID)
+		return ModelMenu(0)
 	case "model_catalog":
 		return ModelCatalogForChat(chatID, "")
 	case "memory":
@@ -120,8 +123,10 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 	switch name {
 	case "status", "context":
 		return statusMenu(sessionID)
+	case "provider":
+		return ProviderMenu()
 	case "model":
-		return modelMenu(0)
+		return ModelMenu(0)
 	case "agent":
 		return agentMenu()
 	case "variant":
@@ -179,43 +184,87 @@ func closeMenu() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "✕ Close", "callback_data": "close"}}}}
 }
 
-func modelMenu(chatID int64) map[string]any {
+// ProviderEntry is one provider as the menus see it.
+//
+// The stores disagree about where a provider lives, and that disagreement is why
+// removal appeared not to work: the select menu merged config.json with
+// bridge-state.json, while the remove menu listed only bridge-state.json and
+// removal deleted only from bridge-state.json. A provider in both was listed once,
+// removed from one store, and then still on screen; a provider in config.json alone
+// was selectable but had nothing to tap to remove it.
+type ProviderEntry struct {
+	ID      string
+	Profile config.ProviderProfile
+	// InConfig and InState record which stores hold this id, so a caller removing it
+	// knows where to look.
+	InConfig bool
+	InState  bool
+	// Removable is false for the base configuration, which is not a stored profile.
+	Removable bool
+}
+
+// ProviderEntries returns every provider the menus can show, sorted by id.
+//
+// One definition, used by both the select menu and the remove menu, so the two
+// cannot drift apart again.
+func ProviderEntries() ([]ProviderEntry, string) {
 	cfg, _ := config.Load()
 	state := runtimeValues()
-	profiles := make(map[string]config.ProviderProfile)
+	merged := map[string]*ProviderEntry{}
+	add := func(id string, profile config.ProviderProfile, inConfig, inState bool) {
+		entry, ok := merged[id]
+		if !ok {
+			entry = &ProviderEntry{ID: id, Removable: id != "default"}
+			merged[id] = entry
+		}
+		entry.Profile = profile
+		entry.InConfig = entry.InConfig || inConfig
+		entry.InState = entry.InState || inState
+	}
 	if cfg != nil {
 		for id, profile := range cfg.ProviderProfiles {
-			profiles[id] = profile
+			add(id, profile, true, false)
 		}
-		profiles["default"] = config.ProviderProfile{URL: cfg.LLM.URL, Model: cfg.LLM.Model}
+		add("default", config.ProviderProfile{URL: cfg.LLM.URL, Model: cfg.LLM.Model}, true, false)
 	}
 	for id, profile := range state.ProviderProfiles {
-		profiles[id] = profile
+		add(id, profile, false, true)
 	}
-	ids := make([]string, 0, len(profiles))
-	for id := range profiles {
-		ids = append(ids, id)
+	entries := make([]ProviderEntry, 0, len(merged))
+	for _, entry := range merged {
+		entries = append(entries, *entry)
 	}
-	sort.Strings(ids)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 	active := state.Provider
 	if active == "" {
 		active = "default"
 	}
-	rows := make([][]map[string]string, 0, len(ids)+1)
-	for _, id := range ids {
-		profile := profiles[id]
-		label := id + " · " + profile.Model
-		if profile.Model == "" {
-			label = id
-		}
-		if id == active {
+	return entries, active
+}
+
+// ModelMenuForTest exposes ModelMenu for tests in another package.
+func ModelMenuForTest() map[string]any { return ModelMenu(0) }
+
+// ProviderMenu lists providers, and only providers.
+//
+// It used to be one menu called "Provider / Model" that listed a provider per row
+// with the model appended to the label, which made both halves harder to read: the
+// model was repeated on every provider row while being separately choosable, and
+// "remove provider" sat in the middle of it. Provider identity and model choice
+// are separate decisions and now have separate screens.
+func ProviderMenu() map[string]any {
+	entries, active := ProviderEntries()
+	rows := make([][]map[string]string, 0, len(entries)+4)
+	for _, entry := range entries {
+		label := entry.ID
+		if entry.ID == active {
 			label = "✅ " + label
 		}
-		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_provider:" + id}})
+		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_provider:" + entry.ID}})
 	}
-	// Codex is offered as a row rather than only as a profile, because a profile
-	// row can only exist once the profile does. Leaving it solely in the
-	// onboarding menu meant a configured user had no way to reach it at all.
+	// Codex is a row rather than only a profile, because a profile row cannot exist
+	// until the profile does, and leaving it solely in onboarding meant a configured
+	// user had no way to reach it from here.
 	codexLabel := "🧠 Codex (ChatGPT)"
 	switch {
 	case active == llm.CodexSubscription:
@@ -226,10 +275,90 @@ func modelMenu(chatID int64) map[string]any {
 		codexLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": codexLabel, "callback_data": "provider:codex"}})
+	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
-	rows = append(rows, []map[string]string{{"text": "🔎 Choose model", "callback_data": "menu:model_catalog"}, {"text": "➕ Custom provider", "callback_data": "provider:custom"}})
-	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
+	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
+}
+
+// ModelMenu shows the model that is answering and the settings that shape how it is
+// called, so the two can be judged together instead of inferred.
+func ModelMenu(chatID int64) map[string]any {
+	entries, active := ProviderEntries()
+	var profile config.ProviderProfile
+	found := false
+	for _, entry := range entries {
+		if entry.ID == active {
+			profile, found = entry.Profile, true
+			break
+		}
+	}
+	rows := make([][]map[string]string, 0, 4)
+	if found && strings.TrimSpace(profile.Model) != "" {
+		rows = append(rows, []map[string]string{{"text": "🤖 " + profile.Model, "callback_data": "noop"}})
+	}
+	rows = append(rows, []map[string]string{{"text": detailsText(active, found, profile), "callback_data": "noop"}})
+	rows = append(rows, []map[string]string{{"text": "🔎 Choose model", "callback_data": "menu:model_catalog"}})
+	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// detailsText renders the settings attached to the active model.
+//
+// Telegram truncates button text, so the detail is split across several buttons
+// rather than crammed into one. Every line is a fact read from the active profile
+// rather than a restatement of the model name.
+func detailsText(active string, found bool, profile config.ProviderProfile) string {
+	if !found || strings.TrimSpace(profile.Model) == "" {
+		return "No model is active yet.\nPick one below."
+	}
+	lines := []string{"Provider: " + active}
+	if host := endpointHost(profile.URL); host != "" {
+		lines = append(lines, "Endpoint: "+host)
+	}
+	if profile.ContextLimit > 0 {
+		lines = append(lines, "Context: "+humanTokens(profile.ContextLimit))
+	} else {
+		lines = append(lines, "Context: from catalog")
+	}
+	if profile.MaxOutputTokens > 0 {
+		lines = append(lines, "Max output: "+humanTokens(profile.MaxOutputTokens))
+	}
+	if llm.IsSubscription(profile.Subscription) {
+		lines = append(lines, "Auth: "+profile.Subscription+" subscription")
+	} else if profile.APIKey != "" {
+		lines = append(lines, "Auth: API key")
+	}
+	cache := strings.TrimSpace(profile.PromptCacheMode)
+	if cache == "" {
+		cache = "auto"
+	}
+	lines = append(lines, "Cache: "+cache)
+	if ttl := strings.TrimSpace(profile.PromptCacheTTL); ttl != "" {
+		lines = append(lines, "Cache TTL: "+ttl)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// endpointHost reduces a base URL to a host for display.
+func endpointHost(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" {
+		return trimmed
+	}
+	return parsed.Host
+}
+
+// humanTokens renders a token count compactly.
+func humanTokens(n int) string {
+	if n >= 1000 {
+		return strconv.Itoa(n/1000) + "k"
+	}
+	return strconv.Itoa(n)
 }
 
 var modelChoices []llm.ModelMetadata
@@ -287,11 +416,11 @@ func ModelCatalogForChat(chatID int64, query string) map[string]any {
 	if len(rows) == 0 {
 		return map[string]any{"inline_keyboard": [][]map[string]string{
 			{{"text": "🔎 Search models", "callback_data": "model_catalog_search"}, {"text": "✏️ Enter model ID", "callback_data": "provider:model_manual"}},
-			{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}},
+			{{"text": "⬅️ Provider / Model", "callback_data": "menu:provider"}, {"text": "✕ Close", "callback_data": "close"}},
 		}}
 	}
 	rows = append(rows, []map[string]string{{"text": "🔎 Search models", "callback_data": "model_catalog_search"}, {"text": "✏️ Enter model ID", "callback_data": "provider:model_manual"}})
-	rows = append(rows, []map[string]string{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}})
+	rows = append(rows, []map[string]string{{"text": "⬅️ Provider / Model", "callback_data": "menu:provider"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }
 
@@ -461,7 +590,7 @@ func settingsMenu() map[string]any {
 		model, url, limit = cfg.LLM.Model, cfg.LLM.URL, cfg.LLM.ContextLimit
 	}
 	rows := [][]map[string]string{
-		{{"text": "🧠 " + model, "callback_data": "menu:model"}},
+		{{"text": "🧠 " + model, "callback_data": "menu:provider"}},
 		{{"text": "🏷️ Session title settings", "callback_data": "menu:title_settings"}},
 		{{"text": "🧮 Context: " + strconv.Itoa(limit), "callback_data": "menu:context"}},
 		{{"text": "🌐 " + url, "callback_data": "noop"}},
@@ -719,8 +848,9 @@ func Onboarding() map[string]any {
 func Root() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "📊 Status", "callback_data": "menu:status"}, {"text": "💬 Sessions", "callback_data": "menu:session"}},
-		{{"text": "🧠 Provider / Model", "callback_data": "menu:model"}, {"text": "🤖 Mode", "callback_data": "menu:agent"}},
-		{{"text": "💭 Variant", "callback_data": "menu:variant"}, {"text": "🧠 Thinking", "callback_data": "menu:thinking"}},
+		{{"text": "🔌 Provider", "callback_data": "menu:provider"}, {"text": "🤖 Model", "callback_data": "menu:model"}},
+		{{"text": "🤖 Mode", "callback_data": "menu:agent"}, {"text": "💭 Variant", "callback_data": "menu:variant"}},
+		{{"text": "🧠 Thinking", "callback_data": "menu:thinking"}},
 		{{"text": "📁 Project", "callback_data": "menu:project"}},
 		{{"text": "🔧 Tools", "callback_data": "menu:tools"}, {"text": "✅ Todos", "callback_data": "menu:todos"}, {"text": "✕ Close", "callback_data": "close"}},
 	}}
@@ -728,7 +858,7 @@ func Root() map[string]any {
 
 func Hub() map[string]any {
 	labels := map[string]string{
-		"status": "📊 Status", "session": "💬 Sessions", "model": "🧠 Provider / Model", "agent": "🤖 Mode",
+		"status": "📊 Status", "session": "💬 Sessions", "provider": "🔌 Provider", "model": "🤖 Model", "agent": "🤖 Mode",
 		"variant": "💭 Variant", "thinking": "🧠 Thinking", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
@@ -794,29 +924,24 @@ func CodexMenu(authenticated bool, active string) map[string]any {
 // stored profile, and sessions may still be running against the active provider,
 // so the active one is marked rather than hidden.
 func RemoveProviderMenu(active string) map[string]any {
-	state := runtimeValues()
-	ids := make([]string, 0, len(state.ProviderProfiles))
-	for id := range state.ProviderProfiles {
-		if id == "default" {
+	// The same merged view the select menu uses. It listed only the runtime store
+	// before, so a provider held in config.json was selectable but had no row here
+	// to tap, which is the other half of removal looking broken.
+	entries, current := ProviderEntries()
+	rows := make([][]map[string]string, 0, len(entries)+1)
+	for _, entry := range entries {
+		if !entry.Removable {
 			continue
 		}
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	if len(ids) == 0 {
-		return map[string]any{"inline_keyboard": [][]map[string]string{
-			{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}},
-		}}
-	}
-	rows := make([][]map[string]string, 0, len(ids)+1)
-	for _, id := range ids {
-		label := "🗑 " + id
-		if id == active {
+		label := "🗑 " + entry.ID
+		if entry.ID == current || (active != "" && entry.ID == active) {
 			label = "⚠️ " + label + " (active)"
 		}
-		rows = append(rows, []map[string]string{{"text": label, "callback_data": "provider:remove:" + id}})
+		rows = append(rows, []map[string]string{{"text": label, "callback_data": "provider:remove:" + entry.ID}})
 	}
-	rows = append(rows, []map[string]string{{"text": "⬅️ Provider / Model", "callback_data": "menu:model"}, {"text": "✕ Close", "callback_data": "close"}})
+	if len(rows) == 0 {
+		rows = append(rows, []map[string]string{{"text": "Nothing to remove", "callback_data": "noop"}})
+	}
+	rows = append(rows, []map[string]string{{"text": "◀️ Provider", "callback_data": "menu:provider"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }

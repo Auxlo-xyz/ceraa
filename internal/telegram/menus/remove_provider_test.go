@@ -23,7 +23,7 @@ func TestRemoveProviderMenuAlwaysOffersNavigation(t *testing.T) {
 			}
 		}
 	}
-	if !found["menu:model"] || !found["close"] {
+	if !found["menu:provider"] || !found["close"] {
 		t.Errorf("remove menu cannot be left: %v", found)
 	}
 }

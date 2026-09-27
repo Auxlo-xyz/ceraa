@@ -357,7 +357,7 @@ func handleCallback(token string, q *struct {
 			send(token, chatID, "Provider save failed: "+err.Error())
 			return
 		}
-		editCallback(token, chatID, q.Message.MessageID, "✅ Provider set to "+provider, menus.InlineForChat("model", 0, chatID, currentSessionID(chatID)))
+		editCallback(token, chatID, q.Message.MessageID, "✅ Provider set to "+provider, menus.InlineForChat("provider", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if data == "provider:remove_menu" {
@@ -372,27 +372,37 @@ func handleCallback(token string, q *struct {
 			"Remove provider <b>"+html.EscapeString(providerID)+"</b>?\n\nIf it is the active provider, Ceraa switches to <b>default</b>.",
 			map[string]any{"inline_keyboard": [][]map[string]string{{
 				{"text": "✅ Remove", "callback_data": "provider:remove_confirm:" + providerID},
-				{"text": "✕ Cancel", "callback_data": "menu:model"},
+				{"text": "✕ Cancel", "callback_data": "menu:provider"},
 			}}})
 		return
 	}
 	if strings.HasPrefix(data, "provider:remove_confirm:") {
 		providerID := strings.TrimPrefix(data, "provider:remove_confirm:")
 		wasActive := defaultState.provider() == providerID
-		if err := defaultState.removeProviderProfile(providerID); err != nil {
-			editCallback(token, chatID, q.Message.MessageID, "Could not remove provider: "+err.Error(), nil)
+		fromState, fromConfig, stateErr, configErr := removeProviderEverywhere(providerID)
+		switch {
+		case stateErr != nil && configErr != nil:
+			editCallback(token, chatID, q.Message.MessageID, "Could not remove provider: "+stateErr.Error(), nil)
 			return
+		case stateErr != nil:
+			logger.Warn("provider removed from config only, runtime store said: " + stateErr.Error())
+		case configErr != nil:
+			logger.Warn("provider removed from runtime only, config said: " + configErr.Error())
 		}
-		logger.Info("provider removed: id=" + providerID + " was_active=" + strconv.FormatBool(wasActive))
+		logger.Info("provider removed: id=" + providerID + " was_active=" + strconv.FormatBool(wasActive) +
+			" from_runtime=" + strconv.FormatBool(fromState) + " from_config=" + strconv.FormatBool(fromConfig))
 		note := ""
 		if wasActive {
 			note = "\n\nIt was active, so Ceraa is now on <b>default</b>."
+		}
+		if !fromState && !fromConfig {
+			note += "\n\nIt was not present in either store, so nothing changed."
 		}
 		// Return to the provider menu rather than stranding the user on a dead
 		// keyboard: the point of removing a provider is usually to pick another.
 		editHTML(token, chatID, q.Message.MessageID,
 			"🗑 Removed provider <b>"+html.EscapeString(providerID)+"</b>."+note,
-			menus.Inline("model", 0))
+			menus.Inline("provider", 0))
 		return
 	}
 	if data == "provider:codex" {
@@ -447,7 +457,7 @@ func handleCallback(token string, q *struct {
 			send(token, chatID, "Provider activation failed: "+err.Error())
 			return
 		}
-		editCallback(token, chatID, q.Message.MessageID, "✅ Model set to "+metadata.ID, menus.InlineForChat("model", 0, chatID, currentSessionID(chatID)))
+		editCallback(token, chatID, q.Message.MessageID, "✅ Model set to "+metadata.ID, menus.InlineForChat("provider", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if strings.HasPrefix(data, "select_agent:") {
@@ -818,6 +828,36 @@ func handleCallback(token string, q *struct {
 			}})
 		return
 	}
+}
+
+// removeProviderEverywhere deletes a provider profile from every store the menus
+// read, and reports which ones held it.
+//
+// Both, because the menus merge config.json with bridge-state.json. Clearing only
+// the runtime store left a config.json copy, so the provider was still listed the
+// instant it was removed. That is the whole defect, so it lives in one function
+// rather than being spread across a callback and a helper.
+func removeProviderEverywhere(id string) (fromState, fromConfig bool, stateErr, configErr error) {
+	fromState, stateErr = defaultState.removeProviderProfile(id)
+	fromConfig, configErr = removeProviderFromConfig(id)
+	return fromState, fromConfig, stateErr, configErr
+}
+
+// removeProviderFromConfig deletes a provider profile from config.json, reporting
+// whether one was there. A missing profile is not an error: the caller removes from
+// both stores and either succeeding is enough.
+func removeProviderFromConfig(id string) (bool, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return false, err
+	}
+	if _, ok := cfg.ProviderProfiles[id]; !ok {
+		return false, nil
+	}
+	if err := cfg.RemoveProviderProfile(id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func handleBrowseCallback(token string, chatID int64, messageID int, path string) {

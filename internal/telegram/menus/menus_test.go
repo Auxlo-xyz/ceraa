@@ -2,11 +2,13 @@ package menus
 
 import "testing"
 
-func TestRootMenuHasFiveRowsAndPrimaryControls(t *testing.T) {
+func TestRootMenuHasPrimaryControls(t *testing.T) {
 	markup := Root()
 	rows, ok := markup["inline_keyboard"].([][]map[string]string)
-	if !ok || len(rows) != 5 {
-		t.Fatalf("expected five-line root keyboard, got %T with %d rows", markup["inline_keyboard"], len(rows))
+	// Six lines since provider and model became separate entries, which is the
+	// point of the split: the compact menu has to offer both.
+	if !ok || len(rows) != 6 {
+		t.Fatalf("expected six-line root keyboard, got %T with %d rows", markup["inline_keyboard"], len(rows))
 	}
 	found := map[string]bool{}
 	for _, row := range rows {
@@ -14,7 +16,7 @@ func TestRootMenuHasFiveRowsAndPrimaryControls(t *testing.T) {
 			found[button["callback_data"]] = true
 		}
 	}
-	for _, callback := range []string{"menu:status", "menu:session", "menu:model", "menu:agent", "menu:variant", "menu:thinking", "menu:project", "menu:tools", "menu:todos", "close"} {
+	for _, callback := range []string{"menu:status", "menu:session", "menu:provider", "menu:model", "menu:agent", "menu:variant", "menu:thinking", "menu:project", "menu:tools", "menu:todos", "close"} {
 		if !found[callback] {
 			t.Errorf("missing root callback %q", callback)
 		}

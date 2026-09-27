@@ -24,7 +24,7 @@ func TestRemoveProviderProfileDeletesOnlyTheTarget(t *testing.T) {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	if err := state.removeProviderProfile("codex"); err != nil {
+	if _, err := state.removeProviderProfile("codex"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	profiles := state.providerProfiles()
@@ -46,7 +46,7 @@ func TestRemoveActiveProviderFallsBackToDefault(t *testing.T) {
 	if err := state.setProvider("codex"); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := state.removeProviderProfile("codex"); err != nil {
+	if _, err := state.removeProviderProfile("codex"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if got := state.provider(); got != "default" {
@@ -64,7 +64,7 @@ func TestRemoveActiveProviderKeepsActiveWhenRemovingAnother(t *testing.T) {
 	if err := state.setProvider("codex"); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := state.removeProviderProfile("other"); err != nil {
+	if _, err := state.removeProviderProfile("other"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if got := state.provider(); got != "codex" {
@@ -74,17 +74,17 @@ func TestRemoveActiveProviderKeepsActiveWhenRemovingAnother(t *testing.T) {
 
 func TestRemoveProviderRefusesDefault(t *testing.T) {
 	state := newTestState(t)
-	if err := state.removeProviderProfile("default"); err == nil {
+	if _, err := state.removeProviderProfile("default"); err == nil {
 		t.Fatal("removing default should be refused: it is the base configuration, not a stored profile")
 	}
 }
 
 func TestRemoveProviderRejectsUnknownAndEmpty(t *testing.T) {
 	state := newTestState(t)
-	if err := state.removeProviderProfile("ghost"); err == nil {
+	if _, err := state.removeProviderProfile("ghost"); err == nil {
 		t.Error("removing an unknown provider should fail rather than report success")
 	}
-	if err := state.removeProviderProfile("  "); err == nil {
+	if _, err := state.removeProviderProfile("  "); err == nil {
 		t.Error("an empty name should be rejected")
 	}
 }
@@ -99,7 +99,7 @@ func TestRemoveProviderPersists(t *testing.T) {
 	if err := state.setProviderProfile("codex", config.ProviderProfile{Model: "gpt-5.6-luna"}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := state.removeProviderProfile("codex"); err != nil {
+	if _, err := state.removeProviderProfile("codex"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	// Re-read from disk: a removal that only mutated memory would come back after
