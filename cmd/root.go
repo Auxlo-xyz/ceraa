@@ -27,6 +27,12 @@ var root = &cobra.Command{
 		if len(args) == 0 {
 			return cmd.Help()
 		}
+		// A near miss of a real subcommand is a typo, not a prompt. Without this,
+		// `ceraa stopp` was sent to the model as a prompt and answered, spending a
+		// real inference call on a one-word slip.
+		if suggestion, ok := nearMiss(args[0], subcommandNames()); ok {
+			return errNearMiss(args[0], suggestion)
+		}
 		return agent.Run(strings.Join(args, " "))
 	},
 }
@@ -203,13 +209,17 @@ func maskToken(s string) string {
 // Execute meant the subcommands did not exist until the binary ran, so nothing
 // could assert that they still resolve.
 func registerSubcommands() {
-	root.AddCommand(verCmd)
-	root.AddCommand(startCmd)
-	root.AddCommand(stopCmd)
-	root.AddCommand(setupCmd)
-	root.AddCommand(doctorCmd)
-	root.AddCommand(configCmd)
-	root.AddCommand(configInitCmd)
+	attach := func(command *cobra.Command) {
+		root.AddCommand(command)
+		recordSubcommand(command)
+	}
+	attach(verCmd)
+	attach(startCmd)
+	attach(stopCmd)
+	attach(setupCmd)
+	attach(doctorCmd)
+	attach(configCmd)
+	attach(configInitCmd)
 }
 
 func Execute() {

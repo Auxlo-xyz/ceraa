@@ -254,6 +254,21 @@ func (c *Config) ProviderIDs() []string {
 }
 
 // Load loads config from config file + env override + defaults.
+// LoadPersisted reads the configuration as stored, without environment overrides.
+//
+// Load is right for running and wrong for editing. It applies CERAA_* on top of
+// the file, so a command that loads and then saves turns a runtime override into
+// permanent configuration: setup would write the environment's provider, model
+// and token limits into config.json, and unsetting the variable afterwards would
+// change nothing. This is the base an editing command should save from.
+func LoadPersisted() (*Config, error) {
+	cfg := DefaultConfig()
+	if err := loadFile(cfg); err != nil {
+		return nil, fmt.Errorf("config file: %w", err)
+	}
+	return cfg, nil
+}
+
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 

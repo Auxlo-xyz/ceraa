@@ -837,8 +837,11 @@ func Run() error {
 func providerConfigured(cfg *config.Config) bool {
 	provider := activeProviderConfig(cfg, defaultState.provider())
 	// Subscription providers carry no API key in the profile: their credential
-	// comes from the encrypted native store at request time.
-	if provider.Subscription == "hermes" {
+	// comes from the encrypted native store at request time. Comparing against
+	// "hermes" alone meant a working Codex install read as unconfigured, so /start
+	// answered with the onboarding picker and startup announced that onboarding
+	// was still required.
+	if llm.IsSubscription(provider.Subscription) {
 		return provider.Model != ""
 	}
 	return provider.URL != "" && provider.Model != "" && provider.APIKey != ""
@@ -1407,7 +1410,7 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 		return
 	}
 	// ContextLimit left unset so the catalog supplies the model's real window.
-	profile := config.ProviderProfile{Model: model, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: "hermes", HermesProvider: "nous"}
+	profile := config.ProviderProfile{Model: model, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: llm.HermesSubscription, HermesProvider: "nous"}
 	if err := defaultState.setProviderProfile("hermes", profile); err != nil {
 		send(token, chatID, "Hermes profile save failed: "+err.Error())
 		return

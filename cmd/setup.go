@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bufio"
+	"ceraa/harness/llm"
+	"ceraa/internal/codexauth"
 	"ceraa/internal/envs"
 	"context"
 	"fmt"
@@ -69,14 +71,23 @@ func collectDoctorReport(timeout time.Duration) doctorReport {
 	return report
 }
 
+// isSubscriptionProvider reports whether a provider carries a subscription
+// credential instead of a stored API key.
+//
+// One definition for both checks below. They previously each hardcoded "hermes",
+// so a Codex install was reported as unconfigured by one check while the other
+// quietly probed it unauthenticated and called the result reachable.
+func isSubscriptionProvider(subscription string) bool { return llm.IsSubscription(subscription) }
+
 func checkConfig(cfg *config.Config) doctorCheck {
 	if cfg == nil {
 		return doctorCheck{"config", "FAIL", "configuration is nil"}
 	}
 	provider := cfg.ActiveLLM()
-	// Subscription providers carry no API key in the profile; their credential
-	// is resolved from the encrypted native store at request time.
-	subscription := provider.Subscription == "hermes"
+	// Subscription providers carry no API key in the profile; their credential is
+	// resolved from the encrypted store at request time, so demanding one here
+	// reported a working Codex install as unconfigured.
+	subscription := isSubscriptionProvider(provider.Subscription)
 	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
@@ -97,7 +108,7 @@ func checkWorkspace(cfg *config.Config) doctorCheck {
 
 func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	provider := cfg.ActiveLLM()
-	if provider.Model == "" || (provider.URL == "" && provider.Subscription != "hermes") {
+	if provider.Model == "" || (provider.URL == "" && !isSubscriptionProvider(provider.Subscription)) {
 		return doctorCheck{"provider", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -105,13 +116,22 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	apiKey := provider.APIKey
 	baseURL := provider.URL
 	switch provider.Subscription {
-	case "hermes":
+	case llm.HermesSubscription:
 		credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
 		if err != nil {
 			return doctorCheck{"provider", "FAIL", "Hermes credential: " + err.Error()}
 		}
 		apiKey = credential.AccessToken
 		baseURL = credential.BaseURL
+	case llm.CodexSubscription:
+		// Resolved so the probe is authenticated. Without it the request went out
+		// with no credential, came back 403, and the check reported "reachable" for
+		// an endpoint that had in fact rejected the call.
+		token, err := codexauth.AccessToken(ctx)
+		if err != nil {
+			return doctorCheck{"provider", "FAIL", "Codex credential: " + err.Error()}
+		}
+		apiKey = token
 	}
 	if !validProviderURL(baseURL) {
 		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
@@ -130,7 +150,9 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	resp.Body.Close()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 500:
-		return doctorCheck{"provider", "OK", fmt.Sprintf("provider reachable (HTTP %d)", resp.StatusCode)}
+		// A 4xx still means the endpoint answered, which is all this proves. Saying
+		// "reachable" and nothing more, because that is what was checked.
+		return doctorCheck{"provider", "OK", fmt.Sprintf("endpoint answered (HTTP %d)", resp.StatusCode)}
 	default:
 		return doctorCheck{"provider", "FAIL", fmt.Sprintf("provider returned HTTP %d", resp.StatusCode)}
 	}
@@ -217,7 +239,9 @@ func validProviderURL(raw string) bool {
 }
 
 func runSetup(reader io.Reader, writer io.Writer) error {
-	cfg, err := config.Load()
+	// The persisted config, not the resolved one: saving the resolved config would
+	// write this shell's CERAA_* overrides into the file and make them permanent.
+	cfg, err := config.LoadPersisted()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

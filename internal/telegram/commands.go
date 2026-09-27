@@ -890,9 +890,9 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				return true
 			}
 			draft.Model = text
-			if draft.ID == "hermes" {
+			if draft.ID == llm.HermesSubscription {
 				pendingProvider.Delete(chatID)
-				profile := config.ProviderProfile{Model: draft.Model, Subscription: "hermes"}
+				profile := config.ProviderProfile{Model: draft.Model, Subscription: llm.HermesSubscription}
 				if err := defaultState.setProviderProfile(draft.ID, profile); err != nil {
 					send(token, chatID, "Provider profile save failed: "+err.Error())
 					return true
