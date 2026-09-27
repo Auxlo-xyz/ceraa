@@ -23,12 +23,15 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
+	"ceraa/internal/minimaxauth"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
+	"ceraa/internal/xaiauth"
 )
 
 func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
@@ -344,6 +347,33 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 	return result
 }
 
+// minimaxRegionFor picks the MiniMax region a profile belongs to.
+//
+// The two regions are separate account systems, so a CN profile has to be told
+// rather than defaulted to global, where its credential does not exist.
+func minimaxRegionFor(provider config.LLMProvider) minimaxauth.Region {
+	if strings.EqualFold(strings.TrimSpace(provider.URL), llm.MiniMaxCNBaseURL) {
+		return minimaxauth.RegionCN
+	}
+	return minimaxauth.RegionGlobal
+}
+
+// providerSessionID is the run identifier sent to a provider that correlates on
+// it. The gateway uses X-Task-ID to tie a request to a conversation, and the
+// resolver has no session in scope, so it names the client rather than sending a
+// blank that would correlate every request together.
+func providerSessionID() string { return "ceraa" }
+
+// firstNonEmptyStr returns the first non-blank value.
+func firstNonEmptyStr(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func providerModelResolver(provider config.LLMProvider) func(context.Context) (llm.ProviderConfig, error) {
 	// One manager for the process: it owns the in-flight login flows and the
 	// refresh lock, so a per-request instance would let two refreshes race and
@@ -363,6 +393,43 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 			model.BaseURL = provider.URL
 			model.CodexNative = true
 			model.CodexTokens = codexTokens
+			return model, nil
+		case "xai":
+			// The credential comes from the encrypted store, not the profile. Without
+			// this case the provider fell through to the default, which reads an API
+			// key from the profile, found none, and sent an unauthenticated request.
+			credential, err := xaiauth.Resolve(ctx, nil)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			model.BaseURL = firstNonEmptyStr(credential.BaseURL, llm.XaiBaseURL)
+			model.APIKey = credential.AccessToken
+			model.XaiNative = true
+			model.XaiTokens = xaiauth.NewTokenSource()
+			return model, nil
+		case "minimax":
+			credential, err := minimaxauth.Resolve(ctx, minimaxauth.NewStore(minimaxRegionFor(provider)))
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			model.BaseURL = firstNonEmptyStr(credential.BaseURL, llm.MiniMaxBaseURL)
+			model.APIKey = credential.AccessToken
+			// Served by the Messages API, so it needs the Anthropic transport.
+			model.AnthropicNative = true
+			model.AnthropicTokens = minimaxauth.NewTokenSource(credential.Region)
+			return model, nil
+		case "cline":
+			credential, err := clineauth.Resolve(ctx, nil)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			model.BaseURL = firstNonEmptyStr(provider.URL, llm.ClineGatewayBase)
+			model.APIKey = credential.AccessToken
+			// The gateway answers 401 without this header set, and Go's default
+			// "Go-http-client/1.1" was being sent.
+			if len(model.ExtraHeaders) == 0 || !clineauth.HasClineHeaders(model.ExtraHeaders) {
+				model.ExtraHeaders = clineauth.RequestHeaders(providerSessionID())
+			}
 			return model, nil
 		case "hermes":
 			credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)

@@ -128,6 +128,15 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			// chat/completions, so it needs no transport of its own.
 			modelConfig.BaseURL = firstNonEmptyStr(provider.URL, llm.ClineGatewayBase)
 			modelConfig.APIKey = credential.AccessToken
+			// The gateway answers 401 without this header set, and Go's default
+			// "Go-http-client/1.1" was being sent. A profile's own headers win, so
+			// someone who has set them deliberately is not overridden.
+			if len(modelConfig.ExtraHeaders) == 0 || !clineauth.HasClineHeaders(modelConfig.ExtraHeaders) {
+				// The gateway correlates a request with a conversation through this. The
+				// CLI's run id is fixed, which is the truth here: the header names the
+				// run, and there is one.
+				modelConfig.ExtraHeaders = clineauth.RequestHeaders(agentRunID)
+			}
 			return modelConfig, nil
 		case "minimax":
 			credential, err := minimaxauth.Resolve(ctx, minimaxauth.NewStore(regionForProvider(provider)))
@@ -201,6 +210,9 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	_, err = runner.Run(ctx, user)
 	return err
 }
+
+// agentRunID is the run identifier sent to a provider that correlates on it.
+const agentRunID = "cli"
 
 func firstNonEmptyStr(values ...string) string {
 	for _, value := range values {
