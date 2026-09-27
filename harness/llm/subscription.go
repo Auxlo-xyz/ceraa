@@ -39,28 +39,33 @@ func IsSubscription(subscription string) bool {
 const HermesBaseURL = "https://inference-api.nousresearch.com/v1"
 
 // DefaultHermesModel is the model selected when Hermes is chosen without one.
-const DefaultHermesModel = "upstage/solar-pro-4"
+const DefaultHermesModel = "upstage/solar-pro4:free"
 
-// HermesModels lists the model IDs known to be served by the Nous Portal
-// inference endpoint.
+// HermesModels lists the free-tier model IDs the Nous Portal inference endpoint
+// serves.
 //
 // Kept as a list so IsHermesModel can refuse anything else, the same way Codex
 // does. The endpoint is closed and returns a hard 400 for a model it does not
 // serve, so picking a plausible-looking ID is a guaranteed failure rather than a
 // maybe.
 //
-// The IDs are namespaced by vendor, and the earlier `hermes-4-*` names were
-// wrong: they name no model the endpoint serves. The list is therefore the exact
-// set the endpoint was observed to serve, not a family of plausible ids, and
-// each entry has to be treated as load-bearing rather than as documentation.
+// The list is the free tier only, and the `:free` suffix is load-bearing: most of
+// these also exist as a paid route under the bare name, and the suffix is what
+// selects the free one. The account is served roughly 417 models in total,
+// including paid ones, so this is a policy about which routes to offer rather
+// than a description of the endpoint. `TestLiveModelCatalog` reads the live
+// catalog and fails if anything here stops being served.
+//
+// An earlier list named `hermes-4-405b` and friends. Those name no model the
+// endpoint serves, and the free names without their suffix draw a 400.
 var HermesModels = []string{
-	"upstage/solar-pro-4",
-	"inclusionai/ling-3.0-flash-sante",
-	"inclusionai/ling-3.0-flash-fin",
-	"stealth/space-bunny-alpha",
-	"poolside/laguna-xs-2.1",
-	"poolside/laguna-s-2.1",
-	"stepfun/step-3.7-flash",
+	"inclusionai/ling-3.0-flash-sante:free",
+	"inclusionai/ling-3.0-flash-fin:free",
+	"poolside/laguna-s-2.1:free",
+	"poolside/laguna-xs-2.1:free",
+	"meituan/longcat-2.0:free",
+	"stepfun/step-3.7-flash:free",
+	"upstage/solar-pro4:free",
 }
 
 // IsHermesModel reports whether a model ID is known to work on the endpoint.
