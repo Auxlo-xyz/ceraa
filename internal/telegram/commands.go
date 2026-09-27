@@ -4,6 +4,7 @@ import (
 	"ceraa/harness/llm"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,16 +246,22 @@ func handleTodosCommand(token string, chatID int64) {
 	sendMenuMarkup(token, chatID, text, menus.InlineForChat("todos", 0, chatID, currentSessionID(chatID)))
 }
 
-func handleContextCommand(token string, chatID int64) {
+// statusReport builds the single report behind /status, /context and the hub's
+// Status button.
+//
+// These were three separate paths producing three different bodies for one menu:
+// /status printed session and config facts, /context printed token and cache
+// facts, and the Status button printed nothing at all, just the menu's name. All
+// three attached the same keyboard, so the menu looked identical while the content
+// underneath it changed. One report, three entry points.
+func statusReport(chatID int64) (string, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		send(token, chatID, "Config error: "+err.Error())
-		return
+		return "", fmt.Errorf("config error: %w", err)
 	}
 	store, err := configuredStore()
 	if err != nil {
-		send(token, chatID, "Session store error: "+err.Error())
-		return
+		return "", fmt.Errorf("session store error: %w", err)
 	}
 	tokens, messages := 0, 0
 	cacheReadPercent := 0
@@ -303,10 +310,35 @@ func handleContextCommand(token string, chatID int64) {
 	// The session total is the honest headline, and the estimate beside it is
 	// explicitly labelled: the estimate is a character-count heuristic over stored
 	// text, while the total is what the provider actually reported.
-	text := fmt.Sprintf("📊 Context\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`",
+	//
+	// Agent and variant are included because the old /status showed them and the
+	// old /context did not, and picking either report meant losing facts the other
+	// had. Endpoint is reduced to a host: the full URL carries a path that is noise
+	// here and a key in the case of some providers.
+	_, agent, variant := defaultState.values()
+	if agent == "" {
+		agent = "build"
+	}
+	if variant == "" {
+		variant = "default"
+	}
+	endpoint := providerHost(activeProviderURL(cfg))
+	return fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s\nVariant: %s",
 		groupDigits(tokens), groupDigits(contextLimit), percent,
 		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
-		cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model)
+		cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
+		endpoint, agent, variant), nil
+}
+
+// handleContextCommand shows the status report. Kept as a distinct command because
+// it is what people reach for when they mean "how full is the context", but it is
+// the same report, so the two cannot drift apart again.
+func handleContextCommand(token string, chatID int64) {
+	text, err := statusReport(chatID)
+	if err != nil {
+		send(token, chatID, err.Error())
+		return
+	}
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 
@@ -643,36 +675,11 @@ func handleListFiles(token string, chatID int64, text string) {
 
 // handleStatus shows harness status -> maps to soraacode session/status.ts + llm/route
 func handleStatus(token string, chatID int64) {
-	cfg, err := config.Load()
+	text, err := statusReport(chatID)
 	if err != nil {
-		send(token, chatID, "Config error: "+err.Error())
+		send(token, chatID, err.Error())
 		return
 	}
-	store, _ := configuredStore()
-	var sessCount int
-	var msgCount int
-	sessionTitle := "Untitled session"
-	if store != nil {
-		if ids, err := store.List(); err == nil {
-			sessCount = len(ids)
-		}
-		if sess, err := store.Load(currentSessionID(chatID)); err == nil {
-			msgCount = len(sess.Messages)
-			sessionTitle = sess.DisplayTitle()
-		}
-	}
-	model, agent, variant := defaultState.values()
-	if model == "" {
-		model = cfg.LLM.Model
-	}
-	if agent == "" {
-		agent = "build"
-	}
-	if variant == "" {
-		variant = "default"
-	}
-	text := fmt.Sprintf("Ceraa status:\n• Session: %s\n• Workspace: `%s`\n• Project: `%s`\n• Model: %s\n• Agent: %s\n• Variant: %s\n• URL: %s\n• Sessions: %d\n• Current messages: %d",
-		sessionTitle, cfg.WorkspaceRootPath(), defaultState.project(chatID), model, agent, variant, cfg.LLM.URL, sessCount, msgCount)
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
 }
 
@@ -1225,4 +1232,29 @@ func displayContextLimit(cfg *config.Config) int {
 		}
 	}
 	return llm.FallbackContextWindow
+}
+
+// activeProviderURL is the endpoint of the provider that is actually serving.
+//
+// The base config is not what serves a session once a provider has been activated
+// from the menu, so reading cfg.LLM reported an empty URL for a working install.
+func activeProviderURL(cfg *config.Config) string {
+	provider := cfg.ActiveLLM()
+	if _, profile, ok := defaultState.activeProviderProfile(); ok && strings.TrimSpace(profile.URL) != "" {
+		return profile.URL
+	}
+	return provider.URL
+}
+
+// providerHost reduces a base URL to a host for display.
+func providerHost(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "unknown"
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" {
+		return trimmed
+	}
+	return parsed.Host
 }

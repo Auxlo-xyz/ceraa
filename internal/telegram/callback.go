@@ -138,7 +138,13 @@ func closeCallbackMenu(token string, chatID int64, menuMessageID int, currentTex
 	menuTriggerPending.Delete(chatID)
 }
 
-func handleCallback(token string, q *struct {
+// callbackQuery is one inline-keyboard tap.
+//
+// A named type rather than an anonymous struct: Go compares anonymous struct types
+// structurally, so a caller has to repeat every field and tag in the exact order to
+// satisfy the parameter, which is a trap for any test that wants to drive the
+// handler directly.
+type callbackQuery struct {
 	ID   string `json:"id"`
 	From struct {
 		ID int64 `json:"id"`
@@ -151,7 +157,9 @@ func handleCallback(token string, q *struct {
 		MessageID int    `json:"message_id"`
 		Text      string `json:"text"`
 	} `json:"message"`
-}) {
+}
+
+func handleCallback(token string, q *callbackQuery) {
 	answerCallback(token, q.ID)
 	if q.Message == nil {
 		fmt.Printf("callback missing message id=%s data=%q\n", q.ID, q.Data)
@@ -339,7 +347,16 @@ func handleCallback(token string, q *struct {
 	}
 	if strings.HasPrefix(data, "menu:") {
 		name := strings.TrimPrefix(data, "menu:")
-		editCallback(token, chatID, q.Message.MessageID, "📋 "+name, menus.InlineForChat(name, 0, chatID, currentSessionID(chatID)))
+		// A menu that reports something has to say it. The generic handler used to
+		// send the menu's own name as the whole body, so tapping Status produced the
+		// word "status" above a row of buttons while /status printed a full report
+		// under an identical keyboard. A title is only a fallback for menus that
+		// genuinely are just buttons.
+		body := "📋 " + name
+		if text, ok := menuReportText(name, chatID); ok {
+			body = text
+		}
+		editCallback(token, chatID, q.Message.MessageID, body, menus.InlineForChat(name, 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if strings.HasPrefix(data, "select_model:") {
@@ -828,6 +845,22 @@ func handleCallback(token string, q *struct {
 			}})
 		return
 	}
+}
+
+// menuReportText is the body for menus that show data rather than only buttons.
+//
+// Deliberately a lookup rather than a general mechanism: most menus are action
+// lists and their name is a fine label, so the ones that report are named here.
+func menuReportText(name string, chatID int64) (string, bool) {
+	switch name {
+	case "status", "context":
+		text, err := statusReport(chatID)
+		if err != nil {
+			return "Status unavailable: " + err.Error(), true
+		}
+		return text, true
+	}
+	return "", false
 }
 
 // removeProviderEverywhere deletes a provider profile from every store the menus

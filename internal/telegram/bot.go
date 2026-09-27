@@ -57,20 +57,7 @@ type update struct {
 			FileID string `json:"file_id"`
 		} `json:"voice"`
 	} `json:"message"`
-	CallbackQuery *struct {
-		ID   string `json:"id"`
-		From struct {
-			ID int64 `json:"id"`
-		} `json:"from"`
-		Data    string `json:"data"`
-		Message *struct {
-			Chat struct {
-				ID int64 `json:"id"`
-			} `json:"chat"`
-			MessageID int    `json:"message_id"`
-			Text      string `json:"text"`
-		} `json:"message"`
-	} `json:"callback_query"`
+	CallbackQuery *callbackQuery `json:"callback_query"`
 }
 
 var telegramAPIBase = "https://api.telegram.org/bot"
