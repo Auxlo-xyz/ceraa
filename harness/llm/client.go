@@ -8,9 +8,11 @@ import (
 	"ceraa/internal/envs"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,6 +46,10 @@ type ProviderConfig struct {
 	PromptCacheMode string
 	PromptCacheTTL  string
 	Compatibility   *Compatibility
+	// OnRetry fires before each retry wait with the error, the attempt number and
+	// the delay chosen. A gateway backoff can run to about a minute, and a silent
+	// wait that long looks exactly like a hang.
+	OnRetry func(error, int, time.Duration)
 	// ExtraBody is merged into every chat-completions request body. Used by
 	// providers that require extra top-level fields. Set by the caller; never
 	// mutated here.
@@ -875,7 +881,12 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			if providerErr.Retryable && attempt < c.cfg.MaxRetries {
 				delay := providerErr.RetryAfter
 				if delay <= 0 {
-					delay = backoffScaled(attempt, c.cfg.RetryBackoff)
+					delay = retryDelay(providerErr, attempt, c.cfg.RetryBackoff)
+				}
+				// Surface the wait: a gateway backoff runs to about a minute and
+				// silence that long is indistinguishable from a hang.
+				if c.cfg.OnRetry != nil {
+					c.cfg.OnRetry(providerErr, attempt+1, delay)
 				}
 				if !sleepContext(ctx, delay) {
 					break
@@ -887,7 +898,11 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		err = c.readStreamWithCompatibility(resp.Body, onDelta, compatibility)
 		_ = resp.Body.Close()
 		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
-			if !sleepContext(ctx, backoff(attempt)) {
+			delay := retryDelay(streamErr, attempt, c.cfg.RetryBackoff)
+			if c.cfg.OnRetry != nil {
+				c.cfg.OnRetry(streamErr, attempt+1, delay)
+			}
+			if !sleepContext(ctx, delay) {
 				break
 			}
 			continue
@@ -1335,6 +1350,52 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 }
 
 // backoff returns exponential backoff duration for the given attempt (0-based).
+// gatewayBackoff is deliberately much longer than the default schedule.
+//
+// A 429 means the caller is going too fast and a short wait is right. A 502 or 503
+// means the provider's own upstream is unreachable, and repeating after a second
+// just finds it still down. The default spans about twelve seconds in total, which
+// rides out a blip but not an outage: a live run lost four attempts inside that
+// window to a gateway that had been failing intermittently. This spans about a
+// minute, which covers the case that actually happens.
+var gatewayBackoff = []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second}
+
+// IsGatewayError reports whether an upstream gateway fault is what failed.
+//
+// Deliberately narrow. A 4xx is the caller's fault and repeating it only wastes the
+// budget, and a cancelled context is the user's decision rather than a fault.
+func IsGatewayError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		switch providerErr.Status {
+		case 500, 502, 503, 504:
+			return true
+		}
+		return false
+	}
+	// A transport fault never reached the provider, so it is an outage rather than
+	// a bad request.
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
+// retryDelay returns how long to wait before the given attempt.
+func retryDelay(err error, attempt int, scale time.Duration) time.Duration {
+	if scale > 0 {
+		return scale
+	}
+	if IsGatewayError(err) {
+		if attempt < len(gatewayBackoff) {
+			return gatewayBackoff[attempt]
+		}
+		return gatewayBackoff[len(gatewayBackoff)-1]
+	}
+	return backoffScaled(attempt, scale)
+}
+
 func backoff(attempt int) time.Duration { return backoffScaled(attempt, 0) }
 
 // backoffScaled returns the delay before the given attempt, optionally shortened

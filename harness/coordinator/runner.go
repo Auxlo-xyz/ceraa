@@ -72,11 +72,15 @@ type Callbacks struct {
 	OnToolStart       func(string, string, map[string]any)
 	OnToolDone        func(string, string, operation.ResultEvent)
 	OnCompactionStart func()
-	OnCompactionDone  func(bool, error)
-	OnUsage           func(llm.UsageInfo)
-	OnCost            func(llm.CostInfo, string)
-	OnDone            func(string)
-	OnError           func(error)
+	// OnRetry fires before each provider retry wait, with the error, the attempt
+	// number and the delay. A gateway backoff runs to about a minute and a silent
+	// wait that long is indistinguishable from a hang.
+	OnRetry          func(error, int, time.Duration)
+	OnCompactionDone func(bool, error)
+	OnUsage          func(llm.UsageInfo)
+	OnCost           func(llm.CostInfo, string)
+	OnDone           func(string)
+	OnError          func(error)
 }
 
 type Result struct {
@@ -447,6 +451,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, fmt.Errorf("resolve provider credentials: %w", resolveErr))
 			}
 			modelConfig = resolved
+		}
+		// Applied after resolution, because the provider config is rebuilt per run
+		// and a hook set on the caller's copy would not survive that.
+		if r.cb.OnRetry != nil {
+			modelConfig.OnRetry = r.cb.OnRetry
 		}
 		client := llm.New(modelConfig)
 		toolDefs := r.toolDefs()

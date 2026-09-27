@@ -188,6 +188,15 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 					onTool(callID, fmt.Sprintf("%s %s %s", status, label, toolResultLabel(result)))
 				}
 			},
+			OnRetry: func(err error, attempt int, delay time.Duration) {
+				if onTool == nil {
+					return
+				}
+				// Shown rather than logged, because a gateway backoff can be a
+				// minute and the alternative is a silent wait.
+				onTool("retry", fmt.Sprintf("\u23f3 Upstream error, retrying (%d) in %s: %s",
+					attempt, delay.Round(time.Second), shortProviderError(err)))
+			},
 			OnCompactionStart: func() {
 				if onTool != nil {
 					onTool("compaction", "⚡ Compacting context...")
@@ -420,4 +429,26 @@ func needsPermission(toolName, args string) bool {
 		}
 	}
 	return false
+}
+
+// shortProviderError keeps a retry notice to one readable line.
+//
+// The full error carries the whole provider body, which in a status line inside a
+// chat message is unreadable and, on some providers, long enough to break layout.
+func shortProviderError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	if i := strings.IndexByte(msg, '{'); i > 0 {
+		msg = msg[:i]
+	}
+	msg = strings.TrimSpace(msg)
+	if len(msg) > 80 {
+		msg = msg[:80] + "..."
+	}
+	if msg == "" {
+		return "unknown"
+	}
+	return msg
 }
