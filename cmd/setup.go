@@ -5,6 +5,8 @@ import (
 	"ceraa/harness/llm"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/envs"
+	"ceraa/internal/paths"
+	"ceraa/internal/secret"
 	"context"
 	"fmt"
 	"io"
@@ -47,6 +49,13 @@ func (r doctorReport) failed() bool {
 }
 
 func runDoctor() error {
+	// Open the encrypted store first. Every credential check reads from it, and
+	// without this the checks silently saw an empty store: doctor reported a
+	// working Codex install as having no credential, because the file was never
+	// decrypted rather than because anything was missing.
+	if err := secret.Init(filepath.Join(paths.DataDir(), "secret.key"), filepath.Join(paths.DataDir(), "secrets.json")); err != nil {
+		return fmt.Errorf("secret store: %w", err)
+	}
 	report := collectDoctorReport(10 * time.Second)
 	report.print()
 	if report.failed() {
@@ -91,7 +100,7 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
-	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.ActiveProvider, provider.Model)}
+	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.EffectiveProviderID(), provider.Model)}
 }
 
 func checkWorkspace(cfg *config.Config) doctorCheck {
@@ -113,6 +122,15 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	// A subscription provider is checked by resolving its credential, not by
+	// probing a URL. The Codex endpoint answers POST /responses and nothing else,
+	// so a GET on the base URL returns 403 whatever the credential state, which
+	// made the probe meaningless while still reporting a result.
+	if isSubscriptionProvider(provider.Subscription) {
+		return checkSubscriptionCredential(ctx, provider, timeout)
+	}
+
 	apiKey := provider.APIKey
 	baseURL := provider.URL
 	switch provider.Subscription {
@@ -123,15 +141,6 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 		}
 		apiKey = credential.AccessToken
 		baseURL = credential.BaseURL
-	case llm.CodexSubscription:
-		// Resolved so the probe is authenticated. Without it the request went out
-		// with no credential, came back 403, and the check reported "reachable" for
-		// an endpoint that had in fact rejected the call.
-		token, err := codexauth.AccessToken(ctx)
-		if err != nil {
-			return doctorCheck{"provider", "FAIL", "Codex credential: " + err.Error()}
-		}
-		apiKey = token
 	}
 	if !validProviderURL(baseURL) {
 		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
@@ -156,6 +165,47 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	default:
 		return doctorCheck{"provider", "FAIL", fmt.Sprintf("provider returned HTTP %d", resp.StatusCode)}
 	}
+}
+
+// checkSubscriptionCredential resolves a subscription provider's stored token.
+//
+// Resolving rather than merely reading also proves the credential is usable: the
+// Codex manager refreshes an expired access token against the stored refresh token
+// while doing this, so a successful resolve is evidence the login still works.
+func checkSubscriptionCredential(ctx context.Context, provider config.LLMProvider, timeout time.Duration) doctorCheck {
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	switch provider.Subscription {
+	case llm.CodexSubscription:
+		token, err := codexauth.AccessToken(deadline)
+		if err != nil {
+			return doctorCheck{"provider", "FAIL", "Codex credential: " + err.Error()}
+		}
+		if strings.TrimSpace(token) == "" {
+			return doctorCheck{"provider", "FAIL", "Codex credential is empty; sign in again"}
+		}
+		return doctorCheck{"provider", "OK", "Codex credential resolves" + codexExpirySuffix()}
+	case llm.HermesSubscription:
+		if _, err := hermesauth.NewStore().Resolve(deadline, provider.HermesProvider); err != nil {
+			return doctorCheck{"provider", "FAIL", "Hermes credential: " + err.Error()}
+		}
+		return doctorCheck{"provider", "OK", "Hermes credential resolves for " + provider.HermesProvider}
+	}
+	return doctorCheck{"provider", "WARN", "unknown subscription provider: " + provider.Subscription}
+}
+
+// codexExpirySuffix names the stored expiry, so the check says how much runway is
+// left rather than only that a token exists.
+func codexExpirySuffix() string {
+	raw, err := secret.Get("codex_expires_at")
+	if err != nil || raw == "" {
+		return ""
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return ""
+	}
+	return ", valid until " + time.Unix(seconds, 0).UTC().Format(time.RFC3339)
 }
 
 func checkTelegram(cfg *config.Config, timeout time.Duration) doctorCheck {

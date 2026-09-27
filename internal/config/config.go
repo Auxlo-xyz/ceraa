@@ -185,6 +185,27 @@ func mergeProfile(base LLMProvider, profile ProviderProfile) LLMProvider {
 	return base
 }
 
+// EffectiveProviderID names the provider that will actually serve, whether it came
+// from config.json or from the runtime selection.
+//
+// ActiveProvider is empty when the active profile was chosen from the Telegram
+// menu, so reporting it directly printed "provider=" with nothing after it on a
+// perfectly working install.
+func (c *Config) EffectiveProviderID() string {
+	if id := strings.TrimSpace(c.ActiveProvider); id != "" {
+		return id
+	}
+	if state, _, ok := activeRuntimeSelection(); ok {
+		if name := strings.TrimSpace(state.Provider); name != "" {
+			return name
+		}
+	}
+	if strings.TrimSpace(c.LLM.URL) == "" && strings.TrimSpace(c.LLM.Model) == "" {
+		return "default"
+	}
+	return "config"
+}
+
 // ActiveLLM resolves the provider to serve with.
 //
 // Precedence is deliberate. A provider written in config.json wins, because it is

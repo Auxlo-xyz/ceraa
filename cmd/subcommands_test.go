@@ -1,12 +1,19 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/internal/config"
+	"ceraa/internal/secret"
 )
 
 // A mistyped subcommand used to be sent to the model as a prompt, so `ceraa
@@ -195,4 +202,126 @@ func TestPlainProviderStillNeedsAnAPIKey(t *testing.T) {
 	if got := checkConfig(cfg); got.Status != "WARN" {
 		t.Errorf("a provider with no key did not warn: %+v", got)
 	}
+}
+
+// doctor reads credentials from the encrypted store, so it has to open it before
+// collecting any checks.
+//
+// Run in a subprocess because the store is a package global: once any earlier test
+// has called secret.Init, it stays open for the rest of the process and runDoctor's
+// own call becomes unobservable. Asserting in-process therefore passed even with
+// the open removed, because the store was already open from a previous test.
+//
+// The helper points CERAA_HOME at a regular file so the key cannot be created.
+// runDoctor must then fail on the store itself, before producing a report.
+func TestDoctorFailsWhenTheCredentialStoreCannotBeOpened(t *testing.T) {
+	if os.Getenv("CERAA_DOCTER_STORE_HELPER") == "1" {
+		// The helper has to carry the verdict out through its exit status. An
+		// earlier version called runDoctor and returned, so the helper passed
+		// whether or not doctor had failed and the parent learned nothing.
+		if err := runDoctor(); err != nil {
+			fmt.Println("HELPER-ERR:", err)
+			return
+		}
+		fmt.Println("HELPER-OK: runDoctor returned no error")
+		os.Exit(3)
+	}
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestDoctorFailsWhenTheCredentialStoreCannotBeOpened")
+	cmd.Env = append(os.Environ(),
+		"CERAA_DOCTER_STORE_HELPER=1",
+		"CERAA_HOME="+blocker,
+		"TELEGRAM_BOT_TOKEN=999:TESTTOKENabcdefghijklmnopqrstuvwxyz",
+		"TELEGRAM_ALLOWED_USER_ID=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor did not fail on an unopenable credential store:\n%s", out)
+	}
+	if strings.Contains(string(out), "HELPER-OK") {
+		t.Fatalf("doctor succeeded with an unopenable credential store:\n%s", out)
+	}
+	// The wrap from opening the store, not a per-check failure discovered later.
+	// With the open removed, the codex check reported "Codex credential: secret
+	// store not initialized" instead, which is a different message.
+	if !strings.Contains(string(out), "secret store:") {
+		t.Errorf("doctor failed with %q, want it to fail opening the store", out)
+	}
+}
+
+// A provider check has to be reached and named.
+// A subscription provider has no URL that answers a GET, so it is checked by
+// resolving its credential. Asserted through the report so that restoring the GET
+// probe fails here.
+func TestSubscriptionProviderIsCheckedByCredentialNotByURL(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	seedCodexConfig(t)
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatal(err)
+	}
+	detail := providerCheckDetail(t)
+	if strings.Contains(detail, "HTTP") {
+		t.Errorf("the codex check still probes a URL: %q", detail)
+	}
+	if !strings.Contains(detail, "Codex credential") {
+		t.Errorf("provider check said %q, want a credential result", detail)
+	}
+}
+
+// The provider named in the report must be the one serving, which is the runtime
+// selection when the profile was chosen in Telegram. Reading the config field
+// alone printed "provider=" with nothing after it, so this asserts on what
+// checkConfig reports rather than on the helper it calls.
+func TestConfigReportNamesTheEffectiveProvider(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	state := config.RuntimeState{Provider: "codex", ProviderProfiles: map[string]config.ProviderProfile{
+		"codex": {URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.6-luna", Subscription: "codex"},
+	}}
+	raw, _ := json.Marshal(state)
+	if err := os.WriteFile(filepath.Join(dir, "bridge-state.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := checkConfig(config.DefaultConfig())
+	if !strings.Contains(got.Detail, "provider=codex") {
+		t.Errorf("config report said %q, want it to name codex", got.Detail)
+	}
+	if !strings.Contains(got.Detail, "gpt-5.6-luna") {
+		t.Errorf("config report said %q, want the model", got.Detail)
+	}
+}
+
+// seedCodexConfig writes a Codex provider into the temp data directory.
+//
+// collectDoctorReport loads the config itself, so a struct passed in would be
+// ignored and the check would run against an unconfigured install.
+func seedCodexConfig(t *testing.T) {
+	t.Helper()
+	cfg := config.DefaultConfig()
+	cfg.LLM.URL = "https://chatgpt.com/backend-api/codex"
+	cfg.LLM.Model = "gpt-5.6-luna"
+	cfg.LLM.APIKey = ""
+	cfg.LLM.Subscription = "codex"
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+}
+
+func providerCheckDetail(t *testing.T) string {
+	t.Helper()
+	report := collectDoctorReport(2 * time.Second)
+	for _, check := range report.Checks {
+		if check.Name == "provider" {
+			if check.Detail != "" {
+				return check.Detail
+			}
+		}
+	}
+	t.Fatalf("no provider check in the report: %+v", report.Checks)
+	return ""
 }
