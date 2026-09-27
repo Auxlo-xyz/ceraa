@@ -70,6 +70,9 @@ type Config struct {
 	HTTPClient *http.Client
 	// Now is optional, for tests.
 	Now func() time.Time
+	// Dialect describes the provider's deviations from the standard flow. The zero
+	// value is the standard flow.
+	Dialect Dialect
 }
 
 // Token is a successful device-flow result.
@@ -232,7 +235,13 @@ func (m *Manager) Start(ctx context.Context) (*Flow, error) {
 		interval = MinInterval
 	}
 	timeout := DefaultFlowTimeout
-	if device.ExpiresIn > 0 {
+	switch {
+	case device.ExpiresAtMS > 0:
+		timeout = time.Until(time.UnixMilli(device.ExpiresAtMS))
+		if timeout <= 0 {
+			timeout = DefaultFlowTimeout
+		}
+	case device.ExpiresIn > 0:
 		timeout = time.Duration(device.ExpiresIn) * time.Second
 	}
 
@@ -391,13 +400,22 @@ type deviceCodeResponse struct {
 	VerificationURI         string `json:"verification_uri"`
 	VerificationURIComplete string `json:"verification_uri_complete"`
 	ExpiresIn               int    `json:"expires_in"`
-	Interval                int    `json:"interval"`
+	// ExpiresAtMS is the absolute form of the expiry, for a provider that returns
+	// a timestamp rather than a duration.
+	ExpiresAtMS int64 `json:"expires_at_ms"`
+	Interval    int   `json:"interval"`
 }
 
 func (m *Manager) requestDeviceCode(ctx context.Context) (deviceCodeResponse, error) {
+	dialect := m.config.Dialect.withDefaults()
 	form := url.Values{
 		"client_id": {m.config.ClientID},
 		"scope":     {m.config.Scope},
+	}
+	// A provider that requires a PKCE challenge on the device-code request gets
+	// one. RFC 8628 has no such field, so without this the request is rejected.
+	for key, values := range dialect.ExtraCodeParams {
+		form[key] = values
 	}
 	payload, err := m.postForm(ctx, m.config.Endpoints.DeviceCode, form)
 	if err != nil {
@@ -407,27 +425,76 @@ func (m *Manager) requestDeviceCode(ctx context.Context) (deviceCodeResponse, er
 	if err != nil {
 		return deviceCodeResponse{}, err
 	}
-	var device deviceCodeResponse
+	var device map[string]any
 	if err := json.Unmarshal(encoded, &device); err != nil {
 		return deviceCodeResponse{}, err
 	}
-	if device.DeviceCode == "" || device.UserCode == "" {
+	// The code and the user-visible code are read by name, because a provider is
+	// free to call them something other than device_code and one does.
+	code, _ := device[dialect.CodeField].(string)
+	userCode, _ := device["user_code"].(string)
+	if userCode == "" {
+		userCode, _ = device["user_code"].(string)
+	}
+	if code == "" || userCode == "" {
 		return deviceCodeResponse{}, errors.New("device authorization response is incomplete")
 	}
-	return device, nil
+	result := deviceCodeResponse{DeviceCode: code, UserCode: userCode}
+	// The interval is a duration in seconds everywhere except one provider, which
+	// returns milliseconds. Reading 3000 as seconds is a fifty minute poll.
+	result.Interval = int(durationSeconds(device["interval"], dialect.IntervalIsMilliseconds))
+	// The expiry is a duration in seconds everywhere except one provider, which
+	// returns an absolute epoch timestamp in milliseconds. Read as seconds it is
+	// the year 58709, which never expires; read as milliseconds it is 1970.
+	if raw, ok := device[dialect.ExpiryField]; ok {
+		result.ExpiresIn = int(durationSeconds(raw, dialect.IntervalIsMilliseconds))
+		if dialect.ExpiryAbsoluteMilliseconds {
+			result.ExpiresAtMS = int64(numberOf(raw))
+		}
+	}
+	return result, nil
+}
+
+// durationSeconds converts a JSON number of seconds or milliseconds to seconds.
+func durationSeconds(raw any, milliseconds bool) float64 {
+	value := numberOf(raw)
+	if milliseconds {
+		return value / 1000
+	}
+	return value
+}
+
+func numberOf(raw any) float64 {
+	switch value := raw.(type) {
+	case float64:
+		return value
+	case string:
+		var parsed float64
+		if _, err := fmt.Sscan(value, &parsed); err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func (m *Manager) pollToken(ctx context.Context, deviceCode string) (Token, error) {
+	dialect := m.config.Dialect.withDefaults()
 	form := url.Values{
-		"grant_type":  {GrantTypeDeviceCode},
-		"client_id":   {m.config.ClientID},
-		"device_code": {deviceCode},
+		"grant_type":      {dialect.GrantType},
+		"client_id":       {m.config.ClientID},
+		dialect.CodeField: {deviceCode},
 	}
 	payload, err := m.postForm(ctx, m.config.Endpoints.Token, form)
 	if err != nil {
 		return Token{}, err
 	}
-	return tokenFromPayload(payload, m.now()), nil
+	// A 200 can still mean "not yet" or "denied". Reading it as a token response
+	// makes the login report success and then fail on the missing access token,
+	// which is the worst possible outcome: it looks like the provider is broken.
+	if wait := dialect.pending(payload); wait != nil {
+		return Token{}, wait
+	}
+	return m.tokenFromPayload(payload), nil
 }
 
 // Refresh exchanges a refresh token for a new access token.
@@ -435,6 +502,7 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string) (Token, erro
 	if strings.TrimSpace(refreshToken) == "" {
 		return Token{}, errors.New("no refresh token stored")
 	}
+	dialect := m.config.Dialect.withDefaults()
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {m.config.ClientID},
@@ -444,32 +512,31 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string) (Token, erro
 	if err != nil {
 		return Token{}, err
 	}
-	return tokenFromPayload(payload, m.now()), nil
+	if wait := dialect.pending(payload); wait != nil {
+		return Token{}, wait
+	}
+	return m.tokenFromPayload(payload), nil
 }
 
-func tokenFromPayload(payload map[string]any, now time.Time) Token {
+// tokenFromPayload reads a token response under the provider's own field names.
+func (m *Manager) tokenFromPayload(payload map[string]any) Token {
+	dialect := m.config.Dialect.withDefaults()
 	token := Token{Raw: payload}
 	token.AccessToken, _ = payload["access_token"].(string)
 	token.RefreshToken, _ = payload["refresh_token"].(string)
 	token.TokenType, _ = payload["token_type"].(string)
 	token.Scope, _ = payload["scope"].(string)
-	if seconds := expirySeconds(payload); seconds > 0 {
-		token.ExpiresAt = now.Add(time.Duration(seconds) * time.Second)
-	}
-	return token
-}
-
-func expirySeconds(payload map[string]any) float64 {
-	switch value := payload["expires_in"].(type) {
-	case float64:
-		return value
-	case string:
-		var seconds float64
-		if _, err := fmt.Sscan(value, &seconds); err == nil {
-			return seconds
+	now := m.now()
+	if raw, ok := payload[dialect.ExpiryField]; ok {
+		if dialect.ExpiryAbsoluteMilliseconds {
+			if ms := int64(numberOf(raw)); ms > 0 {
+				token.ExpiresAt = time.UnixMilli(ms)
+			}
+		} else if seconds := numberOf(raw); seconds > 0 {
+			token.ExpiresAt = now.Add(time.Duration(seconds) * time.Second)
 		}
 	}
-	return 0
+	return token
 }
 
 func (m *Manager) postForm(ctx context.Context, endpoint string, form url.Values) (map[string]any, error) {
