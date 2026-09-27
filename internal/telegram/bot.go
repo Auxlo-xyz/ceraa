@@ -186,15 +186,6 @@ func sendMessagePayload(token string, chatID int64, text string, parseMode strin
 	if err != nil {
 		return 0, err
 	}
-	// An inline keyboard displaces the custom reply keyboard, so remember that this
-	// chat now needs it back. Recorded before the send so a failed send still
-	// leaves the flag set, which is the safe direction.
-	inline := keyboardIsInline(kb)
-	if inline {
-		markInlineKeyboardSent(chatID)
-	} else if kb != nil {
-		replyKeyboardDown.Delete(chatID)
-	}
 	resp, err := doTelegramPost(api("sendMessage", token), body)
 	if err != nil {
 		return 0, err
@@ -222,12 +213,6 @@ func sendMessagePayload(token string, chatID int64, text string, parseMode strin
 	}
 	if result.Result.MessageID == 0 {
 		return 0, fmt.Errorf("sendMessage: missing message_id")
-	}
-	// The message landed, so if it carried an inline keyboard the reply keyboard
-	// is now displaced and has to be put back. Done after the send so the restore
-	// is not issued for a message that failed.
-	if inline {
-		restoreReplyKeyboard(token, chatID)
 	}
 	return result.Result.MessageID, nil
 }
@@ -722,7 +707,11 @@ func Run() error {
 			switch txt {
 			case "/start":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				handleStart(token, u.Message.Chat.ID, cfg)
+				if !providerConfigured(cfg) {
+					sendMenuMarkup(token, u.Message.Chat.ID, "Welcome to Ceraa. Choose a provider to finish onboarding.", menus.Onboarding())
+				} else {
+					sendHub(token, u.Message.Chat.ID)
+				}
 			case "/codex-login", "/codex_login":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexLogin(token, u.Message.Chat.ID)
@@ -827,19 +816,6 @@ func Run() error {
 			}
 		}
 	}
-}
-
-// handleStart is split out of the getUpdates loop so its behaviour is testable.
-// /start is where someone who has lost the keyboard goes to get it back, so the
-// end state matters: every branch here sends a menu, and a menu restores the
-// reply keyboard. No extra force is needed, and adding one would only cost two
-// API calls to be displaced again by the very next message.
-func handleStart(token string, chatID int64, cfg *config.Config) {
-	if !providerConfigured(cfg) {
-		sendMenuMarkup(token, chatID, "Welcome to Ceraa. Choose a provider to finish onboarding.", menus.Onboarding())
-		return
-	}
-	sendHub(token, chatID)
 }
 
 func providerConfigured(cfg *config.Config) bool {
