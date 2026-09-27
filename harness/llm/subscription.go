@@ -39,7 +39,7 @@ func IsSubscription(subscription string) bool {
 const HermesBaseURL = "https://inference-api.nousresearch.com/v1"
 
 // DefaultHermesModel is the model selected when Hermes is chosen without one.
-const DefaultHermesModel = "hermes-4-405b"
+const DefaultHermesModel = "upstage/solar-pro-4"
 
 // HermesModels lists the model IDs known to be served by the Nous Portal
 // inference endpoint.
@@ -48,10 +48,19 @@ const DefaultHermesModel = "hermes-4-405b"
 // does. The endpoint is closed and returns a hard 400 for a model it does not
 // serve, so picking a plausible-looking ID is a guaranteed failure rather than a
 // maybe.
+//
+// The IDs are namespaced by vendor, and the earlier `hermes-4-*` names were
+// wrong: they name no model the endpoint serves. The list is therefore the exact
+// set the endpoint was observed to serve, not a family of plausible ids, and
+// each entry has to be treated as load-bearing rather than as documentation.
 var HermesModels = []string{
-	"hermes-4-405b",
-	"hermes-4-70b",
-	"hermes-4-34b",
+	"upstage/solar-pro-4",
+	"inclusionai/ling-3.0-flash-sante",
+	"inclusionai/ling-3.0-flash-fin",
+	"stealth/space-bunny-alpha",
+	"poolside/laguna-xs-2.1",
+	"poolside/laguna-s-2.1",
+	"stepfun/step-3.7-flash",
 }
 
 // IsHermesModel reports whether a model ID is known to work on the endpoint.
