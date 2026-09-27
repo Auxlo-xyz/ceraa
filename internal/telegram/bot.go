@@ -119,11 +119,27 @@ func applyStateOverrides() {
 
 // doTelegramPost posts with rate-limit retry -> maps to soraacode bot/telegram-client-options.js withTelegramRateLimitRetry max 5
 func doTelegramPost(url string, body []byte) (*http.Response, error) {
+	return postTelegramWithTrace(url, body, methodFromURL(url))
+}
+
+// methodFromURL extracts the API method from a request URL, which is the only
+// identifying part: the bot token is in the path and must never be logged.
+func methodFromURL(url string) string {
+	if i := strings.LastIndex(url, "/"); i >= 0 && i+1 < len(url) {
+		return url[i+1:]
+	}
+	return "unknown"
+}
+
+func postTelegramWithTrace(url string, body []byte, method string) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		resp, err := telegramClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			lastErr = err
+			if telegramTrace.Load() {
+				traceAPICall(method, body, 0, "", false, "transport: "+err.Error())
+			}
 			if attempt < 4 {
 				time.Sleep(time.Duration(attempt+1) * time.Second)
 			}
@@ -136,6 +152,9 @@ func doTelegramPost(url string, body []byte) (*http.Response, error) {
 				return nil, fmt.Errorf("telegram HTTP %d: read response: %w", resp.StatusCode, readErr)
 			}
 			lastErr = fmt.Errorf("telegram HTTP %d: %s", resp.StatusCode, string(raw))
+			if telegramTrace.Load() {
+				traceAPICall(method, body, resp.StatusCode, string(raw), false, string(raw))
+			}
 			if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 				var out struct {
 					Parameters struct {
@@ -154,9 +173,32 @@ func doTelegramPost(url string, body []byte) (*http.Response, error) {
 			}
 			return nil, lastErr
 		}
+		traceSuccessfulCall(method, body, resp)
 		return resp, nil
 	}
 	return nil, lastErr
+}
+
+// traceSuccessfulCall records a call the API accepted. The verdict is the point:
+// ok:true means Telegram accepted the request, not that a client rendered it, so a
+// keyboard that was silently ignored looks exactly like a success from here.
+func traceSuccessfulCall(method string, body []byte, resp *http.Response) {
+	if !telegramTrace.Load() || resp == nil || resp.Body == nil {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	if err != nil {
+		return
+	}
+	// Put the body back so the caller can still read it.
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+	var verdict struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	_ = json.Unmarshal(raw, &verdict)
+	traceAPICall(method, body, resp.StatusCode, string(raw), verdict.OK, verdict.Description)
 }
 
 func discardTelegramResponse(resp *http.Response) {
@@ -725,6 +767,9 @@ func Run() error {
 			case "/codex-status", "/codex_status":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexStatus(token, u.Message.Chat.ID)
+			case "/apilog":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleAPILog(token, u.Message.Chat.ID, strings.TrimPrefix(txt, "/apilog"))
 			case "/keyboard", "/keyboard_reset":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleKeyboard(token, u.Message.Chat.ID)

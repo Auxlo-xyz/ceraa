@@ -26,6 +26,9 @@ type capturedCall struct {
 type capture struct {
 	mu    sync.Mutex
 	calls []capturedCall
+	// trace holds Telegram API trace lines, so tests can assert on what the bot
+	// would have written to the log without capturing the logger.
+	trace []string
 }
 
 var (

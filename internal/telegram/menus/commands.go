@@ -10,6 +10,7 @@ func Commands() []CommandSpec {
 		{"start", "Open Ceraa"},
 		{"help", "Show available commands"},
 		{"keyboard", "Force the reply keyboard to reappear"},
+		{"apilog", "Toggle Telegram API call tracing"},
 		{"hub", "Open the control hub"},
 		{"new", "Start a fresh session"},
 		{"sessions", "List stored sessions"},
