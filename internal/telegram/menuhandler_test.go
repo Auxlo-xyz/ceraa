@@ -85,9 +85,17 @@ func (c *capture) text() string {
 	defer c.mu.Unlock()
 	var parts []string
 	for _, call := range c.calls {
-		if text, ok := call.Body["text"].(string); ok {
-			parts = append(parts, text)
+		text, ok := call.Body["text"].(string)
+		if !ok {
+			continue
 		}
+		// The keyboard restore sends a deliberately content-free zero-width
+		// message and deletes it. It is not user-visible content, so it is not
+		// part of what a command delivered.
+		if strings.TrimSpace(text) == keyboardRestoreText {
+			continue
+		}
+		parts = append(parts, text)
 	}
 	return strings.Join(parts, "\n")
 }
