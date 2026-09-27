@@ -78,3 +78,26 @@ func nativeCredentialExpiry(credential Credential) time.Time {
 	}
 	return credential.ExpiresAt
 }
+
+// SignedIn reports whether a usable Hermes credential is already stored.
+//
+// Used by the Telegram menu to decide between "sign in" and "switch to it". A
+// stored-but-unusable credential must not read as signed in, so this resolves the
+// credential the same way an inference request would rather than checking for a
+// file that exists.
+func SignedIn() bool {
+	store := NewStore()
+	snapshot, err := store.Load()
+	if err != nil {
+		return false
+	}
+	if _, err := resolveFromSnapshot(snapshot, normalizeProvider(snapshot.ActiveProvider)); err == nil {
+		return true
+	}
+	// ActiveProvider can be empty in a store that still holds a usable Nous
+	// credential, which is what a device login through this package writes.
+	if _, err := resolveFromSnapshot(snapshot, "nous"); err == nil {
+		return true
+	}
+	return false
+}

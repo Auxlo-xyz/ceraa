@@ -428,6 +428,13 @@ func handleCallback(token string, q *callbackQuery) {
 		selectCodexProvider(token, chatID)
 		return
 	}
+	if data == "provider:hermes" {
+		// Same entry point as the onboarding button, so a configured user reaches
+		// Hermes from the Provider / Model menu. Without this the only route was
+		// typing /hermes-login, which is not available on a phone.
+		selectHermesProvider(token, chatID)
+		return
+	}
 	if data == "provider:custom" {
 		pendingProvider.Store(chatID, providerDraft{ID: "custom", Stage: "url"})
 		send(token, chatID, "Send the provider base URL for the custom profile.")

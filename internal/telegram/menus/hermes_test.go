@@ -1,0 +1,43 @@
+package menus
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// The gap this closes: Hermes existed only in onboarding, so a user who had
+// already signed in had no way to reach it from the Provider menu. Codex got a
+// dedicated row for exactly that reason, and the comment there said so.
+func TestProviderMenuOffersHermesLikeCodex(t *testing.T) {
+	raw, _ := json.Marshal(ProviderMenu())
+	for _, want := range []string{"provider:codex", "provider:hermes"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the provider menu has no %q button: %s", want, raw)
+		}
+	}
+}
+
+// The label has to name Hermes and say something about state, or it is a dead
+// end with no hint that the provider is even configured.
+func TestProviderMenuHermesLabelIsHumanReadable(t *testing.T) {
+	raw, _ := json.Marshal(ProviderMenu())
+	if !strings.Contains(string(raw), "Hermes") {
+		t.Errorf("the hermes button does not name Hermes: %s", raw)
+	}
+	if !strings.Contains(string(raw), "sign in") && !strings.Contains(string(raw), "switch to it") && !strings.Contains(string(raw), "\u2705") {
+		t.Errorf("the hermes button does not report its state: %s", raw)
+	}
+}
+
+// The hub answers "is Hermes signed in" without opening the provider menu, the
+// same way the Codex entry does.
+func TestHubNamesHermes(t *testing.T) {
+	raw, _ := json.Marshal(Hub())
+	if !strings.Contains(string(raw), "menu:hermes") {
+		t.Errorf("the hub has no hermes row: %s", raw)
+	}
+	if !strings.Contains(string(raw), "Hermes") {
+		t.Errorf("the hub has no human-readable Hermes label: %s", raw)
+	}
+}

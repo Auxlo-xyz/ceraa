@@ -541,6 +541,7 @@ func Run() error {
 	}
 	// Report completed device logins to the chat that started them.
 	registerCodexCompletion(token)
+	registerHermesCompletion(token)
 
 	offset := getInitialOffset(token)
 
@@ -1410,6 +1411,9 @@ func handleHermesLogin(token string, chatID int64, text string) {
 		return
 	}
 	hermesLoginModels.Store(flow.ID, model)
+	// Record the owner so the completion path can post the outcome to this chat
+	// and activate the provider. A typed command used to be invisible to it.
+	trackHermesFlow(flow.ID, chatID, model != "")
 	keyboard, _ := flow.InlineKeyboardJSON()
 	var markup map[string]any
 	if err := json.Unmarshal(keyboard, &markup); err != nil {
@@ -1437,17 +1441,14 @@ func handleHermesStatus(token string, chatID int64) {
 }
 
 func activateHermesProvider(token string, chatID int64, flowID string) {
-	modelValue, _ := hermesLoginModels.Load(flowID)
-	model, _ := modelValue.(string)
-	if model == "" {
-		_, model = defaultState.values()
-	}
-	if model == "" {
-		send(token, chatID, "✅ Hermes login saved. Send /model <model-id> to activate the provider.")
-		return
-	}
+	model, _ := hermesModelForAccount(flowID)
 	// ContextLimit left unset so the catalog supplies the model's real window.
-	profile := config.ProviderProfile{Model: model, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: llm.HermesSubscription, HermesProvider: "nous"}
+	//
+	// The URL here is for display, not for requests: agent.go resolves the Hermes
+	// credential per run and uses credential.BaseURL, which the portal may point
+	// somewhere other than the default. Recording the default keeps /status and the
+	// provider menu honest without pretending to be the effective endpoint.
+	profile := config.ProviderProfile{URL: llm.HermesBaseURL, Model: model, MaxOutputTokens: 8192, PromptCacheMode: "auto", Subscription: llm.HermesSubscription, HermesProvider: "nous"}
 	if err := defaultState.setProviderProfile("hermes", profile); err != nil {
 		send(token, chatID, "Hermes profile save failed: "+err.Error())
 		return
@@ -1677,4 +1678,71 @@ func codexModelForAccount() string {
 		return model
 	}
 	return ""
+}
+
+// hermesModelForAccount picks the model to activate.
+//
+// An explicit choice from the login command wins. Otherwise the currently active
+// model is reused only if it is one the Nous Portal actually serves, because
+// carrying over, say, an apmix model id would produce a profile the endpoint
+// rejects outright. Same rule as codexModelForAccount.
+func hermesModelForAccount(flowID string) (string, string) {
+	if flowID != "" {
+		if value, ok := hermesLoginModels.Load(flowID); ok {
+			if model, _ := value.(string); model != "" {
+				return flowID, model
+			}
+		}
+	}
+	_, current := defaultState.values()
+	if llm.IsHermesModel(current) {
+		return flowID, current
+	}
+	return flowID, llm.DefaultHermesModel
+}
+
+// selectHermesProvider is the Hermes entry point, mirroring selectCodexProvider.
+//
+// A stored credential switches provider immediately; otherwise a device login
+// starts. Both paths go through trackHermesFlow, so approving the code on the
+// Nous portal page is enough: the completion callback activates the provider
+// without the user coming back to press anything.
+func selectHermesProvider(token string, chatID int64) {
+	selectHermesProviderImpl(token, chatID)
+}
+
+// selectHermesProviderImpl is the real entry point.
+//
+// Indirected so a test can assert the provider menu actually routes
+// provider:hermes here, without starting a device login against the live Nous
+// portal. The button existing and being handled are separate facts, and only the
+// first was covered.
+var selectHermesProviderImpl = func(token string, chatID int64) {
+	if hermesauth.SignedIn() {
+		// No flow id, because there is no in-flight login to attach the activation
+		// to. The profile is written directly instead.
+		activateHermesProvider(token, chatID, "")
+		return
+	}
+	flow, err := hermesAuthMgr.Start(context.Background(), "nous")
+	if err != nil {
+		send(token, chatID, "Failed to start Hermes login: "+err.Error())
+		return
+	}
+	keyboard, err := flow.InlineKeyboardJSON()
+	if err != nil {
+		send(token, chatID, "Failed to encode Hermes login menu: "+err.Error())
+		return
+	}
+	var markup map[string]any
+	if json.Unmarshal(keyboard, &markup) != nil {
+		send(token, chatID, "Failed to encode Hermes login menu.")
+		return
+	}
+	// activate: true, because reaching Hermes from the provider menu is a request
+	// to use it. A typed /hermes-status is a request to look, not to switch.
+	trackHermesFlow(flow.ID, chatID, true)
+	sendHTML(token, chatID,
+		"Sign in to Nous Portal to use Hermes. Open the link, approve the code, and Ceraa will switch to Hermes on its own — no need to press Check.\n\n"+flow.ResultMessage(),
+		markup)
 }

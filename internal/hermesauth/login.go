@@ -32,10 +32,31 @@ type LoginFlow struct {
 	cancel          context.CancelFunc
 }
 
+// TerminalState is a login outcome delivered to a SetOnComplete subscriber.
+//
+// A device login has to finish on its own: the user approves the code in a
+// browser, and a callback is the only way the bot learns about it. Polling
+// ListFlows is not a substitute, because a finished flow either has already been
+// reaped or reports only a bare status with nothing tying it to a chat.
+type TerminalState struct {
+	FlowID   string
+	Provider string
+	Status   string
+	Message  string
+}
+
+const (
+	StatusPending   = "pending"
+	StatusSucceeded = "succeeded"
+	StatusFailed    = "failed"
+	StatusCanceled  = "canceled"
+)
+
 type LoginManager struct {
-	mu    sync.Mutex
-	store *Store
-	flows map[string]*LoginFlow
+	mu         sync.Mutex
+	store      *Store
+	flows      map[string]*LoginFlow
+	onComplete func(TerminalState)
 }
 
 func NewLoginManager(store *Store) *LoginManager {
@@ -103,6 +124,33 @@ func (m *LoginManager) Cancel(flowID string) error {
 	return nil
 }
 
+// SetOnComplete registers a callback invoked once when a flow reaches a terminal
+// state: succeeded, failed or cancelled.
+//
+// A caller that needs to know how a login ended must use this. Check can only
+// observe a flow that is still live, so it can never report the outcome of one
+// that has already finished.
+func (m *LoginManager) SetOnComplete(fn func(TerminalState)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onComplete = fn
+}
+
+// finish records a terminal state and notifies the subscriber.
+//
+// Invoked outside the manager lock so a callback that calls back into the
+// manager cannot deadlock, and synchronously so the outcome is delivered before
+// the polling goroutine returns.
+func (m *LoginManager) finish(flow *LoginFlow, status string, message string) {
+	m.mu.Lock()
+	onComplete := m.onComplete
+	m.mu.Unlock()
+	if onComplete == nil {
+		return
+	}
+	onComplete(TerminalState{FlowID: flow.ID, Provider: flow.Provider, Status: status, Message: message})
+}
+
 func (m *LoginManager) ListFlows() []*LoginFlow {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,6 +165,7 @@ func (m *LoginManager) poll(ctx context.Context, flow *LoginFlow) {
 	for {
 		if time.Now().After(flow.ExpiresAt) {
 			flow.setFailed("Authorization expired")
+			m.finish(flow, StatusFailed, "Authorization expired")
 			return
 		}
 		payload, pollErr := m.store.pollDeviceToken(ctx, flow.portalBaseURL, flow.clientID, flow.deviceCode)
@@ -139,10 +188,12 @@ func (m *LoginManager) poll(ctx context.Context, flow *LoginFlow) {
 			}
 			if credential.AccessToken == "" {
 				flow.setFailed("Token response did not include access_token")
+				m.finish(flow, StatusFailed, "Token response did not include access_token")
 				return
 			}
 			if credential.RefreshToken == "" {
 				flow.setFailed("Token response did not include refresh_token")
+				m.finish(flow, StatusFailed, "Token response did not include refresh_token")
 				return
 			}
 			if credential.ExpiresAt.IsZero() {
@@ -152,18 +203,22 @@ func (m *LoginManager) poll(ctx context.Context, flow *LoginFlow) {
 				credential.ClientID = flow.clientID
 			}
 			if err := m.store.saveNative(credential); err != nil {
-				flow.setFailed("Could not save login: " + err.Error())
+				failMsg := "Could not save login: " + err.Error()
+				flow.setFailed(failMsg)
+				m.finish(flow, StatusFailed, failMsg)
 				return
 			}
 			flow.mu.Lock()
-			flow.Status = "succeeded"
+			flow.Status = StatusSucceeded
 			flow.Message = "Login successful"
 			flow.mu.Unlock()
+			m.finish(flow, StatusSucceeded, "Login successful")
 			return
 		}
 		var pending *devicePollError
 		if !errors.As(pollErr, &pending) {
 			flow.setFailed(pollErr.Error())
+			m.finish(flow, StatusFailed, pollErr.Error())
 			return
 		}
 		switch pending.Code {
@@ -174,11 +229,13 @@ func (m *LoginManager) poll(ctx context.Context, flow *LoginFlow) {
 			flow.mu.Unlock()
 		default:
 			flow.setFailed(pending.Message)
+			m.finish(flow, StatusFailed, pending.Message)
 			return
 		}
 		select {
 		case <-ctx.Done():
 			flow.setFailed("Login cancelled")
+			m.finish(flow, StatusCanceled, "Login cancelled")
 			return
 		case <-time.After(flow.interval):
 		}

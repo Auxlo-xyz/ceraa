@@ -1,5 +1,7 @@
 package llm
 
+import "strings"
+
 // Subscription provider identifiers.
 //
 // A subscription provider authenticates with a credential held in the encrypted
@@ -26,4 +28,39 @@ func IsSubscription(subscription string) bool {
 	default:
 		return false
 	}
+}
+
+// HermesBaseURL is the Nous Portal inference endpoint.
+//
+// The Portal is not a public API, and Hermes is the only thing that knows this
+// address: the value was taken from the Hermes source, where it is the
+// DEFAULT_NOUS_INFERENCE_URL registry constant. Guessing an equivalent public
+// URL would send requests to an endpoint that does not serve this credential.
+const HermesBaseURL = "https://inference-api.nousresearch.com/v1"
+
+// DefaultHermesModel is the model selected when Hermes is chosen without one.
+const DefaultHermesModel = "hermes-4-405b"
+
+// HermesModels lists the model IDs known to be served by the Nous Portal
+// inference endpoint.
+//
+// Kept as a list so IsHermesModel can refuse anything else, the same way Codex
+// does. The endpoint is closed and returns a hard 400 for a model it does not
+// serve, so picking a plausible-looking ID is a guaranteed failure rather than a
+// maybe.
+var HermesModels = []string{
+	"hermes-4-405b",
+	"hermes-4-70b",
+	"hermes-4-34b",
+}
+
+// IsHermesModel reports whether a model ID is known to work on the endpoint.
+func IsHermesModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range HermesModels {
+		if trimmed == known {
+			return true
+		}
+	}
+	return false
 }

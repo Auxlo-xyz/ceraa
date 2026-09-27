@@ -10,6 +10,7 @@ import (
 	"ceraa/harness/tool"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
+	"ceraa/internal/hermesauth"
 	"ceraa/internal/paths"
 	"context"
 	"encoding/json"
@@ -27,7 +28,7 @@ var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
-	"memory", "skill", "eval", "schedule", "codex",
+	"memory", "skill", "eval", "schedule", "codex", "hermes",
 }
 
 type runtimeState struct {
@@ -272,6 +273,18 @@ func ProviderMenu() map[string]any {
 		codexLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": codexLabel, "callback_data": "provider:codex"}})
+	// Hermes is a row for the same reason as Codex. It existed only in onboarding,
+	// so a user who had already signed in had no way to reach it from here.
+	hermesLabel := "🔐 Hermes (Nous Portal)"
+	switch {
+	case active == llm.HermesSubscription:
+		hermesLabel = "✅ " + hermesLabel
+	case hermesauth.SignedIn():
+		hermesLabel += " · switch to it"
+	default:
+		hermesLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": hermesLabel, "callback_data": "provider:hermes"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -844,7 +857,7 @@ func Hub() map[string]any {
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
 		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
-		"codex": codexHubLabel(),
+		"codex": codexHubLabel(), "hermes": hermesHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	for i, name := range All {
@@ -860,6 +873,19 @@ func Hub() map[string]any {
 
 // codexHubLabel names the Codex entry by state, so the hub answers "is Codex
 // ready" without being opened.
+// hermesHubLabel names the Hermes entry by state, so the hub answers "is Hermes
+// signed in" without the user having to open the provider menu.
+func hermesHubLabel() string {
+	switch {
+	case hermesauth.SignedIn() && runtimeValues().Provider == llm.HermesSubscription:
+		return "🔐 Hermes · active"
+	case hermesauth.SignedIn():
+		return "🔐 Hermes · signed in"
+	default:
+		return "🔐 Hermes · sign in"
+	}
+}
+
 func codexHubLabel() string {
 	switch {
 	case codexauth.Authenticated() && runtimeValues().Provider == llm.CodexSubscription:
