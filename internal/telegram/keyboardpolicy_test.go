@@ -43,13 +43,18 @@ func calledMethod(methods []string, want string) bool {
 	return false
 }
 
-// sends returns the outbound sendMessage calls, in order.
+// sends returns the outbound message-creating calls, in order.
+//
+// Both sendMessage and sendRichMessage create a user-visible message, and the rich
+// endpoint is the one production actually uses. Filtering to sendMessage alone hid
+// the creation of the assistant message, which is how a green suite came to
+// validate a fallback branch that never runs.
 func (c *capture) sends() []capturedCall {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var out []capturedCall
 	for _, call := range c.calls {
-		if strings.HasSuffix(call.Method, "sendMessage") {
+		if strings.HasSuffix(call.Method, "sendMessage") || strings.HasSuffix(call.Method, "sendRichMessage") {
 			out = append(out, call)
 		}
 	}
@@ -187,8 +192,10 @@ func TestTheRunRendererAttachesTheKeyboardAtCreation(t *testing.T) {
 	if len(sends) == 0 {
 		t.Fatalf("the renderer sent nothing: %v", cap.methods())
 	}
+	// The rich endpoint is what production takes, so the keyboard has to be on
+	// whichever call actually created the message.
 	if !carriesReplyKeyboard(sends[0].Body) {
-		t.Error("the assistant message was created without the reply keyboard")
+		t.Errorf("the assistant message was created without the reply keyboard: %s", cap.methods()[0])
 	}
 }
 
@@ -332,5 +339,77 @@ func TestTheHTMLEditCarriesTheReplyKeyboard(t *testing.T) {
 	markup, _ := edit["reply_markup"].(map[string]any)
 	if _, isReply := markup["keyboard"]; !isReply {
 		t.Error("the HTML edit strips the reply keyboard")
+	}
+}
+
+// The rich endpoint is the branch production takes, and it was the one carrying no
+// reply keyboard. Every earlier test passed because the stub rejected
+// sendRichMessage, so this path was never exercised; the trace is what showed the
+// endpoint works and the branch is live.
+//
+// Pinned directly so removing the markup from the rich send fails here rather than
+// in production.
+func TestTheRichSendCarriesTheReplyKeyboard(t *testing.T) {
+	cap := beginCapture(t)
+	if _, err := sendRichMessage("test-token", 1, "the answer", keyboard.Main()); err != nil {
+		t.Fatalf("sendRichMessage failed: %v", err)
+	}
+
+	var rich map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "sendRichMessage") {
+			rich = call.Body
+		}
+	}
+	if rich == nil {
+		t.Fatalf("no sendRichMessage was sent: %v", cap.methods())
+	}
+	markup, _ := rich["reply_markup"].(map[string]any)
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the rich send carries no reply keyboard, and this is the path a real prompt takes")
+	}
+}
+
+// The rich edit replaces the message's markup like any other edit, so it needs the
+// keyboard too. The API currently rejects rich edits outright, but the fallback
+// path calls this whenever it is accepted, so it cannot be left without markup.
+func TestTheRichEditCarriesTheReplyKeyboard(t *testing.T) {
+	cap := beginCapture(t)
+	_ = editTelegramRichMessage("test-token", 1, 42, "the answer")
+
+	var edit map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "editMessageText") {
+			edit = call.Body
+		}
+	}
+	if edit == nil {
+		t.Fatalf("no editMessageText was sent: %v", cap.methods())
+	}
+	markup, _ := edit["reply_markup"].(map[string]any)
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the rich edit strips the reply keyboard")
+	}
+}
+
+// A renderer that reaches production must create its assistant message through the
+// rich endpoint with the keyboard attached. This is the exact shape of the bug the
+// trace caught: the keyboard was on the fallback branch only.
+func TestProductionCreationPathCarriesTheKeyboard(t *testing.T) {
+	cap := beginCapture(t)
+	newRunRenderer("test-token", 1)
+
+	var rich map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "sendRichMessage") {
+			rich = call.Body
+		}
+	}
+	if rich == nil {
+		t.Fatalf("production took the fallback branch, so this test is not covering the live path: %v", cap.methods())
+	}
+	markup, _ := rich["reply_markup"].(map[string]any)
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the live creation path attaches no reply keyboard")
 	}
 }

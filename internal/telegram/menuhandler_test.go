@@ -57,14 +57,18 @@ func installStub() {
 			holder.calls = append(holder.calls, capturedCall{Method: r.URL.Path, Body: body})
 			holder.mu.Unlock()
 		}
-		// sendRichMessage is a private endpoint that rejects every payload we have
-		// been able to construct, and the real API answers 400. The stub used to
-		// claim success, which sent every test down the rich path and hid the fact
-		// that the fallback replies carried no reply keyboard at all.
-		if strings.HasSuffix(r.URL.Path, "sendRichMessage") {
+		// sendRichMessage succeeds in production: the API trace shows it returning
+		// ok:true with a real message_id. It was stubbed as a 400 because an early
+		// probe rejected an empty payload, and that sent every test down the plain
+		// fallback branch, which production never takes. The whole keyboard suite
+		// was green while validating dead code.
+		//
+		// editMessageText carrying rich_message is a different matter: the trace
+		// shows the real API rejecting that with "rich edit is unavailable", so the
+		// rich edit stays a rejection here.
+		if strings.HasSuffix(r.URL.Path, "editMessageText") && strings.Contains(string(raw), "rich_message") {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"rich message must be non-empty"}`))
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"rich edit is unavailable"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -51,7 +51,11 @@ func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRendere
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
 	}
-	if messageID, err := sendRichMessage(token, chatID, "▌"); err == nil {
+	// The rich branch is the one production takes: the endpoint works, so the
+	// plain fallback below is dead in practice. Attaching the keyboard only to the
+	// fallback is why a prompt finished with no keyboard while /status, which goes
+	// down the plain path, looked correct. Both branches now carry it.
+	if messageID, err := sendRichMessage(token, chatID, "▌", keyboard.Main()); err == nil {
 		renderer.messageID = messageID
 	} else {
 		// Carry the reply keyboard from creation. Every later step of the run only
@@ -185,7 +189,7 @@ func (r *runRenderer) reasoning(value string) {
 		if thoughtMessageID == 0 {
 			return
 		}
-		assistantMessageID, assistantErr := sendRichMessage(r.token, r.chatID, assistantPreview)
+		assistantMessageID, assistantErr := sendRichMessage(r.token, r.chatID, assistantPreview, keyboard.Main())
 		if assistantErr != nil {
 			assistantMessageID = sendWithKeyboard(r.token, r.chatID, assistantPreview, nil)
 		}
@@ -314,7 +318,7 @@ func (r *runRenderer) finish(answer string) {
 				}
 				chunk := string(chunkRunes[:size])
 				rest = string(chunkRunes[size:])
-				if _, err := sendRichMessage(r.token, r.chatID, chunk); err != nil {
+				if _, err := sendRichMessage(r.token, r.chatID, chunk, keyboard.Main()); err != nil {
 					sendPlainMessage(r.token, r.chatID, chunk)
 				}
 			}
@@ -333,7 +337,7 @@ func (r *runRenderer) finish(answer string) {
 				}
 				chunk := string(chunkRunes[:size])
 				rest = string(chunkRunes[size:])
-				if _, err := sendRichMessage(r.token, r.chatID, chunk); err != nil {
+				if _, err := sendRichMessage(r.token, r.chatID, chunk, keyboard.Main()); err != nil {
 					sendPlainMessage(r.token, r.chatID, chunk)
 				}
 			}
@@ -405,7 +409,7 @@ func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
 			return true
 		}
 	}
-	if _, err := sendRichMessage(r.token, r.chatID, markdown); err != nil {
+	if _, err := sendRichMessage(r.token, r.chatID, markdown, keyboard.Main()); err != nil {
 		return false
 	}
 	if messageID != 0 {
@@ -443,10 +447,14 @@ func editTelegramMessage(token string, chatID int64, messageID int, text string)
 	})
 }
 
+// editTelegramRichMessage carries the reply keyboard, for the same reason the
+// plain edit does: an edit replaces a message's reply_markup rather than
+// inheriting it, so an edit without it strips the keyboard.
 func editTelegramRichMessage(token string, chatID int64, messageID int, markdown string) error {
 	return postTelegramEditMessage(token, map[string]any{
-		"chat_id":    chatID,
-		"message_id": messageID,
+		"chat_id":      chatID,
+		"message_id":   messageID,
+		"reply_markup": keyboard.Main(),
 		"rich_message": map[string]any{
 			"markdown": markdown,
 		},
@@ -502,12 +510,21 @@ func postTelegramEditMessage(token string, payload map[string]any) error {
 	return nil
 }
 
-func sendRichMessage(token string, chatID int64, markdown string) (int, error) {
+// sendRichMessage creates the assistant message through the rich endpoint.
+//
+// The markup is a parameter rather than implied, because this is the message the
+// whole run hangs off and the reply keyboard has to be attached here. The rich
+// endpoint is private and its payload shape is not documented, so whether it
+// honours reply_markup is unverified and the API trace is the only way to find out.
+func sendRichMessage(token string, chatID int64, markdown string, markup map[string]any) (int, error) {
 	payload := map[string]any{
 		"chat_id": chatID,
 		"rich_message": map[string]any{
 			"markdown": markdown,
 		},
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
 	}
 	body, _ := json.Marshal(payload)
 	resp, err := doTelegramPost(api("sendRichMessage", token), body)
