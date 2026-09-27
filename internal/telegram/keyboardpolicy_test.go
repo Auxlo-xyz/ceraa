@@ -281,3 +281,56 @@ func TestKeyboardResetEndsWithAVisibleCarryingMessage(t *testing.T) {
 		t.Errorf("the reset told the user nothing: %q", text)
 	}
 }
+
+// An edit replaces a message's reply_markup rather than inheriting it. The
+// keyboard was attached when the assistant message was created, and the final
+// answer is an edit of that same message, so an edit without reply_markup
+// stripped the keyboard a moment after it was set.
+//
+// This is why /keyboard appeared to work while prompts did not: the keyboard
+// command finishes with a fresh send, and nothing strips a fresh send, whereas
+// the answer is written by an edit. Asserted on the edit itself, since that is
+// the call that decides whether the answer keeps the keyboard.
+func TestTheFinalAnswerEditCarriesTheReplyKeyboard(t *testing.T) {
+	cap := beginCapture(t)
+	if err := editTelegramMessageWithKeyboard("test-token", 1, 42, "the final answer"); err != nil {
+		t.Fatalf("edit failed: %v", err)
+	}
+
+	var edit map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "editMessageText") {
+			edit = call.Body
+		}
+	}
+	if edit == nil {
+		t.Fatalf("no editMessageText was sent: %v", cap.methods())
+	}
+	markup, _ := edit["reply_markup"].(map[string]any)
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the edit publishing the final answer carries no reply keyboard, so it strips the one set at creation")
+	}
+}
+
+// The HTML edit has the same defect and is the path used when the answer needs
+// formatting.
+func TestTheHTMLEditCarriesTheReplyKeyboard(t *testing.T) {
+	cap := beginCapture(t)
+	if err := editTelegramHTMLMessage("test-token", 1, 42, "<b>answer</b>"); err != nil {
+		t.Fatalf("edit failed: %v", err)
+	}
+
+	var edit map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "editMessageText") {
+			edit = call.Body
+		}
+	}
+	if edit == nil {
+		t.Fatalf("no editMessageText was sent: %v", cap.methods())
+	}
+	markup, _ := edit["reply_markup"].(map[string]any)
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the HTML edit strips the reply keyboard")
+	}
+}
