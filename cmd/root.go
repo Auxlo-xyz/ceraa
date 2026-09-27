@@ -141,8 +141,14 @@ var configCmd = &cobra.Command{
 
 var configInitCmd = &cobra.Command{
 	Use:   "config-init",
-	Short: "Write a sample config file to ~/.config/ceraa/config.json",
+	Short: "Write a sample config file, refusing to overwrite an existing one",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// No workspace_root key. The sample used to carry the literal string
+		// "/absolute/path/to/ceraa/workspace", which is a placeholder for a human to
+		// replace, not a path: it was written as a real setting and then read back
+		// as one, so the install pointed its workspace at a directory that does not
+		// exist. Omitting the key leaves the resolved default in place, which is
+		// what a fresh install wants anyway.
 		sample := `{
   "llm": {
     "url": "",
@@ -153,8 +159,7 @@ var configInitCmd = &cobra.Command{
     "bot_token": "",
     "allowed_user_id": 0
   },
-  "session_file": "sessions",
-  "workspace_root": "/absolute/path/to/ceraa/workspace"
+  "session_file": "sessions"
 }
 `
 		dir := paths.DataDir()
@@ -162,6 +167,14 @@ var configInitCmd = &cobra.Command{
 			return err
 		}
 		path := filepath.Join(dir, "config.json")
+		// Refuse to clobber. A sample file is only useful before there is a real
+		// one, and overwriting a live config destroys the provider, the workspace
+		// and the session settings with no confirmation and no backup.
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("refusing to overwrite the existing config at %s; edit it, or move it aside first", path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("check for an existing config: %w", err)
+		}
 		if err := os.WriteFile(path, []byte(sample), 0o600); err != nil {
 			return err
 		}
