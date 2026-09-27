@@ -428,6 +428,21 @@ func handleCallback(token string, q *callbackQuery) {
 		selectCodexProvider(token, chatID)
 		return
 	}
+	if data == "provider:cline" {
+		// Same entry point as the onboarding button, so a configured user reaches
+		// Cline from the Provider / Model menu.
+		selectClineProvider(token, chatID)
+		return
+	}
+	if strings.HasPrefix(data, "cline:cancel:") {
+		flowID := strings.TrimPrefix(data, "cline:cancel:")
+		if err := clineLogin.Manager().Cancel(flowID); err != nil {
+			send(token, chatID, "Cline login could not be cancelled: "+err.Error())
+			return
+		}
+		editHTML(token, chatID, q.Message.MessageID, "✗ Cline login cancelled.", menus.Inline("provider", 0))
+		return
+	}
 	if data == "provider:minimax" {
 		// Same entry point as the onboarding button, so a configured user reaches
 		// MiniMax from the Provider / Model menu.

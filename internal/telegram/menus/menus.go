@@ -8,6 +8,7 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
@@ -30,7 +31,7 @@ var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
-	"memory", "skill", "eval", "schedule", "codex", "hermes", "xai", "minimax",
+	"memory", "skill", "eval", "schedule", "codex", "hermes", "xai", "minimax", "cline",
 }
 
 type runtimeState struct {
@@ -311,6 +312,17 @@ func ProviderMenu() map[string]any {
 		minimaxLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": minimaxLabel, "callback_data": "provider:minimax"}})
+	// Cline is a row for the same reason as the other subscription providers.
+	clineLabel := "🦞 Cline Account"
+	switch {
+	case active == llm.ClineSubscription:
+		clineLabel = "✅ " + clineLabel
+	case clineauth.SignedIn():
+		clineLabel += " · switch to it"
+	default:
+		clineLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": clineLabel, "callback_data": "provider:cline"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -883,7 +895,7 @@ func Hub() map[string]any {
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
 		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
-		"codex": codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(),
+		"codex": codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	for i, name := range All {
@@ -933,6 +945,18 @@ func minimaxHubLabel() string {
 		return "🎬 MiniMax · signed in"
 	default:
 		return "🎬 MiniMax · sign in"
+	}
+}
+
+// clineHubLabel names the Cline entry by state.
+func clineHubLabel() string {
+	switch {
+	case clineauth.SignedIn() && runtimeValues().Provider == llm.ClineSubscription:
+		return "🦞 Cline · active"
+	case clineauth.SignedIn():
+		return "🦞 Cline · signed in"
+	default:
+		return "🦞 Cline · sign in"
 	}
 }
 

@@ -84,3 +84,23 @@ func TestHubNamesMinimax(t *testing.T) {
 		t.Errorf("the hub has no human-readable MiniMax label: %s", raw)
 	}
 }
+
+func TestProviderMenuOffersClineLikeCodex(t *testing.T) {
+	raw, _ := json.Marshal(ProviderMenu())
+	if !strings.Contains(string(raw), "provider:cline") {
+		t.Errorf("the provider menu has no cline button: %s", raw)
+	}
+	if !strings.Contains(string(raw), "Cline") {
+		t.Errorf("the cline button does not name Cline: %s", raw)
+	}
+}
+
+func TestHubNamesCline(t *testing.T) {
+	raw, _ := json.Marshal(Hub())
+	if !strings.Contains(string(raw), "menu:cline") {
+		t.Errorf("the hub has no cline row: %s", raw)
+	}
+	if !strings.Contains(string(raw), "Cline") {
+		t.Errorf("the hub has no human-readable Cline label: %s", raw)
+	}
+}

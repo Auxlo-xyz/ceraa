@@ -16,6 +16,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
@@ -117,6 +118,16 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			// adapter may have changed.
 			modelConfig.GeminiNative = llm.UsesGeminiNative(modelConfig.Model, modelConfig.BaseURL)
 			modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(modelConfig.Model, modelConfig.BaseURL)
+			return modelConfig, nil
+		case "cline":
+			credential, err := clineauth.Resolve(ctx, nil)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			// A Cline Account is a hosted gateway with an OpenAI-compatible
+			// chat/completions, so it needs no transport of its own.
+			modelConfig.BaseURL = firstNonEmptyStr(provider.URL, llm.ClineGatewayBase)
+			modelConfig.APIKey = credential.AccessToken
 			return modelConfig, nil
 		case "minimax":
 			credential, err := minimaxauth.Resolve(ctx, minimaxauth.NewStore(regionForProvider(provider)))

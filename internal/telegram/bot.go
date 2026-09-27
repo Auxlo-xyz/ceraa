@@ -8,6 +8,7 @@ import (
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/tool"
+	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/envs"
@@ -547,6 +548,7 @@ func Run() error {
 	registerHermesCompletion(token)
 	registerXaiCompletion(token)
 	registerMinimaxCompletion(token)
+	registerClineCompletion(token)
 
 	offset := getInitialOffset(token)
 
@@ -1893,4 +1895,73 @@ func minimaxModelForAccount(flowID string) (string, string) {
 		return flowID, current
 	}
 	return flowID, llm.DefaultMiniMaxModel
+}
+
+// selectClineProvider is the Cline Account entry point, mirroring the others.
+//
+// A stored credential switches provider immediately; otherwise a device login
+// starts. Reaching Cline from the provider menu asks to use it, so the flow is
+// tracked with activate set and the completion callback switches provider on its
+// own once the code is approved.
+func selectClineProvider(token string, chatID int64) {
+	clineEntryPoint(token, chatID)
+}
+
+// clineEntryPoint is the real entry point, indirected so a test can assert the
+// provider menu routes provider:cline here without starting a device login
+// against the live service.
+var clineEntryPoint = func(token string, chatID int64) {
+	if clineauth.SignedIn() {
+		activateClineProvider(token, chatID, "")
+		return
+	}
+	flow, err := clineLogin.Start(context.Background())
+	if err != nil {
+		send(token, chatID, "Failed to start Cline login: "+err.Error())
+		return
+	}
+	snapshot := flow.Snapshot()
+	trackClineFlow(snapshot.ID, chatID, true)
+	sendHTML(token, chatID,
+		"Sign in to your Cline Account to use the Cline gateway. Open the link, enter the code, approve, and Ceraa will switch on its own — no need to press Check.\n\n"+
+			"🔐 Cline Account Login\n\n1. Open: "+snapshot.VerificationURL+"\n2. Enter code: <code>"+snapshot.UserCode+"</code>\n3. Approve in the browser, then it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": snapshot.VerificationURL}},
+			{{"text": "✗ Cancel", "callback_data": "cline:cancel:" + snapshot.ID}},
+		}})
+}
+
+// activateClineProvider saves the Cline profile and makes it active.
+func activateClineProvider(token string, chatID int64, flowID string) {
+	model, _ := clineModelForAccount(flowID)
+	// The profile URL is the gateway root; the chat transport appends the path.
+	profile := config.ProviderProfile{
+		URL:             llm.ClineGatewayBase,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.ClineSubscription,
+	}
+	if err := defaultState.setProviderProfile("cline", profile); err != nil {
+		send(token, chatID, "Cline profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider("cline"); err != nil {
+		send(token, chatID, "Cline provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "✅ Cline activated with model "+model+". Send a task to use it.")
+}
+
+// clineModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the gateway's free tier serves, so
+// a model left over from another provider cannot produce a profile the gateway
+// rejects.
+func clineModelForAccount(flowID string) (string, string) {
+	_, current := defaultState.values()
+	if llm.IsClineModel(current) {
+		return flowID, current
+	}
+	return flowID, llm.DefaultClineModel
 }

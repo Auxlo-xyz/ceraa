@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription:
 		return true
 	default:
 		return false
@@ -164,6 +164,53 @@ func IsMiniMaxModel(model string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(model))
 	for _, known := range MiniMaxModels {
 		if trimmed == strings.ToLower(known) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClineSubscription identifies a Cline Account profile.
+//
+// Not a vendor subscription but a hosted gateway: Cline serves chat completions
+// for a set of models it pays for, including a free tier, metered against the
+// account's plan. Signing in yields a token for that gateway rather than for
+// Anthropic or anyone else.
+const ClineSubscription = "cline"
+
+// ClineGatewayBase is the Cline gateway's API root.
+//
+// OpenAI-compatible, so the existing chat transport serves it with no adaptation.
+const ClineGatewayBase = "https://api.cline.bot/api/v1"
+
+// ClineModels are the gateway's free-tier model ids, from the public catalog.
+//
+// Read from /ai/cline/recommended-models rather than assumed. The free tier is
+// what a signed-in account can use without a paid plan, so it is the set worth
+// defaulting to. The ids are namespaced by the tier that serves them.
+var ClineModels = []struct {
+	ID   string
+	Name string
+}{
+	{"cline-free/deepseek-v4.1-flash", "Deepseek-v4.1-Flash"},
+	{"cline-free/gemini-3.8-flash", "Gemini 3.8 Flash"},
+	{"cline-free/mimo-v2.6-flash", "Mimo V2.6 Flash"},
+	{"cline-free/muse-spark-1.3-contributor", "Muse Spark 1.3"},
+	{"stealth/pixel-canary", "Pixel Canary"},
+	{"stealth/space-bunny-alpha", "space-bunny-alpha"},
+}
+
+// DefaultClineModel is the model selected when Cline is chosen without one.
+//
+// The free DeepSeek flash, because it is the fastest of the free tier and the
+// cheapest thing to try first on a gateway whose limits are unknown.
+const DefaultClineModel = "cline-free/deepseek-v4.1-flash"
+
+// IsClineModel reports whether a model id is one the gateway's free tier serves.
+func IsClineModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range ClineModels {
+		if trimmed == strings.ToLower(known.ID) {
 			return true
 		}
 	}
