@@ -45,8 +45,21 @@ type runtimeState struct {
 	Projects         map[string]string                 `json:"projects,omitempty"`
 }
 
+// runtimeStatePath is the file the hub reads its labels from.
+//
+// Indirected from the data dir so a test can point it at a temporary file without
+// setting CERAA_HOME, which paths.DataDir caches and would then leak between tests.
+var runtimeStatePath = ""
+
+func runtimeStateFile() string {
+	if runtimeStatePath != "" {
+		return runtimeStatePath
+	}
+	return filepath.Join(paths.DataDir(), "bridge-state.json")
+}
+
 func runtimeValues() runtimeState {
-	data, _ := os.ReadFile(filepath.Join(paths.DataDir(), "bridge-state.json"))
+	data, _ := os.ReadFile(runtimeStateFile())
 	var state runtimeState
 	_ = json.Unmarshal(data, &state)
 	return state
@@ -452,6 +465,18 @@ func ModelCatalogForChat(chatID int64, query string) map[string]any {
 	prefix := ""
 	if strings.Contains(profileURL, "poolside") {
 		prefix = "poolside/"
+	}
+	// A subscription provider is served its own gateway, and the remote catalog is
+	// a list of namespaced ids for OpenAI-compatible hosts that it does not
+	// serve. Asking it for one of those models produces a request the endpoint
+	// cannot answer, so the active provider's own list is used instead.
+	// No IsSubscription guard: a provider with no subscription has no models here
+	// anyway, so the empty check is the one that decides. An earlier version had
+	// both, and a mutation flipping the guard changed nothing, which is what made
+	// it untestable code rather than a condition.
+	if own := subscriptionCatalogEntries(active); len(own) > 0 {
+		modelChoices = own
+		return subscriptionModelCatalog(own, active)
 	}
 	filtered := make([]llm.ModelMetadata, 0, len(models))
 	for _, model := range models {
@@ -1023,6 +1048,47 @@ func subscriptionMenu(label, icon string, signedIn, active bool, entry string) m
 		rows = append(rows, []map[string]string{row("🔑 Sign in to "+label, entry)})
 	}
 	rows = append(rows, []map[string]string{row("◀️ Back", "menu:hub")})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// subscriptionCatalogEntries renders a subscription provider's models as catalog
+// entries, labelled provider/model so it reads as belonging to the signed-in
+// account rather than as a global list.
+//
+// The stored id stays exactly what the gateway expects. Only the label is
+// qualified, because the provider rejects an id it does not serve and a display
+// name is never sent.
+func subscriptionCatalogEntries(providerID string) []llm.ModelMetadata {
+	subscription := subscriptionForProvider(providerID)
+	label := subscriptionLabel(providerID)
+	models := llm.SubscriptionModels(subscription)
+	if len(models) == 0 {
+		return nil
+	}
+	current := currentModel()
+	entries := make([]llm.ModelMetadata, 0, len(models))
+	for _, model := range models {
+		name := label + "/" + model
+		if active := runtimeValues().Provider; active == providerID && current == model {
+			name = "✅ " + name
+		}
+		entries = append(entries, llm.ModelMetadata{ID: model, Name: name})
+	}
+	return entries
+}
+
+// subscriptionModelCatalog renders the provider/model catalog for an active
+// subscription provider, routed through the same model:N callbacks as the generic
+// catalog so the choice is applied the same way.
+func subscriptionModelCatalog(entries []llm.ModelMetadata, providerID string) map[string]any {
+	rows := make([][]map[string]string, 0, len(entries))
+	for i, model := range entries {
+		rows = append(rows, []map[string]string{{"text": model.Name, "callback_data": "model:" + strconv.Itoa(i)}})
+	}
+	rows = append(rows, []map[string]string{
+		{"text": "◀️ Back", "callback_data": "menu:model"},
+		{"text": "✕ Close", "callback_data": "close"},
+	})
 	return map[string]any{"inline_keyboard": rows}
 }
 
