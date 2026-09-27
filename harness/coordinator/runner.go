@@ -455,13 +455,14 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			requestToolChoice = "none"
 		}
 		request := llm.StreamRequest{
-			Messages:       r.messages(sess, toolDefs),
-			Tools:          toolDefs,
-			Reason:         r.cfg.Reasoning,
-			MaxTokens:      r.cfg.MaxOutputTokens,
-			ToolChoice:     requestToolChoice,
-			PromptCacheKey: promptCacheKey(modelConfig),
-			SessionID:      r.cfg.SessionID,
+			Messages:        r.messages(sess, toolDefs),
+			Tools:           toolDefs,
+			Reason:          r.cfg.Reasoning,
+			MaxTokens:       r.cfg.MaxOutputTokens,
+			ToolChoice:      requestToolChoice,
+			PromptCacheKey:  promptCacheKey(modelConfig),
+			SystemCacheSeam: r.systemCacheSeam(),
+			SessionID:       r.cfg.SessionID,
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		var content strings.Builder
@@ -860,12 +861,26 @@ func todayContext() string {
 }
 
 func (r *Runner) systemPrompt() string {
+	parts, _ := r.systemPromptParts()
+	return strings.Join(parts, "\n\n")
+}
+
+// systemPromptParts returns the ordered prompt sections and how many of them are
+// stable.
+//
+// The count is returned rather than inferred from an index because the leading
+// identity block is optional: with it absent the date moves from index 2 to index
+// 1, and an index-based rule then caches the date and re-reads the entire prefix
+// every time the day changes.
+func (r *Runner) systemPromptParts() ([]string, int) {
 	parts := []string{r.cfg.SystemPrompt}
 	// Identity comes before the vendored prompt text: the model has to be able to
 	// answer "which model am I" from its own instructions rather than guessing,
 	// and it cannot know that unless it is told.
+	identityAdded := false
 	if identity := strings.TrimSpace(r.modelIdentity()); identity != "" {
 		parts = append([]string{identity}, parts...)
+		identityAdded = true
 	}
 	// The date goes after the static prompt rather than beside the identity block.
 	// Prefix caching is positional, so a fact placed later costs less: when the
@@ -880,7 +895,34 @@ func (r *Runner) systemPrompt() string {
 	if rendered := r.memoryContext(); rendered != "" {
 		parts = append(parts, rendered)
 	}
-	return strings.Join(parts, "\n\n")
+	// Identity and the vendored prompt are the only stable sections. The date
+	// changes daily, skills change when they are approved, and memory changes
+	// whenever the agent writes to it.
+	stableCount := 1
+	if identityAdded {
+		stableCount = 2
+	}
+	return parts, stableCount
+}
+
+// systemCacheSeam is the byte offset in the system prompt where stable text ends
+// and volatile text begins.
+//
+// The runner is the only place that knows the seam, because only it knows which
+// parts change: identity and the vendored prompt do not, while the date, approved
+// skills and live memory do. Getting this wrong in either direction is expensive
+// rather than merely wrong, since the system prompt is under a thousand tokens and
+// a breakpoint on a volatile block re-reads the whole prefix after every edit.
+func (r *Runner) systemCacheSeam() int {
+	parts, stableCount := r.systemPromptParts()
+	stable := 0
+	for i := 0; i < stableCount && i < len(parts); i++ {
+		stable += len(parts[i])
+		if i < len(parts)-1 {
+			stable += 2 // the join separator in systemPrompt
+		}
+	}
+	return stable
 }
 
 // promptCacheKey is the per-run accessor used by tests and diagnostics.

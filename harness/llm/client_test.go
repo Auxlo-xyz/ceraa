@@ -73,32 +73,86 @@ func TestAddPromptCacheFieldsUsesProviderDefaults(t *testing.T) {
 	}
 }
 
-func TestAddPromptCacheFieldsUsesOptionalTTL(t *testing.T) {
+// These two tests used to assert that addPromptCacheFields wrote cache_control
+// onto the request body. That is the bug: the field is only read on content
+// blocks, so explicit mode was returning 200 and caching nothing, and the tests
+// pinned the broken behaviour in place. The envelope must stay untouched and the
+// marker must land on a block.
+func TestExplicitModeLeavesTheEnvelopeAlone(t *testing.T) {
 	body := map[string]any{}
 	addPromptCacheFields(body, ProviderConfig{
 		BaseURL:         "https://openrouter.ai/api/v1",
 		PromptCacheMode: "explicit",
 	}, StreamRequest{PromptCacheKey: "cache-key", SessionID: "session-id"})
-	control, ok := body["cache_control"].(map[string]any)
-	if !ok || control["type"] != "ephemeral" {
-		t.Fatalf("cache control = %#v", body["cache_control"])
+	if _, present := body["cache_control"]; present {
+		t.Fatalf("cache_control was written to the request envelope, where no API reads it: %#v", body["cache_control"])
 	}
-	if _, exists := control["ttl"]; exists {
-		t.Fatalf("default cache control forced a TTL: %#v", control)
+	if body["session_id"] != "session-id" {
+		t.Errorf("session routing was lost: %#v", body)
 	}
 }
 
-func TestAddPromptCacheFieldsUsesConfiguredTTL(t *testing.T) {
-	body := map[string]any{}
-	addPromptCacheFields(body, ProviderConfig{
-		BaseURL:         "https://openrouter.ai/api/v1",
-		PromptCacheMode: "explicit",
-		PromptCacheTTL:  "3h",
-	}, StreamRequest{PromptCacheKey: "cache-key", SessionID: "session-id"})
-	control, ok := body["cache_control"].(map[string]any)
-	if !ok || control["type"] != "ephemeral" || control["ttl"] != "3h" {
-		t.Fatalf("cache control = %#v", body["cache_control"])
+func TestTheDefaultTTLIsNotSent(t *testing.T) {
+	system, seam := strings.Repeat("stable token ", 800), 0
+	seam = len(system) + 2
+	system += "\n\n<current-date>\nToday is 2026-09-27.\n</current-date>"
+	msgs := []map[string]any{{"role": "system", "content": system}}
+	applyCacheBreakpoints(msgs, ProviderConfig{PromptCacheMode: "explicit"}, seam)
+
+	control := firstCacheControl(t, msgs)
+	if control["type"] != "ephemeral" {
+		t.Fatalf("cache control = %#v", control)
 	}
+	if _, present := control["ttl"]; present {
+		t.Errorf("the 5m default should not send an explicit ttl: %#v", control)
+	}
+}
+
+// A 1h write costs 2x base input against 1.25x for 5m, so it must be asked for
+// rather than assumed.
+func TestConfiguredTTLIsSentOnTheBlock(t *testing.T) {
+	system := strings.Repeat("stable token ", 800) + "\n\n<current-date>\nToday is 2026-09-27.\n</current-date>"
+	seam := len(strings.Repeat("stable token ", 800)) + 2
+	msgs := []map[string]any{{"role": "system", "content": system}}
+	applyCacheBreakpoints(msgs, ProviderConfig{PromptCacheMode: "explicit", PromptCacheTTL: "1h"}, seam)
+
+	control := firstCacheControl(t, msgs)
+	if control["type"] != "ephemeral" || control["ttl"] != "1h" {
+		t.Fatalf("cache control = %#v", control)
+	}
+}
+
+// An unsupported TTL is dropped back to the default rather than forwarded, since
+// the API would reject it and a 400 costs the whole run.
+func TestAnUnsupportedTTLFallsBackInsteadOfBeingForwarded(t *testing.T) {
+	system := strings.Repeat("stable token ", 800) + "\n\n<current-date>\nToday is 2026-09-27.\n</current-date>"
+	seam := len(strings.Repeat("stable token ", 800)) + 2
+	msgs := []map[string]any{{"role": "system", "content": system}}
+	applyCacheBreakpoints(msgs, ProviderConfig{PromptCacheMode: "explicit", PromptCacheTTL: "3h"}, seam)
+
+	if control := firstCacheControl(t, msgs); control["ttl"] == "3h" {
+		t.Errorf("an unsupported ttl was forwarded to the API: %#v", control)
+	}
+}
+
+// firstCacheControl returns the marker on the first block that carries one.
+func firstCacheControl(t *testing.T, msgs []map[string]any) map[string]any {
+	t.Helper()
+	for _, msg := range msgs {
+		blocks, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range blocks {
+			if block, ok := raw.(map[string]any); ok {
+				if control, ok := block["cache_control"].(map[string]any); ok {
+					return control
+				}
+			}
+		}
+	}
+	t.Fatalf("no cache_control on any content block: %#v", msgs)
+	return nil
 }
 
 func TestAddPromptCacheFieldsCanDisableCaching(t *testing.T) {

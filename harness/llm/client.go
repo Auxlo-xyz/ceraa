@@ -416,6 +416,11 @@ type StreamRequest struct {
 	ToolChoice     string
 	PromptCacheKey string
 	SessionID      string
+	// SystemCacheSeam is the byte offset in the system prompt where stable text
+	// ends and volatile text begins. Everything before it is eligible for a cache
+	// breakpoint; everything after is re-read. Zero means no seam, which leaves
+	// the whole prompt uncached rather than guessing.
+	SystemCacheSeam int
 }
 
 type StreamingClient struct {
@@ -661,12 +666,44 @@ func addPromptCacheFields(body map[string]any, cfg ProviderConfig, req StreamReq
 	if mode != "explicit" {
 		return sessionID
 	}
-	cacheControl := map[string]any{"type": "ephemeral"}
-	if ttl := strings.TrimSpace(cfg.PromptCacheTTL); ttl != "" {
-		cacheControl["ttl"] = ttl
-	}
-	body["cache_control"] = cacheControl
+	// The marker is placed on content blocks by applyCacheBreakpoints, not here.
+	// Writing cache_control onto the request body put it in a field no API reads,
+	// so explicit mode returned 200 and changed nothing.
 	return sessionID
+}
+
+// applyCacheBreakpoints marks where the provider should end its cached prefix.
+//
+// Only called in explicit mode. Auto mode is left alone: it is the default for
+// every provider, and turning a content string into a block array changes the
+// request shape for endpoints that may not accept it.
+func applyCacheBreakpoints(msgs []map[string]any, cfg ProviderConfig, systemSeam int) {
+	if promptCacheMode(cfg) != "explicit" {
+		return
+	}
+	ttl, err := ParseCacheTTL(cfg.PromptCacheTTL)
+	if err != nil {
+		// An unparseable TTL falls back to the default rather than sending
+		// something the provider will reject, and the misconfiguration is
+		// reported by the caller reading the run's cache notes.
+		ttl = CacheTTL5m
+	}
+	for i := range msgs {
+		if role, _ := msgs[i]["role"].(string); role == "system" || role == "developer" {
+			if text, ok := msgs[i]["content"].(string); ok {
+				msgs[i]["content"] = toAnyBlocks(SystemBlocks(text, systemSeam, ttl))
+			}
+		}
+	}
+	markLastStableMessage(msgs, ttl)
+}
+
+func toAnyBlocks(blocks []map[string]any) []any {
+	out := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		out = append(out, block)
+	}
+	return out
 }
 
 func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
@@ -735,6 +772,10 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		}
 	}
 	sessionID := addPromptCacheFields(body, c.cfg, req)
+	// After the messages are in the body, so the breakpoints can land on them.
+	if msgs, ok := body["messages"].([]map[string]any); ok {
+		applyCacheBreakpoints(msgs, c.cfg, req.SystemCacheSeam)
+	}
 	extras := c.cfg.ExtraBody
 	if c.cfg.ExtraBodyFunc != nil {
 		// Evaluated per request so correlation ids are never reused.
