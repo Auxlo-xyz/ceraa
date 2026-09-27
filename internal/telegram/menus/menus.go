@@ -24,7 +24,7 @@ import (
 )
 
 var All = []string{
-	"status", "session", "provider", "model", "agent", "variant", "thinking", "project", "tools", "todos",
+	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
 	"memory", "skill", "eval", "schedule", "codex",
@@ -35,7 +35,6 @@ type runtimeState struct {
 	Provider         string                            `json:"provider,omitempty"`
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
-	Variant          string                            `json:"variant,omitempty"`
 	Reasoning        string                            `json:"reasoning,omitempty"`
 	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
 	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
@@ -129,8 +128,6 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return ModelMenu(0)
 	case "agent":
 		return agentMenu()
-	case "variant":
-		return variantMenu()
 	case "thinking":
 		return thinkingMenu()
 	case "session":
@@ -449,25 +446,8 @@ func agentMenu() map[string]any {
 	return map[string]any{"inline_keyboard": rows}
 }
 
-func variantMenu() map[string]any {
-	variant := runtimeValues().Variant
-	if variant == "" {
-		variant = "default"
-	}
-	rows := [][]map[string]string{}
-	for _, value := range []string{"default", "compact"} {
-		label := value
-		if value == variant {
-			label = "✅ " + value
-		}
-		rows = append(rows, []map[string]string{{"text": label, "callback_data": "select_variant:" + value}})
-	}
-	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
-	return map[string]any{"inline_keyboard": rows}
-}
-
-// thinkingMenu exposes the reasoning level. It is separate from the variant menu
-// because a variant changes how an answer reads, while this changes how much the
+// thinkingMenu exposes the reasoning level. It is separate from Mode because Mode
+// changes what the agent is allowed to do, while this changes how much the
 // model thinks before producing one.
 func thinkingMenu() map[string]any {
 	current := runtimeValues().Reasoning
@@ -849,7 +829,7 @@ func Root() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "📊 Status", "callback_data": "menu:status"}, {"text": "💬 Sessions", "callback_data": "menu:session"}},
 		{{"text": "🔌 Provider", "callback_data": "menu:provider"}, {"text": "🤖 Model", "callback_data": "menu:model"}},
-		{{"text": "🤖 Mode", "callback_data": "menu:agent"}, {"text": "💭 Variant", "callback_data": "menu:variant"}},
+		{{"text": "🤖 Mode", "callback_data": "menu:agent"}},
 		{{"text": "🧠 Thinking", "callback_data": "menu:thinking"}},
 		{{"text": "📁 Project", "callback_data": "menu:project"}},
 		{{"text": "🔧 Tools", "callback_data": "menu:tools"}, {"text": "✅ Todos", "callback_data": "menu:todos"}, {"text": "✕ Close", "callback_data": "close"}},
@@ -859,7 +839,7 @@ func Root() map[string]any {
 func Hub() map[string]any {
 	labels := map[string]string{
 		"status": "📊 Status", "session": "💬 Sessions", "provider": "🔌 Provider", "model": "🤖 Model", "agent": "🤖 Mode",
-		"variant": "💭 Variant", "thinking": "🧠 Thinking", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
+		"thinking": "🧠 Thinking", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",

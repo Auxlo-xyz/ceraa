@@ -23,7 +23,6 @@ func Commands() []CommandSpec {
 		{"settings", "Show safe settings"},
 		{"model", "Choose the model"},
 		{"agent", "Choose the agent mode"},
-		{"variant", "Choose the response variant"},
 		{"project", "Choose the workspace"},
 		{"tools", "List available harness tools"},
 		{"todos", "Show session todos"},

@@ -123,7 +123,7 @@ func TestActiveProviderProfileReportsProfileModel(t *testing.T) {
 	if err := state.setProvider("codex"); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_, runtimeModel, _ := state.values()
+	_, runtimeModel := state.values()
 	if runtimeModel != "" {
 		t.Skip("runtime override is set, so this case no longer isolates the profile")
 	}

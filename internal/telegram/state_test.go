@@ -88,15 +88,12 @@ func TestBridgeStateRuntimeValues(t *testing.T) {
 	if err := state.setAgent("plan"); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.setVariant("compact"); err != nil {
-		t.Fatal(err)
-	}
 	if err := state.setAutoCompaction(false); err != nil {
 		t.Fatal(err)
 	}
-	model, agent, variant := state.values()
-	if model != "test/model" || agent != "plan" || variant != "compact" {
-		t.Fatalf("runtime values = %q %q %q", model, agent, variant)
+	model, agent := state.values()
+	if model != "test/model" || agent != "plan" {
+		t.Fatalf("runtime values = %q %q", model, agent)
 	}
 	if enabled, configured := state.autoCompaction(); !configured || enabled {
 		t.Fatal("expected automatic compaction to be disabled")

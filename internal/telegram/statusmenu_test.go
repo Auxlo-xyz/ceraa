@@ -28,7 +28,7 @@ func TestStatusMenuShowsAReportNotItsOwnName(t *testing.T) {
 }
 
 // /status and /context were two reports behind one keyboard, and picking either
-// lost facts the other had: /status had agent and variant, /context had tokens and
+// lost facts the other had: /status had agent, /context had tokens and
 // cache. They are now one report.
 func TestStatusAndContextAreTheSameReport(t *testing.T) {
 	isolateState(t)
@@ -46,7 +46,7 @@ func TestStatusAndContextAreTheSameReport(t *testing.T) {
 func TestStatusReportCarriesContextAndSessionFacts(t *testing.T) {
 	isolateState(t)
 	text, _ := menuReportText("status", 1)
-	for _, want := range []string{"tokens", "Cache read:", "Session:", "Project:", "Agent:", "Variant:", "Endpoint:"} {
+	for _, want := range []string{"tokens", "Cache read:", "Session:", "Project:", "Agent:", "Endpoint:"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("merged report lost %q:\n%s", want, text)
 		}

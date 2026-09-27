@@ -16,7 +16,7 @@ func TestRootMenuHasPrimaryControls(t *testing.T) {
 			found[button["callback_data"]] = true
 		}
 	}
-	for _, callback := range []string{"menu:status", "menu:session", "menu:provider", "menu:model", "menu:agent", "menu:variant", "menu:thinking", "menu:project", "menu:tools", "menu:todos", "close"} {
+	for _, callback := range []string{"menu:status", "menu:session", "menu:provider", "menu:model", "menu:agent", "menu:thinking", "menu:project", "menu:tools", "menu:todos", "close"} {
 		if !found[callback] {
 			t.Errorf("missing root callback %q", callback)
 		}

@@ -88,7 +88,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		return errors.New("no project selected")
 	}
 	userText := user
-	_, agentMode, _ := defaultState.values()
+	_, agentMode := defaultState.values()
 	if agentMode == "plan" {
 		userText = "[PLAN MODE] Do not modify files or execute commands. Produce a concrete implementation plan and ask before any state-changing action.\n\n" + userText
 	}
@@ -394,13 +394,8 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.CacheKey = compactionCacheKey(provider.URL, provider.Model, sessionID)
-	_, _, variant := defaultState.values()
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled
-	}
-	if variant == "compact" {
-		compactor.Settings.Keep.Tokens = 4000
-		compactor.Settings.Buffer = 30000
 	}
 	return compactor
 }

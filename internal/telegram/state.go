@@ -25,7 +25,6 @@ type bridgeState struct {
 	AllowedUserID    int64                             `json:"allowed_user_id,omitempty"`
 	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
 	Agent            string                            `json:"agent,omitempty"`
-	Variant          string                            `json:"variant,omitempty"`
 	Reasoning        string                            `json:"reasoning,omitempty"`
 	answerRequests   map[string]int64
 	ActiveSessions   map[string]string `json:"active_sessions,omitempty"`
@@ -249,10 +248,14 @@ func (s *bridgeState) alwaysAllowed(toolName string) bool {
 	return s.AlwaysAllow[toolName]
 }
 
-func (s *bridgeState) values() (string, string, string) {
+// values reports the runtime model and agent mode.
+//
+// Two values rather than three: the third used to be the response variant, a
+// compaction tuning knob presented as a writing style, and it was removed.
+func (s *bridgeState) values() (string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Model, s.Agent, s.Variant
+	return s.Model, s.Agent
 }
 
 // reasoning returns the runtime reasoning level, empty when the provider's own
@@ -399,13 +402,6 @@ func (s *bridgeState) setModel(model string) error {
 func (s *bridgeState) setAgent(agent string) error {
 	s.mu.Lock()
 	s.Agent = agent
-	s.mu.Unlock()
-	return s.save()
-}
-
-func (s *bridgeState) setVariant(variant string) error {
-	s.mu.Lock()
-	s.Variant = variant
 	s.mu.Unlock()
 	return s.save()
 }

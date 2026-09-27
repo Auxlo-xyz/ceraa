@@ -499,15 +499,6 @@ func handleCallback(token string, q *callbackQuery) {
 		editCallback(token, chatID, q.Message.MessageID, "🧠 Thinking set to "+thinkingLabel(level), nil)
 		return
 	}
-	if strings.HasPrefix(data, "select_variant:") {
-		variant := strings.TrimPrefix(data, "select_variant:")
-		if err := defaultState.setVariant(variant); err != nil {
-			send(token, chatID, "Failed to set variant: "+err.Error())
-			return
-		}
-		editCallback(token, chatID, q.Message.MessageID, "✅ Variant set to "+variant, nil)
-		return
-	}
 	if strings.HasPrefix(data, "session_rename:") {
 		id := strings.TrimPrefix(data, "session_rename:")
 		pendingSessionAction.Store(chatID, sessionAction{ID: id, Action: "rename"})
@@ -1007,8 +998,6 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 		handleModelCommand(token, chatID, command)
 	case "/agent":
 		handleAgentCommand(token, chatID, command)
-	case "/variant":
-		handleVariantCommand(token, chatID, command)
 	case "/project":
 		handleProjectCommand(token, chatID, command)
 	case "/permission":

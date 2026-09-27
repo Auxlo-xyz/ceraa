@@ -162,24 +162,6 @@ func handleAgentCommand(token string, chatID int64, text string) {
 	send(token, chatID, "✅ Agent set to "+agent)
 }
 
-func handleVariantCommand(token string, chatID int64, text string) {
-	parts := strings.Fields(text)
-	if len(parts) < 2 {
-		sendMenuMarkup(token, chatID, "Select a response variant", menusInline("variant"))
-		return
-	}
-	variant := parts[1]
-	if variant != "default" && variant != "compact" {
-		send(token, chatID, "Variant must be default or compact")
-		return
-	}
-	if err := defaultState.setVariant(variant); err != nil {
-		send(token, chatID, "Failed to set variant: "+err.Error())
-		return
-	}
-	send(token, chatID, "✅ Variant set to "+variant)
-}
-
 func handleProjectCommand(token string, chatID int64, text string) {
 	path := strings.TrimSpace(strings.TrimPrefix(text, "/project"))
 	if path == "" {
@@ -311,23 +293,20 @@ func statusReport(chatID int64) (string, error) {
 	// explicitly labelled: the estimate is a character-count heuristic over stored
 	// text, while the total is what the provider actually reported.
 	//
-	// Agent and variant are included because the old /status showed them and the
-	// old /context did not, and picking either report meant losing facts the other
-	// had. Endpoint is reduced to a host: the full URL carries a path that is noise
-	// here and a key in the case of some providers.
-	_, agent, variant := defaultState.values()
+	// Agent is included because the old /status showed it and the old /context did
+	// not, and picking either report meant losing facts the other had. Endpoint is
+	// reduced to a host: the full URL carries a path that is noise here and a key in
+	// the case of some providers.
+	_, agent := defaultState.values()
 	if agent == "" {
 		agent = "build"
 	}
-	if variant == "" {
-		variant = "default"
-	}
 	endpoint := providerHost(activeProviderURL(cfg))
-	return fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s\nVariant: %s",
+	return fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %d%%\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
 		groupDigits(tokens), groupDigits(contextLimit), percent,
 		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
 		cacheReadPercent, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
-		endpoint, agent, variant), nil
+		endpoint, agent), nil
 }
 
 // handleContextCommand shows the status report. Kept as a distinct command because

@@ -97,7 +97,7 @@ func registerCommands(token string) error {
 }
 
 func applyStateOverrides() {
-	model, _, _ := defaultState.values()
+	model, _ := defaultState.values()
 	if model != "" {
 		_ = envs.Set("MODEL", model)
 	}
@@ -786,9 +786,6 @@ func Run() error {
 			case "📊 Context":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleContextCommand(token, u.Message.Chat.ID)
-			case "💭 Variant":
-				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				handleVariantCommand(token, u.Message.Chat.ID, "/variant")
 			default:
 				if strings.HasPrefix(txt, "/") {
 					name := strings.TrimPrefix(strings.Fields(txt)[0], "/")
@@ -1253,11 +1250,6 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 		handleAgentCommand(token, chatID, txt)
 		return true
 	}
-	if txt == "/variant" || strings.HasPrefix(txt, "/variant ") {
-		GetDefaultInbox().CheckAndRecord(updateID)
-		handleVariantCommand(token, chatID, txt)
-		return true
-	}
 	if txt == "/project" || strings.HasPrefix(txt, "/project ") {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleProjectCommand(token, chatID, txt)
@@ -1390,7 +1382,7 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 	modelValue, _ := hermesLoginModels.Load(flowID)
 	model, _ := modelValue.(string)
 	if model == "" {
-		_, model, _ = defaultState.values()
+		_, model = defaultState.values()
 	}
 	if model == "" {
 		send(token, chatID, "✅ Hermes login saved. Send /model <model-id> to activate the provider.")
@@ -1463,7 +1455,7 @@ func handleCodexStatus(token string, chatID int64) {
 	// another provider selected is not a usable Codex setup.
 	authenticated := codexauth.Authenticated()
 	active := defaultState.provider() == llm.CodexSubscription
-	_, activeModel, _ := defaultState.values()
+	_, activeModel := defaultState.values()
 	// The runtime override above is empty unless the user set one, so it reports
 	// a blank model and hides which model is actually answering. The profile
 	// backing the active provider is the source of truth.
@@ -1622,7 +1614,7 @@ const codexContextLimit = 200000
 // codexModelForAccount returns a configured Codex model when one is already
 // known to work, so a re-login keeps the user's choice.
 func codexModelForAccount() string {
-	_, model, _ := defaultState.values()
+	_, model := defaultState.values()
 	if llm.IsCodexModel(model) {
 		return model
 	}

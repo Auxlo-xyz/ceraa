@@ -6,62 +6,85 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
-// capturedEdit is what the handler actually put on the wire.
-type capturedEdit struct {
+// capturedCall is one API call the handler made.
+type capturedCall struct {
 	Method string
 	Body   map[string]any
 }
 
-// telegramStub captures every API call the handler makes.
-type telegramStub struct {
-	server *httptest.Server
-	edits  []capturedEdit
-	// sends captures sendMessage calls, which carry the text for menus that are
-	// posted rather than edited.
-	sends []map[string]any
+// capture is a recording buffer over the package-wide stub server.
+//
+// The server and the API base are installed once by TestMain rather than per test.
+// handleCallback leaves a goroutine running after it returns, and that goroutine
+// reads telegramAPIBase, so a test that restored the variable on cleanup raced
+// with it. Only the buffer is swapped here, under a mutex, which is what the tests
+// actually need to isolate.
+type capture struct {
+	mu    sync.Mutex
+	calls []capturedCall
 }
 
-func newTelegramStub(t *testing.T) *telegramStub {
-	t.Helper()
-	stub := &telegramStub{}
-	stub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+var (
+	stubServer   *httptest.Server
+	activeCap    *capture
+	capMu        sync.Mutex
+	installedAPI bool
+)
+
+// installStub points the Telegram API at a local recorder. Safe to call repeatedly.
+func installStub() {
+	capMu.Lock()
+	defer capMu.Unlock()
+	if installedAPI {
+		return
+	}
+	stubServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
 		_ = json.Unmarshal(raw, &body)
-		if strings.Contains(r.URL.Path, "editMessage") {
-			stub.edits = append(stub.edits, capturedEdit{Method: r.URL.Path, Body: body})
-		} else {
-			stub.sends = append(stub.sends, body)
+		capMu.Lock()
+		holder := activeCap
+		capMu.Unlock()
+		if holder != nil {
+			holder.mu.Lock()
+			holder.calls = append(holder.calls, capturedCall{Method: r.URL.Path, Body: body})
+			holder.mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
 	}))
-
-	previousBase := telegramAPIBase
-	previousClient := telegramClient
-	telegramAPIBase = stub.server.URL + "/bot"
-	telegramClient = stub.server.Client()
-	t.Cleanup(func() {
-		telegramAPIBase = previousBase
-		telegramClient = previousClient
-	})
-	t.Cleanup(stub.server.Close)
-	return stub
+	telegramAPIBase = stubServer.URL + "/bot"
+	telegramClient = stubServer.Client()
+	installedAPI = true
 }
 
-// text returns every string the stub was asked to deliver, joined, so a test can
-// assert on content without caring which API call carried it.
-func (s *telegramStub) text() string {
+// beginCapture starts recording for one test.
+func beginCapture(t *testing.T) *capture {
+	t.Helper()
+	installStub()
+	holder := &capture{}
+	capMu.Lock()
+	activeCap = holder
+	capMu.Unlock()
+	t.Cleanup(func() {
+		capMu.Lock()
+		activeCap = nil
+		capMu.Unlock()
+	})
+	return holder
+}
+
+// text returns every string delivered, joined, so a test can assert on content
+// without caring which API call carried it.
+func (c *capture) text() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var parts []string
-	for _, call := range s.sends {
-		if text, ok := call["text"].(string); ok {
-			parts = append(parts, text)
-		}
-	}
-	for _, call := range s.edits {
+	for _, call := range c.calls {
 		if text, ok := call.Body["text"].(string); ok {
 			parts = append(parts, text)
 		}
@@ -92,10 +115,10 @@ func tap(t *testing.T, data string) {
 // Driven through the real handler with the API host pointed at a stub, because
 // testing the body resolver directly passed even when the handler ignored it.
 func TestTappingStatusSendsAReportOnTheWire(t *testing.T) {
-	stub := newTelegramStub(t)
+	cap := beginCapture(t)
 	tap(t, "menu:status")
 
-	delivered := stub.text()
+	delivered := cap.text()
 	if strings.TrimSpace(delivered) == "📋 status" {
 		t.Fatalf("tapping Status delivered only the menu name: %q", delivered)
 	}
@@ -111,13 +134,13 @@ func TestTappingStatusSendsAReportOnTheWire(t *testing.T) {
 
 // The same path for the context alias, since both used to differ.
 func TestTappingContextSendsTheSameReport(t *testing.T) {
-	statusStub := newTelegramStub(t)
+	statusCap := beginCapture(t)
 	tap(t, "menu:status")
-	statusText := statusStub.text()
+	statusText := statusCap.text()
 
-	contextStub := newTelegramStub(t)
+	contextCap := beginCapture(t)
 	tap(t, "menu:context")
-	contextText := contextStub.text()
+	contextText := contextCap.text()
 
 	if statusText == "" || contextText == "" {
 		t.Fatal("one of the two delivered nothing")
@@ -130,9 +153,9 @@ func TestTappingContextSendsTheSameReport(t *testing.T) {
 // An action menu must stay a title, or the fix turns every menu into a wall of the
 // same report.
 func TestTappingAnActionMenuSendsItsTitleNotTheReport(t *testing.T) {
-	stub := newTelegramStub(t)
+	cap := beginCapture(t)
 	tap(t, "menu:permission")
-	delivered := stub.text()
+	delivered := cap.text()
 	if strings.Contains(delivered, "Cache read:") {
 		t.Errorf("the permission menu was given the status report:\n%s", delivered)
 	}
@@ -146,17 +169,17 @@ func TestTappingAnActionMenuSendsItsTitleNotTheReport(t *testing.T) {
 // neither; a test that only taps buttons would not have caught the commands
 // drifting apart again.
 func TestTypedCommandsDeliverTheSameReportAsTheButton(t *testing.T) {
-	buttonStub := newTelegramStub(t)
+	buttonCap := beginCapture(t)
 	tap(t, "menu:status")
-	fromButton := buttonStub.text()
+	fromButton := buttonCap.text()
 
-	statusStub := newTelegramStub(t)
+	statusCap := beginCapture(t)
 	handleStatus("test-token", 1)
-	fromStatusCommand := statusStub.text()
+	fromStatusCommand := statusCap.text()
 
-	contextStub := newTelegramStub(t)
+	contextCap := beginCapture(t)
 	handleContextCommand("test-token", 1)
-	fromContextCommand := contextStub.text()
+	fromContextCommand := contextCap.text()
 
 	for name, delivered := range map[string]string{
 		"/status":  fromStatusCommand,

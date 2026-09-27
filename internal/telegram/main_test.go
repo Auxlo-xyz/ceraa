@@ -22,7 +22,13 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("CERAA_HOME", dir)
 	defaultState = loadBridgeStateFromFile(filepath.Join(dir, "bridge-state.json"))
+	// Installed here, once, because handleCallback leaves a goroutine reading the
+	// API base after it returns. A per-test swap raced with that goroutine.
+	installStub()
 	code := m.Run()
+	if stubServer != nil {
+		stubServer.Close()
+	}
 	os.RemoveAll(dir)
 	os.Exit(code)
 }
