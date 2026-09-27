@@ -202,9 +202,10 @@ var ClineModels = []struct {
 
 // DefaultClineModel is the model selected when Cline is chosen without one.
 //
-// The free DeepSeek flash, because it is the fastest of the free tier and the
-// cheapest thing to try first on a gateway whose limits are unknown.
-const DefaultClineModel = "cline-free/deepseek-v4.1-flash"
+// The free Mimo flash model, because the free DeepSeek flash model returned
+// successful but contentless completions in live Telegram use while Mimo
+// answered normally.
+const DefaultClineModel = "cline-free/mimo-v2.6-flash"
 
 // IsClineModel reports whether a model id is one the gateway's free tier serves.
 func IsClineModel(model string) bool {
