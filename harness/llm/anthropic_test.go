@@ -1,0 +1,540 @@
+package llm
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// The Messages API is unforgiving about shape, and every one of these is a way it
+// answers 400. The request builder is the part that has to be right, so these
+// assert the body rather than the streaming behaviour.
+func TestMessagesRequestShape(t *testing.T) {
+	cfg := ProviderConfig{Model: "MiniMax-M3", BaseURL: "https://api.minimax.io/anthropic"}
+	items := []Item{
+		{Kind: "text", Role: RoleSystem, Text: "you are a careful agent"},
+		{Kind: "text", Role: RoleUser, Text: "read the file"},
+		{Kind: "tool_call", CallID: "c1", Name: "read", Args: `{"path":"/tmp/x"}`},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "contents"},
+	}
+	tools := []ToolDef{{Name: "read", Description: "read a file", Parameters: map[string]any{"type": "object"}}}
+
+	messages := encodeAnthropicMessages(items)
+	system := anthropicSystemBlocks(joinSystemText(items), 0, cfg)
+	convertedTools := anthropicTools(tools, cfg)
+	body := map[string]any{
+		"model": cfg.Model, "messages": messages, "max_tokens": 1024, "stream": true,
+		"system": system, "tools": convertedTools,
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(encoded)
+
+	// The system prompt is a top-level argument, never a turn. Checking for a
+	// "system" role is not enough: a leaked item arrives as a user turn, so the
+	// count of the text is what actually detects it.
+	if strings.Count(raw, "you are a careful agent") != 1 {
+		t.Errorf("the system prompt appears %d times, want 1; it is being sent as a turn as well:\n%s",
+			strings.Count(raw, "you are a careful agent"), raw)
+	}
+	if !strings.Contains(raw, `"system":`) {
+		t.Errorf("no top-level system argument: %s", raw)
+	}
+	// A tool call is an assistant turn with a tool_use block.
+	if !strings.Contains(raw, `"tool_use"`) || !strings.Contains(raw, `"role":"assistant"`) {
+		t.Errorf("the tool call is not an assistant tool_use turn: %s", raw)
+	}
+	// A result is a user turn with a tool_result block, and it must follow its call.
+	if !strings.Contains(raw, `"tool_result"`) {
+		t.Errorf("the tool result is not a tool_result block: %s", raw)
+	}
+	if strings.Index(raw, `"tool_use"`) > strings.Index(raw, `"tool_result"`) {
+		t.Errorf("the result precedes its call: %s", raw)
+	}
+	// The Messages API authenticates with x-api-key, not a bearer token, so the
+	// request must not carry an Authorization header.
+	if strings.Contains(raw, "Authorization") {
+		t.Errorf("the body carries an Authorization field: %s", raw)
+	}
+	// Tool schemas use input_schema, not parameters.
+	if !strings.Contains(raw, `"input_schema"`) {
+		t.Errorf("tool schema is not input_schema: %s", raw)
+	}
+}
+
+// Explicit mode is the reason this transport exists: the breakpoints written
+// earlier had no transport able to carry them.
+func TestExplicitCacheBreakpointsReachTheWire(t *testing.T) {
+	items := []Item{{Kind: "text", Role: RoleSystem, Text: "stable text\n\nvolatile tail"}}
+	seam := len("stable text\n\n")
+	cfg := ProviderConfig{PromptCacheMode: "explicit", PromptCacheTTL: "1h"}
+
+	blocks := anthropicSystemBlocks(joinSystemText(items), seam, cfg)
+	if len(blocks) == 0 {
+		t.Fatal("no system blocks")
+	}
+	last := blocks[len(blocks)-1]
+	control, ok := last["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("the last system block carries no cache_control: %v", last)
+	}
+	if control["type"] != "ephemeral" {
+		t.Errorf("cache_control type = %v, want ephemeral", control["type"])
+	}
+	if control["ttl"] != "1h" {
+		t.Errorf("cache_control ttl = %v, want 1h", control["ttl"])
+	}
+}
+
+// Auto mode must not add breakpoints. Turning a content string into a block array
+// changes the request shape for endpoints that may not accept it.
+func TestAutoModeAddsNoCacheControl(t *testing.T) {
+	items := []Item{{Kind: "text", Role: RoleSystem, Text: "plain"}}
+	blocks := anthropicSystemBlocks(joinSystemText(items), 0, ProviderConfig{PromptCacheMode: "auto"})
+	for _, block := range blocks {
+		if _, ok := block["cache_control"]; ok {
+			t.Errorf("auto mode added a cache_control: %v", block)
+		}
+	}
+}
+
+// The tool schemas are the largest stable block, so the breakpoint goes on the
+// last tool and not the first.
+func TestToolSchemasCarryTheBreakpoint(t *testing.T) {
+	tools := []ToolDef{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+	converted := anthropicTools(tools, ProviderConfig{PromptCacheMode: "explicit", PromptCacheTTL: "5m"})
+	if len(converted) != 3 {
+		t.Fatalf("got %d tools", len(converted))
+	}
+	if _, ok := converted[0]["cache_control"]; ok {
+		t.Error("the first tool carries the breakpoint, so the later schemas are not cached")
+	}
+	last := converted[len(converted)-1]
+	control, ok := last["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("the last tool carries no cache_control: %v", last)
+	}
+	// 5m is the provider default, so it is omitted rather than restated; only 1h
+	// is sent explicitly, because that is the one that is not the default.
+	if _, present := control["ttl"]; present {
+		t.Errorf("the default 5m ttl was sent explicitly: %v", control)
+	}
+}
+
+// The API has no "none". Sending the literal string is a 400, so it is omitted.
+func TestToolChoiceNoneIsOmitted(t *testing.T) {
+	if choice := anthropicToolChoice("none"); choice != nil {
+		t.Errorf("tool_choice none produced %v; it must be omitted", choice)
+	}
+	if choice := anthropicToolChoice("auto"); choice == nil {
+		t.Error("auto was omitted")
+	}
+	if choice := anthropicToolChoice("required"); choice == nil {
+		t.Error("required was omitted")
+	}
+}
+
+func TestMessagesURLResolution(t *testing.T) {
+	cases := map[string]string{
+		"https://api.minimax.io/anthropic":         "https://api.minimax.io/anthropic/v1/messages",
+		"https://api.minimax.io/anthropic/":        "https://api.minimax.io/anthropic/v1/messages",
+		"https://api.anthropic.com":                "https://api.anthropic.com/v1/messages",
+		"https://api.minimax.io/anthropic/v1/mess": "https://api.minimax.io/anthropic/v1/mess/v1/messages",
+	}
+	for base, want := range cases {
+		if got := anthropicMessagesURL(base); got != want {
+			t.Errorf("anthropicMessagesURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+}
+
+// Streaming is the other half: text, reasoning and tool input all arrive as
+// different delta types and have to end up in the right field.
+func TestStreamEmitsTextReasoningAndToolCalls(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"MiniMax-M3"},"usage":{"input_tokens":120,"cache_read_input_tokens":100,"output_tokens":0}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"/tmp/x\"}"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"message_delta","usage":{"output_tokens":42}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var text, reasoning strings.Builder
+	var calls []StreamedToolCall
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		text.WriteString(r.Content)
+		reasoning.WriteString(r.Reasoning)
+		calls = append(calls, r.ToolCalls...)
+		if r.Usage != nil {
+			usage = r.Usage
+		}
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if text.String() != "hello world" {
+		t.Errorf("text = %q, want %q", text.String(), "hello world")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	if calls[0].Name != "read" {
+		t.Errorf("tool name = %q", calls[0].Name)
+	}
+	// Partial JSON arrives in fragments and must be rejoined, not emitted twice.
+	if !strings.Contains(calls[0].Arguments, "/tmp/x") {
+		t.Errorf("tool arguments = %q, the partial JSON was not rejoined", calls[0].Arguments)
+	}
+	if usage == nil {
+		t.Fatal("no usage reported")
+	}
+	if usage.InputTokens != 120 {
+		t.Errorf("input tokens = %d, want 120", usage.InputTokens)
+	}
+	// Cached tokens are what the whole accounting path depends on.
+	if usage.CachedInputTokens != 100 {
+		t.Errorf("cached input tokens = %d, want 100", usage.CachedInputTokens)
+	}
+	if usage.OutputTokens != 42 {
+		t.Errorf("output tokens = %d, want 42", usage.OutputTokens)
+	}
+}
+
+// MiniMax sends usage: null on message_start, which the Hermes agent had to work
+// around. A null must not clobber counts that already arrived, and a second real
+// payload must not be double counted.
+func TestNullUsageDoesNotClobberCounts(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"m"},"usage":{"input_tokens":50,"output_tokens":0}}`,
+		`data: {"type":"message_delta","usage":null}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			usage = r.Usage
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil || usage.InputTokens != 50 {
+		t.Errorf("usage = %+v, want input tokens 50 preserved through a null event", usage)
+	}
+}
+
+// Error bodies differ between Anthropic and a compatibility host, so both are read.
+func TestAnthropicErrorMessage(t *testing.T) {
+	cases := map[string]string{
+		`{"error":{"type":"overloaded_error","message":"Overloaded"}}`: "Overloaded",
+		`{"error":{"message":"bad model"}}`:                            "bad model",
+		`{"message":"flat shape"}`:                                     "flat shape",
+	}
+	for body, want := range cases {
+		if got := anthropicErrorMessage([]byte(body)); got != want {
+			t.Errorf("anthropicErrorMessage(%s) = %q, want %q", body, got, want)
+		}
+	}
+	if got := anthropicErrorMessage(nil); got == "" {
+		t.Error("an empty error body produced an empty message")
+	}
+}
+
+// A duplicate result for one call id, which an interrupted session produces, must
+// be collapsed rather than sent twice.
+func TestDuplicateToolResultsAreCollapsed(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "go"},
+		{Kind: "tool_call", CallID: "c1", Name: "read", Args: `{}`},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "first"},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "second"},
+	}
+	encoded, _ := json.Marshal(encodeAnthropicMessages(items))
+	raw := string(encoded)
+	if strings.Count(raw, `"tool_result"`) != 1 {
+		t.Errorf("expected one tool_result, got %d: %s", strings.Count(raw, `"tool_result"`), raw)
+	}
+}
+
+// A live request against a stub, so the headers are actually observed. The body
+// assertions cannot see them at all, which is why sending a bearer token instead
+// of x-api-key passed every test.
+func TestMessagesRequestHeaders(t *testing.T) {
+	var got http.Header
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model:           "MiniMax-M3",
+			BaseURL:         srv.URL,
+			AnthropicNative: true,
+			AnthropicTokens: stubTokens{token: "sk-test"},
+			MaxRetries:      0,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages:  []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		MaxTokens: 16,
+	}, func(ProviderResponse) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	// The Messages API authenticates with x-api-key plus an explicit API version.
+	// A bearer token is a 401 on Anthropic and a differently shaped error elsewhere.
+	if got.Get("x-api-key") != "sk-test" {
+		t.Errorf("x-api-key = %q, want the credential; headers were %v", got.Get("x-api-key"), got)
+	}
+	if got.Get("Authorization") != "" {
+		t.Errorf("an Authorization header was also sent: %q", got.Get("Authorization"))
+	}
+	if got.Get("Anthropic-Version") == "" {
+		t.Error("anthropic-version was not sent; the API defaults to a version that may not accept this request shape")
+	}
+	if len(body) == 0 {
+		t.Error("no request body was sent")
+	}
+}
+
+type stubTokens struct{ token string }
+
+func (s stubTokens) AccessToken(context.Context) (string, error) { return s.token, nil }
+
+// A stream that reports no usage must produce nil, not a zero-valued struct. A
+// zero struct reads as "the provider reported 0 tokens", which is exactly the
+// condition the usage-trust guard rejects, so a provider that simply omits usage
+// would look like a misreporting one.
+func TestStreamWithNoUsageReportsNil(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"m"},"usage":null}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`data: {"type":"message_delta","usage":null}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var usage *UsageInfo
+	sawZero := false
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			usage = r.Usage
+			if r.Usage.InputTokens == 0 && r.Usage.OutputTokens == 0 {
+				sawZero = true
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if usage != nil && sawZero {
+		t.Errorf("a stream with no usage reported a zero struct: %+v", usage)
+	}
+}
+
+// A host that reports input and cached tokens on both message_start and
+// message_delta must not have them added together. This is the same double-count
+// the usage trust guard exists to catch, arriving from the other direction.
+func TestRepeatedUsageIsAssignedNotSummed(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"m"},"usage":{"input_tokens":120,"cache_read_input_tokens":100,"output_tokens":1}}`,
+		`data: {"type":"message_delta","usage":{"input_tokens":120,"cache_read_input_tokens":100,"output_tokens":42}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			usage = r.Usage
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil {
+		t.Fatal("no usage reported")
+	}
+	if usage.InputTokens != 120 {
+		t.Errorf("input tokens = %d, want 120; the repeated counts were summed", usage.InputTokens)
+	}
+	if usage.CachedInputTokens != 100 {
+		t.Errorf("cached input tokens = %d, want 100; the repeated counts were summed", usage.CachedInputTokens)
+	}
+	if usage.OutputTokens != 42 {
+		t.Errorf("output tokens = %d, want 42", usage.OutputTokens)
+	}
+}
+
+// When the two events disagree, the later one wins. Proves the merge replaces
+// rather than keeping the first reading, which identical values cannot show.
+func TestLaterUsageReplacesTheEarlier(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"m"},"usage":{"input_tokens":10,"cache_read_input_tokens":0}}`,
+		`data: {"type":"message_delta","usage":{"input_tokens":120,"cache_read_input_tokens":100,"cache_creation_input_tokens":40}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			usage = r.Usage
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil {
+		t.Fatal("no usage reported")
+	}
+	if usage.InputTokens != 120 {
+		t.Errorf("input tokens = %d, want the later value 120", usage.InputTokens)
+	}
+	if usage.CachedInputTokens != 100 {
+		t.Errorf("cached input tokens = %d, want the later value 100", usage.CachedInputTokens)
+	}
+	// Cache writes only reach their assignment on the second event, so a test that
+	// only sends one cannot see that line fail.
+	if usage.CacheWriteTokens != 40 {
+		t.Errorf("cache write tokens = %d, want the later value 40", usage.CacheWriteTokens)
+	}
+}
+
+// Cache writes are what explicit mode is trying to buy, so they have to survive
+// the parse or a 1h TTL reports no cost at all.
+func TestCacheWriteTokensAreReported(t *testing.T) {
+	stream := `data: {"type":"message_start","message":{"id":"m"},"usage":{"input_tokens":120,"cache_read_input_tokens":100,"cache_creation_input_tokens":40}}` + "\n\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			usage = r.Usage
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil || usage.CacheWriteTokens != 40 {
+		t.Errorf("cache write tokens = %+v, want 40", usage)
+	}
+}
+
+// Thinking arrives as its own delta type and lands in Reasoning, not Content.
+// Putting it in Content would show the model its own scratchwork as prose.
+func TestThinkingDeltaIsSeparatedFromText(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"m"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me think"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var text, reasoning strings.Builder
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		text.WriteString(r.Content)
+		reasoning.WriteString(r.Reasoning)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reasoning.String() != "let me think" {
+		t.Errorf("reasoning = %q", reasoning.String())
+	}
+	if text.String() != "answer" {
+		t.Errorf("text = %q; reasoning must not leak into the visible answer", text.String())
+	}
+}
+
+// A rate-limited or gateway-failed request must be retried, or a run dies on the
+// first blip. The retry count and the wait are asserted through call count.
+func TestRetryableStatusIsRetried(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		var calls int
+		var mu sync.Mutex
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			calls++
+			attempt := calls
+			mu.Unlock()
+			if attempt == 1 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":{"message":"try later"}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+		}))
+		client := &StreamingClient{
+			cfg: ProviderConfig{
+				Model: "MiniMax-M3", BaseURL: srv.URL,
+				AnthropicNative: true, AnthropicTokens: stubTokens{token: "k"},
+				MaxRetries: 2, RetryBackoff: time.Millisecond,
+			},
+			http: srv.Client(),
+		}
+		err := client.streamAnthropic(context.Background(), StreamRequest{
+			Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 8,
+		}, func(ProviderResponse) {})
+		srv.Close()
+		mu.Lock()
+		got := calls
+		mu.Unlock()
+		if err != nil {
+			t.Errorf("status %d: request failed instead of retrying: %v", status, err)
+		}
+		if got < 2 {
+			t.Errorf("status %d: made %d request(s), want a retry", status, got)
+		}
+	}
+}
+
+// A permanent failure must not be retried, or a bad request is hammered.
+func TestPermanentStatusIsNotRetried(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad model"}}`))
+	}))
+	defer srv.Close()
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model: "MiniMax-M3", BaseURL: srv.URL,
+			AnthropicNative: true, AnthropicTokens: stubTokens{token: "k"},
+			MaxRetries: 2, RetryBackoff: time.Millisecond,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 8,
+	}, func(ProviderResponse) {})
+	if err == nil {
+		t.Fatal("a 400 was reported as success")
+	}
+	if calls != 1 {
+		t.Errorf("a 400 was retried %d times; it cannot succeed on a second attempt", calls-1)
+	}
+	if !strings.Contains(err.Error(), "bad model") {
+		t.Errorf("the error lost the provider's detail: %v", err)
+	}
+}

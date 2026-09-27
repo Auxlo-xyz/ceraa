@@ -47,8 +47,15 @@ type ProviderConfig struct {
 	XaiNative bool
 	// XaiTokens supplies the credential for XaiNative. Required when XaiNative is
 	// set, for the same reason CodexTokens is required for CodexNative.
-	XaiTokens  CodexTokenSource
-	MaxRetries int
+	XaiTokens CodexTokenSource
+	// AnthropicNative selects the Messages API transport, used by Anthropic
+	// proper and by any provider that speaks it, which is currently MiniMax.
+	AnthropicNative bool
+	// AnthropicTokens supplies the credential for AnthropicNative. For a
+	// subscription profile it is required; for an API-key profile the key is
+	// carried on the profile instead.
+	AnthropicTokens CodexTokenSource
+	MaxRetries      int
 	// RetryBackoff scales the delay between attempts. Zero uses the production
 	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
 	RetryBackoff    time.Duration
@@ -756,6 +763,9 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			c.cfg.BaseURL = XaiBaseURL
 		}
 		return c.streamXai(ctx, req, onDelta)
+	}
+	if c.cfg.AnthropicNative {
+		return c.streamAnthropic(ctx, req, onDelta)
 	}
 	compatibility := compatibilityFor(c.cfg)
 	url := chatCompletionsURL(c.cfg.BaseURL)
