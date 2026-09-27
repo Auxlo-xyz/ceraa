@@ -679,7 +679,11 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 	}
 
 	var lastErr error
+	// attempts tracks provider round trips, including the one in flight when the
+	// loop exits, so the reported count is the number actually made.
+	attempts := 0
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+		attempts = attempt + 1
 		hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
 		if err != nil {
 			return err
@@ -696,7 +700,7 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 		if err != nil {
 			lastErr = fmt.Errorf("request: %w", err)
 			if attempt < c.cfg.MaxRetries {
-				if !sleepContext(ctx, backoff(attempt)) {
+				if !sleepContext(ctx, backoffScaled(attempt, c.cfg.RetryBackoff)) {
 					break
 				}
 				continue
@@ -714,7 +718,7 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 			if providerErr.Retryable && attempt < c.cfg.MaxRetries {
 				delay := providerErr.RetryAfter
 				if delay <= 0 {
-					delay = backoff(attempt)
+					delay = backoffScaled(attempt, c.cfg.RetryBackoff)
 				}
 				if !sleepContext(ctx, delay) {
 					break
@@ -729,20 +733,23 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 			finish()
 		}
 		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
-			if !sleepContext(ctx, backoff(attempt)) {
+			if !sleepContext(ctx, backoffScaled(attempt, c.cfg.RetryBackoff)) {
 				break
 			}
 			continue
 		}
 		return err
 	}
+	// Report the attempt count, as the chat-completions path does. See the note in
+	// client.go: a terminal ProviderError returned bare gave no way to tell a
+	// first-attempt failure from one that had been retried and still failed.
 	if providerErr, ok := lastErr.(*ProviderError); ok {
-		return providerErr
+		return fmt.Errorf("after %d attempt(s): %w", attempts, providerErr)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("gemini request failed")
 	}
-	return fmt.Errorf("after %d retries: %w", c.cfg.MaxRetries, lastErr)
+	return fmt.Errorf("after %d attempt(s): %w", attempts, lastErr)
 }
 
 // describeGeminiTurn renders a native request for the diagnostic log, naming

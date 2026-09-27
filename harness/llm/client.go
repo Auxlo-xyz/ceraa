@@ -34,8 +34,11 @@ type ProviderConfig struct {
 	// CodexTokens supplies the credential for CodexNative. Required when
 	// CodexNative is set; without it the transport refuses the request instead of
 	// sending an unauthenticated one.
-	CodexTokens     CodexTokenSource
-	MaxRetries      int
+	CodexTokens CodexTokenSource
+	MaxRetries  int
+	// RetryBackoff scales the delay between attempts. Zero uses the production
+	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
+	RetryBackoff    time.Duration
 	Timeout         time.Duration
 	ToolChoice      string
 	PromptCacheMode string
@@ -811,7 +814,11 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 
 	var lastErr error
 	recoveries := 0
+	// attempts tracks completed provider round trips, including the one in flight
+	// when the loop exits, so the reported count is the number actually made.
+	attempts := 0
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
+		attempts = attempt + 1
 		hreq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(encoded))
 		if err != nil {
 			return err
@@ -831,7 +838,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		if err != nil {
 			lastErr = fmt.Errorf("request: %w", err)
 			if attempt < c.cfg.MaxRetries {
-				if !sleepContext(ctx, backoff(attempt)) {
+				if !sleepContext(ctx, backoffScaled(attempt, c.cfg.RetryBackoff)) {
 					break
 				}
 				continue
@@ -868,7 +875,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 			if providerErr.Retryable && attempt < c.cfg.MaxRetries {
 				delay := providerErr.RetryAfter
 				if delay <= 0 {
-					delay = backoff(attempt)
+					delay = backoffScaled(attempt, c.cfg.RetryBackoff)
 				}
 				if !sleepContext(ctx, delay) {
 					break
@@ -887,8 +894,13 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		}
 		return err
 	}
+	// The attempt count belongs in the message. Returning a terminal ProviderError
+	// bare made a request that failed on attempt 1 look identical to one that was
+	// retried three times and still failed, which is exactly the ambiguity that
+	// made a retried 502 look unretried in a session log. attempts counts the
+	// initial call plus every retry, so it is the number of provider round trips.
 	if providerErr, ok := lastErr.(*ProviderError); ok {
-		return providerErr
+		return fmt.Errorf("after %d attempt(s): %w", attempts, providerErr)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("provider request failed")
@@ -1323,7 +1335,14 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 }
 
 // backoff returns exponential backoff duration for the given attempt (0-based).
-func backoff(attempt int) time.Duration {
+func backoff(attempt int) time.Duration { return backoffScaled(attempt, 0) }
+
+// backoffScaled returns the delay before the given attempt, optionally shortened
+// for tests. A zero scale means production timings.
+func backoffScaled(attempt int, scale time.Duration) time.Duration {
+	if scale > 0 {
+		return scale
+	}
 	durations := []time.Duration{1 * time.Second, 3 * time.Second, 8 * time.Second}
 	delay := 8 * time.Second
 	if attempt < len(durations) {
