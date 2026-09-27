@@ -2,6 +2,7 @@ package clineauth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -71,15 +72,37 @@ func TestLoadRejectsATokenlessRecord(t *testing.T) {
 	}
 }
 
-// The device flow and the persistence of its token, driven end to end.
+// The device flow and the persistence of the registered account credential,
+// driven end to end. The WorkOS tokens are identity proof, not gateway access:
+// without the registration call the login would store a token Cline's own API
+// rejects.
 func TestDeviceLoginPersistsTheToken(t *testing.T) {
 	initSecret(t)
 	var polls int
+	var registerBody map[string]string
+	registerHeaders := map[string]string{}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/authorize/device"):
 			_, _ = w.Write([]byte(`{"device_code":"d1","user_code":"U-1","verification_uri":"https://authkit.cline.bot/device","verification_uri_complete":"https://authkit.cline.bot/device?user_code=U-1","expires_in":300,"interval":1}`))
+		case strings.HasSuffix(r.URL.Path, "/auth/register"):
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			registerHeaders["Content-Type"] = r.Header.Get("Content-Type")
+			registerHeaders["User-Agent"] = r.Header.Get("User-Agent")
+			registerHeaders["X-CLIENT-TYPE"] = r.Header.Get("X-CLIENT-TYPE")
+			registerHeaders["X-CLIENT-VERSION"] = r.Header.Get("X-CLIENT-VERSION")
+			registerHeaders["X-CORE-VERSION"] = r.Header.Get("X-CORE-VERSION")
+			registerHeaders["X-Task-ID"] = r.Header.Get("X-Task-ID")
+			if err := json.NewDecoder(r.Body).Decode(&registerBody); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"success":false}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"accessToken":"acc-registered","refreshToken":"ref-registered","tokenType":"Bearer","expiresAt":"2030-01-01T00:00:00Z","userInfo":{"email":"user@example.com","clineUserId":"acct-1"}}}`))
 		default:
 			polls++
 			if polls < 2 {
@@ -92,7 +115,7 @@ func TestDeviceLoginPersistsTheToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	login := NewLoginWithEndpoints(srv.Client(), stubEndpoints(srv))
+	login := NewLoginWithRegistration(srv.Client(), stubEndpoints(srv), srv.URL+"/api/v1/auth/register")
 	flow, err := login.Start(context.Background())
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -105,6 +128,21 @@ func TestDeviceLoginPersistsTheToken(t *testing.T) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+	if registerBody["accessToken"] != "acc-c" || registerBody["refreshToken"] != "ref-c" {
+		t.Fatalf("registered WorkOS tokens = %v; the identity proof was not exchanged", registerBody)
+	}
+	if registerHeaders["Content-Type"] != "application/json" {
+		t.Errorf("registration content type = %q, want application/json", registerHeaders["Content-Type"])
+	}
+	if registerHeaders["User-Agent"] != "Cline/"+OfficialCLIVersion ||
+		registerHeaders["X-CLIENT-TYPE"] != OfficialClientName ||
+		registerHeaders["X-CLIENT-VERSION"] != OfficialCLIVersion ||
+		registerHeaders["X-CORE-VERSION"] != OfficialCoreVersion {
+		t.Errorf("registration identity = %v; the gateway routes on the official client", registerHeaders)
+	}
+	if registerHeaders["X-Task-ID"] == "" {
+		t.Error("registration omitted X-Task-ID, so the exchange cannot be correlated with the login")
+	}
 	if !SignedIn() {
 		t.Fatal("the login succeeded but nothing was stored")
 	}
@@ -112,11 +150,17 @@ func TestDeviceLoginPersistsTheToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.AccessToken != "acc-c" || credential.RefreshToken != "ref-c" {
-		t.Errorf("stored credential = %+v", credential)
+	if credential.AccessToken != "acc-registered" || credential.RefreshToken != "ref-registered" {
+		t.Errorf("stored credential = %+v; the WorkOS token was stored instead of the account credential", credential)
+	}
+	if credential.Email != "user@example.com" || credential.AccountID != "acct-1" {
+		t.Errorf("stored account = %+v; the registration response was not retained", credential)
 	}
 	if credential.ExpiresAt.IsZero() {
 		t.Error("expiry was not recorded, so the token can never be refreshed")
+	}
+	if credential.APIKey() != "workos:acc-registered" {
+		t.Errorf("gateway credential = %q; the gateway requires the workos marker", credential.APIKey())
 	}
 }
 
@@ -181,21 +225,22 @@ func TestCatalogNeedsNoCredential(t *testing.T) {
 	}
 }
 
-// The refresh lives on Cline's own API, not the identity provider, and carries
-// the refresh token as a bearer. Getting that wrong sends the credential to the
-// wrong host or in the wrong field.
+// The refresh lives on Cline's own API as a JSON call carrying the account
+// refresh token. The old form post with the refresh token as a bearer never
+// matched Cline's refresh contract.
 func TestRefreshUsesTheGatewayEndpoint(t *testing.T) {
 	initSecret(t)
-	var gotPath, gotAuth, gotMethod string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath, gotAuth, gotMethod = r.URL.Path, r.Header.Get("Authorization"), r.Method
+	var gotPath, gotContentType, gotMethod string
+	var gotBody map[string]string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotContentType, gotMethod = r.URL.Path, r.Header.Get("Content-Type"), r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		// No refresh_token in the response, which is the case under test.
-		_, _ = w.Write([]byte(`{"access_token":"acc-2","token_type":"Bearer"}`))
+		_, _ = w.Write([]byte(`{"success":true,"data":{"accessToken":"acc-2","refreshToken":"ref-2","tokenType":"Bearer","expiresAt":"2030-01-01T00:00:00Z","userInfo":{"email":"new@example.com","clineUserId":"acct-2"}}}`))
 	}))
 	defer srv.Close()
 
-	if err := Save(Credential{AccessToken: "old", RefreshToken: "ref-1", ExpiresAt: time.Now().Add(-time.Hour)}); err != nil {
+	if err := Save(Credential{Kind: CredentialKindAccount, AccessToken: "old", RefreshToken: "ref-1", ExpiresAt: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	store := NewStore()
@@ -213,17 +258,18 @@ func TestRefreshUsesTheGatewayEndpoint(t *testing.T) {
 	if gotPath != "/api/v1/auth/refresh" {
 		t.Errorf("refresh path = %q, want Cline's own /api/v1/auth/refresh", gotPath)
 	}
-	if gotAuth != "Bearer ref-1" {
-		t.Errorf("refresh sent %q, want the refresh token as a bearer", gotAuth)
+	if gotContentType != "application/json" {
+		t.Errorf("refresh content type = %q, want application/json", gotContentType)
+	}
+	if gotBody["refreshToken"] != "ref-1" || gotBody["grantType"] != "refresh_token" {
+		t.Errorf("refresh body = %v; the account refresh belongs in JSON fields", gotBody)
 	}
 	if credential.AccessToken != "acc-2" {
 		t.Errorf("access token = %q", credential.AccessToken)
 	}
-	if credential.RefreshToken != "ref-1" {
-		t.Errorf("refresh token = %q; it must be kept when the response omits it", credential.RefreshToken)
+	if credential.RefreshToken != "ref-2" {
+		t.Errorf("refresh token = %q; the gateway-issued refresh must replace the old one", credential.RefreshToken)
 	}
-	// An assumed lifetime, so the token is refreshed on the skew rather than
-	// being treated as never expiring.
 	if credential.ExpiresAt.IsZero() {
 		t.Error("the refreshed token has no expiry, so it would never be refreshed")
 	}
@@ -272,6 +318,110 @@ func TestCancelledLoginReports(t *testing.T) {
 	defer mu.Unlock()
 	if len(terminal) != 1 || terminal[0].Status != oauthdevice.StatusCanceled {
 		t.Errorf("terminal states = %+v, want one cancel", terminal)
+	}
+}
+
+func TestSaveMarksNewCredentialsAsAccounts(t *testing.T) {
+	initSecret(t)
+	if err := Save(Credential{AccessToken: "acc-1"}); err != nil {
+		t.Fatal(err)
+	}
+	credential, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.Kind != CredentialKindAccount {
+		t.Errorf("stored kind = %q; a new credential must be distinguishable from a legacy identity token", credential.Kind)
+	}
+}
+
+func TestAPIKeyAddsTheGatewayMarker(t *testing.T) {
+	cases := map[string]string{
+		"acc-1":        "workos:acc-1",
+		"  acc-1  ":    "workos:acc-1",
+		"workos:acc-1": "workos:acc-1",
+		"WORKOS:acc-1": "WORKOS:acc-1",
+	}
+	for token, want := range cases {
+		if got := (Credential{AccessToken: token}).APIKey(); got != want {
+			t.Errorf("APIKey(%q) = %q, want %q", token, got, want)
+		}
+	}
+}
+
+func TestRegisterRejectsAnIncompleteAccountResponse(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"accessToken":"acc-1"}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := registerAccount(context.Background(), srv.Client(), srv.URL+"/api/v1/auth/register", nil, "workos-access", "workos-refresh"); err == nil {
+		t.Error("an account response without the account refresh was accepted; the credential cannot be renewed")
+	}
+}
+
+func TestRegisterRefusesPlainHTTP(t *testing.T) {
+	if _, err := registerAccount(context.Background(), nil, "http://api.cline.bot/api/v1/auth/register", nil, "workos-access", "workos-refresh"); err == nil {
+		t.Error("an account token would be exchanged over plain HTTP")
+	}
+}
+
+// A credential stored before registration existed must be exchanged before it
+// can be used. Sending its WorkOS access token to the gateway is exactly the
+// request that was returning 401.
+func TestLegacyStoredSignInIsRegisteredBeforeUse(t *testing.T) {
+	initSecret(t)
+	var gotBody map[string]string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/api/v1/auth/register") {
+			t.Errorf("legacy upgrade requested %q; only registration may redeem it", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"accessToken":"acc-upgraded","refreshToken":"ref-upgraded","tokenType":"Bearer","expiresAt":"2030-01-01T00:00:00Z","userInfo":{"email":"legacy@example.com","clineUserId":"acct-legacy"}}}`))
+	}))
+	defer srv.Close()
+
+	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	if err := secretSet(secretName, `{"access_token":"workos-access-legacy","refresh_token":"workos-refresh-legacy","expires_at":"`+expiry+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	store.HTTPClient = srv.Client()
+	store.RegisterEndpoint = srv.URL + "/api/v1/auth/register"
+	credential, err := Resolve(context.Background(), store)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if gotBody["accessToken"] != "workos-access-legacy" || gotBody["refreshToken"] != "workos-refresh-legacy" {
+		t.Fatalf("registration body = %v; the legacy identity token was not exchanged", gotBody)
+	}
+	if credential.Kind != CredentialKindAccount || credential.AccessToken != "acc-upgraded" {
+		t.Errorf("resolved credential = %+v; the raw identity token would still be sent", credential)
+	}
+	if stored, err := Load(); err != nil {
+		t.Fatal(err)
+	} else if stored.AccessToken != "acc-upgraded" || stored.Kind != CredentialKindAccount {
+		t.Errorf("stored credential = %+v; the upgrade was not persisted", stored)
+	}
+}
+
+// The default registration endpoint is what production uses, and an exchange
+// sent to WorkOS instead would ask the identity provider for a credential only
+// Cline can issue.
+func TestDefaultRegisterEndpointIsOnCline(t *testing.T) {
+	endpoint := defaultRegisterEndpoint()
+	if endpoint != "https://api.cline.bot/api/v1/auth/register" {
+		t.Errorf("default register endpoint = %q", endpoint)
+	}
+	if !strings.HasPrefix(endpoint, "https://api.cline.bot") {
+		t.Errorf("the registration would leave Cline's API: %q", endpoint)
+	}
+	if strings.HasPrefix(endpoint, WorkOSAPIBase) {
+		t.Errorf("the registration is pointed at the identity provider: %q", endpoint)
 	}
 }
 

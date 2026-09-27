@@ -418,7 +418,7 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 				return llm.ProviderConfig{}, err
 			}
 			model.BaseURL = firstNonEmptyStr(provider.URL, llm.ClineGatewayBase)
-			model.APIKey = credential.AccessToken
+			model.APIKey = credential.APIKey()
 			// The gateway answers 401 without this header set, and Go's default
 			// "Go-http-client/1.1" was being sent.
 			if len(model.ExtraHeaders) == 0 || !clineauth.HasClineHeaders(model.ExtraHeaders) {

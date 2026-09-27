@@ -41,7 +41,7 @@ func TestTelegramResolverAuthenticatesEachSubscription(t *testing.T) {
 	}{
 		{"xai", llm.XAISubscription, "xai-token"},
 		{"minimax", llm.MiniMaxSubscription, "mm-token"},
-		{"cline", llm.ClineSubscription, "cline-token"},
+		{"cline", llm.ClineSubscription, "workos:cline-token"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.providerID, func(t *testing.T) {
@@ -76,6 +76,9 @@ func TestTelegramClineModelCarriesTheGatewayHeaders(t *testing.T) {
 	model, err := providerModelResolver(profile, "tg-cline-headers")(context.Background())
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
+	}
+	if model.APIKey != "workos:cline-token" {
+		t.Errorf("API key = %q; the gateway requires the WorkOS marker", model.APIKey)
 	}
 	if !clineauth.HasClineHeaders(model.ExtraHeaders) {
 		t.Fatalf("no gateway headers: %v", model.ExtraHeaders)

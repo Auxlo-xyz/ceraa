@@ -127,7 +127,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			// A Cline Account is a hosted gateway with an OpenAI-compatible
 			// chat/completions, so it needs no transport of its own.
 			modelConfig.BaseURL = firstNonEmptyStr(provider.URL, llm.ClineGatewayBase)
-			modelConfig.APIKey = credential.AccessToken
+			modelConfig.APIKey = credential.APIKey()
 			// The gateway answers 401 without this header set, and Go's default
 			// "Go-http-client/1.1" was being sent. A profile's own headers win, so
 			// someone who has set them deliberately is not overridden.
