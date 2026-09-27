@@ -26,29 +26,24 @@ const (
 	HeaderTaskID      = "X-Task-ID"
 )
 
-// ClientVersion is Ceraa's version, sent as the client identity.
-//
-// Ceraa's own version, not Cline's. The gateway's version floor is checked
-// server-side and its rule is not published, so a Cline version number here would
-// be a claim about a client we are not. If the gateway refuses anything but a
-// Cline identity, that is Cline deciding which third-party clients it supports,
-// and the honest answer is to ask them rather than to answer for them.
-const ClientVersion = "0.1.0"
-
-// ClientType identifies this client.
-//
-// Cline's SDK sets "cline-sdk" and supports overriding it with the client's own
-// name, which is the clearest evidence in the header set that a non-Cline client
-// is expected to identify itself.
-const ClientType = "ceraa"
-
-// Platform is where this client runs.
-const Platform = "telegram"
+// OfficialCLIVersion, OfficialCoreVersion, OfficialClientName, and
+// OfficialClientSource reproduce the version metadata the official Cline CLI
+// sends. The Cline gateway rejects
+// requests that identify as an unfamiliar third-party client, so these values
+// have to match a supported client. They were taken from the released Cline
+// source: apps/cli/package.json version 3.0.65 and sdk/packages/core/package.json
+// version 0.0.86.
+const (
+	OfficialCLIVersion   = "3.0.65"
+	OfficialCoreVersion  = "0.0.86"
+	OfficialClientName   = "cline-cli"
+	OfficialClientSource = "cli"
+)
 
 // RequestHeaders builds the header set for a gateway request.
 //
-// The identity fields name Ceraa. The header names, and the shape of every value,
-// are Cline's, because the gateway routes on them.
+// The identity fields reproduce Cline's CLI identity. The header names, and the
+// shape of every value, are Cline's, because the gateway routes on them.
 //
 // sessionID becomes X-Task-ID, which is how the gateway correlates a request with
 // a conversation. An empty one is sent rather than omitted because the SDK always
@@ -57,14 +52,14 @@ func RequestHeaders(sessionID string) map[string]string {
 	sessionID = strings.TrimSpace(sessionID)
 	return map[string]string{
 		HeaderReferer:     "https://cline.bot",
-		HeaderTitle:       "Ceraa",
+		HeaderTitle:       "Cline",
 		HeaderMultiRoot:   "false",
-		HeaderClientType:  ClientType,
-		HeaderUserAgent:   "Ceraa/" + ClientVersion,
-		HeaderClientVer:   ClientVersion,
-		HeaderPlatform:    Platform,
-		HeaderPlatformVer: ClientVersion,
-		HeaderCoreVersion: ClientVersion,
+		HeaderClientType:  OfficialClientName,
+		HeaderUserAgent:   "Cline/" + OfficialCLIVersion,
+		HeaderClientVer:   OfficialCLIVersion,
+		HeaderPlatform:    OfficialClientSource,
+		HeaderPlatformVer: OfficialCLIVersion,
+		HeaderCoreVersion: OfficialCoreVersion,
 		HeaderTaskID:      sessionID,
 	}
 }

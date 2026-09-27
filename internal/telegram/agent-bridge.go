@@ -107,7 +107,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
 	compactor := newCompactor(cfg, providerID, sessionID)
-	resolveModel := providerModelResolver(providerConfig)
+	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
 	// Startup snapshot, kept as a fallback and as the first render. The live
 	// renderer below re-reads the file every turn, so an edit to
@@ -358,12 +358,6 @@ func minimaxRegionFor(provider config.LLMProvider) minimaxauth.Region {
 	return minimaxauth.RegionGlobal
 }
 
-// providerSessionID is the run identifier sent to a provider that correlates on
-// it. The gateway uses X-Task-ID to tie a request to a conversation, and the
-// resolver has no session in scope, so it names the client rather than sending a
-// blank that would correlate every request together.
-func providerSessionID() string { return "ceraa" }
-
 // firstNonEmptyStr returns the first non-blank value.
 func firstNonEmptyStr(values ...string) string {
 	for _, value := range values {
@@ -374,7 +368,7 @@ func firstNonEmptyStr(values ...string) string {
 	return ""
 }
 
-func providerModelResolver(provider config.LLMProvider) func(context.Context) (llm.ProviderConfig, error) {
+func providerModelResolver(provider config.LLMProvider, sessionID string) func(context.Context) (llm.ProviderConfig, error) {
 	// One manager for the process: it owns the in-flight login flows and the
 	// refresh lock, so a per-request instance would let two refreshes race and
 	// revoke each other's rotated token.
@@ -428,7 +422,7 @@ func providerModelResolver(provider config.LLMProvider) func(context.Context) (l
 			// The gateway answers 401 without this header set, and Go's default
 			// "Go-http-client/1.1" was being sent.
 			if len(model.ExtraHeaders) == 0 || !clineauth.HasClineHeaders(model.ExtraHeaders) {
-				model.ExtraHeaders = clineauth.RequestHeaders(providerSessionID())
+				model.ExtraHeaders = clineauth.RequestHeaders(sessionID)
 			}
 			return model, nil
 		case "hermes":

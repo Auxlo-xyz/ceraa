@@ -48,7 +48,7 @@ func TestTelegramResolverAuthenticatesEachSubscription(t *testing.T) {
 			profile := config.LLMProvider{
 				URL: llm.ClineGatewayBase, Model: "some-model", Subscription: tc.subscription,
 			}
-			model, err := providerModelResolver(profile)(context.Background())
+			model, err := providerModelResolver(profile, "tg-"+tc.providerID)(context.Background())
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -73,12 +73,15 @@ func TestTelegramClineModelCarriesTheGatewayHeaders(t *testing.T) {
 		URL: llm.ClineGatewayBase, Model: "cline-free/deepseek-v4.1-flash",
 		Subscription: llm.ClineSubscription,
 	}
-	model, err := providerModelResolver(profile)(context.Background())
+	model, err := providerModelResolver(profile, "tg-cline-headers")(context.Background())
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if !clineauth.HasClineHeaders(model.ExtraHeaders) {
 		t.Fatalf("no gateway headers: %v", model.ExtraHeaders)
+	}
+	if model.ExtraHeaders["X-Task-ID"] != "tg-cline-headers" {
+		t.Errorf("X-Task-ID = %q, want the Telegram session", model.ExtraHeaders["X-Task-ID"])
 	}
 	for _, key := range []string{"User-Agent", "X-Title", "X-CLIENT-TYPE", "X-Task-ID"} {
 		if model.ExtraHeaders[key] == "" {

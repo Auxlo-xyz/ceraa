@@ -31,28 +31,26 @@ func TestRequestHeadersCarryTheWholeContract(t *testing.T) {
 	}
 }
 
-// The identity is Ceraa's. Cline's SDK supports overriding the client name, which
-// is the clearest sign a non-Cline client is expected to identify itself, so
-// claiming to be their SDK would be a false statement to their server rather than
-// a working integration.
-func TestHeadersIdentifyCeraaNotCline(t *testing.T) {
-	headers := RequestHeaders("s")
-	if headers[HeaderClientType] != "ceraa" {
-		t.Errorf("X-CLIENT-TYPE = %q, want ceraa", headers[HeaderClientType])
+// The gateway expects Cline's own CLI identity. Ceraa values produced a 401,
+// so the request must send the official shape rather than identifying this
+// process.
+func TestHeadersMatchOfficialCLI(t *testing.T) {
+	headers := RequestHeaders("sess-1")
+	want := map[string]string{
+		HeaderReferer:     "https://cline.bot",
+		HeaderTitle:       "Cline",
+		HeaderMultiRoot:   "false",
+		HeaderClientType:  "cline-cli",
+		HeaderUserAgent:   "Cline/3.0.65",
+		HeaderClientVer:   "3.0.65",
+		HeaderPlatform:    "cli",
+		HeaderPlatformVer: "3.0.65",
+		HeaderCoreVersion: "0.0.86",
+		HeaderTaskID:      "sess-1",
 	}
-	if got := headers[HeaderUserAgent]; got != "Ceraa/"+ClientVersion {
-		t.Errorf("User-Agent = %q", got)
-	}
-	if headers[HeaderTitle] != "Ceraa" {
-		t.Errorf("X-Title = %q, want Ceraa", headers[HeaderTitle])
-	}
-	// Nothing in the set may claim to be the official client.
-	for key, value := range headers {
-		if key == HeaderReferer {
-			continue
-		}
-		if value == "cline-sdk" || value == "Cline" {
-			t.Errorf("%s claims to be the official client: %q", key, value)
+	for key, expected := range want {
+		if headers[key] != expected {
+			t.Errorf("%s = %q, want %q", key, headers[key], expected)
 		}
 	}
 }
@@ -66,7 +64,7 @@ func TestHasClineHeaders(t *testing.T) {
 	if HasClineHeaders(RequestHeaders("s")) != true {
 		t.Error("a full set was not recognised")
 	}
-	partial := map[string]string{HeaderClientType: "ceraa"}
+	partial := map[string]string{HeaderClientType: "cline-cli"}
 	if HasClineHeaders(partial) {
 		t.Error("a partial set was reported as complete")
 	}

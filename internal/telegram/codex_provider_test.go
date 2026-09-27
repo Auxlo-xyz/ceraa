@@ -19,7 +19,7 @@ func TestProviderResolverWiresCodexTransport(t *testing.T) {
 		Model:        llm.DefaultCodexModel,
 		Subscription: llm.CodexSubscription,
 	}
-	resolve := providerModelResolver(provider)
+	resolve := providerModelResolver(provider, "tg-codex-transport")
 
 	model, err := resolve(context.Background())
 	if err != nil {
@@ -42,7 +42,7 @@ func TestProviderResolverFillsMissingCodexURL(t *testing.T) {
 	resolve := providerModelResolver(config.LLMProvider{
 		Model:        llm.DefaultCodexModel,
 		Subscription: llm.CodexSubscription,
-	})
+	}, "tg-codex-url")
 	model, err := resolve(context.Background())
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -57,7 +57,7 @@ func TestProviderResolverLeavesOtherSubscriptionsAlone(t *testing.T) {
 	resolve := providerModelResolver(config.LLMProvider{
 		URL:   "https://openrouter.ai/api/v1",
 		Model: "some/model",
-	})
+	}, "tg-custom-provider")
 	model, err := resolve(context.Background())
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
