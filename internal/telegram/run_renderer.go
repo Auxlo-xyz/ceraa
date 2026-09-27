@@ -84,7 +84,26 @@ func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRendere
 
 func (r *runRenderer) runStream() {
 	defer close(r.streamDone)
+	// A final render once the channel is closed.
+	//
+	// Pacing means the last state change can have had its signal dropped: a tool
+	// that completes inside the interval never gets a signal of its own, and the
+	// queued one may already have been consumed against the earlier state. Without
+	// this the live preview can show a tool as still running right up to the final
+	// answer, which is the only place the completed state would otherwise appear.
+	defer r.renderCurrentState()
 	for range r.streamSignal {
+		r.renderCurrentState()
+	}
+}
+
+// renderCurrentState pushes the current stream and thought text, skipping either
+// when the API already has it.
+//
+// Shared by the loop and the final render so the two cannot drift on what counts
+// as changed.
+func (r *runRenderer) renderCurrentState() {
+	{
 		r.mu.Lock()
 		messageID := r.messageID
 		text := r.streamTextLocked()
@@ -104,12 +123,12 @@ func (r *runRenderer) runStream() {
 			r.mu.Unlock()
 		}
 		if messageID == 0 || skipStream {
-			continue
+			return
 		}
 		if err := editTelegramRichMessage(r.token, r.chatID, messageID, text); err != nil {
 			if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, text); fallbackErr != nil {
 				logger.Warn("Telegram streaming preview fallback failed: " + fallbackErr.Error())
-				continue
+				return
 			}
 		}
 		// Recorded only after the API accepted the text. A rejected edit leaves the
