@@ -538,3 +538,117 @@ func TestPermanentStatusIsNotRetried(t *testing.T) {
 		t.Errorf("the error lost the provider's detail: %v", err)
 	}
 }
+
+// The effort is an output_config field. reasoning.effort is accepted and ignored,
+// which is a silent way to send a setting that looks like it works.
+func TestAnthropicEffortGoesInOutputConfig(t *testing.T) {
+	body := map[string]any{}
+	applyAnthropicThinking(body, ReasonHigh, 4096)
+
+	config, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("no output_config: body %v", body)
+	}
+	if config["effort"] != "high" {
+		t.Errorf("effort = %v, want high", config["effort"])
+	}
+	if _, present := body["reasoning"]; present {
+		t.Errorf("reasoning was sent; that field is ignored by this endpoint: %v", body)
+	}
+}
+
+// Thinking off must send nothing at all, since it is billed differently when on.
+func TestThinkingOffSendsNothing(t *testing.T) {
+	for _, level := range []ReasonLevel{ReasonOff, ""} {
+		body := map[string]any{}
+		applyAnthropicThinking(body, level, 4096)
+		if _, present := body["thinking"]; present {
+			t.Errorf("level %q sent a thinking field: %v", level, body)
+		}
+		if _, present := body["output_config"]; present {
+			t.Errorf("level %q sent an output_config: %v", level, body)
+		}
+	}
+}
+
+func TestAnthropicEffortMapping(t *testing.T) {
+	cases := map[ReasonLevel]string{
+		ReasonMinimal: "low",
+		ReasonLow:     "medium",
+		ReasonMedium:  "medium",
+		ReasonHigh:    "high",
+		ReasonXHigh:   "high",
+		ReasonMax:     "high",
+	}
+	for level, want := range cases {
+		if got := anthropicEffort(level); got != want {
+			t.Errorf("anthropicEffort(%q) = %q, want %q", level, got, want)
+		}
+	}
+}
+
+// A budget at or above max_tokens is a 400, not a clamp, and a budget below the
+// minimum is refused outright.
+func TestThinkingBudgetIsBounded(t *testing.T) {
+	body := map[string]any{}
+	applyAnthropicThinkingBudget(body, 10, 4096)
+	thinking, _ := body["thinking"].(map[string]any)
+	if got := thinking["budget_tokens"]; got != minimumThinkingBudget {
+		t.Errorf("a tiny budget became %v, want the minimum %d", got, minimumThinkingBudget)
+	}
+
+	body = map[string]any{}
+	applyAnthropicThinkingBudget(body, 5000, 4096)
+	thinking, _ = body["thinking"].(map[string]any)
+	if got, ok := thinking["budget_tokens"].(int); !ok || got >= 4096 {
+		t.Errorf("budget %v is not below max_tokens 4096, which is a 400", thinking["budget_tokens"])
+	}
+
+	// Too small a window leaves no room at all, so nothing is sent rather than
+	// sending a request the endpoint will reject.
+	body = map[string]any{}
+	applyAnthropicThinkingBudget(body, 2048, 1024)
+	if _, present := body["thinking"]; present {
+		t.Errorf("a budget was sent for a window too small to hold one: %v", body)
+	}
+}
+
+// The thinking fields have to survive into the actual request. Testing the helper
+// directly left the wiring unobserved, which is the same mistake the stream
+// assertions made earlier: green while the field never left the function.
+func TestThinkingReachesTheWire(t *testing.T) {
+	for _, level := range []ReasonLevel{ReasonHigh, ReasonOff} {
+		var body []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+		}))
+		client := &StreamingClient{
+			cfg: ProviderConfig{
+				Model: "claude-x", BaseURL: srv.URL,
+				AnthropicNative: true, AnthropicTokens: stubTokens{token: "sk-test"},
+			},
+			http: srv.Client(),
+		}
+		err := client.streamAnthropic(context.Background(), StreamRequest{
+			Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+			Reason:   level, MaxTokens: 4096,
+		}, func(ProviderResponse) {})
+		srv.Close()
+		if err != nil {
+			t.Fatalf("level %q: %v", level, err)
+		}
+		sent := string(body)
+		hasThinking := strings.Contains(sent, "\"thinking\"")
+		if level == ReasonOff && hasThinking {
+			t.Errorf("thinking reached the wire with the level off: %s", sent)
+		}
+		if level == ReasonHigh && !hasThinking {
+			t.Errorf("no thinking field reached the wire: %s", sent)
+		}
+		if level == ReasonHigh && !strings.Contains(sent, "output_config") {
+			t.Errorf("no output_config reached the wire: %s", sent)
+		}
+	}
+}

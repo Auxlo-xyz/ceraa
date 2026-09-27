@@ -294,10 +294,9 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 		}
 	}
 	if req.Reason != "" {
-		// Extended thinking is opt-in and billed differently, so it is only sent
-		// when asked for. A budget below the minimum is rejected by the API, so
-		// the effort mapping is left to the endpoint's own vocabulary.
-		body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": 2048}
+		// Extended thinking is opt-in and billed differently, so it is only sent when
+		// asked for. The shape is the endpoint's own, not ours.
+		applyAnthropicThinking(body, req.Reason, maxTokens)
 	}
 
 	encoded, err := json.Marshal(body)
@@ -371,6 +370,67 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 		return nil
 	}
 	return lastErr
+}
+
+// anthropicEffort maps our reasoning level onto the Messages API vocabulary.
+//
+// The effort is not a reasoning parameter: it goes in output_config, and
+// reasoning.effort is accepted and ignored, which is a silent way to send a
+// setting that appears to work and does nothing. Hermes and the DeepSeek harness
+// both name these three fields, so the spelling here is theirs.
+func anthropicEffort(level ReasonLevel) string {
+	switch level {
+	case ReasonMinimal:
+		return "low"
+	case ReasonLow, ReasonMedium:
+		return "medium"
+	case ReasonHigh, ReasonXHigh, ReasonMax:
+		return "high"
+	default:
+		return ""
+	}
+}
+
+// minimumThinkingBudget is the smallest budget the Messages API accepts.
+//
+// A budget below the minimum is a hard 400 rather than a clamp, so a request that
+// merely asked for thinking would fail outright.
+const minimumThinkingBudget = 1024
+
+// applyAnthropicThinking writes the thinking and effort fields.
+//
+// Adaptive mode is preferred: the endpoint sizes the budget itself, which avoids
+// the constraint that budget_tokens must stay below max_tokens. Budget mode is
+// kept for a caller that wants to pin it, and the budget is then raised above the
+// minimum and held under max_tokens because exceeding max_tokens is a 400 rather
+// than a clamp.
+func applyAnthropicThinking(body map[string]any, level ReasonLevel, maxTokens int) {
+	if level == "" || level == ReasonOff {
+		return
+	}
+	thinking := map[string]any{"type": "adaptive"}
+	if effort := anthropicEffort(level); effort != "" {
+		// output_config carries the effort. sending reasoning.effort instead is
+		// accepted and ignored.
+		body["output_config"] = map[string]any{"effort": effort}
+	}
+	body["thinking"] = thinking
+}
+
+// applyAnthropicThinkingBudget pins an explicit budget instead of adaptive mode.
+func applyAnthropicThinkingBudget(body map[string]any, budget, maxTokens int) {
+	if budget < minimumThinkingBudget {
+		budget = minimumThinkingBudget
+	}
+	// The budget is counted against max_tokens, so a budget at or above it is a
+	// 400 rather than a clamp.
+	if maxTokens > 0 && budget >= maxTokens {
+		budget = maxTokens - 1
+		if budget < minimumThinkingBudget {
+			return
+		}
+	}
+	body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 }
 
 func pickToolChoice(requested, configured string) string {
