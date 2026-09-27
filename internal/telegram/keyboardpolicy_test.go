@@ -179,23 +179,26 @@ func TestTheAgentAnswerCarriesTheReplyKeyboard(t *testing.T) {
 	}
 }
 
-// The run renderer creates the assistant message once and then only ever edits it.
-// Telegram keeps the existing reply_markup when an edit omits it, so attaching the
-// keyboard at creation is what carries it through the streamed text and the final
-// answer. If this regresses, every run finishes with a keyboard-less message even
-// though the first frame had one.
-func TestTheRunRendererAttachesTheKeyboardAtCreation(t *testing.T) {
+// A run creates its assistant message through the rich endpoint, whose payload
+// cannot carry markup, then attaches the keyboard with a markup-only call. Both
+// halves are required: drop the attach and the run ends with no keyboard, put the
+// markup in the rich payload and the endpoint's tool call and thought rendering
+// breaks.
+func TestARunEndsWithTheKeyboardAttached(t *testing.T) {
 	cap := beginCapture(t)
 	newRunRenderer("test-token", 1)
 
-	sends := cap.sends()
-	if len(sends) == 0 {
-		t.Fatalf("the renderer sent nothing: %v", cap.methods())
+	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
+		t.Fatalf("the run attached no keyboard: %v", cap.methods())
 	}
-	// The rich endpoint is what production takes, so the keyboard has to be on
-	// whichever call actually created the message.
-	if !carriesReplyKeyboard(sends[0].Body) {
-		t.Errorf("the assistant message was created without the reply keyboard: %s", cap.methods()[0])
+	var markup map[string]any
+	for _, call := range cap.calls {
+		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			markup, _ = call.Body["reply_markup"].(map[string]any)
+		}
+	}
+	if _, isReply := markup["keyboard"]; !isReply {
+		t.Error("the attach call did not carry the reply keyboard")
 	}
 }
 
@@ -211,7 +214,7 @@ func TestEveryUserFacingReplyIsACarrier(t *testing.T) {
 	newRunRenderer("test-token", 1)
 
 	carriers := 0
-	for _, call := range cap.sends() {
+	for _, call := range cap.calls {
 		if carriesReplyKeyboard(call.Body) {
 			carriers++
 		}
@@ -342,16 +345,16 @@ func TestTheHTMLEditCarriesTheReplyKeyboard(t *testing.T) {
 	}
 }
 
-// The rich endpoint is the branch production takes, and it was the one carrying no
-// reply keyboard. Every earlier test passed because the stub rejected
-// sendRichMessage, so this path was never exercised; the trace is what showed the
-// endpoint works and the branch is live.
+// The rich payload is exactly chat_id plus rich_message. Adding reply_markup to it
+// attached the keyboard but broke the endpoint's own rendering of tool calls and
+// thoughts, so the payload is treated as fixed and the keyboard is attached by a
+// separate markup-only call instead.
 //
-// Pinned directly so removing the markup from the rich send fails here rather than
-// in production.
-func TestTheRichSendCarriesTheReplyKeyboard(t *testing.T) {
+// This is the regression guard for that: it fails if anyone puts markup back into a
+// rich send.
+func TestTheRichSendPayloadStaysClean(t *testing.T) {
 	cap := beginCapture(t)
-	if _, err := sendRichMessage("test-token", 1, "the answer", keyboard.Main()); err != nil {
+	if _, err := sendRichMessage("test-token", 1, "the answer"); err != nil {
 		t.Fatalf("sendRichMessage failed: %v", err)
 	}
 
@@ -364,16 +367,15 @@ func TestTheRichSendCarriesTheReplyKeyboard(t *testing.T) {
 	if rich == nil {
 		t.Fatalf("no sendRichMessage was sent: %v", cap.methods())
 	}
-	markup, _ := rich["reply_markup"].(map[string]any)
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the rich send carries no reply keyboard, and this is the path a real prompt takes")
+	if _, present := rich["reply_markup"]; present {
+		t.Error("the rich send carries reply_markup, which breaks its tool call and thought rendering")
+	}
+	if len(rich) != 2 {
+		t.Errorf("the rich payload has %d keys, want exactly chat_id and rich_message: %#v", len(rich), rich)
 	}
 }
 
-// The rich edit replaces the message's markup like any other edit, so it needs the
-// keyboard too. The API currently rejects rich edits outright, but the fallback
-// path calls this whenever it is accepted, so it cannot be left without markup.
-func TestTheRichEditCarriesTheReplyKeyboard(t *testing.T) {
+func TestTheRichEditPayloadStaysClean(t *testing.T) {
 	cap := beginCapture(t)
 	_ = editTelegramRichMessage("test-token", 1, 42, "the answer")
 
@@ -386,30 +388,28 @@ func TestTheRichEditCarriesTheReplyKeyboard(t *testing.T) {
 	if edit == nil {
 		t.Fatalf("no editMessageText was sent: %v", cap.methods())
 	}
-	markup, _ := edit["reply_markup"].(map[string]any)
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the rich edit strips the reply keyboard")
+	if _, present := edit["reply_markup"]; present {
+		t.Error("the rich edit carries reply_markup, which breaks its rendering")
 	}
 }
 
-// A renderer that reaches production must create its assistant message through the
-// rich endpoint with the keyboard attached. This is the exact shape of the bug the
-// trace caught: the keyboard was on the fallback branch only.
-func TestProductionCreationPathCarriesTheKeyboard(t *testing.T) {
+// The keyboard now reaches a rich-created message through editMessageReplyMarkup,
+// which changes only the markup and leaves the rich content alone. A rich send is
+// the live path, so if this stops happening the run finishes with no keyboard.
+func TestTheKeyboardIsAttachedToARichMessageSeparately(t *testing.T) {
 	cap := beginCapture(t)
 	newRunRenderer("test-token", 1)
 
-	var rich map[string]any
+	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
+		t.Fatalf("no editMessageReplyMarkup was sent, so a rich-created run ends with no keyboard: %v", cap.methods())
+	}
+	var markup map[string]any
 	for _, call := range cap.calls {
-		if strings.HasSuffix(call.Method, "sendRichMessage") {
-			rich = call.Body
+		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			markup, _ = call.Body["reply_markup"].(map[string]any)
 		}
 	}
-	if rich == nil {
-		t.Fatalf("production took the fallback branch, so this test is not covering the live path: %v", cap.methods())
-	}
-	markup, _ := rich["reply_markup"].(map[string]any)
 	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the live creation path attaches no reply keyboard")
+		t.Error("editMessageReplyMarkup did not carry the reply keyboard")
 	}
 }
