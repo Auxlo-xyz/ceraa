@@ -33,15 +33,25 @@ type runRenderer struct {
 	streamContent string
 	thought       string
 	tools         []toolActivity
-	lastStream    time.Time
 	lastThought   time.Time
 	lastStatus    time.Time
-	stopped       bool
-	cancel        context.CancelFunc
-	streamSignal  chan struct{}
-	streamDone    chan struct{}
-	streamMu      sync.Mutex
-	streamClosed  bool
+	// Last text accepted by the API for each message, used to skip no-op edits.
+	//
+	// The stream loop re-sends the whole accumulated buffer on every signal,
+	// because Telegram has no append. Without this, any signal that did not change
+	// the rendered text still PUT the entire buffer, and Telegram answered
+	// "message is not modified". Live cost: 404 such rejections, and a run that
+	// ended in 429 retry after 227s because a single 3k answer was re-sent around
+	// thirty times.
+	sentStream   string
+	sentThought  string
+	lastSignal   time.Time
+	stopped      bool
+	cancel       context.CancelFunc
+	streamSignal chan struct{}
+	streamDone   chan struct{}
+	streamMu     sync.Mutex
+	streamClosed bool
 }
 
 func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRenderer {
@@ -80,24 +90,50 @@ func (r *runRenderer) runStream() {
 		text := r.streamTextLocked()
 		thoughtID := r.thoughtID
 		thoughtText := r.thoughtTextLocked()
+		skipStream := text == r.sentStream
+		skipThought := thoughtID != 0 && thoughtText == r.sentThought
 		r.mu.Unlock()
-		if thoughtID != 0 && thoughtText != "" {
+		if thoughtID != 0 && thoughtText != "" && !skipThought {
 			if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
 				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
 					logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
 				}
 			}
+			r.mu.Lock()
+			r.sentThought = thoughtText
+			r.mu.Unlock()
 		}
-		if messageID == 0 {
+		if messageID == 0 || skipStream {
 			continue
 		}
 		if err := editTelegramRichMessage(r.token, r.chatID, messageID, text); err != nil {
 			if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, text); fallbackErr != nil {
 				logger.Warn("Telegram streaming preview fallback failed: " + fallbackErr.Error())
+				continue
 			}
 		}
+		// Recorded only after the API accepted the text. A rejected edit leaves the
+		// last-known-good value in place, so the next signal retries it instead of
+		// treating the message as already up to date.
+		r.mu.Lock()
+		r.sentStream = text
+		r.mu.Unlock()
 	}
 }
+
+// streamMinInterval is the floor between two outbound stream edits.
+//
+// The three producers used to pace themselves independently: content at 350ms,
+// reasoning at 300ms, and tool with no limit at all. A burst of tool results
+// therefore signalled on every single event, and each signal cost a full-buffer
+// edit. Coalescing here, at the one point every producer funnels through, bounds
+// the rate regardless of which producer is busy.
+//
+// Dropping a signal is safe: streamContent keeps accumulating, so the next one
+// that is let through renders the newer text rather than losing it. The final
+// answer does not go through here at all, so a dropped tail is always superseded
+// by the real answer.
+const streamMinInterval = 300 * time.Millisecond
 
 func (r *runRenderer) signalStream() {
 	r.streamMu.Lock()
@@ -105,6 +141,10 @@ func (r *runRenderer) signalStream() {
 	if r.streamClosed {
 		return
 	}
+	if time.Since(r.lastSignal) < streamMinInterval {
+		return
+	}
+	r.lastSignal = time.Now()
 	select {
 	case r.streamSignal <- struct{}{}:
 	default:
@@ -209,6 +249,11 @@ func (r *runRenderer) reasoning(value string) {
 		r.thoughtID = thoughtMessageID
 		r.messageID = assistantMessageID
 		r.mu.Unlock()
+		// sentStream is deliberately not seeded here. It looks necessary, since the
+		// replacement is created already carrying the preview, but a probe showed
+		// sentStream already equals that preview by this point: a queued signal
+		// renders it before reasoning() gets here. Seeding it was redundant, and
+		// because it was redundant no test could tell it from its absence.
 	}
 	r.signalStream()
 }
@@ -260,16 +305,8 @@ func (r *runRenderer) tool(callID, value string) {
 func (r *runRenderer) content(delta string) {
 	r.mu.Lock()
 	r.streamContent += delta
-	messageID := r.messageID
-	if time.Since(r.lastStream) < 350*time.Millisecond {
-		r.mu.Unlock()
-		return
-	}
-	r.lastStream = time.Now()
 	r.mu.Unlock()
-	if messageID == 0 {
-		return
-	}
+	// Pacing lives in signalStream now, so a stream tick cannot outrun the others.
 	r.signalStream()
 }
 
