@@ -440,9 +440,22 @@ func pickToolChoice(requested, configured string) string {
 	return configured
 }
 
+// anthropicToken resolves the credential for a Messages request.
+//
+// Two sources, and the order matters. A subscription profile carries a managed
+// credential that is refreshed for us; an API-key profile carries the key on the
+// profile itself. The managed one wins because it is the one that can renew
+// itself, and a profile key is a fallback rather than a peer.
 func (c *StreamingClient) anthropicToken(ctx context.Context) (string, error) {
 	if c.cfg.AnthropicTokens == nil {
-		return "", fmt.Errorf("messages provider selected but no credential is available")
+		// No managed credential, so the profile's own key has to serve. Without
+		// this the transport refuses outright, which left a plain Anthropic API
+		// key unable to use it at all: the Messages transport existed but had no
+		// reachable path to a credential.
+		if key := strings.TrimSpace(c.cfg.APIKey); key != "" {
+			return key, nil
+		}
+		return "", fmt.Errorf("messages provider selected but no credential is available: sign in or set an API key")
 	}
 	token, err := c.cfg.AnthropicTokens.AccessToken(ctx)
 	if err != nil {

@@ -652,3 +652,87 @@ func TestThinkingReachesTheWire(t *testing.T) {
 		}
 	}
 }
+
+// The transport had no reachable path to a plain API key: it refused outright
+// without a managed credential, so a normal Anthropic key could not use it even
+// though the transport is what serves that endpoint.
+func TestMessagesAcceptsAProfileAPIKey(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg:  ProviderConfig{Model: "claude-x", BaseURL: srv.URL, AnthropicNative: true, APIKey: "sk-profile"},
+		http: srv.Client(),
+	}
+	if err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 64,
+	}, func(ProviderResponse) {}); err != nil {
+		t.Fatalf("a profile API key was refused: %v", err)
+	}
+	if got != "sk-profile" {
+		t.Errorf("x-api-key = %q, want the profile key", got)
+	}
+}
+
+// A managed credential wins over a profile key, because it is the one that renews.
+func TestManagedCredentialWinsOverAProfileKey(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model: "claude-x", BaseURL: srv.URL, AnthropicNative: true,
+			APIKey: "sk-profile", AnthropicTokens: stubTokens{token: "managed"},
+		},
+		http: srv.Client(),
+	}
+	if err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 64,
+	}, func(ProviderResponse) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "managed" {
+		t.Errorf("x-api-key = %q, want the managed credential", got)
+	}
+}
+
+// With neither, the error has to say both what is missing and what to do.
+func TestMessagesWithNoCredentialSaysWhatToDo(t *testing.T) {
+	client := &StreamingClient{cfg: ProviderConfig{Model: "claude-x", AnthropicNative: true}}
+	_, err := client.anthropicToken(context.Background())
+	if err == nil {
+		t.Fatal("a request with no credential was allowed")
+	}
+	if !strings.Contains(err.Error(), "API key") {
+		t.Errorf("the error does not say how to fix it: %v", err)
+	}
+}
+
+// A Messages-compatible host must be detected from the profile, so a plain
+// Anthropic or MiniMax key is not sent to chat completions.
+func TestMessagesHostDetection(t *testing.T) {
+	cases := map[string]bool{
+		"https://api.anthropic.com":          true,
+		"https://api.minimax.io/anthropic":   true,
+		"https://api.minimaxi.com/anthropic": true,
+		"https://api.openai.com/v1":          false,
+		"https://api.apmix.ai/v1":            false,
+		"https://api.deepseek.com":           false,
+		"":                                   false,
+	}
+	for base, want := range cases {
+		if got := UsesAnthropicMessages("m", base); got != want {
+			t.Errorf("UsesAnthropicMessages(%q) = %v, want %v", base, got, want)
+		}
+	}
+}

@@ -141,6 +141,15 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			modelConfig.XaiTokens = xaiauth.NewTokenSource()
 			return modelConfig, nil
 		default:
+			// A plain profile can still need the Messages transport. Anthropic and
+			// MiniMax both serve /v1/messages rather than chat completions, and a
+			// profile configured for them with a plain API key would otherwise be
+			// sent to the wrong endpoint and 404 on a path that reads as a bad
+			// model id. Keyed off the host rather than the profile name so a
+			// self-hosted Messages-compatible gateway is picked up too.
+			if llm.UsesAnthropicMessages(modelConfig.Model, modelConfig.BaseURL) {
+				modelConfig.AnthropicNative = true
+			}
 			return modelConfig, nil
 		}
 	}
