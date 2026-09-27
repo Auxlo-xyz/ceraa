@@ -214,3 +214,70 @@ func TestEveryUserFacingReplyIsACarrier(t *testing.T) {
 			carriers, cap.methods())
 	}
 }
+
+// /keyboard exists because the Bot API has no way to flush what a client has
+// cached about a chat UI. Removal followed by a fresh keyboard is the documented
+// way to make a client rebuild one, and it is the only lever available.
+//
+// The order is the entire mechanism: setting the keyboard again while the client
+// believes it already has one can be a no-op, which is exactly the stuck state
+// this clears. Asserted as a sequence so swapping the two fails.
+func TestKeyboardResetRemovesBeforeReinstating(t *testing.T) {
+	cap := beginCapture(t)
+	handleKeyboard("test-token", 1)
+
+	var sawRemoval, sawKeyboard bool
+	order := 0
+	for _, call := range cap.sends() {
+		markup, _ := call.Body["reply_markup"].(map[string]any)
+		if _, removing := markup["remove_keyboard"]; removing {
+			sawRemoval = true
+			if order > 0 {
+				t.Fatal("the removal was sent after the keyboard was set, so the client would treat the reset as a no-op")
+			}
+			order++
+			continue
+		}
+		if _, isReply := markup["keyboard"]; isReply {
+			sawKeyboard = true
+			order++
+		}
+	}
+	if !sawRemoval {
+		t.Errorf("no ReplyKeyboardRemove was sent: %v", cap.methods())
+	}
+	if !sawKeyboard {
+		t.Errorf("the keyboard was not reinstated: %v", cap.methods())
+	}
+}
+
+// The removal message is bookkeeping and must not be left in the transcript. It
+// carries no keyboard, so deleting it cannot take the keyboard down with it.
+func TestKeyboardResetCleansUpTheRemovalMessage(t *testing.T) {
+	cap := beginCapture(t)
+	handleKeyboard("test-token", 1)
+
+	if !calledMethod(cap.methods(), "deleteMessage") {
+		t.Errorf("the reset left its removal message in the transcript: %v", cap.methods())
+	}
+}
+
+// The reinstatement is a real user-facing reply, so it must carry the keyboard
+// and must not be one of the invisible placeholder messages.
+func TestKeyboardResetEndsWithAVisibleCarryingMessage(t *testing.T) {
+	cap := beginCapture(t)
+	handleKeyboard("test-token", 1)
+
+	sends := cap.sends()
+	if len(sends) == 0 {
+		t.Fatal("the reset sent nothing")
+	}
+	last := sends[len(sends)-1]
+	if !carriesReplyKeyboard(last.Body) {
+		t.Error("the final message of the reset did not carry the keyboard")
+	}
+	text, _ := last.Body["text"].(string)
+	if strings.TrimSpace(strings.Trim(text, "\u200b")) == "" {
+		t.Errorf("the reset told the user nothing: %q", text)
+	}
+}

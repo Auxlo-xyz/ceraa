@@ -725,6 +725,9 @@ func Run() error {
 			case "/codex-status", "/codex_status":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleCodexStatus(token, u.Message.Chat.ID)
+			case "/keyboard", "/keyboard_reset":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleKeyboard(token, u.Message.Chat.ID)
 			case "/help":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleFullHelp(token, u.Message.Chat.ID)

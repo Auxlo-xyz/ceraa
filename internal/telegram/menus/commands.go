@@ -9,6 +9,7 @@ func Commands() []CommandSpec {
 	return []CommandSpec{
 		{"start", "Open Ceraa"},
 		{"help", "Show available commands"},
+		{"keyboard", "Force the reply keyboard to reappear"},
 		{"hub", "Open the control hub"},
 		{"new", "Start a fresh session"},
 		{"sessions", "List stored sessions"},
