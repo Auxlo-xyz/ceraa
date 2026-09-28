@@ -474,6 +474,7 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.CacheKey = compactionCacheKey(provider.URL, provider.Model, sessionID)
+	compactor.ArchiveDir = cfg.SessionFile
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled
 	}

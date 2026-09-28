@@ -85,6 +85,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.CacheKey = "ceraa-compaction-cli"
+	compactor.ArchiveDir = cfg.SessionFile
 	// Startup snapshot, kept as a fallback and as the first render. The live
 	// renderer below re-reads the file every turn.
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)

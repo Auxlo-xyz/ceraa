@@ -351,6 +351,12 @@ type Compactor struct {
 	ResolveModel     func(context.Context) (llm.ProviderConfig, error)
 	LastPromptTokens int
 	OnUsage          func(llm.UsageInfo)
+	// ArchiveDir is where the discarded head is kept for auditing. Empty disables
+	// archiving, so a caller that has nowhere to put it is unaffected.
+	//
+	// This is a diagnostic and never an input: nothing read back from here reaches
+	// the model, so turning it on cannot change what the agent does.
+	ArchiveDir string
 }
 
 // New creates a compactor with default settings.
@@ -507,6 +513,10 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	if text == "" {
 		return false, fmt.Errorf("empty summary from LLM")
 	}
+	// Archive before the rewrite, while the head is still in hand. The summary is
+	// the only surviving account of this stretch, and without the head there is no
+	// way to check that account later.
+	c.writeArchive(sess.ID, len(sess.Messages), text, headMessages)
 	newMessages := make([]sessionstore.Message, 0, len(recentMessages)+2)
 	if systemMessage != nil {
 		newMessages = append(newMessages, *systemMessage)
