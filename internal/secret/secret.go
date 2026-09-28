@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -124,6 +126,51 @@ func Get(name string) (string, error) {
 	}
 
 	return value, nil
+}
+
+// internalPrefixes mark credentials the harness resolves for itself.
+//
+// The store holds two kinds of secret in one file: the ones a person set for the
+// agent to use, and Ceraa's own provider tokens. Both are credentials, and the
+// second kind must not be reachable by anything the model can call — a tool that
+// can read `ceraa_minimax_global` can read the account, and one that could read a
+// bot token would own the host. The code that already has them keeps having them.
+var internalPrefixes = []string{
+	"ceraa_",
+	"codex_",
+	"hermes_",
+	"xai_",
+	"cline_",
+	"minimax_",
+}
+
+// IsInternal reports whether a name is Ceraa's own rather than a user's.
+//
+// A deny-list and not an allow-list on purpose: a name the store learns about later
+// is denied by default, and there is no way for a new internal credential to be
+// exposed by forgetting to register it.
+func IsInternal(name string) bool {
+	for _, prefix := range internalPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ListUser returns the stored names a person set, for display and for offering as
+// choices. Ceraa's own credentials are excluded rather than shown, since a menu
+// that lists them invites picking one.
+func ListUser() []string {
+	all := List()
+	out := make([]string, 0, len(all))
+	for _, name := range all {
+		if !IsInternal(name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // List returns all stored secret names.

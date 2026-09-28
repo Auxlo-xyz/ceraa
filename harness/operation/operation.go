@@ -19,6 +19,7 @@ import (
 	"ceraa/harness/search"
 	"ceraa/harness/snapshot"
 	"ceraa/harness/todo"
+	"ceraa/internal/secret"
 )
 
 // Spec describes work to be done.
@@ -52,6 +53,51 @@ type Manager interface {
 	Add(op Operation)
 	Cancel(id string)
 	Results() <-chan ResultEvent
+}
+
+// setProviderCredential is the seam the provider profile write goes through.
+//
+// Injected by the bridge so this package does not have to know how a profile is
+// stored, and so the value crosses exactly one boundary on its way out of the
+// secret store.
+var setProviderCredential = func(provider, value string) error {
+	return fmt.Errorf("no provider store is attached")
+}
+
+// SetProviderCredentialWriter attaches the profile write that set_provider_key
+// resolves to. Exported so the application can supply it; without it the tool
+// reports that no store is attached rather than pretending to have set anything.
+func SetProviderCredentialWriter(fn func(provider, value string) error) {
+	if fn != nil {
+		setProviderCredential = fn
+	}
+}
+
+// resolveUsableSecret reads a secret the model is permitted to use.
+//
+// Both refusals are deliberate. A reserved name is Ceraa's own credential — a tool
+// that could read one hands the model the account, and one that could read a bot
+// token would own the host. An unknown name is a typo in a name the model chose,
+// and passing it through as empty would fail later and somewhere else.
+func resolveUsableSecret(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("secret name is required")
+	}
+	if secret.IsInternal(name) {
+		return "", fmt.Errorf("secret %q is reserved for Ceraa's own provider credentials and cannot be used by a tool", name)
+	}
+	value, err := secret.Get(name)
+	if err != nil {
+		return "", fmt.Errorf("no secret named %q", name)
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("secret %q is stored but empty", name)
+	}
+	// Armed here as well as at startup, so a secret set since then is scrubbed
+	// before it can be printed.
+	redact.RegisterLiteral(value)
+	return value, nil
 }
 
 // specEdits reads the edits argument in either shape it can arrive in.
@@ -233,6 +279,59 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 		result.Error = "canceled"
 	default:
 		switch op.Spec.Type {
+		case "set_provider_key":
+			// The value is read here, used, and dropped. It never enters the spec,
+			// which is persisted as SpecArgs, and never enters the result.
+			name, _ := op.Spec.Args["secret"].(string)
+			provider, _ := op.Spec.Args["provider"].(string)
+			value, err := resolveUsableSecret(name)
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+				break
+			}
+			if err := setProviderCredential(provider, value); err != nil {
+				result.Error = fmt.Sprintf("could not set the credential for %s: %v", provider, err)
+				result.Status = StatusFailed
+				break
+			}
+			result.Output = fmt.Sprintf("Gave %s the credential from %s (%d chars). The value was not shown.",
+				provider, name, len([]rune(value)))
+			result.Status = StatusCompleted
+		case "run_command_with_secret":
+			// Read, inject into the child only, drop. The command's own output is
+			// scrubbed below by the same redaction every other result goes through,
+			// so `env` and `echo $VAR` cannot deliver the value into the model's
+			// context.
+			name, _ := op.Spec.Args["secret"].(string)
+			envVar, _ := op.Spec.Args["env_var"].(string)
+			cmd, _ := op.Spec.Args["command"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			value, err := resolveUsableSecret(name)
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+				break
+			}
+			workDir = operationPath(workDir, workDir)
+			r, err := primitives.RunShellContextWithEnv(ctx, cmd, workDir, defaultShellTimeout,
+				[]string{envVar + "=" + value})
+			// Overwrite the local so it is not left in a long-lived slice while the
+			// rest of the operation finishes.
+			value = ""
+			result.Output = r.Content
+			result.OutputPath = r.OutputPath
+			if r.OutputPath != "" {
+				if data, readErr := os.ReadFile(r.OutputPath); readErr == nil {
+					_ = os.WriteFile(r.OutputPath, []byte(redact.SecretsInText(string(data))), 0o600)
+				}
+			}
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+			} else {
+				result.Status = StatusCompleted
+			}
 		case "shell":
 			cmd, _ := op.Spec.Args["command"].(string)
 			to := defaultShellTimeout

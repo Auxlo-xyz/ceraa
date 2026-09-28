@@ -23,9 +23,25 @@ func RunShell(command string, workDir string, timeout time.Duration) (PrimitiveR
 }
 
 func RunShellContext(parent context.Context, command string, workDir string, timeout time.Duration) (PrimitiveResult, error) {
+	return runShell(parent, command, workDir, timeout, nil)
+}
+
+// RunShellContextWithEnv runs a command with extra environment entries.
+//
+// The entries are set on the child process only, so a value passed this way never
+// appears in the command line — which means it cannot be read out of `ps` — and
+// never enters this process's own environment.
+func RunShellContextWithEnv(parent context.Context, command string, workDir string, timeout time.Duration, extraEnv []string) (PrimitiveResult, error) {
+	return runShell(parent, command, workDir, timeout, extraEnv)
+}
+
+func runShell(parent context.Context, command string, workDir string, timeout time.Duration, extraEnv []string) (PrimitiveResult, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	if workDir != "" {
 		cmd.Dir = workDir
 	}

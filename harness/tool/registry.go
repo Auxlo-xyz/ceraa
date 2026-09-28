@@ -304,6 +304,8 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&WriteTool{})
 	r.Register(&EditTool{})
 	r.Register(&BatchEditFileTool{})
+	r.Register(&SetProviderKeyTool{})
+	r.Register(&RunCommandWithSecretTool{})
 
 	r.Register(&WebFetchTool{})
 	// Registered without a client and attached later by whoever knows the active

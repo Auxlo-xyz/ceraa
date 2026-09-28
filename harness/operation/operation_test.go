@@ -2,6 +2,10 @@ package operation
 
 import (
 	"bytes"
+	"ceraa/harness/redact"
+	"ceraa/internal/secret"
+	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -460,5 +464,146 @@ func TestEditLineAndTheLegacyEditTypeBothRun(t *testing.T) {
 		if after, _ := os.ReadFile(path); string(after) != "new\n" {
 			t.Errorf("%s: file = %q", specType, after)
 		}
+	}
+}
+
+// The guarantee: a secret is readable and usable, and never readable back.
+//
+// A value placed in a spec would be persisted as SpecArgs and reloaded on every
+// later request in the session, so the spec carries the name and the value exists
+// only inside the operation.
+func TestASecretValueNeverEntersASpecOrAResult(t *testing.T) {
+	openTestSecretStore(t)
+	const value = "sk-live-DONTLEAKTHISVALUE1234567890"
+	if err := secret.Set("probe_key", value); err != nil {
+		t.Fatal(err)
+	}
+	redact.ResetLiterals()
+	t.Cleanup(redact.ResetLiterals)
+	SetProviderCredentialWriter(func(provider, got string) error {
+		if got != value {
+			return fmt.Errorf("the writer received %q, want the stored value", got)
+		}
+		return nil
+	})
+	t.Cleanup(func() { SetProviderCredentialWriter(nil) })
+
+	// The spec, which is what gets persisted.
+	spec := Spec{Type: "set_provider_key", Args: map[string]any{"provider": "custom", "secret": "probe_key"}}
+	encoded, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), value) {
+		t.Fatalf("the value is in the spec that gets persisted: %s", encoded)
+	}
+
+	mgr := New(nil)
+	mgr.Add(Operation{ID: "spk", Spec: spec, Status: StatusPending})
+	var out string
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("status %s: %s", r.Status, r.Error)
+		}
+		out = r.Output + r.Error
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+	if strings.Contains(out, value) {
+		t.Errorf("the value reached the result the model reads: %q", out)
+	}
+	if !strings.Contains(out, "chars") {
+		t.Errorf("the result should describe the credential without showing it: %q", out)
+	}
+}
+
+// The name of a secret is fine; Ceraa's own credentials are not. A tool that could
+// read `ceraa_minimax_global` hands the model the account.
+func TestReservedSecretsAreRefusedByName(t *testing.T) {
+	openTestSecretStore(t)
+	for _, name := range []string{"ceraa_minimax_global", "codex_access_token", "ceraa_xai_xai"} {
+		if err := secret.Set(name, "internal-credential-value"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"ceraa_minimax_global", "codex_access_token"} {
+		_, err := resolveUsableSecret(name)
+		if err == nil {
+			t.Errorf("%s was readable by a model-facing tool", name)
+		} else if !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("%s: error = %q, want it to say reserved", name, err)
+		}
+	}
+	if _, err := resolveUsableSecret("no_such_secret"); err == nil {
+		t.Error("an unknown name was accepted")
+	}
+}
+
+// The whole reason a command may be handed a secret at all: the value goes into
+// the child process, and what the child prints is scrubbed on the way out. Without
+// that, `env` puts it in the model's context.
+func TestASecretHandedToACommandNeverComesBack(t *testing.T) {
+	openTestSecretStore(t)
+	const value = "plaintextsecret-not-pattern-shaped"
+	if err := secret.Set("probe_env", value); err != nil {
+		t.Fatal(err)
+	}
+	redact.ResetLiterals()
+	t.Cleanup(redact.ResetLiterals)
+	if _, err := resolveUsableSecret("probe_env"); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(nil)
+	mgr.Add(Operation{ID: "rcs", Spec: Spec{Type: "run_command_with_secret", Args: map[string]any{
+		// The two commands a model reaches for to exfiltrate one.
+		"command": "echo \"value=$PROBE\"; env | grep PROBE; printenv PROBE",
+		"secret":  "probe_env",
+		"env_var": "PROBE",
+	}}, Status: StatusPending})
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("status %s: %s", r.Status, r.Error)
+		}
+		if strings.Contains(r.Output, value) {
+			t.Errorf("the command's own output carried the value into the result: %q", r.Output)
+		}
+		if !strings.Contains(r.Output, "redacted") {
+			t.Errorf("expected a redaction marker in %q", r.Output)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+// The value must not be in the command line, or `ps` publishes it.
+func TestTheValueIsNotInTheCommandLine(t *testing.T) {
+	openTestSecretStore(t)
+	if err := secret.Set("probe_ps", "commandline-secret-value-9876"); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(nil)
+	mgr.Add(Operation{ID: "rcs-ps", Spec: Spec{Type: "run_command_with_secret", Args: map[string]any{
+		"command": "cat /proc/$$/cmdline | tr '\\0' ' '",
+		"secret":  "probe_ps",
+		"env_var": "PROBE_PS",
+	}}, Status: StatusPending})
+	select {
+	case r := <-mgr.Results():
+		if strings.Contains(r.Output, "commandline-secret-value-9876") {
+			t.Errorf("the value was on the command line: %q", r.Output)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func openTestSecretStore(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatal(err)
 	}
 }

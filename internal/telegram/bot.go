@@ -508,6 +508,10 @@ func Run() error {
 	if err := secret.Init(keyFile, secretFile); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
+	// Arm exact-value redaction with everything already stored, before a single
+	// tool can run. Patterns alone only catch vendor-shaped credentials, and a
+	// secret a person chose has no prefix to recognise.
+	armSecretRedaction()
 
 	if defaultState.loadErr != nil {
 		return fmt.Errorf("bridge state: %w", defaultState.loadErr)
@@ -738,6 +742,14 @@ func Run() error {
 			}
 			txt := normalizeCommandText(strings.TrimSpace(u.Message.Text))
 			setMenuTriggerPending(u.Message.Chat.ID, u.Message.MessageID)
+			// A secret capture is checked first, and before anything that could put
+			// the text anywhere durable. The value must not reach the session file, a
+			// transcript, or a tool result, so this has to run ahead of
+			// handlePendingInput as well as ahead of the run.
+			if handleSecretInput(token, u.Message.Chat.ID, int64(u.Message.MessageID), txt) {
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				continue
+			}
 			if handlePendingInput(token, u.Message.Chat.ID, txt) {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				continue

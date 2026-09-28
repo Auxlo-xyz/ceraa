@@ -5,8 +5,85 @@ package redact
 
 import (
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 )
+
+// Exact-value redaction.
+//
+// The patterns above are high precision by design, which is also their limit: a
+// user's own secret has no vendor prefix, so a random passphrase read back by
+// `env` or echoed by a provider in an error line sails straight through. A value
+// the process already holds can be matched literally, with no guessing, so the
+// application registers each one it stores and everything leaving the process is
+// scrubbed against it as well.
+//
+// This is what makes it safe to hand a secret to a subprocess at all. Without it,
+// a tool that injects a value into an environment is one `env` away from putting
+// it in the model's context.
+var (
+	literalsMu sync.RWMutex
+	literals   = map[string]struct{}{}
+)
+
+// MinLiteralLength is the shortest value worth matching literally.
+//
+// Scrubbing is substring replacement, so a short secret would corrupt unrelated
+// text everywhere it appeared — a three-character secret would blank out most of
+// a transcript. Below this length a value is not protectable by matching, and
+// pretending otherwise would damage more than it saved.
+const MinLiteralLength = 8
+
+// RegisterLiteral adds a stored value to the exact-match scrub list.
+//
+// A no-op for an empty or very short value; see MinLiteralLength for why.
+func RegisterLiteral(value string) {
+	if len(value) < MinLiteralLength {
+		return
+	}
+	literalsMu.Lock()
+	defer literalsMu.Unlock()
+	literals[value] = struct{}{}
+}
+
+// ResetLiterals clears the registered values. For tests, and for a store that
+// has been reloaded.
+func ResetLiterals() {
+	literalsMu.Lock()
+	defer literalsMu.Unlock()
+	literals = map[string]struct{}{}
+}
+
+// RegisteredLiterals reports how many exact values are registered, so a caller can
+// assert the scrubber is armed rather than assuming it.
+func RegisteredLiterals() int {
+	literalsMu.RLock()
+	defer literalsMu.RUnlock()
+	return len(literals)
+}
+
+// scrubLiterals replaces every registered value, longest first.
+//
+// Longest first because the values overlap in practice — a token and a prefix of
+// it — and replacing the short one first would leave a tail of the long one
+// behind, which is still most of the secret.
+func scrubLiterals(text string) string {
+	literalsMu.RLock()
+	values := make([]string, 0, len(literals))
+	for value := range literals {
+		values = append(values, value)
+	}
+	literalsMu.RUnlock()
+	if len(values) == 0 {
+		return text
+	}
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, value := range values {
+		text = strings.ReplaceAll(text, value, mask(value))
+	}
+	return text
+}
 
 const redactionMarker = "«redacted"
 
@@ -77,12 +154,15 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// SecretsInText scrubs credential-shaped values from arbitrary text.
+// SecretsInText scrubs credential-shaped values and every registered exact value
+// from arbitrary text.
 func SecretsInText(text string) string {
 	if len(text) < 8 {
 		return text
 	}
-	out := text
+	// Literals first: they are exact, so they beat a pattern that would only
+	// partially match, and a masked value must not be re-matched by a later pass.
+	out := scrubLiterals(text)
 
 	// Prefix formats (sk-xxx, xai-xxx, etc.)
 	for _, re := range prefixes {
@@ -96,6 +176,9 @@ func SecretsInText(text string) string {
 
 	// Bearer tokens
 	out = bearer.ReplaceAllStringFunc(out, func(m string) string {
+		if strings.HasPrefix(m, redactionMarker) {
+			return m
+		}
 		return mask(m)
 	})
 

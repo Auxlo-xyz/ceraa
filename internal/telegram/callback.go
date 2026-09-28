@@ -22,6 +22,7 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/logger"
+	"ceraa/internal/secret"
 	"ceraa/internal/telegram/menus"
 )
 
@@ -343,6 +344,44 @@ func handleCallback(token string, q *callbackQuery) {
 			}
 		}
 		editCallback(token, chatID, q.Message.MessageID, "Scheduled job removed", menus.InlineForChat("schedule", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "setsecret:") {
+		name := strings.TrimPrefix(data, "setsecret:")
+		if name == "" {
+			// Free-form: ask for the name first, then the value. Two messages
+			// rather than one "name value" line, because parsing a space out of a
+			// secret is how a value silently becomes half a secret.
+			setPendingSecretName(chatID)
+			editCallback(token, chatID, q.Message.MessageID,
+				"Send the name for the secret, for example github_token. It is stored "+
+					"encrypted and never shown again.", cancelSecretKeyboard())
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID,
+			fmt.Sprintf("Send the value for %s as your next message. It is stored "+
+				"encrypted, deleted from this chat, and kept out of the session and "+
+				"the model's context.\n\nValid for %d minutes, or press ✕.",
+				name, int(pendingSecretTTL.Minutes())), cancelSecretKeyboard())
+		setPendingSecret(chatID, name)
+		return
+	}
+	if data == "secret:cancel" {
+		clearPendingSecret(chatID)
+		clearPendingSecretName(chatID)
+		editCallback(token, chatID, q.Message.MessageID, "Cancelled. Nothing stored.",
+			menus.InlineForChat("secrets", 0, chatID, currentSessionID(chatID)))
+		return
+	}
+	if strings.HasPrefix(data, "delsecret:") {
+		name := strings.TrimPrefix(data, "delsecret:")
+		if err := secret.Delete(name); err != nil {
+			editCallback(token, chatID, q.Message.MessageID, "Could not delete "+name+": "+err.Error(),
+				menus.InlineForChat("secrets", 0, chatID, currentSessionID(chatID)))
+			return
+		}
+		editCallback(token, chatID, q.Message.MessageID, "Deleted "+name,
+			menus.InlineForChat("secrets", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if strings.HasPrefix(data, "menu:") {

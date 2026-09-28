@@ -119,3 +119,78 @@ func TestRedactedMarkerStable(t *testing.T) {
 		t.Errorf("redaction should be idempotent:\nfirst:  %q\nsecond: %q", first, second)
 	}
 }
+
+// The reason literals exist: a user's own secret has no vendor prefix, so the
+// patterns cannot see it. A value the process already holds can be matched
+// exactly, which is what makes it safe to put one in a subprocess environment at
+// all — without this, one `env` puts it in the model's context.
+func TestARegisteredValueIsScrubbedWhereNoPatternWouldMatch(t *testing.T) {
+	ResetLiterals()
+	t.Cleanup(ResetLiterals)
+
+	const value = "correct-horse-battery-staple-9f2a"
+	// Nothing pattern-shaped about it.
+	if SecretsInText(value) != value {
+		t.Fatal("the fixture is not pattern-shaped, so it proves nothing")
+	}
+	RegisterLiteral(value)
+	if RegisteredLiterals() != 1 {
+		t.Fatalf("registered %d literals, want 1", RegisteredLiterals())
+	}
+	scrubbed := SecretsInText("the token is " + value + " ok")
+	if strings.Contains(scrubbed, value) {
+		t.Errorf("the value survived redaction: %s", scrubbed)
+	}
+	if !strings.Contains(scrubbed, redactionMarker) {
+		t.Errorf("no marker in %q", scrubbed)
+	}
+}
+
+// A value the process holds is often a shell command's whole output, so the
+// scrub has to work mid-line and repeatedly.
+func TestRegisteredValuesAreScrubbedEverywhere(t *testing.T) {
+	ResetLiterals()
+	t.Cleanup(ResetLiterals)
+	const value = "supersecretvalue123"
+	RegisterLiteral(value)
+	for _, text := range []string{
+		value,
+		"env: " + value,
+		"a=" + value + " b=" + value,
+		"prefix" + value + "suffix",
+	} {
+		if strings.Contains(SecretsInText(text), value) {
+			t.Errorf("survived in %q", text)
+		}
+	}
+}
+
+// Overlapping values: the token and a prefix of it are both registered, and
+// replacing the short one first would leave most of the long one behind.
+func TestOverlappingValuesAreScrubbedLongestFirst(t *testing.T) {
+	ResetLiterals()
+	t.Cleanup(ResetLiterals)
+	const long = "abcdefgh12345678"
+	const short = "abcdefgh"
+	RegisterLiteral(long)
+	RegisterLiteral(short)
+	got := SecretsInText("value=" + long)
+	if strings.Contains(got, "12345678") || strings.Contains(got, "abcdefgh") {
+		t.Errorf("a tail of the secret survived: %q", got)
+	}
+}
+
+// A short secret would corrupt unrelated text everywhere it appeared, so it is
+// not registered. Claiming to protect it would do more damage than leaving it.
+func TestShortValuesAreNotRegistered(t *testing.T) {
+	ResetLiterals()
+	t.Cleanup(ResetLiterals)
+	RegisterLiteral("abc")
+	RegisterLiteral("")
+	if RegisteredLiterals() != 0 {
+		t.Errorf("registered %d short values, want none", RegisteredLiterals())
+	}
+	if got := SecretsInText("abc is fine"); got != "abc is fine" {
+		t.Errorf("unrelated text was rewritten: %q", got)
+	}
+}
