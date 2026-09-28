@@ -860,3 +860,53 @@ func TestMalformedToolArgumentsAreNamedAndBounded(t *testing.T) {
 		t.Errorf("the error is %d bytes; the snippet is not bounded: %v", len(err.Error()), err)
 	}
 }
+
+// Two hosts, two header styles, and each refuses the other's credential with a
+// 401 naming the header it wanted. The agent backend answers an x-api-key request
+// with {"code":401,"message":"token is required"}; the platform API answers a
+// bearer token with a request for an API secret key. Getting this wrong is not a
+// missing credential, it is a credential sent correctly to the wrong door.
+func TestMessagesAuthStyleChoosesTheHeader(t *testing.T) {
+	for _, tc := range []struct {
+		style      string
+		wantHeader string
+		wantPrefix string
+	}{
+		{"", "x-api-key", ""},
+		{"bearer", "Authorization", "Bearer "},
+		{"Bearer", "Authorization", "Bearer "},
+		{" BEARER ", "Authorization", "Bearer "},
+	} {
+		var seen http.Header
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = r.Header.Clone()
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+		}))
+		client := New(ProviderConfig{
+			Model:             "m",
+			BaseURL:           srv.URL,
+			APIKey:            "secret-token",
+			MessagesAuthStyle: tc.style,
+		})
+		err := client.streamAnthropic(context.Background(), StreamRequest{
+			Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		}, nil)
+		srv.Close()
+		if err != nil {
+			t.Fatalf("style %q: %v", tc.style, err)
+		}
+		if got := seen.Get(tc.wantHeader); got != tc.wantPrefix+"secret-token" {
+			t.Errorf("style %q: %s = %q, want %q", tc.style, tc.wantHeader, got, tc.wantPrefix+"secret-token")
+		}
+		// The other header must be absent, so a token is never offered twice and a
+		// host that prefers one is never left to guess.
+		other := "x-api-key"
+		if tc.wantHeader == "x-api-key" {
+			other = "Authorization"
+		}
+		if got := seen.Get(other); got != "" {
+			t.Errorf("style %q: %s = %q, want it absent", tc.style, other, got)
+		}
+	}
+}

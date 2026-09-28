@@ -407,7 +407,12 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			if err != nil {
 				return llm.ProviderConfig{}, err
 			}
-			model.BaseURL = firstNonEmptyStr(credential.BaseURL, llm.MiniMaxBaseURL)
+			// Host and header come from the grant, not the stored profile: the
+			// agent token is accepted only by the agent backend, and a profile
+			// left on the platform URL signs in correctly and then 401s on every
+			// request asking for an API secret key this login cannot have.
+			model.BaseURL = minimaxauth.BaseURLFor(credential.Region)
+			model.MessagesAuthStyle = minimaxauth.MessagesAuthFor(credential.Region)
 			model.APIKey = credential.AccessToken
 			// Served by the Messages API, so it needs the Anthropic transport.
 			model.AnthropicNative = true

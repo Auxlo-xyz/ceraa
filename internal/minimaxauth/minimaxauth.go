@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"ceraa/harness/llm"
 	"ceraa/internal/oauthdevice"
 	"ceraa/internal/secret"
 )
@@ -102,22 +103,47 @@ type endpoints struct {
 	Base      string
 }
 
+// BaseURLFor returns the inference endpoint this grant is served by.
+//
+// The host is a property of the grant, not of the profile, and that is why it is
+// looked up here rather than read from the stored profile. The mcode grant issues
+// an agent token and only the agent backend accepts one; the platform host answers
+// it with a 401 whose message asks for an API secret key in X-Api-Key, which is a
+// credential this login cannot obtain and never will. A profile left on the
+// platform URL therefore produces a provider that signs in correctly and then
+// cannot be called at all.
+func BaseURLFor(region Region) string {
+	if region == "" {
+		region = RegionGlobal
+	}
+	return endpointsFor(region).Base
+}
+
+// MessagesAuthFor returns the header style BaseURLFor's host authenticates with.
+//
+// Exported beside BaseURLFor because the two have to move together. The agent
+// backend wants Authorization: Bearer and answers an x-api-key request with
+// {"code":401,"message":"token is required"}, so pairing the agent host with the
+// platform host's header is a 401 naming neither.
+func MessagesAuthFor(region Region) string {
+	return llm.MiniMaxMessagesAuth
+}
+
 // endpointsFor returns the hosts for a region.
 //
-// From the OpenClaw plugin's MINIMAX_OAUTH_CONFIG. The inference base for the
-// OAuth path is the /anthropic suffix, because the subscription is served by the
-// Messages API and the plain /v1 is the OpenAI-compatible host that belongs to the
-// API-key provider.
+// The OAuth hosts are the account portal, the same two paths both grants use. The
+// inference base is the agent backend rather than the platform API, because the
+// mcode grant issues an agent token and only the agent backend accepts one.
 func endpointsFor(region Region) endpoints {
 	if region == RegionCN {
 		return endpoints{
 			OAuthBase: "https://account.minimaxi.com",
-			Base:      "https://api.minimaxi.com/anthropic",
+			Base:      llm.MiniMaxCNBaseURL,
 		}
 	}
 	return endpoints{
 		OAuthBase: "https://account.minimax.io",
-		Base:      "https://api.minimax.io/anthropic",
+		Base:      llm.MiniMaxBaseURL,
 	}
 }
 

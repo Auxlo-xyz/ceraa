@@ -79,6 +79,20 @@ type ProviderConfig struct {
 	// ExtraHeaders are added to every request. Used for provider-required
 	// client identification.
 	ExtraHeaders map[string]string
+	// MessagesAuthStyle chooses the header the Messages transport authenticates
+	// with. Empty means x-api-key, which is what Anthropic and MiniMax's platform
+	// API both want.
+	//
+	// This is not a preference. The two disagree, and each rejects the other's
+	// credential with a 401 whose message names the header it wanted:
+	//
+	//	api.minimax.io/anthropic      wants x-api-key, refuses a bearer token
+	//	agent.minimax.io/mavis/...    wants Authorization: Bearer, and answers
+	//	                              x-api-key with {"token is required"}
+	//
+	// A token from MiniMax's agent grant is only accepted by the second, so a
+	// correct OAuth flow still produces a provider that cannot be called.
+	MessagesAuthStyle string
 	// RecoverError is consulted when the provider returns an error that a plain
 	// retry cannot fix. It returns whether the request may be retried once
 	// after the hook repaired provider state, plus a user-facing message.

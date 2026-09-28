@@ -54,10 +54,16 @@ func TestConstantsMatchTheService(t *testing.T) {
 	if hosts.OAuthBase != "https://account.minimax.io" {
 		t.Errorf("global oauth host = %q", hosts.OAuthBase)
 	}
-	// The subscription is served by the Messages API, so the base carries the
-	// /anthropic suffix. The plain host is the API-key provider's.
-	if !strings.HasSuffix(hosts.Base, "/anthropic") {
-		t.Errorf("global inference base = %q, want the /anthropic path", hosts.Base)
+	// The agent backend, not the platform API. An agent token is refused by the
+	// platform host with a 401 asking for an API secret key in X-Api-Key, so this
+	// is the difference between a provider that works and one that cannot be called.
+	if hosts.Base != "https://agent.minimax.io/mavis/api/v1/llm/v1" {
+		t.Errorf("global inference base = %q, want the agent backend", hosts.Base)
+	}
+	// The header style travels with the host. The agent backend wants a bearer
+	// token and answers x-api-key with {"token is required"}.
+	if MessagesAuthFor(RegionGlobal) != "bearer" {
+		t.Errorf("messages auth = %q, want bearer", MessagesAuthFor(RegionGlobal))
 	}
 	cn := endpointsFor(RegionCN)
 	if cn.OAuthBase != "https://account.minimaxi.com" {
@@ -213,8 +219,8 @@ func TestCompletedLoginIsPersisted(t *testing.T) {
 	if credential.AccessToken != "acc-m" {
 		t.Errorf("access token = %q", credential.AccessToken)
 	}
-	if !strings.HasSuffix(credential.BaseURL, "/anthropic") {
-		t.Errorf("base URL = %q, want the messages endpoint", credential.BaseURL)
+	if credential.BaseURL != "https://agent.minimax.io/mavis/api/v1/llm/v1" {
+		t.Errorf("base URL = %q, want the agent backend", credential.BaseURL)
 	}
 	// The absolute epoch-ms expiry must resolve to a real time, not the far future.
 	if y := credential.ExpiresAt.Year(); y < 2020 || y > 2100 {

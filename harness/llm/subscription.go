@@ -149,17 +149,33 @@ func XaiContextWindow(model string) int {
 // the Anthropic transport rather than chat completions.
 const MiniMaxSubscription = "minimax"
 
-// MiniMaxBaseURL is the global subscription inference endpoint.
+// MiniMaxBaseURL is the global subscription inference endpoint for the agent grant.
 //
-// The /anthropic suffix is not optional and not a preference. The subscription is
-// served by the Messages API, while the plain /v1 host is the OpenAI-compatible
-// endpoint that belongs to the API-key provider. Sending a Messages request to the
-// wrong one is a 404 that looks like a bad model id.
-const MiniMaxBaseURL = "https://api.minimax.io/anthropic"
+// This is the agent backend, not the platform API, and the two are not
+// interchangeable. A token from the mcode grant is only accepted here: the
+// platform host answers it with a 401 whose message asks for an API secret key in
+// X-Api-Key, which is a request for a credential this login does not have and
+// never will, because the grant issues an agent token.
+//
+// The path already ends in the API version, so the transport's /v1/messages is
+// appended to it rather than substituted for it.
+const MiniMaxBaseURL = "https://agent.minimax.io/mavis/api/v1/llm/v1"
+
+// MiniMaxMessagesAuth is the header style MiniMaxBaseURL authenticates with.
+//
+// The agent backend wants Authorization: Bearer and answers an x-api-key request
+// with {"code":401,"message":"token is required"}. The platform API at
+// api.minimax.io/anthropic is the opposite and is where an API secret key goes.
+const MiniMaxMessagesAuth = MessagesAuthBearer
 
 // MiniMaxCNBaseURL is the Chinese service. It is a separate account system, so a
-// credential is not interchangeable between the two.
-const MiniMaxCNBaseURL = "https://api.minimaxi.com/anthropic"
+// credential is not interchangeable with the global one.
+//
+// The agent host is agent.minimaxi.com, matching the api.minimaxi.com inference
+// host above it; this is the one pair that could not be observed from here,
+// because no Chinese credential is stored, and it is written from the vendor's
+// own host list rather than from a probe.
+const MiniMaxCNBaseURL = "https://agent.minimaxi.com/mavis/api/v1/llm/v1"
 
 // DefaultMiniMaxModel is the model selected when MiniMax is chosen without one.
 //

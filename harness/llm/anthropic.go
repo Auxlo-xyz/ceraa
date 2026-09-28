@@ -27,6 +27,10 @@ import (
 //
 // A base ending in /anthropic or /v1 is already the prefix, so nothing is
 // appended twice. Anything else gets /v1/messages, which is the documented path.
+// MessagesAuthBearer is the MessagesAuthStyle for a host that authenticates with
+// Authorization: Bearer rather than x-api-key.
+const MessagesAuthBearer = "bearer"
+
 func anthropicMessagesURL(base string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.HasSuffix(trimmed, "/messages") {
@@ -535,10 +539,20 @@ func (c *StreamingClient) postAnthropic(ctx context.Context, endpoint, token str
 	if err != nil {
 		return nil, err
 	}
-	// The Messages API authenticates with x-api-key plus the anthropic-version
-	// header, not a bearer token. Sending Authorization instead is a 401 on
-	// Anthropic and, on a compatibility host, a differently-shaped error.
-	request.Header.Set("x-api-key", token)
+	// The Messages API on Anthropic, and on MiniMax's platform API, authenticates
+	// with x-api-key plus the anthropic-version header, not a bearer token. Sending
+	// Authorization instead is a 401 on Anthropic and, on a compatibility host, a
+	// differently-shaped error.
+	//
+	// MiniMax's agent backend is the other way round and says so: it answers an
+	// x-api-key request with {"code":401,"message":"token is required"}. So the
+	// style is a property of the host, set by the profile, and the token is the
+	// same either way.
+	if strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthBearer) {
+		request.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		request.Header.Set("x-api-key", token)
+	}
 	request.Header.Set("anthropic-version", "2023-06-01")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")

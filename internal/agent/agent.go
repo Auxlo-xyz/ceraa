@@ -147,7 +147,12 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			if err != nil {
 				return llm.ProviderConfig{}, err
 			}
-			modelConfig.BaseURL = firstNonEmptyStr(credential.BaseURL, llm.MiniMaxBaseURL)
+			// Host and header come from the grant, not the stored profile: the
+			// agent token is accepted only by the agent backend, and a profile
+			// left on the platform URL signs in correctly and then 401s on every
+			// request asking for an API secret key this login cannot have.
+			modelConfig.BaseURL = minimaxauth.BaseURLFor(credential.Region)
+			modelConfig.MessagesAuthStyle = minimaxauth.MessagesAuthFor(credential.Region)
 			modelConfig.APIKey = credential.AccessToken
 			// Served by the Messages API, so it needs the Anthropic transport
 			// rather than chat completions.
