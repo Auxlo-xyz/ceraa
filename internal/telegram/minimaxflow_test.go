@@ -150,7 +150,7 @@ func TestMinimaxActivationModelIsNeverCarriedOver(t *testing.T) {
 	if llm.IsMiniMaxModel(current) {
 		t.Skip("the active model is already a MiniMax model, so there is nothing to guard")
 	}
-	_, model := minimaxModelForAccount("")
+	model := minimaxModelForAccount("")
 	if !llm.IsMiniMaxModel(model) {
 		t.Errorf("activation chose %q, which the subscription does not serve; carried over from %q", model, current)
 	}

@@ -174,7 +174,7 @@ func TestXaiActivationModelIsNeverCarriedOverFromAnotherProvider(t *testing.T) {
 	if llm.IsXaiModel(current) {
 		t.Skip("the active model is already an xAI model, so there is nothing to guard")
 	}
-	_, model := xaiModelForAccount("")
+	model := xaiModelForAccount("")
 	if !llm.IsXaiModel(model) {
 		t.Errorf("activation chose %q, which Grok does not serve; it was carried over from %q", model, current)
 	}

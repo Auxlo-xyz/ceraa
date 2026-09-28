@@ -54,7 +54,7 @@ func TestKeepingTheActiveModelReadsTheModelNotTheAgent(t *testing.T) {
 	}
 
 	// With the model set, the helper must keep it rather than fall back.
-	_, chosen := minimaxModelForAccount("")
+	chosen := minimaxModelForAccount("")
 	if chosen != llm.DefaultMiniMaxModel {
 		t.Errorf("minimaxModelForAccount = %q, want the active model", chosen)
 	}
@@ -63,7 +63,7 @@ func TestKeepingTheActiveModelReadsTheModelNotTheAgent(t *testing.T) {
 	if err := providers.setModel("grok-4.6"); err != nil {
 		t.Fatal(err)
 	}
-	_, chosen = minimaxModelForAccount("")
+	chosen = minimaxModelForAccount("")
 	if chosen != llm.DefaultMiniMaxModel {
 		t.Errorf("minimaxModelForAccount = %q, want the MiniMax default", chosen)
 	}

@@ -144,7 +144,7 @@ func TestClineActivationModelIsNeverCarriedOver(t *testing.T) {
 	if llm.IsClineModel(current) {
 		t.Skip("the active model is already a Cline model, so there is nothing to guard")
 	}
-	_, model := clineModelForAccount("")
+	model := clineModelForAccount("")
 	if !llm.IsClineModel(model) {
 		t.Errorf("activation chose %q, which the gateway does not serve; carried over from %q", model, current)
 	}

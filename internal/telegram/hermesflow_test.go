@@ -192,7 +192,7 @@ func TestHermesActivationModelIsNeverCarriedOverFromAnotherProvider(t *testing.T
 	if llm.IsHermesModel(current) {
 		t.Skip("the active model is already a Hermes model, so there is nothing to guard")
 	}
-	_, model := hermesModelForAccount("")
+	model := hermesModelForAccount("")
 	if !llm.IsHermesModel(model) {
 		t.Errorf("activation chose %q, which the Nous Portal does not serve; it was carried over from %q", model, current)
 	}

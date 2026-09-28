@@ -1448,7 +1448,7 @@ func handleHermesStatus(token string, chatID int64) {
 }
 
 func activateHermesProvider(token string, chatID int64, flowID string) {
-	model, _ := hermesModelForAccount(flowID)
+	model := hermesModelForAccount(flowID)
 	model, err := guardModel("hermes", model)
 	if err != nil {
 		logger.Warn("Hermes activate: " + err.Error())
@@ -1699,19 +1699,27 @@ func codexModelForAccount() string {
 // model is reused only if it is one the Nous Portal actually serves, because
 // carrying over, say, an apmix model id would produce a profile the endpoint
 // rejects outright. Same rule as codexModelForAccount.
-func hermesModelForAccount(flowID string) (string, string) {
+// hermesModelForAccount returns the model to activate the provider with.
+//
+// It used to return (flowID, model) and every caller destructured it as
+// (model, _), so activation wrote the login flow id — an id of the shape
+// "minimax-1790571540-1" — into the provider profile. That value then went
+// out as the model id, into the model-identity block, and into the pricing
+// lookup, which reported model_not_found and priced nothing. One value
+// means the mistake cannot be made again.
+func hermesModelForAccount(flowID string) string {
 	if flowID != "" {
 		if value, ok := hermesLoginModels.Load(flowID); ok {
 			if model, _ := value.(string); model != "" {
-				return flowID, model
+				return model
 			}
 		}
 	}
 	current, _ := defaultState.values()
 	if llm.IsHermesModel(current) {
-		return flowID, current
+		return current
 	}
-	return flowID, llm.DefaultHermesModel
+	return llm.DefaultHermesModel
 }
 
 // selectHermesProvider is the Hermes entry point, mirroring selectCodexProvider.
@@ -1811,7 +1819,7 @@ func xaiLoginKeyboard(flow *oauthdevice.Flow) map[string]any {
 
 // activateXaiProvider saves the xAI profile and makes it active.
 func activateXaiProvider(token string, chatID int64, flowID string) {
-	model, _ := xaiModelForAccount(flowID)
+	model := xaiModelForAccount(flowID)
 	model, err := guardModel("xai", model)
 	if err != nil {
 		logger.Warn("xAI activate: " + err.Error())
@@ -1843,12 +1851,20 @@ func activateXaiProvider(token string, chatID int64, flowID string) {
 // Reuses the active model only when it is one the Grok endpoint is known to
 // serve, so a model left over from another provider cannot produce a profile the
 // endpoint rejects. Same rule as the Codex and Hermes paths.
-func xaiModelForAccount(flowID string) (string, string) {
+// xaiModelForAccount returns the model to activate the provider with.
+//
+// It used to return (flowID, model) and every caller destructured it as
+// (model, _), so activation wrote the login flow id — an id of the shape
+// "minimax-1790571540-1" — into the provider profile. That value then went
+// out as the model id, into the model-identity block, and into the pricing
+// lookup, which reported model_not_found and priced nothing. One value
+// means the mistake cannot be made again.
+func xaiModelForAccount(flowID string) string {
 	current, _ := defaultState.values()
 	if llm.IsXaiModel(current) {
-		return flowID, current
+		return current
 	}
-	return flowID, llm.DefaultXaiModel
+	return llm.DefaultXaiModel
 }
 
 // selectMinimaxProvider is the MiniMax entry point, mirroring the other
@@ -1905,7 +1921,7 @@ func startMinimaxLogin(token string, chatID int64) {
 
 // activateMinimaxProvider saves the MiniMax profile and makes it active.
 func activateMinimaxProvider(token string, chatID int64, flowID string) {
-	model, _ := minimaxModelForAccount(flowID)
+	model := minimaxModelForAccount(flowID)
 	model, err := guardModel("minimax", model)
 	if err != nil {
 		logger.Warn("MiniMax activate: " + err.Error())
@@ -1939,12 +1955,20 @@ func activateMinimaxProvider(token string, chatID int64, flowID string) {
 //
 // Reuses the active model only when it is one the subscription serves, so a model
 // left over from another provider cannot produce a profile the endpoint rejects.
-func minimaxModelForAccount(flowID string) (string, string) {
+// minimaxModelForAccount returns the model to activate the provider with.
+//
+// It used to return (flowID, model) and every caller destructured it as
+// (model, _), so activation wrote the login flow id — an id of the shape
+// "minimax-1790571540-1" — into the provider profile. That value then went
+// out as the model id, into the model-identity block, and into the pricing
+// lookup, which reported model_not_found and priced nothing. One value
+// means the mistake cannot be made again.
+func minimaxModelForAccount(flowID string) string {
 	current, _ := defaultState.values()
 	if llm.IsMiniMaxModel(current) {
-		return flowID, current
+		return current
 	}
-	return flowID, llm.DefaultMiniMaxModel
+	return llm.DefaultMiniMaxModel
 }
 
 // guardModel refuses to activate a provider with no model.
@@ -1953,10 +1977,24 @@ func minimaxModelForAccount(flowID string) (string, string) {
 // one: the request goes out with no model id and the endpoint answers with
 // something unrelated to the actual fault. One of these reached the store during
 // development, so the write is refused here rather than trusted to every caller.
+// It used to check only for an empty string, while the four activation paths
+// treated it as the last thing standing between a bad model and a live profile.
+// Nothing checked that the provider actually served the value, so a login flow
+// id written by an activation bug survived and went out as the model id.
 func guardModel(providerID, model string) (string, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return "", fmt.Errorf("cannot activate %s with no model", providerID)
+	}
+	if !llm.IsSubscriptionModel(providerID, model) {
+		// A wrong model is recoverable, an absent one is not, so only this case
+		// falls back. Logging keeps the substitution visible in the log rather
+		// than silent.
+		logger.Warn(providerID + " activation: " + model + " is not served by this provider")
+		model = llm.DefaultModelFor(providerID)
+		if model == "" {
+			return "", fmt.Errorf("cannot activate %s: it serves no known model", providerID)
+		}
 	}
 	return model, nil
 }
@@ -2003,7 +2041,7 @@ func startClineLogin(token string, chatID int64) {
 
 // activateClineProvider saves the Cline profile and makes it active.
 func activateClineProvider(token string, chatID int64, flowID string) {
-	model, _ := clineModelForAccount(flowID)
+	model := clineModelForAccount(flowID)
 	model, err := guardModel("cline", model)
 	if err != nil {
 		logger.Warn("Cline activate: " + err.Error())
@@ -2034,12 +2072,20 @@ func activateClineProvider(token string, chatID int64, flowID string) {
 // Reuses the active model only when it is one the gateway's free tier serves, so
 // a model left over from another provider cannot produce a profile the gateway
 // rejects.
-func clineModelForAccount(flowID string) (string, string) {
+// clineModelForAccount returns the model to activate the provider with.
+//
+// It used to return (flowID, model) and every caller destructured it as
+// (model, _), so activation wrote the login flow id — an id of the shape
+// "minimax-1790571540-1" — into the provider profile. That value then went
+// out as the model id, into the model-identity block, and into the pricing
+// lookup, which reported model_not_found and priced nothing. One value
+// means the mistake cannot be made again.
+func clineModelForAccount(flowID string) string {
 	current, _ := defaultState.values()
 	if llm.IsClineModel(current) {
-		return flowID, current
+		return current
 	}
-	return flowID, llm.DefaultClineModel
+	return llm.DefaultClineModel
 }
 
 // selectSubscriptionModel writes a chosen model into a subscription profile.
