@@ -488,7 +488,7 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 // over http or https, which is checked when the call is translated.
 func needsPermission(toolName, args string) bool {
 	switch toolName {
-	case "write", "edit", "delete", "move", "copy":
+	case "write", "edit_line", "batch_edit_file", "delete", "move", "copy":
 		return true
 	case "bash":
 		lower := strings.ToLower(args)

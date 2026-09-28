@@ -51,10 +51,11 @@ func describeToolRequest(tool string, args any) string {
 // payloadSizeFields are the keys whose value is a payload rather than an
 // identifier. Their size is reported instead of their content.
 var payloadSizeFields = map[string]string{
-	"write":    "content",
-	"edit":     "new_text",
-	"bash":     "",
-	"webfetch": "",
+	"write":           "content",
+	"edit_line":       "new_text",
+	"batch_edit_file": "edits",
+	"bash":            "",
+	"webfetch":        "",
 }
 
 // primaryToolArg names the one argument that identifies a call for a tool, and
@@ -63,7 +64,9 @@ func primaryToolArg(tool string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "bash":
 		return "command", true
-	case "read", "write", "edit", "view_image", "apply_patch":
+	case "read", "write", "view_image":
+		return "path", true
+	case "edit_line", "batch_edit_file":
 		return "path", true
 	case "fts_search":
 		return "pattern", true

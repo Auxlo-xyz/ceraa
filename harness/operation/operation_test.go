@@ -295,3 +295,170 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// The reason this tool exists. Five separate edits cost five round trips and five
+// chances to leave a file half-changed; a set that does not match must write
+// nothing at all.
+func TestBatchEditIsAllOrNothing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	original := "alpha\nbeta\ngamma\ndelta\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The third edit does not exist in the file.
+	mgr := New(nil)
+	mgr.Add(Operation{
+		ID: "batch-bad",
+		Spec: Spec{Type: "batch_edit_file", Args: map[string]any{
+			"path": path,
+			"edits": []map[string]any{
+				{"old_text": "alpha", "new_text": "ALPHA"},
+				{"old_text": "gamma", "new_text": "GAMMA"},
+				{"old_text": "epsilon", "new_text": "EPSILON"},
+			},
+		}},
+		Status: StatusPending,
+	})
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusFailed {
+			t.Fatalf("a set with a bad edit reported %s", r.Status)
+		}
+		if !strings.Contains(r.Error, "edit 2") {
+			t.Errorf("error = %q, want it to name which edit did not match", r.Error)
+		}
+		if !strings.Contains(r.Error, "found 0") {
+			t.Errorf("error = %q, want the occurrence count", r.Error)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != original {
+		t.Fatalf("the file was written despite a failed set:\n%q", after)
+	}
+}
+
+// Two of the three matching is still a failure, and a duplicated match is a
+// failure: an ambiguous replacement is not a replacement.
+func TestBatchEditRejectsAmbiguousAndEmptyEdits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	original := "dup\ndup\nonly\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, edits := range map[string][]map[string]any{
+		"ambiguous": {{"old_text": "dup", "new_text": "DUP"}},
+		"empty":     {},
+	} {
+		mgr := New(nil)
+		mgr.Add(Operation{ID: "batch-" + name, Spec: Spec{Type: "batch_edit_file", Args: map[string]any{"path": path, "edits": edits}}, Status: StatusPending})
+		select {
+		case r := <-mgr.Results():
+			if r.Status != StatusFailed {
+				t.Errorf("%s: status %s, want failed", name, r.Status)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: timeout", name)
+		}
+		if after, _ := os.ReadFile(path); string(after) != original {
+			t.Errorf("%s: the file changed: %q", name, after)
+		}
+	}
+}
+
+// The good path: every change lands, in order, in one write.
+func TestBatchEditAppliesEveryChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(nil)
+	mgr.Add(Operation{ID: "batch-ok", Spec: Spec{Type: "batch_edit_file", Args: map[string]any{
+		"path": path,
+		"edits": []map[string]any{
+			{"old_text": "one", "new_text": "1"},
+			{"old_text": "two", "new_text": "2"},
+			{"old_text": "three", "new_text": "3"},
+		},
+	}}, Status: StatusPending})
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("status %s: %s", r.Status, r.Error)
+		}
+		if !strings.Contains(r.Output, "applied 3") {
+			t.Errorf("output = %q, want it to report the count", r.Output)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != "1\n2\n3\n" {
+		t.Errorf("file = %q", after)
+	}
+}
+
+// A spec that has been through JSON arrives as []any, and asserting one shape
+// silently yields no edits — the tool appears to do nothing.
+func TestBatchEditAcceptsBothSpecShapes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("x\ny\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(nil)
+	mgr.Add(Operation{ID: "batch-json", Spec: Spec{Type: "batch_edit_file", Args: map[string]any{
+		"path": path,
+		"edits": []any{
+			map[string]any{"old_text": "x", "new_text": "X"},
+			map[string]any{"old_text": "y", "new_text": "Y"},
+		},
+	}}, Status: StatusPending})
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("status %s: %s", r.Status, r.Error)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+	if after, _ := os.ReadFile(path); string(after) != "X\nY\n" {
+		t.Errorf("file = %q", after)
+	}
+}
+
+// The renamed tool still runs, and so does the type stored by sessions from
+// before the rename.
+func TestEditLineAndTheLegacyEditTypeBothRun(t *testing.T) {
+	for _, specType := range []string{"edit_line", "edit"} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "f.txt")
+		if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mgr := New(nil)
+		mgr.Add(Operation{ID: "e-" + specType, Spec: Spec{Type: specType, Args: map[string]any{
+			"path": path, "old_text": "old", "new_text": "new",
+		}}, Status: StatusPending})
+		select {
+		case r := <-mgr.Results():
+			if r.Status != StatusCompleted {
+				t.Fatalf("%s: status %s: %s", specType, r.Status, r.Error)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: timeout", specType)
+		}
+		if after, _ := os.ReadFile(path); string(after) != "new\n" {
+			t.Errorf("%s: file = %q", specType, after)
+		}
+	}
+}

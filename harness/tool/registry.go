@@ -177,9 +177,25 @@ func (w *WriteTool) MutationKey(args map[string]any) string {
 
 type EditTool struct{}
 
-func (e *EditTool) Name() string { return "edit" }
+func (e *EditTool) Name() string { return "edit_line" }
+
+// Description states the failure modes, because a tool that fails silently is
+// worse than one that is missing: the model believes it edited a file that is
+// unchanged. Both failures here are deterministic and the model can correct
+// itself from the message.
+//
+// The failure modes are stated because a tool that fails silently is worse than
+// one that is missing: the model believes it edited a file that is unchanged.
+// Both are deterministic and the model can correct itself from the message.
+//
+// Which of this and batch_edit_file to reach for is guidance, and guidance
+// belongs in the prompt's toolrules rather than in a description — a description
+// is the tool's contract, and a rule about when to prefer it over a sibling is
+// the prompt's job. TestDescriptionsCarryNoUsageGuidance enforces that split.
 func (e *EditTool) Description() string {
-	return "Replace one exact occurrence of old_text with new_text in a file."
+	return "Replace one exact occurrence of old_text with new_text in a file. " +
+		"Fails without writing if old_text is absent or matches more than once, " +
+		"naming how many were found."
 }
 func (e *EditTool) Schema() map[string]any {
 	return map[string]any{
@@ -199,11 +215,79 @@ func (e *EditTool) Translate(args map[string]any) (operation.Spec, error) {
 	if p == "" || oldText == "" {
 		return operation.Spec{}, fmt.Errorf("path and non-empty old_text are required")
 	}
-	return operation.Spec{Type: "edit", Args: map[string]any{"path": p, "old_text": oldText, "new_text": newText}}, nil
+	return operation.Spec{Type: "edit_line", Args: map[string]any{"path": p, "old_text": oldText, "new_text": newText}}, nil
 }
 func (e *EditTool) TranslateResult(op operation.Operation) string { return "edited" }
 func (e *EditTool) Sequential() bool                              { return true }
 func (e *EditTool) MutationKey(args map[string]any) string {
+	path, _ := args["path"].(string)
+	return path
+}
+
+// BatchEditFileTool applies several changes to one file as a single operation.
+//
+// It exists because edit_line cannot express a change set: making five separate
+// edits costs five round trips and five chances to half-apply, and a model that
+// gives up halfway leaves a file in a state neither it nor the user asked for.
+// Everything or nothing.
+type BatchEditFileTool struct{}
+
+func (b *BatchEditFileTool) Name() string { return "batch_edit_file" }
+func (b *BatchEditFileTool) Description() string {
+	return "Apply several replacements to one file together, as a single write. " +
+		"Give each change as an old_text and a new_text pair; every one must match " +
+		"exactly once. Fails without writing anything if any change does not match, " +
+		"nailing which one."
+}
+func (b *BatchEditFileTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "File path"},
+			"edits": map[string]any{
+				"type":        "array",
+				"description": "Replacements to apply in order. All must match exactly once.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"old_text": map[string]any{"type": "string", "description": "Existing text to replace"},
+						"new_text": map[string]any{"type": "string", "description": "Replacement text"},
+					},
+					"required": []string{"old_text", "new_text"},
+				},
+			},
+		},
+		"required": []string{"path", "edits"},
+	}
+}
+
+func (b *BatchEditFileTool) Translate(args map[string]any) (operation.Spec, error) {
+	path, _ := args["path"].(string)
+	if path == "" {
+		return operation.Spec{}, fmt.Errorf("path is required")
+	}
+	rawEdits, _ := args["edits"].([]any)
+	if len(rawEdits) == 0 {
+		return operation.Spec{}, fmt.Errorf("edits is required and must not be empty")
+	}
+	edits := make([]map[string]any, 0, len(rawEdits))
+	for i, entry := range rawEdits {
+		pair, ok := entry.(map[string]any)
+		if !ok {
+			return operation.Spec{}, fmt.Errorf("edit %d is not an object with old_text and new_text", i)
+		}
+		oldText, _ := pair["old_text"].(string)
+		newText, _ := pair["new_text"].(string)
+		if oldText == "" {
+			return operation.Spec{}, fmt.Errorf("edit %d has no old_text", i)
+		}
+		edits = append(edits, map[string]any{"old_text": oldText, "new_text": newText})
+	}
+	return operation.Spec{Type: "batch_edit_file", Args: map[string]any{"path": path, "edits": edits}}, nil
+}
+func (b *BatchEditFileTool) TranslateResult(op operation.Operation) string { return "edited" }
+func (b *BatchEditFileTool) Sequential() bool                              { return true }
+func (b *BatchEditFileTool) MutationKey(args map[string]any) string {
 	path, _ := args["path"].(string)
 	return path
 }
@@ -219,6 +303,7 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&ReadTool{})
 	r.Register(&WriteTool{})
 	r.Register(&EditTool{})
+	r.Register(&BatchEditFileTool{})
 
 	r.Register(&WebFetchTool{})
 	// Registered without a client and attached later by whoever knows the active

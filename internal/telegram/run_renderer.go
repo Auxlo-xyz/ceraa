@@ -698,7 +698,7 @@ func toolArgsSummary(name string, args map[string]any) string {
 	}
 	key := "value"
 	switch name {
-	case "read", "write", "edit", "move", "copy":
+	case "read", "write", "edit", "edit_line", "batch_edit_file", "move", "copy":
 		key = "path"
 	case "bash":
 		key = "command"
@@ -726,7 +726,7 @@ func toolDisplayName(name string) string {
 		return "📚 Read file"
 	case "write":
 		return "📝 Write file"
-	case "edit":
+	case "edit", "edit_line", "batch_edit_file":
 		return "📝 Edit file"
 	case "bash":
 		return ">_ Run command"

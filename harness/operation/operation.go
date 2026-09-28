@@ -54,6 +54,28 @@ type Manager interface {
 	Results() <-chan ResultEvent
 }
 
+// specEdits reads the edits argument in either shape it can arrive in.
+//
+// A spec is a map[string]any that may have been through JSON, where a
+// []map[string]any becomes a []any of map[string]any, so asserting one shape
+// silently yields no edits and the tool appears to do nothing.
+func specEdits(raw any) []map[string]any {
+	switch typed := raw.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, entry := range typed {
+			if pair, ok := entry.(map[string]any); ok {
+				out = append(out, pair)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 // ResultEvent fires when an operation completes.
 type ResultEvent struct {
 	OpID       string
@@ -271,6 +293,64 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			} else {
 				result.Status = StatusCompleted
 			}
+		case "batch_edit_file":
+			// All or nothing. Every change is checked against the same starting
+			// content first, so a set that half-matches cannot leave a file with
+			// some of the intended changes and none of the report.
+			p, _ := op.Spec.Args["path"].(string)
+			workDir, _ := op.Spec.Args["workdir"].(string)
+			p = operationPath(p, workDir)
+			edits := specEdits(op.Spec.Args["edits"])
+			if len(edits) == 0 {
+				result.Error = "no edits to apply"
+				result.Status = StatusFailed
+				break
+			}
+			original, readErr := os.ReadFile(p)
+			content := string(original)
+			// Validate every edit against the untouched content before applying
+			// any, so the error names the change that did not match rather than a
+			// cascade from the one before it.
+			for i, pair := range edits {
+				oldText, _ := pair["old_text"].(string)
+				if count := strings.Count(content, oldText); count != 1 {
+					result.Error = fmt.Sprintf("edit %d: old_text must occur exactly once in %s; found %d occurrences", i, filepath.Base(p), count)
+					result.Status = StatusFailed
+					break
+				}
+			}
+			if result.Status == StatusFailed {
+				break
+			}
+			updated := content
+			for _, pair := range edits {
+				oldText, _ := pair["old_text"].(string)
+				newText, _ := pair["new_text"].(string)
+				updated = strings.Replace(updated, oldText, newText, 1)
+			}
+			if readErr != nil {
+				result.Error = readErr.Error()
+				result.Status = StatusFailed
+				break
+			}
+			err := withMutationLock(p, func() error {
+				if d := filepath.Dir(p); d != "" {
+					if err := os.MkdirAll(d, 0o755); err != nil {
+						return err
+					}
+				}
+				if snapStore, snapshotErr := newSnapshotStore(); snapshotErr == nil {
+					_, _ = snapStore.Capture(p)
+				}
+				return os.WriteFile(p, []byte(updated), 0o644)
+			})
+			if err != nil {
+				result.Error = err.Error()
+				result.Status = StatusFailed
+			} else {
+				result.Output = fmt.Sprintf("applied %d changes to %s", len(edits), filepath.Base(p))
+				result.Status = StatusCompleted
+			}
 		case "write":
 			p, _ := op.Spec.Args["path"].(string)
 			workDir, _ := op.Spec.Args["workdir"].(string)
@@ -294,7 +374,9 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				result.Status = StatusCompleted
 				result.Output = "written"
 			}
-		case "edit":
+		case "edit_line", "edit":
+			// "edit" is the type stored by sessions from before the tool was
+			// renamed; both dispatch to the same work.
 			p, _ := op.Spec.Args["path"].(string)
 			workDir, _ := op.Spec.Args["workdir"].(string)
 			p = operationPath(p, workDir)

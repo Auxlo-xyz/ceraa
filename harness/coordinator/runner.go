@@ -1118,16 +1118,19 @@ var canonicalToolAliases = map[string]string{
 	"shell":          "bash",
 	"exec":           "bash",
 	"file_write":     "write",
-	"file_edit":      "edit",
+	"file_edit":      "edit_line",
+	"edit":           "edit_line",
+	"apply_patch":    "batch_edit_file",
 	"web_fetch":      "webfetch",
 }
 
 var canonicalToolArgumentAliases = map[string]map[string]string{
-	"read":     {"file": "path", "filename": "path", "file_path": "path"},
-	"write":    {"file": "path", "filename": "path", "file_path": "path"},
-	"edit":     {"file": "path", "filename": "path", "file_path": "path"},
-	"bash":     {"cmd": "command", "script": "command", "shell_command": "command"},
-	"webfetch": {"uri": "url", "link": "url"},
+	"read":            {"file": "path", "filename": "path", "file_path": "path"},
+	"write":           {"file": "path", "filename": "path", "file_path": "path"},
+	"edit_line":       {"file": "path", "filename": "path", "file_path": "path"},
+	"batch_edit_file": {"file": "path", "filename": "path", "file_path": "path"},
+	"bash":            {"cmd": "command", "script": "command", "shell_command": "command"},
+	"webfetch":        {"uri": "url", "link": "url"},
 }
 
 func canonicalToolName(reg *tool.Registry, requested string) string {
