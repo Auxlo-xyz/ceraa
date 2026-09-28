@@ -737,44 +737,74 @@ func handleCallback(token string, q *callbackQuery) {
 		return
 	}
 	if strings.HasPrefix(data, "perm:") {
+		// perm:<token>:<code>. The request id and tool name live behind the token;
+		// they were inlined here and overran Telegram's 64 byte limit, which cost
+		// the whole menu.
 		parts := strings.Split(data, ":")
-		if len(parts) < 3 {
+		if len(parts) != 3 {
 			send(token, chatID, "Invalid permission response")
 			return
 		}
-		decision := parts[1]
-		requestID := parts[2]
-		toolName := ""
-		if len(parts) > 3 {
-			toolName = parts[3]
+		ref, code := parts[1], parts[2]
+		decision := ""
+		switch code {
+		case "a":
+			decision = "allowOnce"
+		case "s":
+			decision = "allowAlways"
+		case "d":
+			decision = "deny"
+		default:
+			send(token, chatID, "Invalid permission response")
+			return
 		}
-		if permission.Default.Answer(currentSessionID(chatID), requestID, decision) {
-			if decision == "allowAlways" && toolName != "" {
-				permission.Default.AllowAlways(toolName)
-				_ = defaultState.setAlwaysAllow(toolName, true)
+		pending, ok := peekCallbackToken(ref)
+		if !ok {
+			send(token, chatID, "That permission request has expired. Send the message again.")
+			return
+		}
+		if permission.Default.Answer(pending.SessionID, pending.RequestID, decision) {
+			dropCallbackToken(ref)
+			if decision == "allowAlways" && pending.Tool != "" {
+				permission.Default.AllowAlways(pending.Tool)
+				_ = defaultState.setAlwaysAllow(pending.Tool, true)
 			}
 			editCallback(token, chatID, q.Message.MessageID, "Permission "+decision+" recorded", nil)
 		} else {
+			dropCallbackToken(ref)
 			send(token, chatID, "Permission request expired or was already answered")
 		}
 		return
 	}
 	if strings.HasPrefix(data, "qtype:") {
-		requestID := strings.TrimPrefix(data, "qtype:")
+		// qtype:<token>, same scheme as qans. The token has to be resolved here
+		// rather than passed through: what expectAnswer needs is the real request
+		// id, and handing it the token would leave the typed reply matching nothing.
+		ref := strings.TrimPrefix(data, "qtype:")
+		pending, ok := peekCallbackToken(ref)
+		if !ok {
+			send(token, chatID, "That question has expired. Ask again.")
+			return
+		}
+		dropCallbackToken(ref)
 		// A question with no options is already free-form, so the prompt is just a
 		// reminder; one with options now allows an answer outside them.
-		defaultState.expectAnswer(requestID, chatID)
+		defaultState.expectAnswer(pending.RequestID, chatID)
 		editCallback(token, chatID, q.Message.MessageID, "✍️ Reply with your answer.", nil)
 		return
 	}
 	if strings.HasPrefix(data, "qans:") {
-		parts := strings.SplitN(data, ":", 3)
-		if len(parts) < 3 {
-			send(token, chatID, "Invalid answer")
+		// qans:<token>. The answer text is behind the token: it used to be inlined
+		// and a single sentence overran the 64 byte limit, so questions with real
+		// options could not be rendered at all.
+		ref := strings.TrimPrefix(data, "qans:")
+		pending, ok := takeCallbackToken(ref)
+		if !ok {
+			send(token, chatID, "That question has expired. Ask again.")
 			return
 		}
-		if question.Default.Answer(currentSessionID(chatID), parts[1], parts[2]) {
-			editCallback(token, chatID, q.Message.MessageID, "✓ Answered: "+parts[2], nil)
+		if question.Default.Answer(pending.SessionID, pending.RequestID, pending.Answer) {
+			editCallback(token, chatID, q.Message.MessageID, "✓ Answered: "+pending.Answer, nil)
 		} else {
 			send(token, chatID, "Question already answered or expired")
 		}

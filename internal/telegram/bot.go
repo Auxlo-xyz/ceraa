@@ -1031,12 +1031,15 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 					case event.TypePermission:
 						tool, _ := e.Data["tool"].(string)
 						reqID, _ := e.Data["request_id"].(string)
-						kb := map[string]any{"inline_keyboard": [][]map[string]string{
-							{{"text": "✓ Allow once", "callback_data": "perm:allowOnce:" + reqID + ":" + tool}},
-							{{"text": "✓ Always", "callback_data": "perm:allowAlways:" + reqID + ":" + tool}},
-							{{"text": "✗ Deny", "callback_data": "perm:deny:" + reqID + ":" + tool}},
-						}}
-						sendWithKeyboard(token, chatID, "🔒 Permission required for `"+tool+"`\n"+summariseToolRequest(tool, e.Data["args"]), kb)
+						// One token, three buttons. The request id, the tool name and
+						// the decision words all used to be inlined here, which put
+						// callback_data at 71 to 78 bytes against a 64 byte limit, and
+						// Telegram rejects the entire message rather than the button.
+						// The prompt therefore never appeared, and the tool sat on its
+						// five minute timeout with nothing on screen to answer.
+						sendWithKeyboard(token, chatID,
+							"🔒 Permission required for `"+tool+"`\n"+summariseToolRequest(tool, e.Data["args"]),
+							permissionKeyboard(pendingCallback{SessionID: sessionID, RequestID: reqID, Tool: tool}))
 					case event.TypeQuestion:
 						ques, _ := e.Data["question"].(string)
 						if ques == "" {
@@ -1060,18 +1063,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 							}
 						}
 						freeForm, _ := e.Data["free_form"].(bool)
-						var rows [][]map[string]string
-						for _, opt := range opts {
-							rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + reqID + ":" + opt}})
-						}
-						// Without a way to type, the user is limited to the exact
-						// strings offered, which is wrong whenever the answer is a
-						// value, a path, or a name.
-						if freeForm || len(opts) == 0 {
-							rows = append(rows, []map[string]string{{"text": "✍️ Type an answer", "callback_data": "qtype:" + reqID}})
-						}
-						rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
-						kb := map[string]any{"inline_keyboard": rows}
+						kb := questionKeyboard(pendingCallback{SessionID: sessionID, RequestID: reqID}, opts, freeForm)
 						if freeForm {
 							// Mark the message as one whose next plain reply is an
 							// answer, so the typed text is not mistaken for a task.
