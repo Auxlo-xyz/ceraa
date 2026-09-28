@@ -883,6 +883,32 @@ func todayContext() string {
 	return fmt.Sprintf("<current-date>\nToday is %s.\n</current-date>", now.Format("2006-01-02"))
 }
 
+// workspaceContext tells the model where its commands actually run.
+//
+// Every filesystem tool resolves a relative path against this directory, and the
+// model is not told that anywhere: the convention is documented for us in
+// AGENTS.md and appears in no prompt the model reads. So it guesses, and a
+// plausible guess looks authoritative until the tool answers "no such file or
+// directory". Observed: asked to review a project, MiniMax reached for
+// /home/assistant/auxlo-neo/… because that is a home directory that exists,
+// while the project was at /workspace/auxlo-neo.
+//
+// The three instructions are the ones that actually change behaviour. Naming the
+// directory alone is not enough, because the model has a strong prior that files
+// live under $HOME.
+func (r *Runner) workspaceContext() string {
+	workdir := strings.TrimSpace(r.cfg.WorkDir)
+	if workdir == "" {
+		return ""
+	}
+	return fmt.Sprintf(`<workspace>
+Commands and file paths run in %s.
+- A relative path resolves against that directory. Prefer relative paths.
+- Do not invent absolute paths, and do not assume files live under your home directory.
+- To find something, list the directory before reading, rather than guessing a path.
+</workspace>`, workdir)
+}
+
 func (r *Runner) systemPrompt() string {
 	parts, _ := r.systemPromptParts()
 	return strings.Join(parts, "\n\n")
@@ -911,6 +937,13 @@ func (r *Runner) systemPromptParts() ([]string, int) {
 	// re-read. At the very front it would invalidate the whole prefix once a day.
 	if date := todayContext(); date != "" {
 		parts = append(parts, date)
+	}
+	// The workspace goes beside the date, after the static prompt, for the same
+	// reason: it is a per-run fact, and placing it later keeps the cached prefix
+	// intact. It changes when the user switches project, which is rare, so it is
+	// not counted as stable below.
+	if workspace := r.workspaceContext(); workspace != "" {
+		parts = append(parts, workspace)
 	}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
 		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
