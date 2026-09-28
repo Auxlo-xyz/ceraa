@@ -36,6 +36,13 @@ func anthropicMessagesURL(base string) string {
 	if strings.HasSuffix(trimmed, "/messages") {
 		return trimmed
 	}
+	// A base that already names the API version gets /messages appended, not
+	// /v1/messages. MiniMax's agent backend is served from a base ending in /v1,
+	// and appending unconditionally produced .../llm/v1/v1/messages, which is a
+	// 404 that reads like a bad path rather than a doubled version.
+	if strings.HasSuffix(trimmed, "/v1") {
+		return trimmed + "/messages"
+	}
 	return trimmed + "/v1/messages"
 }
 

@@ -156,13 +156,24 @@ func TestMinimaxActivationModelIsNeverCarriedOver(t *testing.T) {
 	}
 }
 
-// The default must be the model that is served by the Messages path, not the one
-// that lives on the OpenAI-compatible host.
-func TestDefaultMiniMaxModelIsOnTheMessagesPath(t *testing.T) {
+// The default must be the model the agent backend actually serves, reached by a
+// URL that resolves to the Messages endpoint.
+//
+// Both halves have moved and neither is obvious. The base is the agent backend
+// rather than the platform API's /anthropic path, because the mcode grant issues
+// an agent token and only the agent backend accepts one. And the base already ends
+// in the API version, so the transport appends /v1/messages to it rather than
+// substituting for the version it already carries.
+func TestDefaultMiniMaxModelIsOnTheAgentBackendMessagesPath(t *testing.T) {
 	if llm.DefaultMiniMaxModel != "MiniMax-M3" {
 		t.Errorf("default model = %q", llm.DefaultMiniMaxModel)
 	}
-	if !strings.HasSuffix(llm.MiniMaxBaseURL, "/anthropic") {
-		t.Errorf("base URL = %q; the subscription is served by the Messages API", llm.MiniMaxBaseURL)
+	if !strings.HasPrefix(llm.MiniMaxBaseURL, "https://agent.minimax.io/") {
+		t.Errorf("base URL = %q; the agent token is refused by the platform API with a "+
+			"401 asking for an API secret key in X-Api-Key", llm.MiniMaxBaseURL)
+	}
+	if llm.MiniMaxMessagesAuth != llm.MessagesAuthBearer {
+		t.Errorf("messages auth = %q, want bearer; the agent backend answers x-api-key "+
+			"with {\"token is required\"}", llm.MiniMaxMessagesAuth)
 	}
 }

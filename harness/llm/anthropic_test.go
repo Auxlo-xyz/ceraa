@@ -910,3 +910,22 @@ func TestMessagesAuthStyleChoosesTheHeader(t *testing.T) {
 		}
 	}
 }
+
+// The agent backend's base already ends in the API version, and the Messages URL
+// is built by appending to it. That is the shape that produces a doubled /v1 and
+// a 404, so it is pinned here rather than discovered against the live host.
+func TestTheAgentBackendBaseResolvesToOneMessagesURL(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{"https://agent.minimax.io/mavis/api/v1/llm/v1", "https://agent.minimax.io/mavis/api/v1/llm/v1/messages"},
+		{"https://agent.minimax.io/mavis/api/v1/llm/v1/", "https://agent.minimax.io/mavis/api/v1/llm/v1/messages"},
+		// A host that already names the endpoint must not gain a second suffix.
+		{"https://agent.minimax.io/mavis/api/v1/llm/v1/messages", "https://agent.minimax.io/mavis/api/v1/llm/v1/messages"},
+		// The platform API, which is where an API secret key goes and which the
+		// agent token is refused by.
+		{"https://api.minimax.io/anthropic", "https://api.minimax.io/anthropic/v1/messages"},
+	} {
+		if got := anthropicMessagesURL(tc.base); got != tc.want {
+			t.Errorf("anthropicMessagesURL(%q) = %q, want %q", tc.base, got, tc.want)
+		}
+	}
+}
