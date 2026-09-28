@@ -62,6 +62,15 @@ type Dialect struct {
 	// ExtraCodeParams are added to the device-code request. MiniMax requires a
 	// PKCE challenge there, which RFC 8628 does not have.
 	ExtraCodeParams url.Values
+
+	// ExtraTokenParams are added to the token request.
+	//
+	// PKCE is a two-part secret and a provider that asks for the challenge on the
+	// device-code request will also insist on the verifier when the token is
+	// collected. MiniMax answers "code_verifier is required" without it, so
+	// carrying only the challenge looks like a completed login that then produces
+	// no credential, and the verifier is the half that was being dropped.
+	ExtraTokenParams url.Values
 }
 
 // Standard is the flow as RFC 8628 and RFC 6749 define it, and the zero value

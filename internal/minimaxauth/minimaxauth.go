@@ -233,15 +233,25 @@ func DeviceEndpoints(region Region) oauthdevice.Endpoints {
 // InferenceBaseURL returns the Messages API endpoint for a region.
 func InferenceBaseURL(region Region) string { return endpointsFor(region).Base }
 
-// Dialect is MiniMax's device-flow dialect, including the PKCE challenge for this
-// particular login.
+// Dialect is MiniMax's device-flow dialect, including both halves of this
+// particular login's PKCE pair.
 //
-// Generated rather than a constant because the challenge is per-login, and a fixed
-// challenge would be a replayable secret published in the source.
-func Dialect(challenge string) oauthdevice.Dialect {
+// Generated rather than a constant because the pair is per-login, and a fixed
+// challenge would be a replayable secret published in the source. The whole pair
+// is taken rather than the challenge alone: the official CLI sends code_challenge
+// on the device-code request and code_verifier when the token is collected, and
+// sending only the first is answered with "code_verifier is required".
+//
+// GrantType is left at the RFC 8628 device-code grant, which is what the official
+// CLI posts to /oauth2/token. The user-code grant belonged to the older
+// /oauth/code endpoint that shipped with OpenClaw's client.
+func Dialect(pair pkcePair) oauthdevice.Dialect {
 	return oauthdevice.Dialect{
-		CodeField:                  "user_code",
-		GrantType:                  "urn:ietf:params:oauth:grant-type:user_code",
+		CodeField: "user_code",
+		// Stated rather than inherited. The default happens to be the same value,
+		// but this is MiniMax's contract and the old user-code grant belonged to
+		// the endpoint this flow no longer uses.
+		GrantType:                  oauthdevice.GrantTypeDeviceCode,
 		ExpiryField:                "expired_in",
 		ExpiryAbsoluteMilliseconds: true,
 		IntervalIsMilliseconds:     true,
@@ -250,20 +260,23 @@ func Dialect(challenge string) oauthdevice.Dialect {
 		ErrorStatusField:           "base_resp.status_code",
 		ErrorMessageField:          "base_resp.status_msg",
 		ExtraCodeParams: url.Values{
-			"code_challenge":        {challenge},
+			"code_challenge":        {pair.Challenge},
 			"code_challenge_method": {"S256"},
+		},
+		ExtraTokenParams: url.Values{
+			"code_verifier": {pair.Verifier},
 		},
 	}
 }
 
 // ManagerConfig is the device-login configuration for a region.
-func ManagerConfig(region Region, challenge string, client *http.Client) oauthdevice.Config {
+func ManagerConfig(region Region, pair pkcePair, client *http.Client) oauthdevice.Config {
 	return oauthdevice.Config{
 		ProviderID: ProviderID,
 		ClientID:   OAuthClientID,
 		Scope:      Scope,
 		Endpoints:  DeviceEndpoints(region),
-		Dialect:    Dialect(challenge),
+		Dialect:    Dialect(pair),
 		HTTPClient: client,
 	}
 }
@@ -290,7 +303,7 @@ func NewLoginWithEndpoints(region Region, client *http.Client, endpoints oauthde
 	if err != nil {
 		pair = pkcePair{}
 	}
-	config := ManagerConfig(region, pair.Challenge, client)
+	config := ManagerConfig(region, pair, client)
 	config.Endpoints = endpoints
 	login := &Login{manager: oauthdevice.NewManager(config), region: region}
 	login.manager.SetOnToken(func(flowID string, token oauthdevice.Token) error {
@@ -318,7 +331,7 @@ func NewLogin(region Region, client *http.Client) *Login {
 		pair = pkcePair{}
 	}
 	login := &Login{
-		manager: oauthdevice.NewManager(ManagerConfig(region, pair.Challenge, client)),
+		manager: oauthdevice.NewManager(ManagerConfig(region, pair, client)),
 		region:  region,
 	}
 	login.manager.SetOnToken(func(flowID string, token oauthdevice.Token) error {
@@ -388,7 +401,7 @@ func refresh(ctx context.Context, credential Credential, store *Store) (Credenti
 	if err != nil {
 		return Credential{}, err
 	}
-	config := ManagerConfig(region, pair.Challenge, store.HTTPClient)
+	config := ManagerConfig(region, pair, store.HTTPClient)
 	if store.Endpoints.DeviceCode != "" && store.Endpoints.Token != "" {
 		config.Endpoints = store.Endpoints
 	}

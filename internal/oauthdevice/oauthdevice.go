@@ -490,6 +490,9 @@ func (m *Manager) pollToken(ctx context.Context, deviceCode string) (Token, erro
 		"client_id":       {m.config.ClientID},
 		dialect.CodeField: {deviceCode},
 	}
+	for key, values := range dialect.ExtraTokenParams {
+		form[key] = values
+	}
 	payload, err := m.postForm(ctx, m.config.Endpoints.Token, form)
 	if err != nil {
 		return Token{}, err

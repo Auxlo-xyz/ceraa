@@ -92,6 +92,66 @@ func TestVerificationURLSurvivesTheLogin(t *testing.T) {
 	}
 }
 
+// A login that carries only the PKCE challenge fails at the token poll with
+// "code_verifier is required", which is the live service's answer and not a guess.
+func TestTokenPollCarriesTheVerifier(t *testing.T) {
+	initSecret(t)
+	var codeChallenge, codeVerifier, grantType, codeField string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		if strings.HasSuffix(r.URL.Path, "/oauth2/device/code") {
+			codeChallenge = r.PostForm.Get("code_challenge")
+			_, _ = w.Write([]byte(`{"user_code":"U-3","verification_uri":"https://platform.minimax.io/x","expired_in":1790519361298,"interval":300}`))
+			return
+		}
+		grantType = r.PostForm.Get("grant_type")
+		codeField = r.PostForm.Get("user_code")
+		codeVerifier = r.PostForm.Get("code_verifier")
+		// The live service rejects a poll with no verifier, so the stub does too:
+		// a stub that only ever answers "pending" would let this test pass while
+		// production fails.
+		if codeVerifier == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"code_verifier is required"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"acc-m","refresh_token":"ref-m","token_type":"Bearer","expired_in":1790519361298}`))
+	}))
+	defer srv.Close()
+
+	login := NewLoginWithEndpoints(RegionGlobal, srv.Client(), stubEndpoints(srv))
+	flow, err := login.Start(context.Background())
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.After(20 * time.Second)
+	for flow.Snapshot().Status != oauthdevice.StatusSucceeded {
+		select {
+		case <-deadline:
+			t.Fatalf("login did not complete, status %q: %s", flow.Snapshot().Status, flow.Snapshot().Message)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if codeChallenge == "" {
+		t.Error("the device-code request carried no PKCE challenge")
+	}
+	if codeVerifier == "" {
+		t.Error("the token poll carried no code_verifier; the service answers 'code_verifier is required'")
+	}
+	if codeVerifier == codeChallenge {
+		t.Error("the verifier and the challenge are the same value, so the challenge is not a hash of the verifier")
+	}
+	if grantType != oauthdevice.GrantTypeDeviceCode {
+		t.Errorf("grant = %q, want the RFC 8628 device-code grant", grantType)
+	}
+	if codeField != "U-3" {
+		t.Errorf("user_code = %q, want the code the service issued", codeField)
+	}
+}
+
 // A completed login has to persist, or it reports success and leaves nothing.
 func TestCompletedLoginIsPersisted(t *testing.T) {
 	initSecret(t)
@@ -223,24 +283,34 @@ func TestPKCEChallengeIsUniquePerLogin(t *testing.T) {
 	if first.Verifier == "" || first.Challenge == first.Verifier {
 		t.Error("the challenge is not a hash of the verifier")
 	}
-	dialect := Dialect(first.Challenge)
+	dialect := Dialect(first)
 	if dialect.ExtraCodeParams.Get("code_challenge_method") != "S256" {
 		t.Error("the challenge method is not S256")
 	}
 	if dialect.ExtraCodeParams.Get("code_challenge") != first.Challenge {
 		t.Error("the dialect does not carry the challenge")
 	}
+	// Both halves travel: the challenge opens the flow and the verifier closes it.
+	// Carrying only the challenge is answered with "code_verifier is required".
+	if dialect.ExtraTokenParams.Get("code_verifier") != first.Verifier {
+		t.Error("the dialect does not carry the verifier, so the token poll is rejected")
+	}
+	if dialect.ExtraTokenParams.Get("code_verifier") == first.Challenge {
+		t.Error("the verifier was replaced by the challenge")
+	}
 }
 
 // The dialect has to name every divergence, or the standard reader misreads the
 // response. These are the values observed from the live service.
 func TestDialectNamesEveryDivergence(t *testing.T) {
-	d := Dialect("challenge")
+	d := Dialect(pkcePair{Verifier: "verifier", Challenge: "challenge"})
 	if d.CodeField != "user_code" {
 		t.Errorf("code field = %q", d.CodeField)
 	}
-	if d.GrantType != "urn:ietf:params:oauth:grant-type:user_code" {
-		t.Errorf("grant = %q", d.GrantType)
+	// The official CLI posts the RFC 8628 device-code grant to /oauth2/token. The
+	// user-code grant belonged to the older /oauth/code endpoint.
+	if d.GrantType != "urn:ietf:params:oauth:grant-type:device_code" {
+		t.Errorf("grant = %q, want the RFC 8628 device-code grant", d.GrantType)
 	}
 	if d.ExpiryField != "expired_in" {
 		t.Errorf("expiry field = %q", d.ExpiryField)
