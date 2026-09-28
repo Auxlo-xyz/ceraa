@@ -315,10 +315,19 @@ func InferenceBaseURL(region Region) string { return endpointsFor(region).Base }
 // that cannot work.
 func Dialect(pair pkcePair) oauthdevice.Dialect {
 	return oauthdevice.Dialect{
-		// The account host returns no device_code for this grant, so the user code
-		// is what gets polled, exactly as minimax-code does when standardDeviceCode
-		// is absent.
-		CodeField:          "user_code",
+		// The agent grant returns a device_code, and the token endpoint insists on
+		// that one specifically: polling the user code instead is answered with
+		// "device_code and code_verifier are required". The CLI grant returns no
+		// device_code, so the user code is the only thing to poll. Both are named,
+		// and the reader prefers the device code, which is what the reference client
+		// does.
+		//
+		// This was got wrong once. A probe reported no device_code because the
+		// probe deleted that key from its own output before printing, and the
+		// conclusion drawn from the sanitized evidence was that the field did not
+		// exist. The field was 43 characters long the whole time.
+		CodeField:          "device_code",
+		FallbackCodeField:  "user_code",
 		GrantType:          oauthdevice.GrantTypeDeviceCode,
 		ExpiryField:        "expires_in",
 		PendingStatusField: "status",

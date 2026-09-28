@@ -432,10 +432,10 @@ func (m *Manager) requestDeviceCode(ctx context.Context) (deviceCodeResponse, er
 	// The code and the user-visible code are read by name, because a provider is
 	// free to call them something other than device_code and one does.
 	code, _ := device[dialect.CodeField].(string)
-	userCode, _ := device["user_code"].(string)
-	if userCode == "" {
-		userCode, _ = device["user_code"].(string)
+	if code == "" && dialect.FallbackCodeField != "" {
+		code, _ = device[dialect.FallbackCodeField].(string)
 	}
+	userCode, _ := device["user_code"].(string)
 	if code == "" || userCode == "" {
 		return deviceCodeResponse{}, errors.New("device authorization response is incomplete")
 	}

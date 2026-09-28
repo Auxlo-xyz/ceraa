@@ -22,6 +22,16 @@ type Dialect struct {
 	// the poll request. Default "device_code"; MiniMax calls it "user_code".
 	CodeField string
 
+	// FallbackCodeField is used when the response does not carry CodeField.
+	//
+	// MiniMax serves two grants from the same two paths and they disagree here as
+	// well: the CLI grant returns no device_code at all, so the user code is the
+	// only thing to poll, while the agent grant returns both. A single field cannot
+	// express that, and guessing wrong is not a parse failure — the poll is sent,
+	// the endpoint answers "device_code and code_verifier are required", and the
+	// login reports that the user did not finish.
+	FallbackCodeField string
+
 	// GrantType is sent in the poll request. Default is the device-code grant;
 	// MiniMax uses its own user-code grant.
 	GrantType string

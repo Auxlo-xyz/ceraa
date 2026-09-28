@@ -105,7 +105,7 @@ func TestVerificationURLSurvivesTheLogin(t *testing.T) {
 // "code_verifier is required", which is the live service's answer and not a guess.
 func TestTokenPollCarriesTheVerifier(t *testing.T) {
 	initSecret(t)
-	var codeChallenge, codeVerifier, grantType, codeField string
+	var codeChallenge, codeVerifier, grantType, codeField, leakedUserCode string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := r.ParseForm(); err != nil {
@@ -113,18 +113,23 @@ func TestTokenPollCarriesTheVerifier(t *testing.T) {
 		}
 		if strings.HasSuffix(r.URL.Path, "/oauth2/device/code") {
 			codeChallenge = r.PostForm.Get("code_challenge")
-			_, _ = w.Write([]byte(`{"user_code":"U-3","verification_uri":"https://account.minimax.io/oauth-authorize","expires_in":300,"interval":3}`))
+			// Both codes, because that is what the live service returns for this
+			// grant. A stub carrying only user_code models the *CLI* grant and will
+			// happily agree with a dialect that polls the wrong one, which is how the
+			// wrong dialect shipped: the first stub did exactly this and the login
+			// failed in production with "device_code and code_verifier are required".
+			_, _ = w.Write([]byte(`{"device_code":"D-3","user_code":"U-3","verification_uri":"https://account.minimax.io/oauth-authorize","verification_uri_complete":"https://account.minimax.io/oauth-authorize?user_code=U-3","expires_in":300,"interval":3}`))
 			return
 		}
 		grantType = r.PostForm.Get("grant_type")
-		codeField = r.PostForm.Get("user_code")
+		codeField = r.PostForm.Get("device_code")
+		leakedUserCode = r.PostForm.Get("user_code")
 		codeVerifier = r.PostForm.Get("code_verifier")
-		// The live service rejects a poll with no verifier, so the stub does too:
-		// a stub that only ever answers "pending" would let this test pass while
-		// production fails.
-		if codeVerifier == "" {
+		// The live service names both requirements in one message, so the stub
+		// accepts the poll only when both are present and non-empty.
+		if codeField == "" || codeVerifier == "" {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"code_verifier is required"}}`))
+			_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"device_code and code_verifier are required"}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"access_token":"acc-m","refresh_token":"ref-m","token_type":"Bearer","expires_in":3600}`))
@@ -156,8 +161,12 @@ func TestTokenPollCarriesTheVerifier(t *testing.T) {
 	if grantType != oauthdevice.GrantTypeDeviceCode {
 		t.Errorf("grant = %q, want the RFC 8628 device-code grant", grantType)
 	}
-	if codeField != "U-3" {
-		t.Errorf("user_code = %q, want the code the service issued", codeField)
+	if codeField != "D-3" {
+		t.Errorf("device_code = %q, want the code the service issued; polling the user "+
+			"code is answered with 'device_code and code_verifier are required'", codeField)
+	}
+	if leakedUserCode != "" {
+		t.Errorf("the poll carried user_code %q alongside device_code; the endpoint wants one", leakedUserCode)
 	}
 }
 
@@ -313,8 +322,14 @@ func TestPKCEChallengeIsUniquePerLogin(t *testing.T) {
 // response. These are the values observed from the live service for this grant.
 func TestDialectNamesEveryDivergence(t *testing.T) {
 	d := Dialect(pkcePair{Verifier: "verifier", Challenge: "challenge"})
-	if d.CodeField != "user_code" {
-		t.Errorf("code field = %q", d.CodeField)
+	// device_code is what the agent grant returns and what the token endpoint
+	// insists on. user_code is kept as the fallback because the CLI grant returns
+	// no device_code at all, and the two are served from the same paths.
+	if d.CodeField != "device_code" {
+		t.Errorf("code field = %q, want device_code", d.CodeField)
+	}
+	if d.FallbackCodeField != "user_code" {
+		t.Errorf("fallback code field = %q, want user_code", d.FallbackCodeField)
 	}
 	// The agent product posts the RFC 8628 device-code grant to /oauth2/token. The
 	// user-code grant belonged to the older /oauth/code endpoint.
@@ -422,5 +437,63 @@ func stubEndpoints(srv *httptest.Server) oauthdevice.Endpoints {
 	return oauthdevice.Endpoints{
 		DeviceCode: srv.URL + "/oauth2/device/code",
 		Token:      srv.URL + "/oauth2/token",
+	}
+}
+
+// The CLI grant returns no device_code, so the reader has to be able to fall back
+// to the user code. Both grants come off the same two paths, so a dialect with no
+// fallback works against one and fails against the other.
+func TestTheUserCodeIsTheFallbackNotTheOnlyCode(t *testing.T) {
+	initSecret(t)
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			"device_code present, as the agent grant returns it",
+			`{"device_code":"D-1","user_code":"U-1","verification_uri":"https://account.minimax.io/oauth-authorize","expires_in":300,"interval":3}`,
+			"D-1",
+		},
+		{
+			"device_code absent, as the CLI grant returns it",
+			`{"user_code":"U-1","verification_uri":"https://account.minimax.io/oauth-authorize","expires_in":300,"interval":3}`,
+			"U-1",
+		},
+	} {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/oauth2/device/code") {
+				_, _ = w.Write([]byte(tc.payload))
+				return
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			// Answer the poll only for the code the reader chose.
+			if r.PostForm.Get("device_code") != tc.want && r.PostForm.Get("user_code") != tc.want {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"device_code and code_verifier are required"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"acc","token_type":"Bearer","expires_in":3600}`))
+		}))
+
+		login := NewLoginWithEndpoints(RegionGlobal, srv.Client(), stubEndpoints(srv))
+		flow, err := login.Start(context.Background())
+		if err != nil {
+			srv.Close()
+			t.Fatalf("%s: start: %v", tc.name, err)
+		}
+		deadline := time.After(10 * time.Second)
+		for flow.Snapshot().Status != oauthdevice.StatusSucceeded {
+			select {
+			case <-deadline:
+				srv.Close()
+				t.Fatalf("%s: login did not complete, status %q: %s", tc.name, flow.Snapshot().Status, flow.Snapshot().Message)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		srv.Close()
 	}
 }
