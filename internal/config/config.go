@@ -20,25 +20,35 @@ func env(name string) string {
 
 // Config holds all Ceraa settings.
 type Config struct {
-	LLM                      LLMProvider                `json:"llm"`
-	ProviderProfiles         map[string]ProviderProfile `json:"provider_profiles,omitempty"`
-	ActiveProvider           string                     `json:"active_provider,omitempty"`
-	Subscriptions            Subscriptions              `json:"subscriptions,omitempty"`
-	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
-	SessionFile              string                     `json:"session_file,omitempty"`
-	WorkspaceRoot            string                     `json:"workspace_root,omitempty"`
-	ToolOutputDir            string                     `json:"tool_output_dir,omitempty"`
-	MaxToolResultChars       int                        `json:"max_tool_result_chars,omitempty"`
-	MaxConcurrentTools       int                        `json:"max_concurrent_tools,omitempty"`
-	ModelCatalogURL          string                     `json:"model_catalog_url,omitempty"`
-	ModelCatalogCache        string                     `json:"model_catalog_cache,omitempty"`
-	ModelCatalogRefreshHours int                        `json:"model_catalog_refresh_hours,omitempty"`
-	TitleAPIURL              string                     `json:"title_api_url,omitempty"`
-	TitleModel               string                     `json:"title_model,omitempty"`
-	MemoryFile               string                     `json:"memory_file,omitempty"`
-	SkillFile                string                     `json:"skill_file,omitempty"`
-	EvaluationFile           string                     `json:"evaluation_file,omitempty"`
-	SchedulerFile            string                     `json:"scheduler_file,omitempty"`
+	LLM              LLMProvider                `json:"llm"`
+	ProviderProfiles map[string]ProviderProfile `json:"provider_profiles,omitempty"`
+	ActiveProvider   string                     `json:"active_provider,omitempty"`
+	// Model, Reasoning, Agent and AutoCompaction are the model-facing settings the
+	// Telegram menu edits. They used to live in bridge-state.json, which made config
+	// have two sources of truth for one question: the menu and the run path read
+	// "which model is this" from different files under different precedence rules,
+	// so a provider switched from Telegram was not the provider the next run used.
+	// They belong beside ActiveProvider, which is the same kind of decision.
+	Model                    string         `json:"model,omitempty"`
+	Reasoning                string         `json:"reasoning,omitempty"`
+	Agent                    string         `json:"agent,omitempty"`
+	AutoCompaction           *bool          `json:"auto_compaction,omitempty"`
+	Subscriptions            Subscriptions  `json:"subscriptions,omitempty"`
+	Telegram                 TelegramConfig `json:"telegram,omitempty"`
+	SessionFile              string         `json:"session_file,omitempty"`
+	WorkspaceRoot            string         `json:"workspace_root,omitempty"`
+	ToolOutputDir            string         `json:"tool_output_dir,omitempty"`
+	MaxToolResultChars       int            `json:"max_tool_result_chars,omitempty"`
+	MaxConcurrentTools       int            `json:"max_concurrent_tools,omitempty"`
+	ModelCatalogURL          string         `json:"model_catalog_url,omitempty"`
+	ModelCatalogCache        string         `json:"model_catalog_cache,omitempty"`
+	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
+	TitleAPIURL              string         `json:"title_api_url,omitempty"`
+	TitleModel               string         `json:"title_model,omitempty"`
+	MemoryFile               string         `json:"memory_file,omitempty"`
+	SkillFile                string         `json:"skill_file,omitempty"`
+	EvaluationFile           string         `json:"evaluation_file,omitempty"`
+	SchedulerFile            string         `json:"scheduler_file,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
@@ -316,12 +326,19 @@ func LoadPersisted() (*Config, error) {
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
-	// Try config file
 	if err := loadFile(cfg); err != nil {
 		return nil, fmt.Errorf("config file: %w", err)
 	}
+	applyEnv(cfg)
+	return cfg, nil
+}
 
-	// Env overrides
+// applyEnv overlays CERAA_* onto a loaded config.
+//
+// Split out of Load so the process-wide Load and the Store's Update apply
+// exactly the same rules. Two copies of an override list is how a variable
+// ends up honoured on one path and ignored on the other.
+func applyEnv(cfg *Config) {
 	if v := env("PROVIDER"); v != "" {
 		cfg.ActiveProvider = v
 	}
@@ -410,13 +427,59 @@ func Load() (*Config, error) {
 		cfg.LLM.URL = v
 	}
 
-	return cfg, nil
 }
 
+// loadedFrom records which file the last loadFile actually read, or empty when it
+// read none. A config assembled from a legacy location is working, and the only way
+// to know that is to be told, so the path is surfaced rather than inferred.
+var loadedFrom string
+
+// Selection is the model-facing choice, read as one value.
+//
+// It exists so a reader cannot pick the model from one file and the provider from
+// another. The menus used to do exactly that: provider and profiles came from
+// bridge-state.json while the CLI read config.json, so a screen could describe a
+// provider the run path was not using.
+type Selection struct {
+	ActiveProvider string `json:"active_provider,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Agent          string `json:"agent,omitempty"`
+	Reasoning      string `json:"reasoning,omitempty"`
+	// AutoCompaction is a pointer because unset and off are different answers:
+	// unset means the user never chose, and the menu defaults that to on.
+	AutoCompaction *bool                      `json:"auto_compaction,omitempty"`
+	Profiles       map[string]ProviderProfile `json:"provider_profiles,omitempty"`
+}
+
+// LoadSelection reads the model-facing selection from the one config file.
+func LoadSelection() (Selection, error) {
+	cfg, err := Load()
+	if err != nil {
+		return Selection{}, err
+	}
+	return Selection{
+		ActiveProvider: strings.TrimSpace(cfg.ActiveProvider),
+		Model:          strings.TrimSpace(cfg.Model),
+		Agent:          strings.TrimSpace(cfg.Agent),
+		Reasoning:      strings.TrimSpace(cfg.Reasoning),
+		AutoCompaction: cfg.AutoCompaction,
+		Profiles:       cfg.ProviderProfiles,
+	}, nil
+}
+
+// LoadedFrom is the path the most recent Load read, empty if it read no file.
+func LoadedFrom() string { return loadedFrom }
+
+// loadFile reads the canonical config.json, falling back to the pre-consolidation
+// locations so an existing install is not orphaned by the path change.
+//
+// The canonical path is tried first and alone decides the result when it exists:
+// consulting the fallbacks first would let a stray ./ceraa.json in a working
+// directory keep shadowing the real one indefinitely.
 func loadFile(cfg *Config) error {
-	paths := candidatePaths()
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
+	loadedFrom = ""
+	for _, path := range paths.ConfigCandidates() {
+		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -424,8 +487,9 @@ func loadFile(cfg *Config) error {
 			return err
 		}
 		if err := json.Unmarshal(data, cfg); err != nil {
-			return fmt.Errorf("parse %s: %w", p, err)
+			return fmt.Errorf("parse %s: %w", path, err)
 		}
+		loadedFrom = path
 		return nil
 	}
 	return nil
@@ -485,12 +549,17 @@ func candidatePaths() []string {
 
 // RuntimeState is the provider selection the running service persists.
 //
-// It lives in bridge-state.json and is written by the Telegram menu and by /model,
-// so a provider chosen there is a real, deliberate choice by the user. It is a
-// separate file from config.json because the service updates it at runtime while
-// config.json is edited by hand, and conflating the two meant a provider activated
-// from Telegram was invisible to the CLI: the CLI reported no endpoint configured
-// for a provider that was working a moment earlier.
+// DEPRECATED: the provider selection moved into Config itself, so that config has
+// exactly one source of truth. This type and the reader below exist only to fold
+// an old bridge-state.json into the consolidated config, and are removed once no
+// install still needs the migration.
+//
+// It used to live in bridge-state.json beside chat, project and permission state,
+// which is what let the menu and the run path disagree about which provider was
+// active: they read the same fact through two different files with two different
+// precedence rules. A provider activated from Telegram was therefore invisible to
+// the CLI, which reported no endpoint configured for a provider that was working a
+// moment earlier.
 type RuntimeState struct {
 	Provider         string                     `json:"provider,omitempty"`
 	Model            string                     `json:"model,omitempty"`
