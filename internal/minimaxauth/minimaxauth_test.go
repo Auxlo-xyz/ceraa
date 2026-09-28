@@ -24,15 +24,22 @@ func initSecret(t *testing.T) {
 // The constants decide whether sign-in works at all, and a typo in any of them
 // fails at the provider rather than here.
 func TestConstantsMatchTheService(t *testing.T) {
-	if OAuthClientID != "78257093-7e40-4613-99e0-527b14b39113" {
+	// Pinned to MiniMax's own CLI client. The previous value was OpenClaw's, and
+	// authorizing it offered a one-day free trial under OpenClaw's name.
+	if OAuthClientID != "659cf4c1-615c-45f6-a5f6-4bf15eb476e5" {
 		t.Errorf("client id = %q", OAuthClientID)
 	}
-	// model.completion is what makes the token able to invoke a model. A login
-	// without it authenticates and then fails on every request.
-	for _, want := range []string{"model.completion", "group_id", "profile"} {
+	// coding_plan is what names a subscription rather than a trial. The API-key
+	// provider's scope here is what produced the free-trial offer.
+	for _, want := range []string{"coding_plan", "openid", "profile"} {
 		if !strings.Contains(Scope, want) {
 			t.Errorf("scope lost %q", want)
 		}
+	}
+	// The portal paths are part of the contract, and the previous client id was
+	// reached through a different pair entirely (/api/oauth/*).
+	if got := DeviceEndpoints(RegionGlobal); got.DeviceCode != "https://account.minimax.io/oauth2/device/code" || got.Token != "https://account.minimax.io/oauth2/token" {
+		t.Errorf("device endpoints = %+v", got)
 	}
 	hosts := endpointsFor(RegionGlobal)
 	if hosts.OAuthBase != "https://account.minimax.io" {

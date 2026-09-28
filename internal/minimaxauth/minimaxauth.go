@@ -38,16 +38,23 @@ import (
 // ProviderID is the id this package registers under.
 const ProviderID = "minimax"
 
-// OAuthClientID is MiniMax's shared OAuth client, the same one OpenClaw uses and
-// the same one the Hermes agent uses.
-const OAuthClientID = "78257093-7e40-4613-99e0-527b14b39113"
+// OAuthClientID is MiniMax's own OAuth client, read from its official CLI
+// (github.com/MiniMax-AI/cli, src/auth/oauth.ts).
+//
+// This was previously OpenClaw's client id, and that was wrong in a way the token
+// itself could not show: authorizing it lands on a consent page reading "Sign in
+// with MiniMax to OpenClaw" whose action button is "Authorize & Start 1-Day Free
+// Trial". The user was granting a stranger's registration a one-day trial, not
+// their own plan. MiniMax publishes this client for coding tools, so use it.
+const OAuthClientID = "659cf4c1-615c-45f6-a5f6-4bf15eb476e5"
 
 // Scope is what the login asks for.
 //
-// model.completion is the part that matters: without it the token cannot invoke a
-// model, so a login that succeeded with a narrower scope would produce a
-// credential that authenticates and then fails on every request.
-const Scope = "group_id profile model.completion"
+// coding_plan is the scope that names a subscription rather than a trial, and it
+// is the whole reason the previous scope was wrong: `group_id profile
+// model.completion` is the API-key provider's scope, so asking for it on the
+// portal is what produced the free-trial offer.
+const Scope = "openid profile coding_plan"
 
 // Region selects which MiniMax deployment an account belongs to.
 type Region string
