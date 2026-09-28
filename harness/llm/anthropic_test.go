@@ -1,11 +1,17 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1011,4 +1017,112 @@ func TestAnEmptyParallelBatchIsDropped(t *testing.T) {
 			t.Error("an empty tool_calls item produced an empty assistant message")
 		}
 	}
+}
+
+// A read of an image used to fall through to the generic reader, which returns
+// string(bytes): a 400 KB JPEG is about a hundred thousand tokens of mojibake,
+// spent silently before the model sees anything. The picture has to go over as an
+// image block, and the path has to survive the session to get there.
+func TestAnImageReadTravelsAsAnImageBlock(t *testing.T) {
+	dir := t.TempDir()
+	shot := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(shot, testPNG(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "look at this"},
+		{Kind: "tool_call", CallID: "c1", Name: "read", Args: `{"path":"shot.png"}`},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read",
+			Output: "shot.png attached as an image (image/png, 1.2 kB).", Images: []string{shot}},
+	}
+	messages, err := encodeAnthropicMessages(items)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	encoded, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("the request does not encode: %v", err)
+	}
+	raw := string(encoded)
+
+	if !strings.Contains(raw, `"type":"image"`) {
+		t.Fatalf("no image block in the request:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"media_type":"image/png"`) {
+		t.Error("the image block has no media type")
+	}
+	// The payload is base64, never the file's bytes pasted into text.
+	if strings.Contains(raw, "PNG") || strings.Contains(raw, "\x89PNG") {
+		t.Error("raw PNG bytes reached the request as text")
+	}
+	if !strings.Contains(raw, "attached as an image") {
+		t.Error("the result text describing the attachment is missing")
+	}
+}
+
+// The session holds a path, never a copy of the picture, or every past message
+// would carry the same image again.
+func TestTheSessionCarriesAPathNotTheImage(t *testing.T) {
+	if _, err := json.Marshal(Item{Images: []string{"/tmp/shot.png"}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(Item{Images: []string{"/tmp/shot.png"}})
+	if strings.Contains(string(raw), "base64") || strings.Contains(string(raw), "iVBOR") {
+		t.Errorf("the item carries image bytes: %s", raw)
+	}
+	if !strings.Contains(string(raw), "/tmp/shot.png") {
+		t.Errorf("the item does not carry the path: %s", raw)
+	}
+}
+
+// A path that has since gone missing must not fail the turn: the result text
+// already says what was attached, so the model still gets an answer.
+func TestAMissingImageDegradesToText(t *testing.T) {
+	blocks := anthropicImageBlocks([]string{filepath.Join(t.TempDir(), "gone.png")})
+	if len(blocks) != 0 {
+		t.Errorf("got %d blocks for a missing file, want none", len(blocks))
+	}
+	items := []Item{
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read",
+			Output: "shot.png attached as an image.", Images: []string{filepath.Join(t.TempDir(), "gone.png")}},
+	}
+	if _, err := encodeAnthropicMessages(items); err != nil {
+		t.Errorf("a missing image failed the encode: %v", err)
+	}
+}
+
+// Chat completions gets the same treatment, so reading a picture is not a
+// property of one transport.
+func TestChatEncoderSendsAnImageToo(t *testing.T) {
+	dir := t.TempDir()
+	shot := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(shot, testPNG(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parts := chatImageParts([]string{shot})
+	if len(parts) != 1 {
+		t.Fatalf("got %d parts, want 1", len(parts))
+	}
+	encoded, _ := json.Marshal(parts[0])
+	if !strings.Contains(string(encoded), "image_url") || !strings.Contains(string(encoded), "data:image/png;base64,") {
+		t.Errorf("part = %s", encoded)
+	}
+}
+
+// testPNG writes a small, valid PNG and returns its bytes. Decoders only are
+// imported, so encoding goes through image/png in the test.
+func testPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 24, 24))
+	for y := 0; y < 24; y++ {
+		for x := 0; x < 24; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x * 10), G: uint8(y * 10), B: 120, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

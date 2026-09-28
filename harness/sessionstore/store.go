@@ -45,34 +45,40 @@ const (
 )
 
 type Operation struct {
-	ID            string          `json:"id"`
-	Tool          string          `json:"tool"`
-	Args          map[string]any  `json:"args,omitempty"`
-	Status        OperationStatus `json:"status"`
-	Output        string          `json:"output,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	ThreadID      string          `json:"thread_id,omitempty"`
-	RunID         string          `json:"run_id,omitempty"`
-	ToolCallID    string          `json:"tool_call_id,omitempty"`
-	SpecType      string          `json:"spec_type,omitempty"`
-	SpecArgs      map[string]any  `json:"spec_args,omitempty"`
-	ResultPresent bool            `json:"result_present,omitempty"`
+	ID     string          `json:"id"`
+	Tool   string          `json:"tool"`
+	Args   map[string]any  `json:"args,omitempty"`
+	Status OperationStatus `json:"status"`
+	Output string          `json:"output,omitempty"`
+	Error  string          `json:"error,omitempty"`
+	// Images are image paths this operation produced, kept as paths so a session
+	// file does not carry a copy of every screenshot it has seen.
+	Images        []string       `json:"images,omitempty"`
+	ThreadID      string         `json:"thread_id,omitempty"`
+	RunID         string         `json:"run_id,omitempty"`
+	ToolCallID    string         `json:"tool_call_id,omitempty"`
+	SpecType      string         `json:"spec_type,omitempty"`
+	SpecArgs      map[string]any `json:"spec_args,omitempty"`
+	ResultPresent bool           `json:"result_present,omitempty"`
 }
 
 type Message struct {
-	Role              llm.Role        `json:"role"`
-	Content           string          `json:"content,omitempty"`
-	ToolCallID        string          `json:"tool_call_id,omitempty"`
-	ToolName          string          `json:"tool_name,omitempty"`
-	ToolResult        string          `json:"tool_result,omitempty"`
-	ToolResultPresent bool            `json:"tool_result_present,omitempty"`
-	ResultStatus      OperationStatus `json:"result_status,omitempty"`
-	ToolCall          *ToolCallRef    `json:"tool_call,omitempty"`
-	ToolCalls         []ToolCallRef   `json:"tool_calls,omitempty"`
-	Reasoning         string          `json:"reasoning,omitempty"`
-	ReasoningDetails  json.RawMessage `json:"reasoning_details,omitempty"`
-	Usage             llm.UsageInfo   `json:"usage,omitempty"`
-	Compaction        *CompactionInfo `json:"compaction,omitempty"`
+	Role              llm.Role `json:"role"`
+	Content           string   `json:"content,omitempty"`
+	ToolCallID        string   `json:"tool_call_id,omitempty"`
+	ToolName          string   `json:"tool_name,omitempty"`
+	ToolResult        string   `json:"tool_result,omitempty"`
+	ToolResultPresent bool     `json:"tool_result_present,omitempty"`
+	// ToolImages are image paths a read produced, kept as paths so a session file
+	// does not carry a copy of every screenshot it has ever seen.
+	ToolImages       []string        `json:"tool_images,omitempty"`
+	ResultStatus     OperationStatus `json:"result_status,omitempty"`
+	ToolCall         *ToolCallRef    `json:"tool_call,omitempty"`
+	ToolCalls        []ToolCallRef   `json:"tool_calls,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
+	Usage            llm.UsageInfo   `json:"usage,omitempty"`
+	Compaction       *CompactionInfo `json:"compaction,omitempty"`
 }
 
 type CompactionInfo struct {

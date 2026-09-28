@@ -1424,6 +1424,9 @@ func (r *Runner) persistResult(sess *sessionstore.Session, runID string, result 
 		sess.Operations[i].Output = r.resultText(runID, result)
 		sess.Operations[i].Error = result.Error
 		sess.Operations[i].ResultPresent = true
+		if len(result.Images) > 0 {
+			sess.Operations[i].Images = append([]string(nil), result.Images...)
+		}
 		switch result.Status {
 		case operation.StatusCompleted:
 			sess.Operations[i].Status = sessionstore.StatusCompleted
@@ -1476,8 +1479,21 @@ func (r *Runner) appendResults(sess *sessionstore.Session, calls []llm.StreamedT
 			ToolResult:        result,
 			ToolResultPresent: true,
 			ResultStatus:      r.statusFor(sess, call.ID),
+			ToolImages:        r.imagesFor(sess, call.ID),
 		})
 	}
+}
+
+// imagesFor returns the image paths an operation attached, for a read that landed
+// on a picture. Read alongside statusFor rather than threaded through the results
+// map, which carries text only.
+func (r *Runner) imagesFor(sess *sessionstore.Session, id string) []string {
+	for _, op := range sess.Operations {
+		if op.ID == id {
+			return op.Images
+		}
+	}
+	return nil
 }
 
 func (r *Runner) statusFor(sess *sessionstore.Session, id string) sessionstore.OperationStatus {

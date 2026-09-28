@@ -31,7 +31,93 @@ func (c *StreamingClient) DescribeMedia(ctx context.Context, media []*MediaAttac
 	if c.cfg.CodexNative {
 		return c.describeMediaCodex(ctx, media, prompt)
 	}
+	// A Messages provider has to be asked in the Messages shape. It used to fall
+	// through to the chat-completions path below, which posts a body the
+	// /anthropic host does not accept, so view_image failed on every provider
+	// that serves the Messages API rather than reporting the picture.
+	if c.cfg.AnthropicNative {
+		return c.describeMediaAnthropic(ctx, media, prompt)
+	}
 	return c.describeMediaOpenAI(ctx, media, prompt)
+}
+
+// describeMediaAnthropic asks a Messages provider to look at an image.
+//
+// Non-streaming on purpose: this is a single short answer to a direct question,
+// and the stream reader here would have to re-assemble it for no benefit.
+func (c *StreamingClient) describeMediaAnthropic(ctx context.Context, media []*MediaAttachment, prompt string) (string, error) {
+	if strings.TrimSpace(prompt) == "" {
+		prompt = mediaPrompt
+	}
+	content := make([]map[string]any, 0, len(media)*2+1)
+	for _, item := range media {
+		content = append(content, map[string]any{"type": "text", "text": "File: " + item.Describe()})
+		content = append(content, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": item.MimeType,
+				"data":       item.Base64Data(),
+			},
+		})
+	}
+	content = append(content, map[string]any{"type": "text", "text": prompt})
+
+	body := map[string]any{
+		"model":      c.cfg.Model,
+		"max_tokens": 1024,
+		"messages":   []map[string]any{{"role": "user", "content": content}},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("encode messages media request: %w", err)
+	}
+	token, err := c.anthropicToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicMessagesURL(c.cfg.BaseURL), bytes.NewReader(encoded))
+	if err != nil {
+		return "", err
+	}
+	if strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthBearer) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Set("x-api-key", token)
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range c.cfg.ExtraHeaders {
+		req.Header.Set(key, value)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", &ProviderError{Status: resp.StatusCode, Body: string(raw)}
+	}
+	var decoded struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", fmt.Errorf("decode messages media response: %w", err)
+	}
+	var out []string
+	for _, block := range decoded.Content {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			out = append(out, block.Text)
+		}
+	}
+	if len(out) == 0 {
+		return "", fmt.Errorf("the provider returned no text for the image")
+	}
+	return strings.Join(out, "\n"), nil
 }
 
 // mediaPrompt is the instruction used when the caller does not supply one. It

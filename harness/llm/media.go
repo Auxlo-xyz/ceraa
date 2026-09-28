@@ -227,6 +227,10 @@ func (m *MediaAttachment) Describe() string {
 	return note
 }
 
+// HumanBytes is the readable size used in a tool result that describes an
+// attachment, so the model is told the payload it is about to receive.
+func HumanBytes(n int) string { return humanBytes(n) }
+
 func humanBytes(n int) string {
 	switch {
 	case n >= 1024*1024:

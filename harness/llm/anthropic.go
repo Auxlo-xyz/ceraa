@@ -27,6 +27,35 @@ import (
 //
 // A base ending in /anthropic or /v1 is already the prefix, so nothing is
 // appended twice. Anything else gets /v1/messages, which is the documented path.
+// anthropicImageBlocks turns image paths into Messages image blocks.
+//
+// The file is loaded, resized and re-encoded here rather than earlier, so the
+// session stores a path and never a copy of the picture. The resize is
+// deterministic, so the same image produces the same bytes on a later request
+// and still matches the cached prefix.
+//
+// A file that has since gone missing, or is not decodable, yields no block: the
+// result text already says what was attached, so the turn degrades to a
+// description rather than failing.
+func anthropicImageBlocks(paths []string) []map[string]any {
+	blocks := make([]map[string]any, 0, len(paths))
+	for _, path := range paths {
+		attachment, err := LoadMediaAttachment(path)
+		if err != nil || attachment == nil {
+			continue
+		}
+		blocks = append(blocks, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": attachment.MimeType,
+				"data":       attachment.Base64Data(),
+			},
+		})
+	}
+	return blocks
+}
+
 // MessagesAuthBearer is the MessagesAuthStyle for a host that authenticates with
 // Authorization: Bearer rather than x-api-key.
 const MessagesAuthBearer = "bearer"
@@ -172,11 +201,22 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 				if !containsString(pendingOrder, item.CallID) {
 					pendingOrder = append(pendingOrder, item.CallID)
 				}
-				pending = append(pending, map[string]any{
+				block := map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": item.CallID,
 					"content":     content,
-				})
+				}
+				// An image a read attached travels beside the result text, in the
+				// Messages shape. Without this the read returned the file's bytes
+				// as text and the model never saw the picture at all.
+				if blocks := anthropicImageBlocks(item.Images); len(blocks) > 0 {
+					mixed := []any{map[string]any{"type": "text", "text": content}}
+					for _, img := range blocks {
+						mixed = append(mixed, img)
+					}
+					block["content"] = mixed
+				}
+				pending = append(pending, block)
 				continue
 			}
 			if item.Role == RoleAssistant && strings.TrimSpace(item.Text) == "" {

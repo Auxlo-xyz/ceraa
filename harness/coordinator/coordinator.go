@@ -83,7 +83,7 @@ func buildLLMMessages(msgs []sessionstore.Message) []llm.Item {
 		if name == "" {
 			name = toolNames[m.ToolCallID]
 		}
-		items = append(items, llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Name: name, Output: m.ToolResult})
+		items = append(items, llm.Item{Kind: "text", Role: m.Role, Text: m.Content, CallID: m.ToolCallID, Name: name, Output: m.ToolResult, Images: m.ToolImages})
 	}
 	return items
 }

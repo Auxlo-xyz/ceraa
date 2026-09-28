@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ceraa/harness/event"
+	"ceraa/harness/llm"
 	"ceraa/harness/primitives"
 	"ceraa/harness/question"
 	"ceraa/harness/redact"
@@ -60,6 +61,9 @@ type ResultEvent struct {
 	OutputPath string
 	Error      string
 	Status     Status
+	// Images are paths the operation wants attached to this result, for a read
+	// that landed on an image file.
+	Images []string
 }
 
 // ToolRunner allows tools to be executed by the operation manager.
@@ -237,6 +241,25 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 			info, statErr := os.Stat(p)
 			if statErr == nil && info.IsDir() {
 				result.Output = listDirectory(p)
+				result.Status = StatusCompleted
+				break
+			}
+			// An image is attached, not transcribed.
+			//
+			// It used to fall through to the generic reader, which returns
+			// string(bytes) and hands the model up to 5 MB of binary as text. A
+			// 400 KB JPEG is around a hundred thousand tokens of mojibake, and it
+			// silently consumes the context budget before the model sees anything
+			// useful. The model is multimodal, so the bytes go over as an image.
+			if mime, kind, ok := llm.MimeTypeForFile(p); ok && kind == llm.MediaTypeImage {
+				attachment, err := llm.LoadMediaAttachment(p)
+				if err != nil {
+					result.Error = err.Error()
+					result.Status = StatusFailed
+					break
+				}
+				result.Images = []string{p}
+				result.Output = fmt.Sprintf("%s attached as an image (%s, %s).", filepath.Base(p), mime, llm.HumanBytes(len(attachment.Data)))
 				result.Status = StatusCompleted
 				break
 			}

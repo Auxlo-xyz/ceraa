@@ -94,13 +94,21 @@ func ExtractSingleArgValue(text string) (string, bool) {
 }
 
 type Item struct {
-	Kind             string          `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
-	Role             Role            `json:"role,omitempty"`
-	Text             string          `json:"text,omitempty"`
-	CallID           string          `json:"call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	Args             string          `json:"arguments,omitempty"`
-	ThoughtSignature string          `json:"thought_signature,omitempty"`
+	Kind             string `json:"type"` // text, tool_call, tool_calls, tool_result, reasoning
+	Role             Role   `json:"role,omitempty"`
+	Text             string `json:"text,omitempty"`
+	CallID           string `json:"call_id,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Args             string `json:"arguments,omitempty"`
+	ThoughtSignature string `json:"thought_signature,omitempty"`
+	// Images are file paths attached to this item, not inline bytes.
+	//
+	// A path rather than base64 because a prepared screenshot is a few hundred
+	// kilobytes and a session holds every past message: inlining would put the
+	// same image in the file once per request it appears in. The encoder loads
+	// and resizes at send time, which is also where the format belongs, and the
+	// resize is deterministic so a repeated request still matches the cache.
+	Images           []string        `json:"images,omitempty"`
 	Output           string          `json:"output,omitempty"`
 	Reason           string          `json:"reasoning,omitempty"`
 	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`

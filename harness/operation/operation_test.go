@@ -1,6 +1,13 @@
 package operation
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,4 +210,88 @@ func containsIn(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// Reading an image must attach it, not transcribe its bytes.
+//
+// The generic reader returns string(bytes) and caps at 5 MB, so a screenshot came
+// back as a hundred thousand tokens of mojibake: the context budget was spent
+// before the model saw anything, and nothing said so. The model is multimodal, so
+// the picture goes over as an image and the text says so much.
+func TestReadAnImageAttachesItInsteadOfDumpingBytes(t *testing.T) {
+	dir := t.TempDir()
+	shot := filepath.Join(dir, "shot.png")
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x * 4), G: uint8(y * 4), B: 200, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shot, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(nil)
+	mgr.Add(Operation{
+		ID:     "read-image",
+		Spec:   Spec{Type: "read", Args: map[string]any{"path": shot}},
+		Status: StatusPending,
+	})
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("status %s: %s", r.Status, r.Error)
+		}
+		if len(r.Images) != 1 || r.Images[0] != shot {
+			t.Fatalf("images = %v, want the file it read", r.Images)
+		}
+		if !strings.Contains(r.Output, "attached as an image") {
+			t.Errorf("output = %q, want it to say the image was attached", r.Output)
+		}
+		// The decisive assertion: no binary in the text.
+		if strings.Contains(r.Output, "PNG") || strings.Contains(r.Output, "\x89") {
+			t.Errorf("image bytes reached the result text: %q", r.Output[:min(len(r.Output), 120)])
+		}
+		if len(r.Output) > 300 {
+			t.Errorf("result text is %d bytes for a 64x64 image; the bytes are still going in as text", len(r.Output))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
+// A non-image must be unaffected, or this fix breaks ordinary reads.
+func TestReadATextFileIsUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(path, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(nil)
+	mgr.Add(Operation{ID: "read-text", Spec: Spec{Type: "read", Args: map[string]any{"path": path}}, Status: StatusPending})
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted {
+			t.Fatalf("status %s: %s", r.Status, r.Error)
+		}
+		if r.Output != "hello\nworld\n" {
+			t.Errorf("output = %q", r.Output)
+		}
+		if len(r.Images) != 0 {
+			t.Errorf("a text file produced images: %v", r.Images)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

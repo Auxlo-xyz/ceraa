@@ -553,7 +553,14 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 				if strings.TrimSpace(output) == "" {
 					output = "No output was produced."
 				}
-				msg["content"] = output
+				// An image a read attached becomes a multimodal tool result, in
+				// the chat shape. Done here rather than in the Messages encoder so
+				// reading a picture is not a property of one transport.
+				if parts := chatImageParts(item.Images); len(parts) > 0 {
+					msg["content"] = append([]any{map[string]any{"type": "text", "text": output}}, parts...)
+				} else {
+					msg["content"] = output
+				}
 				if compatibility.RequiresToolResultName {
 					// Some providers reject the whole request when a tool result
 					// has no name. Gemini reports it as
@@ -636,6 +643,24 @@ func addReasoningFields(message map[string]any, item Item, compatibility Compati
 	if len(item.ReasoningDetails) > 0 {
 		message["reasoning_details"] = item.ReasoningDetails
 	}
+}
+
+// chatImageParts turns image paths into chat-completions image_url parts, loading
+// and resizing at send time. A file that has gone missing yields no part, so the
+// turn degrades to the result text rather than failing.
+func chatImageParts(paths []string) []any {
+	parts := make([]any, 0, len(paths))
+	for _, path := range paths {
+		attachment, err := LoadMediaAttachment(path)
+		if err != nil || attachment == nil {
+			continue
+		}
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": "data:" + attachment.MimeType + ";base64," + attachment.Base64Data()},
+		})
+	}
+	return parts
 }
 
 func normalizeItemsForChat(items []Item) []Item {
