@@ -155,18 +155,21 @@ func cancelSecretKeyboard() map[string]any {
 	}}
 }
 
-// handleCapturedSecret consumes the message that carried a value.
+// handleCapturedSecret stores the message that carried a value.
+//
+// The name arrives as an argument rather than being taken from the pending map
+// again. Taking it twice is not a harmless redundancy: the first take removes the
+// entry, so the second finds nothing, the function returns without storing, and
+// the value is silently lost while the caller reports the message as handled. The
+// value of this function is the whole capture, so the caller that consumed the
+// armed entry owns the name and passes it down.
 //
 // The order is deliberate: store, then delete. The value is already in Telegram's
 // hands the moment it is sent, so deleting first buys a smaller window at the cost
 // of the worst outcome — a failed store loses the secret outright, while a failed
 // delete leaves a message a person can remove by hand. Loss is not recoverable;
 // exposure is.
-func handleCapturedSecret(token string, chatID, messageID int64, text string) {
-	name, ok := takePendingSecret(chatID)
-	if !ok {
-		return
-	}
+func handleCapturedSecret(token string, chatID, messageID int64, name, text string) {
 	text = strings.TrimSpace(text)
 	if strings.EqualFold(text, "/cancel") {
 		send(token, chatID, "Cancelled. Nothing stored.")
@@ -226,8 +229,8 @@ func secretNameArmed(chatID int64) bool {
 // sending a value, so it is checked before the name prompt: otherwise typing a
 // name after pressing "Another name" would be stored as the value.
 func handleSecretInput(token string, chatID, messageID int64, text string) bool {
-	if _, armed := takePendingSecret(chatID); armed {
-		handleCapturedSecret(token, chatID, messageID, text)
+	if name, armed := takePendingSecret(chatID); armed {
+		handleCapturedSecret(token, chatID, messageID, name, text)
 		return true
 	}
 	if secretNameArmed(chatID) {
