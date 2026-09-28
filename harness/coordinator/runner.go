@@ -893,9 +893,10 @@ func todayContext() string {
 // /home/assistant/auxlo-neo/… because that is a home directory that exists,
 // while the project was at /workspace/auxlo-neo.
 //
-// The three instructions are the ones that actually change behaviour. Naming the
-// directory alone is not enough, because the model has a strong prior that files
-// live under $HOME.
+// The directory is whatever this session was given — each chat may select its own
+// project — so nothing here is pinned to a particular repository. Naming it alone
+// is also not enough, because the model has a strong prior that files live under
+// $HOME, which is what produced the observed failure.
 func (r *Runner) workspaceContext() string {
 	workdir := strings.TrimSpace(r.cfg.WorkDir)
 	if workdir == "" {
