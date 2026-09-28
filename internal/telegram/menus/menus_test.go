@@ -2,6 +2,7 @@ package menus
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -116,6 +117,61 @@ func TestTheHiddenToolMenusStillDispatch(t *testing.T) {
 		}
 		if dead {
 			t.Errorf("%s resolves to a bare Close button", name)
+		}
+	}
+}
+
+// Every hub button needs text. Telegram renders a missing label as a blank button,
+// which is indistinguishable from a broken one, and a blank button in a row of
+// labelled ones is the kind of thing that gets reported as "the button is missing"
+// rather than as the label that is.
+//
+// It shipped that way once: "secrets" was added to All and to the switch, and its
+// label edit silently did not apply, so the hub rendered a nameless button. Every
+// existing test passed, because they all checked that an entry *resolves* to a menu
+// and none checked that it is *legible*.
+func TestEveryHubButtonHasText(t *testing.T) {
+	rows := Hub()["inline_keyboard"].([][]map[string]string)
+	seen := map[string]bool{}
+	for _, row := range rows {
+		for _, button := range row {
+			if strings.TrimSpace(button["text"]) == "" {
+				t.Errorf("a hub button has no text: %s", mustJSON(button))
+			}
+			if button["callback_data"] != "close" {
+				seen[button["callback_data"]] = true
+			}
+		}
+	}
+	// Every visible entry must be reachable, so hiding two did not quietly orphan
+	// something either.
+	for _, name := range All {
+		if hubHidden[name] {
+			continue
+		}
+		if !seen["menu:"+name] {
+			t.Errorf("%s is in All, is not hidden, and is not on the hub", name)
+		}
+	}
+}
+
+// A label that resolves to nothing is the same failure as a missing entry, and the
+// two are the same class of mistake: the entry exists in code and not on screen.
+func TestEveryHubEntryHasALabel(t *testing.T) {
+	for _, name := range All {
+		if hubHidden[name] {
+			continue
+		}
+		found := false
+		for _, row := range Hub()["inline_keyboard"].([][]map[string]string) {
+			for _, button := range row {
+				if button["callback_data"] == "menu:"+name && strings.TrimSpace(button["text"]) != "" {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s renders with no label", name)
 		}
 	}
 }
