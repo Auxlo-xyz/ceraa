@@ -21,7 +21,17 @@ var initOnce sync.Once
 
 // Initialize creates logger at path like ~/.soraacode/logs/bridge.log
 // Maps to soraacode initializeLogger + flushLogger
+//
+// CERAA_LOG_FILE overrides the resolved path. It exists because the soraacode
+// fallback below reaches $HOME, which the test suite shares with the running
+// bot: tests that pointed CERAA_HOME at a temp directory still wrote into the
+// live log, and 300-odd lines of "model=test" and fake provider warnings ended
+// up interleaved with real diagnostics. A log kept as the record of what a
+// provider actually did cannot also be the test suite's scratch file.
 func Initialize(path string) (*Logger, error) {
+	if path == "" {
+		path = os.Getenv("CERAA_LOG_FILE")
+	}
 	if path == "" {
 		home, _ := os.UserHomeDir()
 		path = filepath.Join(paths.DataDir(), "logs", "bridge.log")
@@ -49,6 +59,16 @@ func Get() *Logger {
 		Initialize("")
 	}
 	return defaultLogger
+}
+
+// Path reports the file this logger writes to, so a caller can assert the log
+// is where it was meant to be. The suite needs that: a test that cannot see the
+// path cannot prove it stayed out of the live log.
+func (l *Logger) Path() string {
+	if l == nil {
+		return ""
+	}
+	return l.path
 }
 
 func (l *Logger) log(level, msg string) {

@@ -3,9 +3,11 @@ package telegram
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ceraa/internal/config"
+	"ceraa/internal/logger"
 	"ceraa/internal/paths"
 )
 
@@ -18,12 +20,19 @@ import (
 // and model "test/model" into the live install, which would then have pinned the
 // running bot to a fixture. Individual tests stub what they touch, but a package
 // default is the only thing that covers the ones that forget.
+//
+// CERAA_LOG_FILE is the same guard for the log. The logger resolves through
+// $HOME, which this process shares with the running bot, so setting CERAA_HOME
+// was not enough: the suite appended its own lines to the live bridge.log.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "ceraa-telegram-test-")
 	if err != nil {
 		panic(err)
 	}
 	if err := os.Setenv("CERAA_HOME", dir); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("CERAA_LOG_FILE", filepath.Join(dir, "bridge.log")); err != nil {
 		panic(err)
 	}
 	providers = newProviderState(config.NewStoreAt(filepath.Join(dir, "config.json")))
@@ -40,4 +49,18 @@ func TestTheLiveInstallIsNotReachable(t *testing.T) {
 	}
 	t.Fatalf("the package data dir %q is not the test directory %q; a test would write to the live install",
 		got, os.Getenv("CERAA_HOME"))
+}
+
+// The log is the record of what a provider actually did, so the suite writing to
+// it is the same defect as writing to the live config, and it is the one that
+// quietly invalidates every other diagnosis drawn from the file.
+func TestTheLiveLogIsNotReachable(t *testing.T) {
+	want := os.Getenv("CERAA_LOG_FILE")
+	if want == "" {
+		t.Fatal("CERAA_LOG_FILE is unset, so the logger resolves through $HOME into the live log")
+	}
+	if !strings.HasPrefix(logger.Get().Path(), filepath.Dir(want)) {
+		t.Errorf("the logger writes to %q, outside the test directory containing %q",
+			logger.Get().Path(), want)
+	}
 }
