@@ -163,12 +163,22 @@ const MiniMaxCNBaseURL = "https://api.minimaxi.com/anthropic"
 
 // DefaultMiniMaxModel is the model selected when MiniMax is chosen without one.
 //
-// M3 on the /anthropic path. M2.7 exists but is served by the OpenAI-compatible
-// /v1 host, so it belongs to the API-key provider rather than this one.
+// M3 on the /anthropic path. It used to carry a comment saying M2.7 belonged to
+// the OpenAI-compatible /v1 host instead, which the live check in
+// TestLiveEveryServedModelIDIsHonoured disproves: the Messages API answers 200
+// with model "MiniMax-M2.7" for that id, so it is served here too.
 const DefaultMiniMaxModel = "MiniMax-M3"
 
 // MiniMaxModels lists the model ids the subscription is known to serve.
+//
+// MiniMax-M3.1-Flash-Preview is not in the account's own /v1/models response,
+// which still lists only the M3/M2 series with has_more: false. It was found by
+// asking the Messages API and reading the model field the response echoes back,
+// which is the only trustworthy signal here: the endpoint answers 200 to any
+// model id at all and quietly serves MiniMax-M3, so a list that omits a real
+// model is misleading in the same way a wrong id looks like it works.
 var MiniMaxModels = []string{
+	"MiniMax-M3.1-Flash-Preview",
 	"MiniMax-M3",
 	"MiniMax-M2.7",
 }
