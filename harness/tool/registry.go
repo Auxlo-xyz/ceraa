@@ -304,7 +304,6 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&WriteTool{})
 	r.Register(&EditTool{})
 	r.Register(&BatchEditFileTool{})
-	r.Register(&SetProviderKeyTool{})
 	r.Register(&RunCommandWithSecretTool{})
 	r.Register(&ListSecretsTool{})
 

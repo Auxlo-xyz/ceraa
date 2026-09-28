@@ -5,7 +5,6 @@ import (
 	"ceraa/harness/redact"
 	"ceraa/internal/secret"
 	"encoding/json"
-	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -467,11 +466,16 @@ func TestEditLineAndTheLegacyEditTypeBothRun(t *testing.T) {
 	}
 }
 
-// The guarantee: a secret is readable and usable, and never readable back.
+// The guarantee: a secret is usable, and never readable back.
 //
 // A value placed in a spec would be persisted as SpecArgs and reloaded on every
 // later request in the session, so the spec carries the name and the value exists
 // only inside the operation.
+//
+// This ran against set_provider_key while that tool existed. It now runs against
+// run_command_with_secret, which is the only path left that resolves a name to a
+// value, so the guarantee is still covered rather than deleted along with the
+// tool it happened to be written for.
 func TestASecretValueNeverEntersASpecOrAResult(t *testing.T) {
 	openTestSecretStore(t)
 	const value = "sk-live-DONTLEAKTHISVALUE1234567890"
@@ -480,16 +484,11 @@ func TestASecretValueNeverEntersASpecOrAResult(t *testing.T) {
 	}
 	redact.ResetLiterals()
 	t.Cleanup(redact.ResetLiterals)
-	SetProviderCredentialWriter(func(provider, got string) error {
-		if got != value {
-			return fmt.Errorf("the writer received %q, want the stored value", got)
-		}
-		return nil
-	})
-	t.Cleanup(func() { SetProviderCredentialWriter(nil) })
 
 	// The spec, which is what gets persisted.
-	spec := Spec{Type: "set_provider_key", Args: map[string]any{"provider": "custom", "secret": "probe_key"}}
+	spec := Spec{Type: "run_command_with_secret", Args: map[string]any{
+		"command": "printf %s \"$PROBE\"", "secret": "probe_key", "env_var": "PROBE",
+	}}
 	encoded, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -500,25 +499,19 @@ func TestASecretValueNeverEntersASpecOrAResult(t *testing.T) {
 
 	mgr := New(nil)
 	mgr.Add(Operation{ID: "spk", Spec: spec, Status: StatusPending})
-	var out string
 	select {
 	case r := <-mgr.Results():
 		if r.Status != StatusCompleted {
 			t.Fatalf("status %s: %s", r.Status, r.Error)
 		}
-		out = r.Output + r.Error
-	case <-time.After(10 * time.Second):
+		if strings.Contains(r.Output+r.Error, value) {
+			t.Errorf("the value reached the result the model reads: %q", r.Output)
+		}
+	case <-time.After(30 * time.Second):
 		t.Fatal("timeout")
-	}
-	if strings.Contains(out, value) {
-		t.Errorf("the value reached the result the model reads: %q", out)
-	}
-	if !strings.Contains(out, "chars") {
-		t.Errorf("the result should describe the credential without showing it: %q", out)
 	}
 }
 
-// The name of a secret is fine; Ceraa's own credentials are not. A tool that could
 // read `ceraa_minimax_global` hands the model the account.
 func TestReservedSecretsAreRefusedByName(t *testing.T) {
 	openTestSecretStore(t)

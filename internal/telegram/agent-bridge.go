@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -270,37 +269,6 @@ func telegramRegistry(cfg *config.Config, user string, memoryStore *memory.Store
 		registry.Register(&tool.SendMediaTool{Sender: newTelegramMediaSender(token, chatID)})
 	}
 	return registry
-}
-
-// attachSecretCredentialWriter lets set_provider_key place a stored secret into a
-// provider profile.
-//
-// The value crosses from the encrypted store to the profile in one call and is
-// never in the spec, the result, or anything the model can read. The seam is
-// attached here because this is the only place that knows how a profile is
-// written.
-func attachSecretCredentialWriter() {
-	operation.SetProviderCredentialWriter(func(provider, value string) error {
-		name := strings.TrimSpace(provider)
-		profiles := providers.profiles()
-		profile, ok := profiles[name]
-		if !ok {
-			return fmt.Errorf("no provider profile named %q; known: %s", name, strings.Join(profileNames(profiles), ", "))
-		}
-		profile.APIKey = value
-		return providers.setProfile(name, profile)
-	})
-}
-
-// profileNames lists the profile ids, for an error message that says what does
-// exist rather than only what does not.
-func profileNames(profiles map[string]config.ProviderProfile) []string {
-	names := make([]string, 0, len(profiles))
-	for name := range profiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // attachVisionToRegistry gives view_image the run's resolved model, so a media

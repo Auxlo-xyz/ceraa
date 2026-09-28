@@ -19,51 +19,6 @@ import (
 // in a spec would be written to disk in plain text and reloaded on every later
 // request in that session.
 
-// SetProviderKeyTool gives a provider the credential held in a stored secret.
-//
-// This is what "use a secret" usually means for Ceraa, and it adds no new exposure
-// surface: the value goes where the provider transport already reads it.
-type SetProviderKeyTool struct{}
-
-func (t *SetProviderKeyTool) Name() string { return "set_provider_key" }
-func (t *SetProviderKeyTool) Description() string {
-	return "Give a provider the credential held in a stored secret, without revealing it. " +
-		"Reports the provider, the secret name and the length — never the value. " +
-		"Fails for a name that is not stored, or one reserved for Ceraa's own provider " +
-		"credentials."
-}
-func (t *SetProviderKeyTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"provider": map[string]any{"type": "string", "description": "Provider id to give the credential to, for example custom or cline"},
-			"secret":   map[string]any{"type": "string", "description": "Name of the stored secret holding the credential"},
-		},
-		"required": []string{"provider", "secret"},
-	}
-}
-
-func (t *SetProviderKeyTool) Translate(args map[string]any) (operation.Spec, error) {
-	provider, _ := args["provider"].(string)
-	name, _ := args["secret"].(string)
-	if strings.TrimSpace(provider) == "" {
-		return operation.Spec{}, fmt.Errorf("provider is required")
-	}
-	if strings.TrimSpace(name) == "" {
-		return operation.Spec{}, fmt.Errorf("secret is required")
-	}
-	// Name only. See the file comment: a value here would be persisted.
-	return operation.Spec{Type: "set_provider_key", Args: map[string]any{
-		"provider": strings.TrimSpace(provider), "secret": strings.TrimSpace(name),
-	}}, nil
-}
-func (t *SetProviderKeyTool) TranslateResult(op operation.Operation) string { return op.Output }
-func (t *SetProviderKeyTool) Sequential() bool                              { return true }
-func (t *SetProviderKeyTool) MutationKey(args map[string]any) string {
-	provider, _ := args["provider"].(string)
-	return "provider:" + provider
-}
-
 // RunCommandWithSecretTool runs a command with a secret in its environment.
 //
 // The value is in the process environment and nowhere else: not in the command
@@ -148,9 +103,9 @@ type ListSecretsTool struct{}
 
 func (t *ListSecretsTool) Name() string { return "list_secrets" }
 func (t *ListSecretsTool) Description() string {
-	return "List the names of the stored secrets you can pass to run_command_with_secret or " +
-		"set_provider_key, with the length of each value. Never shows a value. Names reserved " +
-		"for Ceraa's own provider credentials are not listed and cannot be used."
+	return "List the names of the stored secrets you can pass to run_command_with_secret, with " +
+		"the length of each value. Never shows a value. Names reserved for Ceraa's own " +
+		"provider credentials are not listed and cannot be used."
 }
 func (t *ListSecretsTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
