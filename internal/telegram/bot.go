@@ -738,6 +738,19 @@ func Run() error {
 				continue
 			}
 			if u.Message.Text == "" {
+				// An armed capture must never be skipped by the silence here. If the
+				// value arrives in a message this path does not recognise as text, the
+				// one safe thing to do is drop the message and say so; letting it
+				// through would not store it either, but it would also leave the user
+				// waiting with no explanation.
+				if secretCaptureArmed(u.Message.Chat.ID) {
+					GetDefaultInbox().CheckAndRecord(u.UpdateID)
+					name, _ := takePendingSecret(u.Message.Chat.ID)
+					secretFlowLog(u.Message.Chat.ID, "nontext", fmt.Sprintf("name=%q dropped", name))
+					send(token, u.Message.Chat.ID, fmt.Sprintf(
+						"That message arrived without text, so %s was not stored. "+
+							"Reply to this message with the value as plain text.", name))
+				}
 				continue
 			}
 			txt := normalizeCommandText(strings.TrimSpace(u.Message.Text))

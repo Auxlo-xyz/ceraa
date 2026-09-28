@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ceraa/harness/redact"
+	"ceraa/internal/logger"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/menus"
 )
@@ -45,11 +46,21 @@ var (
 	pendingSecrets  = map[int64]pendingSecret{}
 )
 
+// secretFlowLog records which transition a capture took, and never the value.
+//
+// When a capture silently drops the user's message, the only evidence is which
+// state was armed at the time. Logging the name and the state is enough to tell
+// an expired prompt from a message that never reached this code at all.
+func secretFlowLog(chatID int64, step, detail string) {
+	logger.Info(fmt.Sprintf("secret capture chat=%d step=%s %s", chatID, step, detail))
+}
+
 // setPendingSecret arms the capture for a chat, replacing any earlier one.
 func setPendingSecret(chatID int64, name string) {
 	pendingSecretMu.Lock()
 	defer pendingSecretMu.Unlock()
 	pendingSecrets[chatID] = pendingSecret{Name: name, ExpiresAt: time.Now().Add(pendingSecretTTL)}
+	secretFlowLog(chatID, "armed", fmt.Sprintf("name=%q ttl=%s", name, pendingSecretTTL))
 }
 
 // takePendingSecret returns an armed capture and clears it, or reports false.
@@ -61,13 +72,28 @@ func takePendingSecret(chatID int64) (string, bool) {
 	defer pendingSecretMu.Unlock()
 	entry, ok := pendingSecrets[chatID]
 	if !ok {
+		secretFlowLog(chatID, "take", "no capture armed; message is not a secret")
 		return "", false
 	}
 	delete(pendingSecrets, chatID)
 	if time.Now().After(entry.ExpiresAt) {
+		secretFlowLog(chatID, "take", fmt.Sprintf("name=%q expired; message is not a secret", entry.Name))
 		return "", false
 	}
+	secretFlowLog(chatID, "take", fmt.Sprintf("name=%q consumed", entry.Name))
 	return entry.Name, true
+}
+
+// secretCaptureArmed reports whether a value is awaited, without consuming it.
+//
+// A consuming check cannot be used to ask "is this armed?", and the difference is
+// not academic: consuming it in a check and then handling the real message finds
+// nothing, and the value is silently dropped.
+func secretCaptureArmed(chatID int64) bool {
+	pendingSecretMu.Lock()
+	defer pendingSecretMu.Unlock()
+	entry, ok := pendingSecrets[chatID]
+	return ok && time.Now().Before(entry.ExpiresAt)
 }
 
 // clearPendingSecret disarms a capture without consuming it, for the cancel button.
@@ -176,6 +202,7 @@ func setPendingSecretName(chatID int64) {
 	pendingNameMu.Lock()
 	defer pendingNameMu.Unlock()
 	pendingNames[chatID] = time.Now().Add(pendingSecretTTL)
+	secretFlowLog(chatID, "name-armed", "awaiting a secret name")
 }
 
 func clearPendingSecretName(chatID int64) {
