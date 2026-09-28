@@ -105,21 +105,19 @@ type legacySelection struct {
 // readLegacySelection reports whether an old bridge-state.json carried a selection
 // this build should adopt.
 //
-// Every retired key must actually be present. A file that merely happens to be
-// named bridge-state.json is not evidence of an older layout, and treating it as
-// one would let a stray file overwrite the real config.
+// The test is the identifying key, not the full retired set. An install only ever
+// wrote the fields the user had actually set, so requiring all seven rejected the
+// exact file this migration exists for: a live bridge-state holding only
+// `provider`, `provider_profiles` and `agent` looked like a new file and the
+// selection was silently dropped, leaving the bot on the default provider.
 func readLegacySelection(data []byte) (legacySelection, bool, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return legacySelection{}, false, err
 	}
-	present := 0
-	for _, key := range retiredStateFields {
-		if _, ok := raw[key]; ok {
-			present++
-		}
-	}
-	if present != len(retiredStateFields) {
+	_, hasProvider := raw["provider"]
+	_, hasProfiles := raw["provider_profiles"]
+	if !hasProvider && !hasProfiles {
 		return legacySelection{}, false, nil
 	}
 	var legacy legacySelection

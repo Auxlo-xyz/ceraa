@@ -56,11 +56,21 @@ func ConfigFile() string { return filepath.Join(DataDir(), "config.json") }
 // LegacyConfigCandidates are the pre-consolidation read locations, in the order
 // they used to win.
 //
-// Kept as read-only fallbacks so an existing install is not orphaned by the path
-// change, and never written to. XDG_CONFIG_HOME is here for the same reason: it
-// is routinely set to unrelated directories, so honouring it for writes would
-// silently relocate a live install's data.
+// They are consulted **only when CERAA_HOME is unset**. Once it is set, the data
+// directory is the whole truth: that is what the variable means, and honouring
+// the fallbacks anyway made CERAA_HOME a partial override rather than a switch.
+// The concrete failure: with CERAA_HOME pointing at a scratch directory,
+// $HOME/.config/ceraa/config.json still resolved and won, so a process meant to be
+// isolated read the live install's providers anyway. A test hit it, and so would
+// anyone running a second install beside their first.
+//
+// Kept for an install that has not been moved. XDG_CONFIG_HOME is here for the
+// same reason: it is routinely set to unrelated directories, so honouring it for
+// writes would silently relocate a live install's data.
 func LegacyConfigCandidates() []string {
+	if os.Getenv("CERAA_HOME") != "" {
+		return nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."

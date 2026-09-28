@@ -194,8 +194,8 @@ func TestLegacySelectionIsAdoptedOnLoad(t *testing.T) {
 	}
 }
 
-// A bridge-state.json with none of the retired keys is not evidence of an older
-// layout, and must not overwrite the real config.
+// A bridge-state.json carrying none of the retired provider keys is not evidence
+// of an older layout, and must not overwrite the real config.
 func TestBridgeStateWithoutRetiredKeysDoesNotOverwriteConfig(t *testing.T) {
 	dir := t.TempDir()
 	store := config.NewStoreAt(filepath.Join(dir, "config.json"))
@@ -213,13 +213,50 @@ func TestBridgeStateWithoutRetiredKeysDoesNotOverwriteConfig(t *testing.T) {
 	t.Cleanup(func() { providers = previous })
 
 	legacyPath := filepath.Join(dir, "bridge-state.json")
-	if err := os.WriteFile(legacyPath, []byte(`{"provider":"minimax","active_sessions":{"1":"s1"}}`), 0o600); err != nil {
+	if err := os.WriteFile(legacyPath, []byte(`{"active_sessions":{"1":"s1"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loadBridgeStateFromFile(legacyPath)
 
 	if got := providers.active(); got != "xai" {
-		t.Errorf("active provider = %q; a partial file was treated as the old layout", got)
+		t.Errorf("active provider = %q; a bot-only file was treated as the old layout", got)
+	}
+}
+
+// A real install only writes the fields the user actually set, so a legacy file
+// carrying a subset of the retired keys is the normal case, not a partial one.
+// Requiring all of them dropped the selection and left the bot on the default
+// provider with no error anywhere.
+func TestPartialLegacyLayoutStillMigrates(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "bridge-state.json")
+	legacy := `{"provider":"minimax","agent":"build","active_sessions":{"1":"s1"},
+		"always_allow":{"bash":true},
+		"provider_profiles":{"minimax":{"url":"https://api.minimax.io/anthropic","model":"MiniMax-M3","subscription":"minimax"}}}`
+	if err := os.WriteFile(legacyPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := config.NewStoreAt(filepath.Join(dir, "config.json"))
+	previous := providers
+	providers = newProviderState(store)
+	t.Cleanup(func() { providers = previous })
+
+	state := loadBridgeStateFromFile(legacyPath)
+	if state.loadErr != nil {
+		t.Fatalf("load reported %v", state.loadErr)
+	}
+	if got := providers.active(); got != "minimax" {
+		t.Errorf("migrated active provider = %q, want minimax", got)
+	}
+	if !providers.hasProfile("minimax") {
+		t.Error("the legacy provider profile was not migrated")
+	}
+	if _, agent := providers.modelAndAgent(); agent != "build" {
+		t.Errorf("migrated agent = %q, want build", agent)
+	}
+	// The bot's own state still comes from the file it belongs in.
+	if state.ActiveSessions["1"] != "s1" || !state.AlwaysAllow["bash"] {
+		t.Error("bot runtime state was not read from bridge state")
 	}
 }
 

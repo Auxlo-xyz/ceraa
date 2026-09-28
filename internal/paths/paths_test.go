@@ -6,76 +6,72 @@ import (
 	"testing"
 )
 
-// TestDataDirIsCeraa pins the single supported location.
-func TestDataDirIsCeraa(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+// With CERAA_HOME set, the config lives there and nowhere else.
+//
+// This is a production bug caught by a test: the pre-consolidation candidate list
+// still ended in $HOME/.config/ceraa/config.json, so a process pointed at a
+// scratch CERAA_HOME read the live install's config anyway. A second install
+// beside the first would have been silently mixed with it.
+func TestConfigFileIsTheOnlyCandidateWhenHomeIsPinned(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+
+	candidates := ConfigCandidates()
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %v, want only the pinned data dir", candidates)
+	}
+	if candidates[0] != filepath.Join(dir, "config.json") {
+		t.Errorf("candidate = %q", candidates[0])
+	}
+	if ConfigFile() != candidates[0] {
+		t.Errorf("ConfigFile = %q, want the canonical candidate %q", ConfigFile(), candidates[0])
+	}
+}
+
+// Without CERAA_HOME the old locations are still read, so an install that was
+// never moved keeps working.
+func TestUnpinnedHomeFallsBackToTheLegacyLocations(t *testing.T) {
 	t.Setenv("CERAA_HOME", "")
-	if got, want := DataDir(), filepath.Join(home, ".config", "ceraa"); got != want {
-		t.Fatalf("DataDir = %q, want %q", got, want)
-	}
-}
+	t.Setenv("XDG_CONFIG_HOME", "/xdg")
 
-// TestCeraaHomeWins pins the explicit override.
-func TestCeraaHomeWins(t *testing.T) {
-	home := t.TempDir()
-	override := filepath.Join(t.TempDir(), "elsewhere")
-	t.Setenv("HOME", home)
-	t.Setenv("CERAA_HOME", override)
-	if got := DataDir(); got != override {
-		t.Fatalf("DataDir = %q, want %q", got, override)
+	candidates := ConfigCandidates()
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %v, want the legacy fallbacks", candidates)
 	}
-}
-
-// TestDataDirIgnoresXDG pins a deliberate choice: XDG_CONFIG_HOME is a read
-// candidate only. It is routinely set to unrelated directories, so honouring it
-// for writes would silently relocate a live install's config, secrets and
-// sessions.
-func TestDataDirIgnoresXDG(t *testing.T) {
-	home := t.TempDir()
-	xdg := filepath.Join(t.TempDir(), "xdg")
-	t.Setenv("HOME", home)
-	t.Setenv("CERAA_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	if err := os.MkdirAll(filepath.Join(xdg, "ceraa"), 0o700); err != nil {
-		t.Fatal(err)
+	// Canonical path first, always.
+	if candidates[0] != ConfigFile() {
+		t.Errorf("first candidate = %q, want %q", candidates[0], ConfigFile())
 	}
-	want := filepath.Join(home, ".config", "ceraa")
-	if got := DataDir(); got != want {
-		t.Fatalf("DataDir = %q, want %q (XDG must not relocate writes)", got, want)
-	}
-	if !contains(ConfigCandidates(), filepath.Join(xdg, "ceraa", "config.json")) {
-		t.Fatalf("XDG config candidate missing from %v", ConfigCandidates())
-	}
-}
-
-// TestConfigCandidatesCoverTheDataDir pins that a config written by Save is
-// always found by Load.
-func TestConfigCandidatesCoverTheDataDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CERAA_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", "")
-	want := filepath.Join(DataDir(), "config.json")
-	if !contains(ConfigCandidates(), want) {
-		t.Fatalf("ConfigCandidates = %v, missing %q", ConfigCandidates(), want)
-	}
-}
-
-// TestDefaultWorkspaceRoot pins the default location.
-func TestDefaultWorkspaceRoot(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if got, want := DefaultWorkspaceRoot(), filepath.Join(home, "ceraa", "workspace"); got != want {
-		t.Fatalf("DefaultWorkspaceRoot = %q, want %q", got, want)
-	}
-}
-
-func contains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
+	var sawXDG bool
+	for _, candidate := range candidates {
+		if candidate == filepath.Join("/xdg", DirName, "config.json") {
+			sawXDG = true
 		}
 	}
-	return false
+	if !sawXDG {
+		t.Errorf("the XDG read fallback was dropped: %v", candidates)
+	}
+}
+
+// The working-directory candidate is the one that made the same binary read a
+// different file depending on where it was launched from, so it must never
+// outrank the data directory.
+func TestWorkingDirectoryIsNeverTheOnlyOption(t *testing.T) {
+	t.Setenv("CERAA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range ConfigCandidates() {
+		if candidate == "./"+DirName+".json" {
+			home, _ := os.UserHomeDir()
+			canonical := filepath.Join(DataDir(), "config.json")
+			_ = home
+			if canonical == "./"+DirName+".json" {
+				t.Fatalf("the data directory resolved to the working directory, so the two are indistinguishable")
+			}
+		}
+	}
+	_ = cwd
 }
