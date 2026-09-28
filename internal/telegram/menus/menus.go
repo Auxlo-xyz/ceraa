@@ -1037,19 +1037,25 @@ func subscriptionMenu(label, icon string, signedIn, active bool, entry string) m
 	row := func(text, data string) map[string]string {
 		return map[string]string{"text": text, "callback_data": data}
 	}
+	// Re-authentication gets its own callback. It used to be the same entry as
+	// "Switch to", and the entry point activates when a credential exists, so the
+	// button re-activated the provider instead of signing in again — and removing
+	// the provider did not help, because removal clears the profile while the
+	// credential stays in the encrypted store. The two intents need two routes.
+	relogin := strings.TrimSuffix(entry, ":models") + ":relogin"
 	var rows [][]map[string]string
 	switch {
 	case active:
 		rows = append(rows, []map[string]string{
 			row("✅ "+label+" is active", "noop"),
 			row("🧠 Model", entry+":models"),
-			row("🔁 Sign in again", entry),
+			row("🔁 Sign in again", relogin),
 		})
 	case signedIn:
 		rows = append(rows, []map[string]string{
 			row("✅ Switch to "+label, entry),
 			row("🧠 Model", entry+":models"),
-			row("🔁 Sign in again", entry),
+			row("🔁 Sign in again", relogin),
 		})
 	default:
 		rows = append(rows, []map[string]string{row("🔑 Sign in to "+label, entry)})
@@ -1206,4 +1212,13 @@ func RemoveProviderMenu(active string) map[string]any {
 	}
 	rows = append(rows, []map[string]string{{"text": "◀️ Provider", "callback_data": "menu:provider"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
+}
+
+// SubscriptionMenuForTest exposes subscriptionMenu to tests in another package.
+//
+// signedIn and active are passed rather than probed, because the interesting
+// branches are the ones a signed-out environment never renders and a test that
+// probed the real stores could only ever see the sign-in prompt.
+func SubscriptionMenuForTest(label, providerID string, signedIn, active bool) map[string]any {
+	return subscriptionMenu(label, "", signedIn, active, "provider:"+providerID)
 }

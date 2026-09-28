@@ -452,6 +452,24 @@ func handleCallback(token string, q *callbackQuery) {
 		editHTML(token, chatID, q.Message.MessageID, "✗ Cline login cancelled.", menus.Inline("provider", 0))
 		return
 	}
+	for _, providerID := range []string{"minimax", "hermes", "xai", "cline"} {
+		if data == "provider:"+providerID+":relogin" {
+			// An explicit re-authentication, distinct from switching to a provider
+			// that is already signed in. Reached because the two used to share a
+			// callback and the shared one always took the activate branch.
+			switch providerID {
+			case "minimax":
+				startMinimaxLogin(token, chatID)
+			case "hermes":
+				startHermesLogin(token, chatID)
+			case "xai":
+				startXaiLogin(token, chatID)
+			case "cline":
+				startClineLogin(token, chatID)
+			}
+			return
+		}
+	}
 	if data == "provider:minimax" {
 		// Same entry point as the onboarding button, so a configured user reaches
 		// MiniMax from the Provider / Model menu.

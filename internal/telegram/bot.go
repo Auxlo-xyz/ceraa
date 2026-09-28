@@ -1449,6 +1449,12 @@ func handleHermesStatus(token string, chatID int64) {
 
 func activateHermesProvider(token string, chatID int64, flowID string) {
 	model, _ := hermesModelForAccount(flowID)
+	model, err := guardModel("hermes", model)
+	if err != nil {
+		logger.Warn("Hermes activate: " + err.Error())
+		send(token, chatID, "Hermes activation failed: "+err.Error())
+		return
+	}
 	// ContextLimit left unset so the catalog supplies the model's real window.
 	//
 	// The URL here is for display, not for requests: agent.go resolves the Hermes
@@ -1701,7 +1707,7 @@ func hermesModelForAccount(flowID string) (string, string) {
 			}
 		}
 	}
-	_, current := defaultState.values()
+	current, _ := defaultState.values()
 	if llm.IsHermesModel(current) {
 		return flowID, current
 	}
@@ -1731,6 +1737,12 @@ var selectHermesProviderImpl = func(token string, chatID int64) {
 		activateHermesProvider(token, chatID, "")
 		return
 	}
+	startHermesLogin(token, chatID)
+}
+
+// startHermesLogin begins a Hermes device login whether or not a credential
+// exists. Reachable only from an explicit "Sign in again"; see startMinimaxLogin.
+func startHermesLogin(token string, chatID int64) {
 	flow, err := hermesAuthMgr.Start(context.Background(), "nous")
 	if err != nil {
 		send(token, chatID, "Failed to start Hermes login: "+err.Error())
@@ -1770,6 +1782,12 @@ var xaiEntryPoint = func(token string, chatID int64) {
 		activateXaiProvider(token, chatID, "")
 		return
 	}
+	startXaiLogin(token, chatID)
+}
+
+// startXaiLogin begins an xAI device login whether or not a credential exists.
+// Reachable only from an explicit "Sign in again"; see startMinimaxLogin.
+func startXaiLogin(token string, chatID int64) {
 	flow, err := xaiLogin.Start(context.Background())
 	if err != nil {
 		send(token, chatID, "Failed to start xAI login: "+err.Error())
@@ -1794,6 +1812,12 @@ func xaiLoginKeyboard(flow *oauthdevice.Flow) map[string]any {
 // activateXaiProvider saves the xAI profile and makes it active.
 func activateXaiProvider(token string, chatID int64, flowID string) {
 	model, _ := xaiModelForAccount(flowID)
+	model, err := guardModel("xai", model)
+	if err != nil {
+		logger.Warn("xAI activate: " + err.Error())
+		send(token, chatID, "xAI activation failed: "+err.Error())
+		return
+	}
 	// The profile URL is for display: agent.go resolves the credential per run and
 	// uses its own base URL, which is the same host.
 	profile := config.ProviderProfile{
@@ -1820,7 +1844,7 @@ func activateXaiProvider(token string, chatID int64, flowID string) {
 // serve, so a model left over from another provider cannot produce a profile the
 // endpoint rejects. Same rule as the Codex and Hermes paths.
 func xaiModelForAccount(flowID string) (string, string) {
-	_, current := defaultState.values()
+	current, _ := defaultState.values()
 	if llm.IsXaiModel(current) {
 		return flowID, current
 	}
@@ -1851,6 +1875,18 @@ var minimaxEntryPoint = func(token string, chatID int64) {
 		activateMinimaxProvider(token, chatID, "")
 		return
 	}
+	startMinimaxLogin(token, chatID)
+}
+
+// startMinimaxLogin begins a device login, whether or not a credential exists.
+//
+// It is reachable only from an explicit request. "Sign in again" and "Switch to"
+// both arrived here, so tapping either one while a credential was stored took the
+// activate branch and silently re-activated instead of re-authenticating, and
+// removing the provider did not help because removal clears the profile while the
+// credential lives in the encrypted store. Re-authentication was therefore
+// unreachable by any route.
+func startMinimaxLogin(token string, chatID int64) {
 	flow, err := minimaxLogin.Start(context.Background())
 	if err != nil {
 		send(token, chatID, "Failed to start MiniMax login: "+err.Error())
@@ -1870,6 +1906,12 @@ var minimaxEntryPoint = func(token string, chatID int64) {
 // activateMinimaxProvider saves the MiniMax profile and makes it active.
 func activateMinimaxProvider(token string, chatID int64, flowID string) {
 	model, _ := minimaxModelForAccount(flowID)
+	model, err := guardModel("minimax", model)
+	if err != nil {
+		logger.Warn("MiniMax activate: " + err.Error())
+		send(token, chatID, "MiniMax activation failed: "+err.Error())
+		return
+	}
 	// The profile URL is for display: agent.go resolves the credential per run and
 	// uses its own base URL, which is the same host.
 	profile := config.ProviderProfile{
@@ -1898,11 +1940,25 @@ func activateMinimaxProvider(token string, chatID int64, flowID string) {
 // Reuses the active model only when it is one the subscription serves, so a model
 // left over from another provider cannot produce a profile the endpoint rejects.
 func minimaxModelForAccount(flowID string) (string, string) {
-	_, current := defaultState.values()
+	current, _ := defaultState.values()
 	if llm.IsMiniMaxModel(current) {
 		return flowID, current
 	}
 	return flowID, llm.DefaultMiniMaxModel
+}
+
+// guardModel refuses to activate a provider with no model.
+//
+// A profile with an empty model is not a degraded provider, it is an unusable
+// one: the request goes out with no model id and the endpoint answers with
+// something unrelated to the actual fault. One of these reached the store during
+// development, so the write is refused here rather than trusted to every caller.
+func guardModel(providerID, model string) (string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", fmt.Errorf("cannot activate %s with no model", providerID)
+	}
+	return model, nil
 }
 
 // selectClineProvider is the Cline Account entry point, mirroring the others.
@@ -1923,6 +1979,12 @@ var clineEntryPoint = func(token string, chatID int64) {
 		activateClineProvider(token, chatID, "")
 		return
 	}
+	startClineLogin(token, chatID)
+}
+
+// startClineLogin begins a Cline device login whether or not a credential exists.
+// Reachable only from an explicit "Sign in again"; see startMinimaxLogin.
+func startClineLogin(token string, chatID int64) {
 	flow, err := clineLogin.Start(context.Background())
 	if err != nil {
 		send(token, chatID, "Failed to start Cline login: "+err.Error())
@@ -1942,6 +2004,12 @@ var clineEntryPoint = func(token string, chatID int64) {
 // activateClineProvider saves the Cline profile and makes it active.
 func activateClineProvider(token string, chatID int64, flowID string) {
 	model, _ := clineModelForAccount(flowID)
+	model, err := guardModel("cline", model)
+	if err != nil {
+		logger.Warn("Cline activate: " + err.Error())
+		send(token, chatID, "Cline activation failed: "+err.Error())
+		return
+	}
 	// The profile URL is the gateway root; the chat transport appends the path.
 	profile := config.ProviderProfile{
 		URL:             llm.ClineGatewayBase,
@@ -1967,7 +2035,7 @@ func activateClineProvider(token string, chatID int64, flowID string) {
 // a model left over from another provider cannot produce a profile the gateway
 // rejects.
 func clineModelForAccount(flowID string) (string, string) {
-	_, current := defaultState.values()
+	current, _ := defaultState.values()
 	if llm.IsClineModel(current) {
 		return flowID, current
 	}
