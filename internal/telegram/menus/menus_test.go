@@ -1,6 +1,9 @@
 package menus
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestRootMenuHasPrimaryControls(t *testing.T) {
 	markup := Root()
@@ -66,6 +69,53 @@ func TestTitleSettingsMenuUsesInlineControls(t *testing.T) {
 	for callback, found := range want {
 		if !found {
 			t.Errorf("missing callback %s", callback)
+		}
+	}
+}
+
+// The hub is a person's menu, and the tool registry is the agent's. Two
+// identical buttons both labelled "Tools" and both opening toolsMenu() read as a
+// mistake rather than as a feature.
+func TestTheHubDoesNotShowTheToolRegistry(t *testing.T) {
+	raw, _ := json.Marshal(Hub())
+	rows := Hub()["inline_keyboard"].([][]map[string]string)
+	for _, row := range rows {
+		for _, button := range row {
+			switch button["callback_data"] {
+			case "menu:tools", "menu:skills_catalog":
+				t.Errorf("the hub offers the tool registry: %s in %s", button["text"], raw)
+			}
+		}
+	}
+	// Every other entry is still there, so hiding two did not empty the hub.
+	shown := 0
+	for _, row := range rows {
+		shown += len(row)
+	}
+	if shown < len(All)-2 {
+		t.Errorf("the hub shows %d buttons for %d entries; hiding two removed more", shown, len(All))
+	}
+}
+
+// Hidden from the hub is not removed: a keyboard sent before this change still
+// resolves, rather than arriving as a dead button.
+func TestTheHiddenToolMenusStillDispatch(t *testing.T) {
+	for _, name := range []string{"tools", "skills_catalog"} {
+		keyboard := InlineForChat(name, 0, 1, "")
+		rows, ok := keyboard["inline_keyboard"].([][]map[string]string)
+		if !ok || len(rows) == 0 {
+			t.Fatalf("%s no longer resolves to a menu", name)
+		}
+		dead := true
+		for _, row := range rows {
+			for _, button := range row {
+				if button["callback_data"] != "close" {
+					dead = false
+				}
+			}
+		}
+		if dead {
+			t.Errorf("%s resolves to a bare Close button", name)
 		}
 	}
 }

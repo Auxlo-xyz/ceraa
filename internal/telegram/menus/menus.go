@@ -934,6 +934,20 @@ func Root() map[string]any {
 	}}
 }
 
+// hubHidden lists entries the hub does not show.
+//
+// "tools" and "skills_catalog" are two buttons for one menu — both resolve to
+// toolsMenu() — and the thing behind them is the agent's tool registry, not
+// something a person administers. Two identical buttons labelled "Tools" in the
+// same grid is worse than one that is absent: it reads as a mistake.
+//
+// They stay in All and keep dispatching, so a hub keyboard sent before this
+// change still opens a real menu instead of a dead button.
+var hubHidden = map[string]bool{
+	"tools":          true,
+	"skills_catalog": true,
+}
+
 func Hub() map[string]any {
 	labels := map[string]string{
 		"status": "📊 Status", "session": "💬 Sessions", "provider": "🔌 Provider", "model": "🤖 Model", "agent": "🤖 Mode",
@@ -945,12 +959,17 @@ func Hub() map[string]any {
 		"codex": codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 	}
 	rows := [][]map[string]string{}
-	for i, name := range All {
-		if i%2 == 0 {
+	placed := 0
+	for _, name := range All {
+		if hubHidden[name] {
+			continue
+		}
+		if placed%2 == 0 {
 			rows = append(rows, []map[string]string{{"text": labels[name], "callback_data": "menu:" + name}})
 		} else {
 			rows[len(rows)-1] = append(rows[len(rows)-1], map[string]string{"text": labels[name], "callback_data": "menu:" + name})
 		}
+		placed++
 	}
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
