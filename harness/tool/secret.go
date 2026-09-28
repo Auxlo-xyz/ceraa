@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ceraa/harness/operation"
+	"ceraa/internal/secret"
 )
 
 // Secrets are handled by capability, not by value.
@@ -129,4 +130,54 @@ func validEnvVarName(name string) bool {
 		}
 	}
 	return true
+}
+
+// ListSecretsTool reports which secret names the model may ask for.
+//
+// A value can stay unreadable to the model while the name that refers to it is
+// ordinary, discoverable information. Without this tool the model has to be told
+// a name out of band before run_command_with_secret can be called at all, which
+// quietly makes stored secrets usable only by the person who typed them.
+//
+// Reserved names are absent, and not merely unlisted: ceraa_* and codex_* hold
+// Ceraa's own provider credentials, so a model that could enumerate them could
+// aim run_command_with_secret at them, and a names-only view would become a way
+// to have the operator's provider keys run through a command of the model's
+// choosing. secret.ListUser already applies that filter.
+type ListSecretsTool struct{}
+
+func (t *ListSecretsTool) Name() string { return "list_secrets" }
+func (t *ListSecretsTool) Description() string {
+	return "List the names of the stored secrets you can pass to run_command_with_secret or " +
+		"set_provider_key, with the length of each value. Never shows a value. Names reserved " +
+		"for Ceraa's own provider credentials are not listed and cannot be used."
+}
+func (t *ListSecretsTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (t *ListSecretsTool) Translate(args map[string]any) (operation.Spec, error) {
+	return operation.Spec{Type: "list_secrets", Args: map[string]any{}}, nil
+}
+func (t *ListSecretsTool) TranslateResult(op operation.Operation) string { return op.Output }
+
+// Run reads the store directly instead of going through an operation: listing
+// names mutates nothing, and a read has no reason to occupy the operation queue.
+func (t *ListSecretsTool) Run(spec operation.Spec) (string, error) {
+	names := secret.ListUser()
+	if len(names) == 0 {
+		return "No user secrets are stored. The person can add one with /setsecret, " +
+			"or from the Hub's Secrets menu.", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d stored secret(s):", len(names))
+	for _, name := range names {
+		// A length is enough to tell a truncated paste from a whole one and is
+		// useless for reconstructing the value.
+		length := "unknown length"
+		if value, err := secret.Get(name); err == nil {
+			length = fmt.Sprintf("%d chars", len([]rune(value)))
+		}
+		fmt.Fprintf(&b, "\n- %s (%s)", name, length)
+	}
+	return b.String(), nil
 }
