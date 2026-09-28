@@ -3,6 +3,8 @@ package coordinator
 import (
 	"strings"
 	"testing"
+
+	"ceraa/harness/llm"
 )
 
 // The model is not told anywhere in prompt/system.txt where its commands run, and
@@ -54,9 +56,11 @@ func TestNoWorkDirMeansNoWorkspaceBlock(t *testing.T) {
 	}
 }
 
-// It sits after the static prompt so the cached prefix survives it, and like the
-// date it is not counted as stable.
-func TestTheWorkspaceBlockIsNotCountedAsStable(t *testing.T) {
+// It changed from sitting past the cache seam to sitting inside the cached
+// prefix, and that is the point: past the seam is not "cheap", it is "never
+// cached", so an 82-token block was being re-read on every request while
+// changing only when the user switches project.
+func TestTheWorkspaceBlockIsInsideTheCachedPrefix(t *testing.T) {
 	r := &Runner{cfg: RunnerConfig{
 		SystemPrompt: "you are a coding agent",
 		WorkDir:      "/srv/projects/beta",
@@ -65,10 +69,17 @@ func TestTheWorkspaceBlockIsNotCountedAsStable(t *testing.T) {
 	if stable > len(parts) {
 		t.Fatalf("stable count %d exceeds %d parts", stable, len(parts))
 	}
+	found := false
 	for _, part := range parts[:stable] {
 		if strings.Contains(part, "<workspace>") {
-			t.Error("the workspace block is inside the cached prefix; switching project would invalidate the whole prompt")
+			found = true
 		}
+	}
+	if !found {
+		t.Error("the workspace block is past the cache seam, so it is re-read on every request")
+	}
+	if r.systemCacheSeam() < len("/srv/projects/beta") {
+		t.Errorf("the seam does not reach the workspace directory: %d", r.systemCacheSeam())
 	}
 }
 
@@ -105,5 +116,63 @@ func TestTheWorkspaceBlockFollowsEachSessionsOwnProject(t *testing.T) {
 	}
 	if before == after {
 		t.Error("switching project did not change the prompt at all")
+	}
+}
+
+// The seam is a hard boundary, so what is on each side of it is worth pinning.
+// Everything rare belongs inside and everything that changes mid-turn belongs
+// outside, or the caching either does nothing or thrashes.
+func TestTheCacheSeamSplitsStableFromVolatile(t *testing.T) {
+	memory := strings.Repeat("remembered. ", 300)
+	r := &Runner{cfg: RunnerConfig{
+		SystemPrompt:      "you are a coding agent",
+		SkillContext:      "a skill",
+		WorkDir:           "/srv/projects/beta",
+		Model:             llm.ProviderConfig{Model: "test-model", BaseURL: "host.example"},
+		MemoryContextFunc: func() (string, error) { return memory, nil },
+	}}
+	parts, stable := r.systemPromptParts()
+	if stable >= len(parts) {
+		t.Fatalf("stable %d of %d: nothing is volatile, so nothing is cached per part", stable, len(parts))
+	}
+
+	cached, uncached := strings.Join(parts[:stable], "\n\n"), strings.Join(parts[stable:], "\n\n")
+	for _, want := range []string{"<workspace>", "<approved-skills>", "/srv/projects/beta"} {
+		if !strings.Contains(cached, want) {
+			t.Errorf("%s is not in the cached prefix", want)
+		}
+	}
+	// The date and memory change daily and mid-turn respectively. Caching them
+	// would re-read the whole prefix whenever the agent writes a memory.
+	for _, unwanted := range []string{"<current-date>", "remembered."} {
+		if strings.Contains(cached, unwanted) {
+			t.Errorf("%s is inside the cached prefix", unwanted)
+		}
+	}
+	if !strings.Contains(uncached, "<current-date>") || !strings.Contains(uncached, "remembered.") {
+		t.Errorf("the volatile tail is missing a part:\n%s", uncached)
+	}
+}
+
+// An absent workspace or skill must not be counted as a stable part, or the seam
+// would point into the wrong section and cache a prefix that has since shifted.
+func TestAnAbsentBlockIsNotCountedInTheSeam(t *testing.T) {
+	full := &Runner{cfg: RunnerConfig{
+		SystemPrompt: "p", SkillContext: "s", WorkDir: "/w",
+		Model: llm.ProviderConfig{Model: "test-model", BaseURL: "host.example"},
+	}}
+	bare := &Runner{cfg: RunnerConfig{
+		SystemPrompt: "p", Model: llm.ProviderConfig{Model: "test-model", BaseURL: "host.example"},
+	}}
+	fullSeam, bareSeam := full.systemCacheSeam(), bare.systemCacheSeam()
+	if fullSeam <= bareSeam {
+		t.Errorf("adding a workspace and a skill did not move the seam: %d vs %d", fullSeam, bareSeam)
+	}
+	// The bare prompt still caches the identity and the vendored prompt.
+	if bareSeam < len("p") {
+		t.Errorf("bare seam %d does not cover the vendored prompt", bareSeam)
+	}
+	if strings.Contains(bare.systemPrompt(), "<workspace>") {
+		t.Error("a workspace block appeared with no workdir configured")
 	}
 }

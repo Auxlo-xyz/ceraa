@@ -932,32 +932,38 @@ func (r *Runner) systemPromptParts() ([]string, int) {
 		parts = append([]string{identity}, parts...)
 		identityAdded = true
 	}
-	// The date goes after the static prompt rather than beside the identity block.
-	// Prefix caching is positional, so a fact placed later costs less: when the
-	// date rolls over, everything before it still hits and only the remainder is
-	// re-read. At the very front it would invalidate the whole prefix once a day.
-	if date := todayContext(); date != "" {
-		parts = append(parts, date)
-	}
-	// The workspace goes beside the date, after the static prompt, for the same
-	// reason: it is a per-run fact, and placing it later keeps the cached prefix
-	// intact. It changes when the user switches project, which is rare, so it is
-	// not counted as stable below.
-	if workspace := r.workspaceContext(); workspace != "" {
-		parts = append(parts, workspace)
-	}
-	if strings.TrimSpace(r.cfg.SkillContext) != "" {
-		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
-	}
-	if rendered := r.memoryContext(); rendered != "" {
-		parts = append(parts, rendered)
-	}
-	// Identity and the vendored prompt are the only stable sections. The date
-	// changes daily, skills change when they are approved, and memory changes
-	// whenever the agent writes to it.
+	// Order is by how rarely a part changes, least volatile first, because the
+	// seam below makes this a hard boundary rather than a gradient.
+	//
+	// It was the other way round, and the ordering reasoning in the comment above
+	// was about the wrong thing: placing a volatile fact late inside the cached
+	// prefix does cost less, but anything past the seam is not cached at all, so
+	// "late" there means "never". The workspace and the approved skills were
+	// therefore paying full price on every request while changing monthly and on
+	// approval respectively, sitting downstream of a date that changes daily.
+	//
+	// Moving them ahead of the seam puts them in the cache. The cost is that
+	// switching project invalidates the prefix, which is a rare event against a
+	// saving on every request.
 	stableCount := 1
 	if identityAdded {
 		stableCount = 2
+	}
+	if workspace := r.workspaceContext(); workspace != "" {
+		parts = append(parts, workspace)
+		stableCount++
+	}
+	if strings.TrimSpace(r.cfg.SkillContext) != "" {
+		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
+		stableCount++
+	}
+	// The date changes daily and memory changes whenever the agent writes, so both
+	// belong past the seam, where a change costs only the part that changed.
+	if date := todayContext(); date != "" {
+		parts = append(parts, date)
+	}
+	if rendered := r.memoryContext(); rendered != "" {
+		parts = append(parts, rendered)
 	}
 	return parts, stableCount
 }
