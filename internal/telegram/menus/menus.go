@@ -952,19 +952,6 @@ var hubHidden = map[string]bool{
 	"skills_catalog": true,
 }
 
-// SecretNames are the credentials offered as one-tap choices. A curated list
-// rather than free-form only, because a mistyped name creates a secret nothing
-// ever reads and the user has no way to know which one is wrong.
-var SecretNames = []string{
-	"openai_api_key",
-	"anthropic_api_key",
-	"xai_api_key",
-	"minimax_api_key",
-	"openrouter_api_key",
-	"github_token",
-	"custom_api_key",
-}
-
 // SecretsMenu lists stored secrets and offers to add one.
 //
 // Names and lengths only. The value is never rendered, because a menu is the one
@@ -980,14 +967,7 @@ func SecretsMenu(stored []StoredSecret) map[string]any {
 	if len(rows) == 0 {
 		rows = append(rows, []map[string]string{{"text": "— none stored —", "callback_data": "noop"}})
 	}
-	for i, name := range SecretNames {
-		if i%2 == 0 {
-			rows = append(rows, []map[string]string{{"text": "➕ " + name, "callback_data": "setsecret:" + name}})
-		} else {
-			rows[len(rows)-1] = append(rows[len(rows)-1], map[string]string{"text": "➕ " + SecretNames[i], "callback_data": "setsecret:" + SecretNames[i]})
-		}
-	}
-	rows = append(rows, []map[string]string{{"text": "✏️ Another name", "callback_data": "setsecret:"}})
+	rows = append(rows, []map[string]string{{"text": "➕ Add Secret", "callback_data": "setsecret:"}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }

@@ -227,7 +227,7 @@ func secretNameArmed(chatID int64) bool {
 //
 // The order of the two states matters. A capture in progress means the user is
 // sending a value, so it is checked before the name prompt: otherwise typing a
-// name after pressing "Another name" would be stored as the value.
+// name after pressing "Add Secret" would be stored as the value.
 func handleSecretInput(token string, chatID, messageID int64, text string) bool {
 	if name, armed := takePendingSecret(chatID); armed {
 		handleCapturedSecret(token, chatID, messageID, name, text)
