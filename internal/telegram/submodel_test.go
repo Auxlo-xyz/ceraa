@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
 	"ceraa/harness/llm"
@@ -12,12 +11,7 @@ import (
 // stubState points the state at a temp dir, following the pattern the Codex flow
 // tests already use, so a profile write cannot touch the real one.
 func stubState(t *testing.T) func() {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("CERAA_HOME", dir)
-	previous := defaultState
-	defaultState = loadBridgeStateFromFile(filepath.Join(dir, "bridge-state.json"))
-	return func() { defaultState = previous }
+	return stubBothState(t)
 }
 
 // Choosing a model must write the profile, or the picker is decorative.

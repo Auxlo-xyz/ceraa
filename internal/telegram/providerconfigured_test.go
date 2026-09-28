@@ -11,11 +11,9 @@ import (
 // as unconfigured. The consequence was not cosmetic: /start answered with the
 // onboarding picker and startup logged that onboarding was still required.
 func TestProviderConfiguredAcceptsASubscriptionWithoutAKey(t *testing.T) {
-	previous := defaultState
-	defaultState = &bridgeState{Provider: "codex", ProviderProfiles: map[string]config.ProviderProfile{
+	withProviderState(t, "codex", map[string]config.ProviderProfile{
 		"codex": {URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.6-luna", Subscription: "codex"},
-	}}
-	t.Cleanup(func() { defaultState = previous })
+	})
 
 	cfg := config.DefaultConfig()
 	cfg.ProviderProfiles = map[string]config.ProviderProfile{
@@ -29,11 +27,9 @@ func TestProviderConfiguredAcceptsASubscriptionWithoutAKey(t *testing.T) {
 }
 
 func TestProviderConfiguredRejectsAPlainProviderWithoutAKey(t *testing.T) {
-	previous := defaultState
-	defaultState = &bridgeState{Provider: "custom", ProviderProfiles: map[string]config.ProviderProfile{
+	withProviderState(t, "custom", map[string]config.ProviderProfile{
 		"custom": {URL: "https://openrouter.ai/api/v1", Model: "some/model"},
-	}}
-	t.Cleanup(func() { defaultState = previous })
+	})
 
 	cfg := config.DefaultConfig()
 	cfg.ProviderProfiles = map[string]config.ProviderProfile{

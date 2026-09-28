@@ -103,9 +103,8 @@ func isolateState(t *testing.T) {
 	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
 		t.Fatalf("secret init: %v", err)
 	}
-	previous := defaultState
-	defaultState = loadBridgeStateFromFile(filepath.Join(dir, "bridge-state.json"))
-	t.Cleanup(func() { defaultState = previous })
+	restoreProviders := stubProviders(t)
+	t.Cleanup(restoreProviders)
 }
 
 // captureCodexNotifications records what the watcher would have sent.

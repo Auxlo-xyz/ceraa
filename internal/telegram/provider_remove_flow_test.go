@@ -112,9 +112,8 @@ func TestConfigOnlyProviderIsOfferedForRemoval(t *testing.T) {
 	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
-	previous := defaultState
-	defaultState = loadBridgeStateFromFile(dir + "/bridge-state.json")
-	t.Cleanup(func() { defaultState = previous })
+	restoreProviders := stubProviders(t)
+	t.Cleanup(restoreProviders)
 
 	if !hasCallback(callbacksIn(t, menus.ProviderMenu()), "select_provider:cfgonly") {
 		t.Fatal("a config-only provider is not listed, so the test would prove nothing")
@@ -129,14 +128,13 @@ func TestConfigOnlyProviderIsOfferedForRemoval(t *testing.T) {
 func TestRemovingTheActiveProviderClearsTheSelection(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CERAA_HOME", dir)
-	previous := defaultState
-	state := loadBridgeStateFromFile(dir + "/bridge-state.json")
+	restore := stubBothState(t)
+	t.Cleanup(restore)
+	state := defaultState
 	seedProfile(t, state, "live")
 	if err := state.setProvider("live"); err != nil {
 		t.Fatal(err)
 	}
-	defaultState = state
-	t.Cleanup(func() { defaultState = previous })
 
 	if state.provider() != "live" {
 		t.Fatalf("precondition: active provider is %q", state.provider())
@@ -152,11 +150,8 @@ func TestRemovingTheActiveProviderClearsTheSelection(t *testing.T) {
 // The base configuration is not a stored profile and must stay unremovable,
 // whichever menu offers it.
 func TestDefaultIsNeverOfferedForRemoval(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CERAA_HOME", dir)
-	previous := defaultState
-	defaultState = loadBridgeStateFromFile(dir + "/bridge-state.json")
-	t.Cleanup(func() { defaultState = previous })
+	restore := stubBothState(t)
+	t.Cleanup(restore)
 	if hasCallback(callbacksIn(t, menus.RemoveProviderMenu("")), "provider:remove:default") {
 		t.Error("the remove menu offers the default provider")
 	}
@@ -164,16 +159,13 @@ func TestDefaultIsNeverOfferedForRemoval(t *testing.T) {
 
 // The split: provider identity and model choice are separate screens.
 func TestProviderAndModelAreSeparateMenus(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CERAA_HOME", dir)
-	previous := defaultState
-	state := loadBridgeStateFromFile(dir + "/bridge-state.json")
+	restore := stubBothState(t)
+	t.Cleanup(restore)
+	state := defaultState
 	seedProfile(t, state, "alpha")
 	if err := state.setProvider("alpha"); err != nil {
 		t.Fatal(err)
 	}
-	defaultState = state
-	t.Cleanup(func() { defaultState = previous })
 
 	provider := callbacksIn(t, menus.ProviderMenu())
 	// The provider menu lists providers and nothing about choosing a model.
@@ -200,11 +192,8 @@ func TestProviderAndModelAreSeparateMenus(t *testing.T) {
 // With no model chosen the model menu has to say so rather than showing an empty
 // screen or a stale name.
 func TestModelMenuWithNoActiveModel(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CERAA_HOME", dir)
-	previous := defaultState
-	defaultState = loadBridgeStateFromFile(dir + "/bridge-state.json")
-	t.Cleanup(func() { defaultState = previous })
+	restore := stubBothState(t)
+	t.Cleanup(restore)
 	labels := labelsIn(t, menus.ModelMenuForTest())
 	if !strings.Contains(labels, "No model is active") {
 		t.Errorf("model menu with no model says %q", labels)
