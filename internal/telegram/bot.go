@@ -1842,7 +1842,12 @@ func selectMinimaxProvider(token string, chatID int64) {
 // provider menu routes provider:minimax here without starting a device login
 // against the live service.
 var minimaxEntryPoint = func(token string, chatID int64) {
-	if minimaxauth.SignedIn(minimaxauth.RegionGlobal) {
+	signedIn := minimaxauth.SignedIn(minimaxauth.RegionGlobal)
+	// Which branch this took was unobservable, and a wrong branch here leaves the
+	// active provider pointing somewhere else while the menu says otherwise.
+	logger.Info("minimax entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
 		activateMinimaxProvider(token, chatID, "")
 		return
 	}
@@ -1875,13 +1880,16 @@ func activateMinimaxProvider(token string, chatID int64, flowID string) {
 		Subscription:    llm.MiniMaxSubscription,
 	}
 	if err := defaultState.setProviderProfile("minimax", profile); err != nil {
+		logger.Warn("minimax activate: profile save failed: " + err.Error())
 		send(token, chatID, "MiniMax profile save failed: "+err.Error())
 		return
 	}
 	if err := defaultState.setProvider("minimax"); err != nil {
+		logger.Warn("minimax activate: provider set failed: " + err.Error())
 		send(token, chatID, "MiniMax provider activation failed: "+err.Error())
 		return
 	}
+	logger.Info("minimax activate: provider=" + defaultState.provider() + " model=" + model)
 	send(token, chatID, "✅ MiniMax provider activated with model "+model+". Send a task to use it.")
 }
 

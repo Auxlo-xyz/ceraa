@@ -119,8 +119,8 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// Recorded because a provider may reject or ignore a level, and the only way
 	// to tell a rejected level from a model that chose not to think is to know
 	// what was asked for.
-	logger.Info(fmt.Sprintf("agent run: provider=%s model=%s reasoning=%q native_gemini=%v",
-		providerID, providerConfig.Model, string(reasoning), llm.UsesGeminiNative(providerConfig.Model, providerConfig.URL)))
+	logger.Info(fmt.Sprintf("agent run: provider=%s model=%s reasoning=%q native_gemini=%v host=%s",
+		providerID, providerConfig.Model, string(reasoning), llm.UsesGeminiNative(providerConfig.Model, providerConfig.URL), providerConfig.URL))
 	registry := telegramRegistry(cfg, user, memoryStore, skillStore)
 	// view_image follows the same resolved provider as the run, so a media call
 	// cannot drift onto a different model than the one doing the work.
