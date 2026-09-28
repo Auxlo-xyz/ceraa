@@ -3,7 +3,6 @@ package telegram
 import (
 	"ceraa/harness/llm"
 	"ceraa/internal/config"
-	"ceraa/internal/envs"
 	"ceraa/internal/paths"
 	"encoding/json"
 	"errors"
@@ -15,24 +14,37 @@ import (
 	"sync"
 )
 
+// bridgeState is the bot's own runtime state: who is allowed to talk to it, which
+// chat is bound to which session, which project each session works in, and which
+// tools are always allowed.
+//
+// It deliberately holds no provider, model, reasoning or agent selection. Those
+// used to be fields here, duplicating config.json, and two files with two
+// precedence rules is how the menu and the run path ended up disagreeing about
+// which model was serving. They live in config.json and are reached through
+// providerState.
 type bridgeState struct {
-	mu               sync.RWMutex
-	writeMu          sync.Mutex
-	path             string
-	loadErr          error
-	Model            string                            `json:"model,omitempty"`
-	Provider         string                            `json:"provider,omitempty"`
-	AllowedUserID    int64                             `json:"allowed_user_id,omitempty"`
-	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
-	Agent            string                            `json:"agent,omitempty"`
-	Reasoning        string                            `json:"reasoning,omitempty"`
-	answerRequests   map[string]int64
-	ActiveSessions   map[string]string `json:"active_sessions,omitempty"`
-	Projects         map[string]string `json:"projects,omitempty"`
-	SessionProjects  map[string]string `json:"session_projects,omitempty"`
-	AlwaysAllow      map[string]bool   `json:"always_allow,omitempty"`
-	AutoCompaction   bool              `json:"auto_compaction,omitempty"`
-	AutoSet          bool              `json:"auto_compaction_set,omitempty"`
+	mu              sync.RWMutex
+	writeMu         sync.Mutex
+	path            string
+	loadErr         error
+	AllowedUserID   int64 `json:"allowed_user_id,omitempty"`
+	answerRequests  map[string]int64
+	ActiveSessions  map[string]string `json:"active_sessions,omitempty"`
+	Projects        map[string]string `json:"projects,omitempty"`
+	SessionProjects map[string]string `json:"session_projects,omitempty"`
+	AlwaysAllow     map[string]bool   `json:"always_allow,omitempty"`
+}
+
+// retiredStateFields are the keys an older bridge-state.json carried and this
+// build no longer reads.
+//
+// They are listed so the migration can detect and drop them, rather than leaving
+// a stale `provider` sitting in the file where a future reader could find it and
+// believe it.
+var retiredStateFields = []string{
+	"model", "provider", "provider_profiles", "agent", "reasoning",
+	"auto_compaction", "auto_compaction_set",
 }
 
 var defaultState = loadBridgeState()
@@ -43,11 +55,20 @@ func loadBridgeState() *bridgeState {
 }
 
 func loadBridgeStateFromFile(path string) *bridgeState {
-	state := &bridgeState{path: path, ActiveSessions: make(map[string]string), Projects: make(map[string]string), SessionProjects: make(map[string]string), AlwaysAllow: make(map[string]bool), ProviderProfiles: make(map[string]config.ProviderProfile)}
+	state := &bridgeState{path: path, ActiveSessions: make(map[string]string), Projects: make(map[string]string), SessionProjects: make(map[string]string), AlwaysAllow: make(map[string]bool)}
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if unmarshalErr := json.Unmarshal(data, state); unmarshalErr != nil {
 			state.loadErr = fmt.Errorf("parse bridge state: %w", unmarshalErr)
+		}
+		// Fold a pre-consolidation selection into config.json before dropping it.
+		// Migrating on read rather than at upgrade time means an install that was
+		// last written by an older build is not stranded: whichever process starts
+		// first performs the move, and it is idempotent.
+		if legacy, found, migErr := readLegacySelection(data); found && migErr == nil {
+			if err := adoptLegacySelection(legacy); err != nil {
+				state.loadErr = fmt.Errorf("migrate bridge state: %w", err)
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		state.loadErr = fmt.Errorf("read bridge state: %w", err)
@@ -67,11 +88,78 @@ func loadBridgeStateFromFile(path string) *bridgeState {
 	if state.AlwaysAllow == nil {
 		state.AlwaysAllow = make(map[string]bool)
 	}
-	if state.ProviderProfiles == nil {
-		state.ProviderProfiles = make(map[string]config.ProviderProfile)
-	}
 	state.path = path
 	return state
+}
+
+// legacySelection is the provider and model state an older bridge-state.json held.
+type legacySelection struct {
+	Provider         string                            `json:"provider"`
+	Model            string                            `json:"model"`
+	Agent            string                            `json:"agent"`
+	Reasoning        string                            `json:"reasoning"`
+	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles"`
+	AutoCompaction   *bool                             `json:"auto_compaction"`
+}
+
+// readLegacySelection reports whether an old bridge-state.json carried a selection
+// this build should adopt.
+//
+// Every retired key must actually be present. A file that merely happens to be
+// named bridge-state.json is not evidence of an older layout, and treating it as
+// one would let a stray file overwrite the real config.
+func readLegacySelection(data []byte) (legacySelection, bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return legacySelection{}, false, err
+	}
+	present := 0
+	for _, key := range retiredStateFields {
+		if _, ok := raw[key]; ok {
+			present++
+		}
+	}
+	if present != len(retiredStateFields) {
+		return legacySelection{}, false, nil
+	}
+	var legacy legacySelection
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return legacySelection{}, false, err
+	}
+	return legacy, true, nil
+}
+
+// adoptLegacySelection writes a pre-consolidation selection into config.json.
+//
+// It only fills values config does not already have, so re-running it can never
+// clobber a choice the user has since made through the consolidated path.
+func adoptLegacySelection(legacy legacySelection) error {
+	return providers.store.Update(func(cfg *config.Config) error {
+		if strings.TrimSpace(cfg.ActiveProvider) == "" && strings.TrimSpace(legacy.Provider) != "" {
+			cfg.ActiveProvider = strings.TrimSpace(legacy.Provider)
+		}
+		if strings.TrimSpace(cfg.Model) == "" && strings.TrimSpace(legacy.Model) != "" {
+			cfg.Model = strings.TrimSpace(legacy.Model)
+		}
+		if strings.TrimSpace(cfg.Agent) == "" && strings.TrimSpace(legacy.Agent) != "" {
+			cfg.Agent = strings.TrimSpace(legacy.Agent)
+		}
+		if strings.TrimSpace(cfg.Reasoning) == "" && strings.TrimSpace(legacy.Reasoning) != "" {
+			cfg.Reasoning = strings.TrimSpace(legacy.Reasoning)
+		}
+		if cfg.AutoCompaction == nil && legacy.AutoCompaction != nil {
+			cfg.AutoCompaction = legacy.AutoCompaction
+		}
+		for name, profile := range legacy.ProviderProfiles {
+			if cfg.ProviderProfiles == nil {
+				cfg.ProviderProfiles = map[string]config.ProviderProfile{}
+			}
+			if _, exists := cfg.ProviderProfiles[name]; !exists {
+				cfg.ProviderProfiles[name] = profile
+			}
+		}
+		return nil
+	})
 }
 
 func (s *bridgeState) save() error {
@@ -218,17 +306,11 @@ func (s *bridgeState) projectForSession(sessionID string) string {
 }
 
 func (s *bridgeState) setAutoCompaction(enabled bool) error {
-	s.mu.Lock()
-	s.AutoCompaction = enabled
-	s.AutoSet = true
-	s.mu.Unlock()
-	return s.save()
+	return providers.setAutoCompaction(enabled)
 }
 
 func (s *bridgeState) autoCompaction() (bool, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.AutoCompaction, s.AutoSet
+	return providers.autoCompaction()
 }
 
 func (s *bridgeState) setAlwaysAllow(toolName string, allowed bool) error {
@@ -253,17 +335,13 @@ func (s *bridgeState) alwaysAllowed(toolName string) bool {
 // Two values rather than three: the third used to be the response variant, a
 // compaction tuning knob presented as a writing style, and it was removed.
 func (s *bridgeState) values() (string, string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.Model, s.Agent
+	return providers.modelAndAgent()
 }
 
 // reasoning returns the runtime reasoning level, empty when the provider's own
 // default should apply.
 func (s *bridgeState) reasoning() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.Reasoning
+	return providers.reasoning()
 }
 
 // setReasoning records the runtime reasoning level. An empty value clears it and
@@ -273,19 +351,11 @@ func (s *bridgeState) setReasoning(level string) error {
 	if level != "" && !llm.ReasonLevel(level).Valid() {
 		return errors.New("unknown reasoning level " + level)
 	}
-	s.mu.Lock()
-	s.Reasoning = level
-	s.mu.Unlock()
-	return s.save()
+	return providers.setReasoning(level)
 }
 
 func (s *bridgeState) provider() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.Provider == "" {
-		return "default"
-	}
-	return s.Provider
+	return providers.active()
 }
 
 func (s *bridgeState) allowedUserID() int64 {
@@ -312,34 +382,15 @@ func (s *bridgeState) claimAllowedUserID(id int64) (bool, error) {
 }
 
 func (s *bridgeState) providerProfiles() map[string]config.ProviderProfile {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	profiles := make(map[string]config.ProviderProfile, len(s.ProviderProfiles))
-	for key, profile := range s.ProviderProfiles {
-		profiles[key] = profile
-	}
-	return profiles
+	return providers.profiles()
 }
 
 func (s *bridgeState) setProvider(provider string) error {
-	if provider == "" {
-		provider = "default"
-	}
-	s.mu.Lock()
-	s.Provider = provider
-	s.mu.Unlock()
-	return s.save()
+	return providers.setActive(provider)
 }
 
 func (s *bridgeState) setProviderProfile(name string, profile config.ProviderProfile) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return errors.New("provider name is empty")
-	}
-	s.mu.Lock()
-	s.ProviderProfiles[name] = profile
-	s.mu.Unlock()
-	return s.save()
+	return providers.setProfile(name, profile)
 }
 
 // removeProviderProfile deletes a stored profile, reporting whether one was there.
@@ -355,19 +406,7 @@ func (s *bridgeState) removeProviderProfile(name string) (bool, error) {
 	if name == "default" {
 		return false, errors.New("the default provider is the base configuration and cannot be removed; switch to another provider instead")
 	}
-	s.mu.Lock()
-	if _, ok := s.ProviderProfiles[name]; !ok {
-		s.mu.Unlock()
-		return false, errors.New("no provider named " + name)
-	}
-	delete(s.ProviderProfiles, name)
-	// Removing the active provider must not leave the bot pointing at a profile
-	// that no longer exists, so fall back to default.
-	if s.Provider == name {
-		s.Provider = "default"
-	}
-	s.mu.Unlock()
-	return true, s.save()
+	return providers.removeProfile(name)
 }
 
 // activeProviderProfile returns the profile backing the active provider, and
@@ -377,33 +416,15 @@ func (s *bridgeState) removeProviderProfile(name string) (bool, error) {
 // unless the user set one, so reading it alone reports a blank model and hides
 // which model is actually answering.
 func (s *bridgeState) activeProviderProfile() (string, config.ProviderProfile, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	id := s.Provider
-	if id == "" {
-		id = "default"
-	}
-	if profile, ok := s.ProviderProfiles[id]; ok {
-		return id, profile, true
-	}
-	return id, config.ProviderProfile{}, false
+	return providers.activeProfile()
 }
 
 func (s *bridgeState) setModel(model string) error {
-	s.mu.Lock()
-	s.Model = model
-	s.mu.Unlock()
-	if err := envs.Set("MODEL", model); err != nil {
-		return err
-	}
-	return s.save()
+	return providers.setModel(model)
 }
 
 func (s *bridgeState) setAgent(agent string) error {
-	s.mu.Lock()
-	s.Agent = agent
-	s.mu.Unlock()
-	return s.save()
+	return providers.setAgent(agent)
 }
 
 func requestForcedCompaction(sessionID string) {

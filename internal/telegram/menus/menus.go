@@ -34,15 +34,14 @@ var All = []string{
 	"memory", "skill", "eval", "schedule", "codex", "hermes", "xai", "minimax", "cline",
 }
 
+// runtimeState is the bot's own state, read from bridge-state.json.
+//
+// It holds no provider or model. Those live in config.json and come from
+// config.LoadSelection, so a menu cannot describe a provider the run path is not
+// using. Only the chat-keyed state the menus need — currently the project map —
+// is read here.
 type runtimeState struct {
-	Model            string                            `json:"model,omitempty"`
-	Provider         string                            `json:"provider,omitempty"`
-	ProviderProfiles map[string]config.ProviderProfile `json:"provider_profiles,omitempty"`
-	Agent            string                            `json:"agent,omitempty"`
-	Reasoning        string                            `json:"reasoning,omitempty"`
-	AutoCompaction   bool                              `json:"auto_compaction,omitempty"`
-	AutoSet          bool                              `json:"auto_compaction_set,omitempty"`
-	Projects         map[string]string                 `json:"projects,omitempty"`
+	Projects map[string]string `json:"projects,omitempty"`
 }
 
 // runtimeStatePath is the file the hub reads its labels from.
@@ -62,6 +61,18 @@ func runtimeValues() runtimeState {
 	data, _ := os.ReadFile(runtimeStateFile())
 	var state runtimeState
 	_ = json.Unmarshal(data, &state)
+	return state
+}
+
+// selection reads the model-facing choice from config.json.
+//
+// An unreadable config yields the zero value rather than a guess, so a screen that
+// needs a model says it has none instead of naming a provider it cannot confirm.
+func selection() config.Selection {
+	state, err := config.LoadSelection()
+	if err != nil {
+		return config.Selection{}
+	}
 	return state
 }
 
@@ -158,15 +169,15 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 	case "todos":
 		return todosMenu(sessionID)
 	case "codex":
-		return CodexMenu(codexauth.Authenticated(), runtimeValues().Provider)
+		return CodexMenu(codexauth.Authenticated(), selection().ActiveProvider)
 	case "hermes":
-		return subscriptionMenu("Hermes", "🔐", hermesauth.SignedIn(), runtimeValues().Provider == llm.HermesSubscription, "provider:hermes")
+		return subscriptionMenu("Hermes", "🔐", hermesauth.SignedIn(), selection().ActiveProvider == llm.HermesSubscription, "provider:hermes")
 	case "xai":
-		return subscriptionMenu("xAI", "✳️", xaiauth.SignedIn(), runtimeValues().Provider == llm.XAISubscription, "provider:xai")
+		return subscriptionMenu("xAI", "✳️", xaiauth.SignedIn(), selection().ActiveProvider == llm.XAISubscription, "provider:xai")
 	case "minimax":
-		return subscriptionMenu("MiniMax", "🎬", minimaxauth.SignedIn(minimaxauth.RegionGlobal), runtimeValues().Provider == llm.MiniMaxSubscription, "provider:minimax")
+		return subscriptionMenu("MiniMax", "🎬", minimaxauth.SignedIn(minimaxauth.RegionGlobal), selection().ActiveProvider == llm.MiniMaxSubscription, "provider:minimax")
 	case "cline":
-		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), runtimeValues().Provider == llm.ClineSubscription, "provider:cline")
+		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), selection().ActiveProvider == llm.ClineSubscription, "provider:cline")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models":
 		return subscriptionModelMenu(strings.TrimSuffix(name, ":models"))
 	case "settings":
@@ -238,33 +249,35 @@ type ProviderEntry struct {
 // cannot drift apart again.
 func ProviderEntries() ([]ProviderEntry, string) {
 	cfg, _ := config.Load()
-	state := runtimeValues()
 	merged := map[string]*ProviderEntry{}
-	add := func(id string, profile config.ProviderProfile, inConfig, inState bool) {
+	// One store. This used to merge config.json with bridge-state.json and flag
+	// each entry with which file held it, because a provider recorded in one was
+	// invisible to the menu reading the other — the split that let a screen and the
+	// run path disagree. Both flags are now set together for the same reason: a
+	// caller that asks "is this removable" must get the same answer whichever
+	// question it is asking.
+	add := func(id string, profile config.ProviderProfile) {
 		entry, ok := merged[id]
 		if !ok {
 			entry = &ProviderEntry{ID: id, Removable: id != "default"}
 			merged[id] = entry
 		}
 		entry.Profile = profile
-		entry.InConfig = entry.InConfig || inConfig
-		entry.InState = entry.InState || inState
+		entry.InConfig = true
+		entry.InState = true
 	}
 	if cfg != nil {
 		for id, profile := range cfg.ProviderProfiles {
-			add(id, profile, true, false)
+			add(id, profile)
 		}
-		add("default", config.ProviderProfile{URL: cfg.LLM.URL, Model: cfg.LLM.Model}, true, false)
-	}
-	for id, profile := range state.ProviderProfiles {
-		add(id, profile, false, true)
+		add("default", config.ProviderProfile{URL: cfg.LLM.URL, Model: cfg.LLM.Model})
 	}
 	entries := make([]ProviderEntry, 0, len(merged))
 	for _, entry := range merged {
 		entries = append(entries, *entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
-	active := state.Provider
+	active := selection().ActiveProvider
 	if active == "" {
 		active = "default"
 	}
@@ -441,21 +454,16 @@ var modelChoices []llm.ModelMetadata
 
 func ModelCatalogForChat(chatID int64, query string) map[string]any {
 	cfg, _ := config.Load()
-	state := runtimeValues()
-	active := state.Provider
+	state := selection()
+	active := state.ActiveProvider
 	if active == "" {
 		active = "default"
 	}
 	profileURL := ""
-	for id, profile := range cfg.ProviderProfiles {
-		if id == active {
-			profileURL = profile.URL
-		}
-	}
-	if profile, ok := state.ProviderProfiles[active]; ok {
+	if profile, ok := state.Profiles[active]; ok {
 		profileURL = profile.URL
 	}
-	if profileURL == "" {
+	if profileURL == "" && cfg != nil {
 		profileURL = cfg.LLM.URL
 	}
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, time.Duration(cfg.ModelCatalogRefreshHours)*time.Hour)
@@ -520,8 +528,7 @@ func ModelChoice(index int) (llm.ModelMetadata, bool) {
 }
 
 func agentMenu() map[string]any {
-	state := runtimeValues()
-	agent := state.Agent
+	agent := selection().Agent
 	if agent == "" {
 		agent = "build"
 	}
@@ -541,7 +548,7 @@ func agentMenu() map[string]any {
 // changes what the agent is allowed to do, while this changes how much the
 // model thinks before producing one.
 func thinkingMenu() map[string]any {
-	current := runtimeValues().Reasoning
+	current := selection().Reasoning
 	rows := [][]map[string]string{}
 	row := []map[string]string{}
 	for _, value := range []string{"off", "minimal", "low", "medium", "high", "max"} {
@@ -744,10 +751,10 @@ func todosMenu(sessionID string) map[string]any {
 }
 
 func compactionMenu() map[string]any {
-	state := runtimeValues()
-	auto := state.AutoCompaction
-	if !state.AutoSet {
-		auto = true
+	// Unset means the user never chose, which the menu shows as on.
+	auto := true
+	if configured := selection().AutoCompaction; configured != nil {
+		auto = *configured
 	}
 	autoLabel := "⚙️ Auto: on"
 	autoData := "compaction:auto_off"
@@ -955,7 +962,7 @@ func Hub() map[string]any {
 // signed in" without the user having to open the provider menu.
 func hermesHubLabel() string {
 	switch {
-	case hermesauth.SignedIn() && runtimeValues().Provider == llm.HermesSubscription:
+	case hermesauth.SignedIn() && selection().ActiveProvider == llm.HermesSubscription:
 		return "🔐 Hermes · active"
 	case hermesauth.SignedIn():
 		return "🔐 Hermes · signed in"
@@ -967,7 +974,7 @@ func hermesHubLabel() string {
 // xaiHubLabel names the xAI entry by state.
 func xaiHubLabel() string {
 	switch {
-	case xaiauth.SignedIn() && runtimeValues().Provider == llm.XAISubscription:
+	case xaiauth.SignedIn() && selection().ActiveProvider == llm.XAISubscription:
 		return "✳️ xAI · active"
 	case xaiauth.SignedIn():
 		return "✳️ xAI · signed in"
@@ -979,7 +986,7 @@ func xaiHubLabel() string {
 // minimaxHubLabel names the MiniMax entry by state.
 func minimaxHubLabel() string {
 	switch {
-	case minimaxauth.SignedIn(minimaxauth.RegionGlobal) && runtimeValues().Provider == llm.MiniMaxSubscription:
+	case minimaxauth.SignedIn(minimaxauth.RegionGlobal) && selection().ActiveProvider == llm.MiniMaxSubscription:
 		return "🎬 MiniMax · active"
 	case minimaxauth.SignedIn(minimaxauth.RegionGlobal):
 		return "🎬 MiniMax · signed in"
@@ -991,7 +998,7 @@ func minimaxHubLabel() string {
 // clineHubLabel names the Cline entry by state.
 func clineHubLabel() string {
 	switch {
-	case clineauth.SignedIn() && runtimeValues().Provider == llm.ClineSubscription:
+	case clineauth.SignedIn() && selection().ActiveProvider == llm.ClineSubscription:
 		return "🦞 Cline · active"
 	case clineauth.SignedIn():
 		return "🦞 Cline · signed in"
@@ -1002,7 +1009,7 @@ func clineHubLabel() string {
 
 func codexHubLabel() string {
 	switch {
-	case codexauth.Authenticated() && runtimeValues().Provider == llm.CodexSubscription:
+	case codexauth.Authenticated() && selection().ActiveProvider == llm.CodexSubscription:
 		return "🧠 Codex · active"
 	case codexauth.Authenticated():
 		return "🧠 Codex · signed in"
@@ -1069,7 +1076,7 @@ func subscriptionCatalogEntries(providerID string) []llm.ModelMetadata {
 	entries := make([]llm.ModelMetadata, 0, len(models))
 	for _, model := range models {
 		name := label + "/" + model
-		if active := runtimeValues().Provider; active == providerID && current == model {
+		if active := selection().ActiveProvider; active == providerID && current == model {
 			name = "✅ " + name
 		}
 		entries = append(entries, llm.ModelMetadata{ID: model, Name: name})
@@ -1103,7 +1110,7 @@ func subscriptionModelMenu(providerID string) map[string]any {
 		}}
 	}
 	label := subscriptionLabel(providerID)
-	active := runtimeValues().Provider
+	active := selection().ActiveProvider
 	rows := make([][]map[string]string, 0, len(models)/2+2)
 	for i, model := range models {
 		text := model
@@ -1153,7 +1160,7 @@ func subscriptionLabel(providerID string) string {
 	}
 }
 
-func currentModel() string { return runtimeValues().Model }
+func currentModel() string { return selection().Model }
 
 func CodexMenu(authenticated bool, active string) map[string]any {
 	isActive := active == llm.CodexSubscription

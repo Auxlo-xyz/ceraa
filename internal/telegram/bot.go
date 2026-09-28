@@ -2037,13 +2037,11 @@ func subscriptionMarkerFor(providerID string) string {
 
 // currentProfile reads a provider's stored profile.
 //
-// Reads the bridge state rather than config.Load, because that is where provider
-// profiles actually live. Reading the config file returned nothing, so the
-// existence check failed and choosing a model rebuilt the profile from scratch,
-// discarding its URL and context limit.
+// Reads config, which is where provider profiles live. It used to reach into the
+// bridge state instead, with a comment explaining that reading the config file
+// "returned nothing" — the profiles were in the other file, so the config reader
+// could not see them. Both copies are now one, and this reads the same one the
+// run path reads.
 func currentProfile(providerID string) (config.ProviderProfile, bool) {
-	defaultState.mu.Lock()
-	defer defaultState.mu.Unlock()
-	profile, ok := defaultState.ProviderProfiles[providerID]
-	return profile, ok
+	return providers.profiles()[providerID], providers.hasProfile(providerID)
 }

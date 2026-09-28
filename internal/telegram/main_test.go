@@ -4,31 +4,40 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"ceraa/internal/config"
+	"ceraa/internal/paths"
 )
 
-// TestMain points the package at a throwaway data directory before any test runs.
+// TestMain points the whole package at a temporary data directory before any test
+// runs.
 //
-// The telegram package holds its bridge state in a package-level var built from
-// paths.DataDir(), so without this every test read the live install. That made a
-// test asserting "no provider is configured" pass or fail depending on what the
-// developer's install happened to have active, and it is how a test managed to
-// activate a provider on the running bot. Reassigning defaultState here is
-// deliberate: setting the environment variable alone is too late, because the
-// package var is initialised before TestMain runs.
+// The provider selection is a file the menus write, and several tests write it.
+// Without this, a test that does not stub the store reaches the real
+// $CERAA_HOME: it happened, and it wrote a config.json naming provider "codex"
+// and model "test/model" into the live install, which would then have pinned the
+// running bot to a fixture. Individual tests stub what they touch, but a package
+// default is the only thing that covers the ones that forget.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "ceraa-telegram-test-")
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("CERAA_HOME", dir)
-	defaultState = loadBridgeStateFromFile(filepath.Join(dir, "bridge-state.json"))
-	// Installed here, once, because handleCallback leaves a goroutine reading the
-	// API base after it returns. A per-test swap raced with that goroutine.
-	installStub()
-	code := m.Run()
-	if stubServer != nil {
-		stubServer.Close()
+	if err := os.Setenv("CERAA_HOME", dir); err != nil {
+		panic(err)
 	}
-	os.RemoveAll(dir)
-	os.Exit(code)
+	providers = newProviderState(config.NewStoreAt(filepath.Join(dir, "config.json")))
+	os.Exit(m.Run())
+}
+
+// TestTheLiveInstallIsNotReachable guards the guard: if this fails, something in
+// the package resolved a path outside the temporary directory and the tests are
+// writing to the user's real state again.
+func TestTheLiveInstallIsNotReachable(t *testing.T) {
+	got := paths.DataDir()
+	if got == os.Getenv("CERAA_HOME") {
+		return
+	}
+	t.Fatalf("the package data dir %q is not the test directory %q; a test would write to the live install",
+		got, os.Getenv("CERAA_HOME"))
 }

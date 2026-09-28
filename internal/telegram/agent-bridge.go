@@ -95,12 +95,13 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	if agentMode == "plan" {
 		userText = "[PLAN MODE] Do not modify files or execute commands. Produce a concrete implementation plan and ask before any state-changing action.\n\n" + userText
 	}
-	providerID := defaultState.provider()
-	if cfg.ActiveProvider != "" {
-		providerID = cfg.ActiveProvider
-	} else if cfg.ProviderProfiles == nil {
-		providerID = "default"
-	}
+	// One source of truth: config.json names the active provider, and this is the
+	// only place a run learns it.
+	//
+	// This used to prefer the Telegram state and then let cfg.ActiveProvider
+	// override it, so a run could use a different provider from the one the menu
+	// had just saved, with no error anywhere. There is now nothing to override.
+	providerID := cfg.EffectiveProviderID()
 	providerConfig := activeProviderConfig(cfg, providerID)
 	modelConfig := llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model)
 	modelConfig.PromptCacheMode = providerConfig.PromptCacheMode
