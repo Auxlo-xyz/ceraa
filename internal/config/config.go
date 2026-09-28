@@ -101,21 +101,52 @@ type TelegramConfig struct {
 	AllowedUserID int64  `json:"allowed_user_id,omitempty"`
 }
 
+// defaultWorkspaceRoot derives the workspace from the installed binary's
+// directory, so an agent's "where my commands run" is a real project directory
+// rather than wherever it happened to be started.
+//
+// A location that cannot survive a restart is not a project. The executable is
+// skipped when it lives under the system temp directory, because that is where
+// the Go toolchain puts a test binary — /tmp/go-buildNNN/bNNN/pkg.test — and a
+// workspace derived from one is a path that no longer exists once the build ends.
+// Nothing about that failure is loud: the agent is told its workspace is an empty
+// directory, every relative path resolves to nothing, and the only symptom is a
+// bot that appears to have forgotten the project it lives in. It reached the live
+// config as "/tmp/go-build2223616541/b001/workspace".
 func defaultWorkspaceRoot() string {
 	if executable, err := os.Executable(); err == nil {
 		if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
 			executable = resolved
 		}
-		directory := filepath.Dir(executable)
-		if filepath.Base(directory) == "bin" {
-			directory = filepath.Dir(directory)
+		if !underTempDir(executable) {
+			directory := filepath.Dir(executable)
+			if filepath.Base(directory) == "bin" {
+				directory = filepath.Dir(directory)
+			}
+			return filepath.Join(directory, "workspace")
 		}
-		return filepath.Join(directory, "workspace")
 	}
-	if workingDirectory, err := os.Getwd(); err == nil {
+	if workingDirectory, err := os.Getwd(); err == nil && !underTempDir(workingDirectory) {
 		return filepath.Join(workingDirectory, "workspace")
 	}
 	return paths.DefaultWorkspaceRoot()
+}
+
+// underTempDir reports whether a path is inside the system temp directory.
+//
+// Compared on cleaned absolute paths so a symlinked /tmp, the macOS /var ->
+// /private/var indirection, or a trailing separator cannot slip past. A name test
+// would also be wrong here: it is the location that matters, not the spelling.
+func underTempDir(path string) bool {
+	temp := strings.TrimRight(filepath.Clean(os.TempDir()), string(filepath.Separator))
+	if temp == "" {
+		return false
+	}
+	cleaned := filepath.Clean(path)
+	if cleaned == temp {
+		return true
+	}
+	return strings.HasPrefix(cleaned, temp+string(filepath.Separator))
 }
 
 // DefaultConfig returns the base defaults before env/file overrides.
