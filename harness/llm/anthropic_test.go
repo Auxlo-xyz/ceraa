@@ -929,3 +929,86 @@ func TestTheAgentBackendBaseResolvesToOneMessagesURL(t *testing.T) {
 		}
 	}
 }
+
+// Parallel tool calls arrive as one item, Kind "tool_calls", and the encoder had
+// no arm for it. The whole turn fell through the switch and was dropped, so the
+// tool_results that followed named tool_use ids the endpoint had never been sent:
+//
+//	invalid params, tool result's tool id(run_…_1_0) not found (2013)
+//
+// Every result must have a matching tool_use in the encoded request. That is the
+// invariant, and it is what the endpoint checks.
+func TestParallelToolCallsSurviveEncoding(t *testing.T) {
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "check three directories"},
+		{Kind: "tool_calls", Text: "I'll look at all three.", ToolCalls: []ToolCall{
+			{ID: "c0", Name: "bash", Args: `{"command":"ls /a"}`},
+			{ID: "c1", Name: "bash", Args: `{"command":"ls /b"}`},
+			{ID: "c2", Name: "bash", Args: `{"command":"ls /c"}`},
+		}},
+		{Kind: "text", Role: RoleTool, CallID: "c0", Name: "bash", Output: "a"},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "b"},
+		{Kind: "text", Role: RoleTool, CallID: "c2", Name: "bash", Output: "c"},
+	}
+	messages, err := encodeAnthropicMessages(items)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	uses := map[string]bool{}
+	results := map[string]bool{}
+	for _, m := range messages {
+		for _, block := range m.Content {
+			switch block["type"] {
+			case "tool_use":
+				id, _ := block["id"].(string)
+				uses[id] = true
+			case "tool_result":
+				id, _ := block["tool_use_id"].(string)
+				results[id] = true
+			}
+		}
+	}
+	if len(uses) != 3 {
+		t.Errorf("encoded %d tool_use blocks, want 3", len(uses))
+	}
+	for id := range results {
+		if !uses[id] {
+			t.Errorf("tool_result %s has no tool_use; this is the request the endpoint rejects", id)
+		}
+	}
+
+	// One assistant turn, not one message per call: calls made together were
+	// said together, and splitting them misrepresents the conversation.
+	assistant := 0
+	for _, m := range messages {
+		if m.Role == "assistant" {
+			assistant++
+			if len(m.Content) != 4 {
+				t.Errorf("assistant message has %d blocks, want text + 3 tool_use", len(m.Content))
+			}
+		}
+	}
+	if assistant != 1 {
+		t.Errorf("%d assistant messages, want 1 for a single parallel turn", assistant)
+	}
+	if _, err := json.Marshal(messages); err != nil {
+		t.Fatalf("the request does not encode: %v", err)
+	}
+}
+
+// An empty batch must not produce an empty assistant turn, which the endpoint
+// would reject outright.
+func TestAnEmptyParallelBatchIsDropped(t *testing.T) {
+	messages, err := encodeAnthropicMessages([]Item{
+		{Kind: "text", Role: RoleUser, Text: "hi"},
+		{Kind: "tool_calls"},
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, m := range messages {
+		if m.Role == "assistant" {
+			t.Error("an empty tool_calls item produced an empty assistant message")
+		}
+	}
+}

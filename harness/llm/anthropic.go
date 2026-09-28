@@ -206,6 +206,42 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 					"input": input,
 				}},
 			})
+		case "tool_calls":
+			// Parallel calls from one turn arrive as a single item and belong in a
+			// single assistant message.
+			//
+			// This case was missing, so the whole turn was dropped: the switch had
+			// no arm for it and fell through, the tool_use blocks never went out,
+			// and the tool_results that followed referred to ids the endpoint had
+			// never been given. MiniMax's agent backend says so precisely —
+			// "invalid params, tool result's tool id … not found (2013)" — and the
+			// run fails on the request after the parallel batch. Every other
+			// transport handled it, which is why only the Messages API showed it.
+			flush()
+			blocks := make([]map[string]any, 0, len(item.ToolCalls))
+			for _, call := range item.ToolCalls {
+				input, err := toolInputJSON(call.Name, call.Args)
+				if err != nil {
+					return nil, err
+				}
+				blocks = append(blocks, map[string]any{
+					"type":  "tool_use",
+					"id":    call.ID,
+					"name":  call.Name,
+					"input": input,
+				})
+			}
+			if len(blocks) == 0 {
+				continue
+			}
+			content := make([]map[string]any, 0, len(blocks)+1)
+			// Text alongside the calls is part of the same assistant turn, and
+			// dropping it loses whatever the model said before calling.
+			if text := strings.TrimSpace(item.Text); text != "" {
+				content = append(content, map[string]any{"type": "text", "text": text})
+			}
+			content = append(content, blocks...)
+			messages = append(messages, anthropicMessage{Role: "assistant", Content: content})
 		}
 	}
 	flush()
