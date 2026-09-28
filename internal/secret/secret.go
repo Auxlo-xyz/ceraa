@@ -137,6 +137,14 @@ func Get(name string) (string, error) {
 // bot token would own the host. The code that already has them keeps having them.
 var internalPrefixes = []string{
 	"ceraa_",
+	// Provider onboarding writes this name (internal/telegram/commands.go), and the
+	// agent bridge reads it back to authenticate every request. It was not reserved,
+	// so a provider key stored this way was a user secret: list_secrets named it and
+	// run_command_with_secret would inject it into a command of the model's
+	// choosing. The prefix list reads as if it were enumerated from the credentials
+	// that existed when it was written, and a writer that lands outside it does so
+	// silently — so this one is reserved by the name onboarding actually uses.
+	"provider_api_key_",
 	"codex_",
 	"hermes_",
 	"xai_",
