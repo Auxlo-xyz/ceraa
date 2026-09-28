@@ -20,8 +20,11 @@ var System string
 
 // degraded is used only when prompt/system.txt cannot be read. It is a minimal
 // identity rather than a second copy of the prompt, so the two cannot drift
-// apart, and the failure is logged instead of being invisible.
-const degraded = "You are Ceraa, an interactive coding agent for software engineering tasks."
+// apart, and the failure is logged instead of being invisible. It says "your name
+// is" rather than "you are" for the same reason the real prompt does: a model
+// reading a one-line description of itself treats it as a role and answers
+// identity questions from its model id instead.
+const degraded = "Your name is Ceraa, a coding agent for software engineering."
 
 // SystemPromptPath is the canonical location, relative to the working directory.
 const SystemPromptPath = "prompt/system.txt"
