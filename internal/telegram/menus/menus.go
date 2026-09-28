@@ -182,8 +182,14 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("MiniMax", "🎬", minimaxauth.SignedIn(minimaxauth.RegionGlobal), selection().ActiveProvider == llm.MiniMaxSubscription, "provider:minimax")
 	case "cline":
 		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), selection().ActiveProvider == llm.ClineSubscription, "provider:cline")
-	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models":
-		return subscriptionModelMenu(strings.TrimSuffix(name, ":models"))
+	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
+		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
+		"provider:cline:models", "provider:codex:models":
+		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
+		// form is the callback data subscriptionMenu emits. Only the menu name was
+		// here, which is the same gap the callback had: the button's data resolved
+		// to nothing and tapping Model did nothing.
+		return SubscriptionModelMenu(strings.TrimSuffix(strings.TrimPrefix(name, "provider:"), ":models"))
 	case "settings":
 		return settingsMenu()
 	case "title_settings":
@@ -1176,6 +1182,20 @@ func subscriptionModelCatalog(entries []llm.ModelMetadata, providerID string) ma
 
 // subscriptionModelMenu lists the models a subscription provider is known to
 // serve, so the model can be chosen rather than left at a hardcoded default.
+// SubscriptionLabel is the display name for a subscription provider id.
+func SubscriptionLabel(providerID string) string { return subscriptionLabel(providerID) }
+
+// SubscriptionModelMenu lists one provider's models, scoped to that provider.
+//
+// Exported because the callback that opens it has to be answered here, and a menu
+// reached from a provider's own screen has to show that provider's models rather
+// than the active provider's. Those come apart the moment someone reads the model
+// list of a provider they are not currently on, which is the normal way to decide
+// before switching.
+func SubscriptionModelMenu(providerID string) map[string]any {
+	return subscriptionModelMenu(providerID)
+}
+
 func subscriptionModelMenu(providerID string) map[string]any {
 	subscription := subscriptionForProvider(providerID)
 	models := llm.SubscriptionModels(subscription)
@@ -1282,6 +1302,9 @@ func RemoveProviderMenu(active string) map[string]any {
 	rows = append(rows, []map[string]string{{"text": "◀️ Provider", "callback_data": "menu:provider"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }
+
+// CodexMenuForTest exposes a provider screen for routing tests.
+func CodexMenuForTest(authenticated bool) map[string]any { return CodexMenu(authenticated, "") }
 
 // SubscriptionMenuForTest exposes subscriptionMenu to tests in another package.
 //

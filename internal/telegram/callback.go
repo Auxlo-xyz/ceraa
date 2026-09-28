@@ -467,32 +467,39 @@ func handleCallback(token string, q *callbackQuery) {
 		selectCodexProvider(token, chatID)
 		return
 	}
-	// Per-provider model selection for the subscription providers. Checked before
-	// the bare provider ids so a longer callback is not mistaken for a prefix.
-	for _, providerID := range []string{"codex", "hermes", "xai", "minimax", "cline"} {
-		prefix := "provider:" + providerID + ":model:"
-		if strings.HasPrefix(data, prefix) {
-			selectSubscriptionModel(token, chatID, providerID, strings.TrimPrefix(data, prefix))
-			return
-		}
-	}
-	if data == "provider:cline" {
-		// Same entry point as the onboarding button, so a configured user reaches
-		// Cline from the Provider / Model menu.
-		selectClineProvider(token, chatID)
-		return
-	}
-	if strings.HasPrefix(data, "cline:cancel:") {
-		flowID := strings.TrimPrefix(data, "cline:cancel:")
-		if err := clineLogin.Manager().Cancel(flowID); err != nil {
-			send(token, chatID, "Cline login could not be cancelled: "+err.Error())
-			return
-		}
-		editHTML(token, chatID, q.Message.MessageID, "✗ Cline login cancelled.", menus.Inline("provider", 0))
-		return
-	}
-	for _, providerID := range []string{"minimax", "hermes", "xai", "cline"} {
-		if data == "provider:"+providerID+":relogin" {
+	// The whole provider family, routed in one place. See provider_route.go: the
+	// model list used to have no route at all, so the button silently did nothing.
+	// Checked before the cancel handlers and the bare ids below, which it absorbs.
+	if providerID, kind, value := routeProviderCallback(data); kind != providerRouteNone {
+		switch kind {
+		case providerRouteActivate:
+			// Same entry point as the onboarding button, so a configured user
+			// reaches the provider from the Provider menu.
+			switch providerID {
+			case "hermes":
+				selectHermesProvider(token, chatID)
+			case "xai":
+				selectXaiProvider(token, chatID)
+			case "minimax":
+				selectMinimaxProvider(token, chatID)
+			case "cline":
+				selectClineProvider(token, chatID)
+			}
+		case providerRouteModels:
+			label := menus.SubscriptionLabel(providerID)
+			note := ""
+			if active := defaultState.provider(); active != providerID {
+				// Naming the provider is the point: this list is deliberately not
+				// the active provider's, so the screen has to say whose it is.
+				note = "\n\nCeraa is on <b>" + html.EscapeString(active) + "</b>. " +
+					"Pick a " + html.EscapeString(label) + " model, then switch to it from Provider."
+			}
+			editHTML(token, chatID, q.Message.MessageID,
+				"🧠 <b>"+html.EscapeString(label)+" models</b>"+note,
+				menus.SubscriptionModelMenu(providerID))
+		case providerRoutePickModel:
+			selectSubscriptionModel(token, chatID, providerID, value)
+		case providerRouteRelogin:
 			// An explicit re-authentication, distinct from switching to a provider
 			// that is already signed in. Reached because the two used to share a
 			// callback and the shared one always took the activate branch.
@@ -506,44 +513,7 @@ func handleCallback(token string, q *callbackQuery) {
 			case "cline":
 				startClineLogin(token, chatID)
 			}
-			return
 		}
-	}
-	if data == "provider:minimax" {
-		// Same entry point as the onboarding button, so a configured user reaches
-		// MiniMax from the Provider / Model menu.
-		selectMinimaxProvider(token, chatID)
-		return
-	}
-	if strings.HasPrefix(data, "minimax:cancel:") {
-		flowID := strings.TrimPrefix(data, "minimax:cancel:")
-		if err := minimaxLogin.Manager().Cancel(flowID); err != nil {
-			send(token, chatID, "MiniMax login could not be cancelled: "+err.Error())
-			return
-		}
-		editHTML(token, chatID, q.Message.MessageID, "✗ MiniMax login cancelled.", menus.Inline("provider", 0))
-		return
-	}
-	if data == "provider:xai" {
-		// Same entry point as the onboarding button, so a configured user reaches
-		// xAI from the Provider / Model menu.
-		selectXaiProvider(token, chatID)
-		return
-	}
-	if strings.HasPrefix(data, "xai:cancel:") {
-		flowID := strings.TrimPrefix(data, "xai:cancel:")
-		if err := xaiLogin.Manager().Cancel(flowID); err != nil {
-			send(token, chatID, "xAI login could not be cancelled: "+err.Error())
-			return
-		}
-		editHTML(token, chatID, q.Message.MessageID, "✗ xAI login cancelled.", menus.Inline("provider", 0))
-		return
-	}
-	if data == "provider:hermes" {
-		// Same entry point as the onboarding button, so a configured user reaches
-		// Hermes from the Provider / Model menu. Without this the only route was
-		// typing /hermes-login, which is not available on a phone.
-		selectHermesProvider(token, chatID)
 		return
 	}
 	if data == "provider:custom" {
