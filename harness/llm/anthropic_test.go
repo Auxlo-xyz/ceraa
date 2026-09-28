@@ -25,7 +25,10 @@ func TestMessagesRequestShape(t *testing.T) {
 	}
 	tools := []ToolDef{{Name: "read", Description: "read a file", Parameters: map[string]any{"type": "object"}}}
 
-	messages := encodeAnthropicMessages(items)
+	messages, err := encodeAnthropicMessages(items)
+	if err != nil {
+		t.Fatal(err)
+	}
 	system := anthropicSystemBlocks(joinSystemText(items), 0, cfg)
 	convertedTools := anthropicTools(tools, cfg)
 	body := map[string]any{
@@ -196,9 +199,16 @@ func TestStreamEmitsTextReasoningAndToolCalls(t *testing.T) {
 	if calls[0].Name != "read" {
 		t.Errorf("tool name = %q", calls[0].Name)
 	}
-	// Partial JSON arrives in fragments and must be rejoined, not emitted twice.
-	if !strings.Contains(calls[0].Arguments, "/tmp/x") {
-		t.Errorf("tool arguments = %q, the partial JSON was not rejoined", calls[0].Arguments)
+	// Partial JSON arrives in fragments and must be rejoined into exactly one
+	// value. This was checked with Contains, which passed for {}{"path":"/tmp/x"}:
+	// content_block_start carries input:{} and the fragments were appended to it,
+	// so the arguments were two top-level values and the follow-up request died
+	// in encoding/json with "invalid character '{' after top-level value".
+	if calls[0].Arguments != `{"path":"/tmp/x"}` {
+		t.Errorf("tool arguments = %q, want %q", calls[0].Arguments, `{"path":"/tmp/x"}`)
+	}
+	if !json.Valid([]byte(calls[0].Arguments)) {
+		t.Errorf("tool arguments %q are not one JSON value", calls[0].Arguments)
 	}
 	if usage == nil {
 		t.Fatal("no usage reported")
@@ -265,7 +275,11 @@ func TestDuplicateToolResultsAreCollapsed(t *testing.T) {
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "first"},
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "second"},
 	}
-	encoded, _ := json.Marshal(encodeAnthropicMessages(items))
+	messages, err := encodeAnthropicMessages(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(messages)
 	raw := string(encoded)
 	if strings.Count(raw, `"tool_result"`) != 1 {
 		t.Errorf("expected one tool_result, got %d: %s", strings.Count(raw, `"tool_result"`), raw)
@@ -734,5 +748,115 @@ func TestMessagesHostDetection(t *testing.T) {
 		if got := UsesAnthropicMessages("m", base); got != want {
 			t.Errorf("UsesAnthropicMessages(%q) = %v, want %v", base, got, want)
 		}
+	}
+}
+
+// The failure this guards was only visible once the tool result came back: the
+// first request encoded fine, and the second carried a tool_use whose input was
+// two JSON values, so json.Marshal rejected it with an error naming neither the
+// tool nor the arguments. Both halves are checked here.
+func TestToolInputIsOneJSONValueAndSurvivesEncoding(t *testing.T) {
+	// A seed of {} followed by the streamed object, which is what the endpoint
+	// sends for a tool_use block.
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"MiniMax-M3"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"ls\"}"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var calls []StreamedToolCall
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		calls = append(calls, r.ToolCalls...)
+	}); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	if calls[0].Arguments != `{"command":"ls"}` {
+		t.Fatalf("arguments = %q, want the streamed object alone", calls[0].Arguments)
+	}
+
+	// The follow-up request: the tool_use and its result together. This is the
+	// encode that failed in production.
+	items := []Item{
+		{Kind: "text", Role: RoleUser, Text: "list files"},
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: calls[0].Arguments},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "bin\nprompt"},
+	}
+	messages, err := encodeAnthropicMessages(items)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := json.Marshal(messages); err != nil {
+		t.Fatalf("the follow-up request does not encode: %v", err)
+	}
+}
+
+// A block that streams no fragments at all still has to produce a usable
+// arguments object, from the seed or as {}.
+func TestToolInputWithoutFragments(t *testing.T) {
+	cases := []struct {
+		name  string
+		start string
+		want  string
+	}{
+		{"empty object seed", `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"read","input":{}}}`, "{}"},
+		{"no seed", `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"read"}}`, "{}"},
+		{"seed carrying the object", `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"read","input":{"path":"/tmp/x"}}}`, `{"path":"/tmp/x"}`},
+	}
+	for _, tc := range cases {
+		stream := strings.Join([]string{
+			`data: {"type":"message_start","message":{"id":"msg_1","model":"m"}}`,
+			tc.start,
+			`data: {"type":"content_block_stop","index":0}`,
+			`data: {"type":"message_stop"}`,
+		}, "\n\n") + "\n"
+		var calls []StreamedToolCall
+		client := &StreamingClient{}
+		if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+			calls = append(calls, r.ToolCalls...)
+		}); err != nil {
+			t.Fatalf("%s: stream: %v", tc.name, err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("%s: got %d tool calls, want 1", tc.name, len(calls))
+		}
+		if calls[0].Arguments != tc.want {
+			t.Errorf("%s: arguments = %q, want %q", tc.name, calls[0].Arguments, tc.want)
+		}
+		if !json.Valid([]byte(calls[0].Arguments)) {
+			t.Errorf("%s: arguments %q are not one JSON value", tc.name, calls[0].Arguments)
+		}
+	}
+}
+
+// Malformed arguments are reported against the tool that produced them, with a
+// bounded snippet, instead of surfacing as an encoding error from inside
+// encoding/json that names neither.
+func TestMalformedToolArgumentsAreNamedAndBounded(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	_, err := encodeAnthropicMessages([]Item{
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{}{"command":"ls"}`},
+	})
+	if err == nil {
+		t.Fatal("two concatenated JSON values were accepted as tool input")
+	}
+	if !strings.Contains(err.Error(), "bash") {
+		t.Errorf("the error does not name the tool: %v", err)
+	}
+
+	_, err = encodeAnthropicMessages([]Item{
+		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: long},
+	})
+	if err == nil {
+		t.Fatal("a non-JSON argument value was accepted")
+	}
+	if len(err.Error()) > 260 {
+		t.Errorf("the error is %d bytes; the snippet is not bounded: %v", len(err.Error()), err)
 	}
 }

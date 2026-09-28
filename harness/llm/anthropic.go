@@ -45,6 +45,62 @@ type anthropicMessage struct {
 	Content []map[string]any `json:"content"`
 }
 
+// toolInputBuilder accumulates one tool_use block's input.
+//
+// A streamed block arrives as an empty object on content_block_start followed by
+// input_json_delta fragments that together form the whole object, so the two are
+// alternatives rather than halves of one value. Concatenating them produced
+// {}{"command":"ls"} and the request then failed to encode.
+type toolInputBuilder struct {
+	// seed is whatever content_block_start carried.
+	seed strings.Builder
+	// streamed is the concatenation of the input_json_delta fragments.
+	streamed strings.Builder
+	// sawStreamed records that at least one fragment arrived, which is what
+	// makes the fragments authoritative over the seed.
+	sawStreamed bool
+}
+
+// arguments returns the block's input as a single JSON value.
+//
+// An empty result becomes {} rather than being sent as an absent value, so the
+// endpoint is never asked to read a tool call that has no arguments object.
+func (b *toolInputBuilder) arguments() string {
+	value := ""
+	switch {
+	case b.sawStreamed:
+		value = b.streamed.String()
+	case b.seed.Len() > 0:
+		value = b.seed.String()
+	}
+	if strings.TrimSpace(value) == "" {
+		return "{}"
+	}
+	return value
+}
+
+// toolInputJSON validates one tool_use input value and describes it if it cannot
+// be sent.
+//
+// The value reaches json.RawMessage on the request, so a malformed one is
+// otherwise only visible as "invalid character '{' after top-level value" from
+// deep inside encoding/json, naming neither the tool nor the arguments. The
+// snippet is bounded because arguments are model output and can be large.
+func toolInputJSON(name, arguments string) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		trimmed = "{}"
+	}
+	if !json.Valid([]byte(trimmed)) {
+		snippet := trimmed
+		if len(snippet) > 120 {
+			snippet = snippet[:120] + "…"
+		}
+		return nil, fmt.Errorf("tool %q returned arguments that are not one JSON value: %q", name, snippet)
+	}
+	return json.RawMessage(trimmed), nil
+}
+
 // encodeAnthropicMessages converts stored items into Anthropic message turns.
 //
 // The Messages API has no tool role. A tool call becomes an assistant turn holding
@@ -55,7 +111,11 @@ type anthropicMessage struct {
 //
 // A result carries the call id, and the name is recovered from the call history
 // because the Messages API matches on id and the name is only for readability.
-func encodeAnthropicMessages(items []Item) []anthropicMessage {
+//
+// It returns an error when a tool call's arguments are not one JSON value, so the
+// fault is reported against the tool that produced it rather than surfacing later
+// as an encoding failure with no indication of which call was at fault.
+func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 	items = normalizeItemsForChat(items)
 	// One result per call id. History recorded across an interrupted run can hold
 	// two, and a duplicate tool_result for the same id is malformed.
@@ -122,9 +182,9 @@ func encodeAnthropicMessages(items []Item) []anthropicMessage {
 			})
 		case "tool_call":
 			flush()
-			arguments := item.Args
-			if strings.TrimSpace(arguments) == "" {
-				arguments = "{}"
+			input, err := toolInputJSON(item.Name, item.Args)
+			if err != nil {
+				return nil, err
 			}
 			messages = append(messages, anthropicMessage{
 				Role: "assistant",
@@ -132,13 +192,13 @@ func encodeAnthropicMessages(items []Item) []anthropicMessage {
 					"type":  "tool_use",
 					"id":    item.CallID,
 					"name":  item.Name,
-					"input": json.RawMessage(arguments),
+					"input": input,
 				}},
 			})
 		}
 	}
 	flush()
-	return messages
+	return messages, nil
 }
 
 func containsString(values []string, want string) bool {
@@ -269,7 +329,10 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 		return err
 	}
 
-	messages := encodeAnthropicMessages(req.Messages)
+	messages, err := encodeAnthropicMessages(req.Messages)
+	if err != nil {
+		return err
+	}
 	if len(messages) == 0 {
 		return fmt.Errorf("no messages to send to the messages API")
 	}
@@ -507,7 +570,15 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 	var usage *UsageInfo
 	// Tool input arrives as JSON fragments keyed by the block index, so partial
 	// JSON has to be buffered per block rather than appended to one string.
-	toolInput := map[int]*strings.Builder{}
+	//
+	// The seed and the streamed fragments are kept apart. content_block_start
+	// carries input: {} for a tool_use block and input_json_delta then streams
+	// the whole object, so writing both into one buffer yields {}{"command":…}:
+	// two top-level values, which json.Marshal rejects with "invalid character
+	// '{' after top-level value" when the follow-up request is encoded. That is
+	// what a tool call on this endpoint did, and the empty string it left in the
+	// session is the {} seed with the real arguments discarded.
+	toolInput := map[int]*toolInputBuilder{}
 	toolName := map[int]string{}
 
 	mergeUsage := func(raw json.RawMessage) {
@@ -580,11 +651,18 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 		case "content_block_start":
 			if event.ContentBlock.Type == "tool_use" {
 				toolName[event.Index] = event.ContentBlock.Name
-				if event.ContentBlock.Input != nil && len(event.ContentBlock.Input) > 0 {
-					if toolInput[event.Index] == nil {
-						toolInput[event.Index] = &strings.Builder{}
-					}
-					toolInput[event.Index].Write(event.ContentBlock.Input)
+				// Registered even with no input, so a block that never streams a
+				// fragment still produces a tool call at content_block_stop. It
+				// used to be created only when input was present, and a block with
+				// neither input nor fragments emitted nothing, so the call the
+				// model made simply disappeared.
+				builder := toolInput[event.Index]
+				if builder == nil {
+					builder = &toolInputBuilder{}
+					toolInput[event.Index] = builder
+				}
+				if len(event.ContentBlock.Input) > 0 {
+					builder.seed.Write(event.ContentBlock.Input)
 				}
 			}
 		case "content_block_delta":
@@ -598,16 +676,19 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 					onDelta(ProviderResponse{Reasoning: event.Delta.Thinking})
 				}
 			case "input_json_delta":
-				if toolInput[event.Index] == nil {
-					toolInput[event.Index] = &strings.Builder{}
+				builder := toolInput[event.Index]
+				if builder == nil {
+					builder = &toolInputBuilder{}
+					toolInput[event.Index] = builder
 				}
-				toolInput[event.Index].Write([]byte(event.Delta.PartialJSON))
+				builder.streamed.WriteString(event.Delta.PartialJSON)
+				builder.sawStreamed = true
 			}
 		case "content_block_stop":
 			if builder, ok := toolInput[event.Index]; ok {
 				name := toolName[event.Index]
 				if name != "" && onDelta != nil {
-					arguments := builder.String()
+					arguments := builder.arguments()
 					if strings.TrimSpace(arguments) == "" {
 						arguments = "{}"
 					}
