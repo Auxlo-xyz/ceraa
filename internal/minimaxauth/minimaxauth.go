@@ -38,23 +38,38 @@ import (
 // ProviderID is the id this package registers under.
 const ProviderID = "minimax"
 
-// OAuthClientID is MiniMax's own OAuth client, read from its official CLI
-// (github.com/MiniMax-AI/cli, src/auth/oauth.ts).
+// OAuthClientID is the public client for MiniMax's agent product, read from
+// github.com/MiniMax-AI/minimax-code, packages/oauth-core/src/contracts.ts.
 //
-// This was previously OpenClaw's client id, and that was wrong in a way the token
-// itself could not show: authorizing it lands on a consent page reading "Sign in
-// with MiniMax to OpenClaw" whose action button is "Authorize & Start 1-Day Free
-// Trial". The user was granting a stranger's registration a one-day trial, not
-// their own plan. MiniMax publishes this client for coding tools, so use it.
-const OAuthClientID = "659cf4c1-615c-45f6-a5f6-4bf15eb476e5"
+// Three client ids have been in this file, and each was wrong for a reason the
+// token itself could not show:
+//
+//   - OpenClaw's uuid, which put "Sign in with MiniMax to OpenClaw" on the
+//     consent page.
+//   - MiniMax's *CLI* client, which fixed the stranger's name but kept the
+//     agent-less grant. It authorized as "MiniMax CLI" with a coding_plan scope
+//     and the portal offered a **one-day free trial** rather than the account's
+//     Token Plan. Adopting a vendor's client is only correct if the vendor's
+//     product is the one you are.
+//   - mcode-public, which is the grant for the coding agent. Ceraa is a coding
+//     agent, so this is the one that matches.
+const OAuthClientID = "mcode-public"
 
 // Scope is what the login asks for.
 //
-// coding_plan is the scope that names a subscription rather than a trial, and it
-// is the whole reason the previous scope was wrong: `group_id profile
-// model.completion` is the API-key provider's scope, so asking for it on the
-// portal is what produced the free-trial offer.
-const Scope = "openid profile coding_plan"
+// "agent.default" is the agent grant. The previous "openid profile coding_plan"
+// named a subscription-shaped scope that the account host honoured by starting a
+// trial instead.
+const Scope = "agent.default"
+
+// Audience identifies which backend the grant is for.
+//
+// It is not optional and it is not decoration: the account host issues a
+// different token per audience, so a login that omits it does not fail, it
+// returns a token for no particular backend. minimax-code sends it on all three
+// requests — the device code, the token exchange and the refresh — and this
+// login sends it on all three too.
+const Audience = "agent-backend"
 
 // Region selects which MiniMax deployment an account belongs to.
 type Region string
@@ -69,6 +84,18 @@ const (
 
 // ErrNoCredential is returned when nothing usable is stored.
 var ErrNoCredential = errors.New("minimax credential not found")
+
+// ErrGrantMismatch is returned when a stored credential was issued under a
+// different OAuth grant than the one this build uses.
+//
+// The token is structurally fine, so nothing about it looks wrong. It was granted
+// to a different client, for a different scope, against a different audience, and
+// using it would keep whatever that grant was for. Ceraa's grant changed from the
+// MiniMax CLI's coding_plan client, which the account host answers with a one-day
+// trial, to mcode's agent.default grant, which is the account's Token Plan. A
+// record with no recorded grant predates this and is refused for the same reason:
+// it was issued by a client id that is no longer named here.
+var ErrGrantMismatch = errors.New("minimax credential was issued under a different oauth grant; sign in again")
 
 type endpoints struct {
 	OAuthBase string
@@ -116,6 +143,11 @@ type record struct {
 	BaseURL      string `json:"base_url"`
 	Region       string `json:"region"`
 	ExpiresAt    string `json:"expires_at"`
+	// The grant that issued the token, so a credential from a different one is
+	// not silently reused.
+	ClientID string `json:"client_id,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	Audience string `json:"audience,omitempty"`
 }
 
 // Store reads and writes the stored credential for one region.
@@ -172,10 +204,33 @@ func Load(region Region) (Credential, error) {
 	if credential.AccessToken == "" {
 		return Credential{}, ErrNoCredential
 	}
+	if err := checkGrant(stored); err != nil {
+		return Credential{}, err
+	}
 	if expires, err := time.Parse(time.RFC3339, strings.TrimSpace(stored.ExpiresAt)); err == nil {
 		credential.ExpiresAt = expires
 	}
 	return credential, nil
+}
+
+// checkGrant refuses a credential issued to a different client, scope or audience.
+//
+// Deliberately strict on the scope and audience, which is why it is written as
+// three comparisons rather than a check on the client id alone: a token minted
+// for the wrong audience is a token for no particular backend, and it fails later
+// and somewhere else.
+func checkGrant(stored record) error {
+	switch {
+	case stored.ClientID == "":
+		return ErrGrantMismatch
+	case stored.ClientID != OAuthClientID:
+		return ErrGrantMismatch
+	case stored.Scope != Scope:
+		return ErrGrantMismatch
+	case stored.Audience != Audience:
+		return ErrGrantMismatch
+	}
+	return nil
 }
 
 // Save writes a credential to the encrypted store.
@@ -194,6 +249,9 @@ func Save(credential Credential) error {
 		BaseURL:      firstNonEmpty(credential.BaseURL, endpointsFor(region).Base),
 		Region:       string(region),
 		ExpiresAt:    credential.ExpiresAt.UTC().Format(time.RFC3339),
+		ClientID:     OAuthClientID,
+		Scope:        Scope,
+		Audience:     Audience,
 	})
 	if err != nil {
 		return err
@@ -238,33 +296,48 @@ func InferenceBaseURL(region Region) string { return endpointsFor(region).Base }
 //
 // Generated rather than a constant because the pair is per-login, and a fixed
 // challenge would be a replayable secret published in the source. The whole pair
-// is taken rather than the challenge alone: the official CLI sends code_challenge
-// on the device-code request and code_verifier when the token is collected, and
-// sending only the first is answered with "code_verifier is required".
+// is taken rather than the challenge alone: the account host sends
+// code_challenge on the device-code request and code_verifier when the token is
+// collected, and sending only the first is answered with "code_verifier is
+// required".
 //
-// GrantType is left at the RFC 8628 device-code grant, which is what the official
-// CLI posts to /oauth2/token. The user-code grant belonged to the older
-// /oauth/code endpoint that shipped with OpenClaw's client.
+// The expiry and interval readings are the part that changed with the client id,
+// and they are the reason this cannot be a constant. MiniMax serves two
+// dialects from the same paths:
+//
+//	CLI client  expired_in 1790575373976  interval 3000  base_resp envelope
+//	mcode       expired_in 300            interval 3    standard RFC 8628
+//
+// Read as the other one, the first waits fifty minutes between polls and expires
+// in the year 58709; the second is born expired in 1970 and would be polled every
+// three nanoseconds. So the flags below are a property of the grant, not of
+// MiniMax, and changing OAuthClientID without changing them produces a login
+// that cannot work.
 func Dialect(pair pkcePair) oauthdevice.Dialect {
 	return oauthdevice.Dialect{
-		CodeField: "user_code",
-		// Stated rather than inherited. The default happens to be the same value,
-		// but this is MiniMax's contract and the old user-code grant belonged to
-		// the endpoint this flow no longer uses.
-		GrantType:                  oauthdevice.GrantTypeDeviceCode,
-		ExpiryField:                "expired_in",
-		ExpiryAbsoluteMilliseconds: true,
-		IntervalIsMilliseconds:     true,
-		PendingStatusField:         "status",
-		PendingStatusValue:         "pending",
-		ErrorStatusField:           "base_resp.status_code",
-		ErrorMessageField:          "base_resp.status_msg",
+		// The account host returns no device_code for this grant, so the user code
+		// is what gets polled, exactly as minimax-code does when standardDeviceCode
+		// is absent.
+		CodeField:          "user_code",
+		GrantType:          oauthdevice.GrantTypeDeviceCode,
+		ExpiryField:        "expires_in",
+		PendingStatusField: "status",
+		PendingStatusValue: "pending",
+		// No base_resp envelope on this grant, and no absolute expiry: the two
+		// flags the CLI dialect needed are deliberately absent rather than merely
+		// forgotten.
+		ExpiryAbsoluteMilliseconds: false,
+		IntervalIsMilliseconds:     false,
 		ExtraCodeParams: url.Values{
 			"code_challenge":        {pair.Challenge},
 			"code_challenge_method": {"S256"},
+			"audience":              {Audience},
 		},
 		ExtraTokenParams: url.Values{
 			"code_verifier": {pair.Verifier},
+		},
+		ExtraRefreshParams: url.Values{
+			"audience": {Audience},
 		},
 	}
 }

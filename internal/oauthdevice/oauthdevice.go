@@ -517,6 +517,17 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string) (Token, erro
 		"client_id":     {m.config.ClientID},
 		"refresh_token": {refreshToken},
 	}
+	// The scope is optional in RFC 6749 but sent here: MiniMax's agent product
+	// sends it on all three requests, and a refresh that omits it is asking for a
+	// narrower grant than the one it is renewing.
+	if scope := strings.TrimSpace(m.config.Scope); scope != "" {
+		form.Set("scope", scope)
+	}
+	for key, values := range dialect.ExtraRefreshParams {
+		for _, value := range values {
+			form.Add(key, value)
+		}
+	}
 	payload, err := m.postForm(ctx, m.config.Endpoints.Token, form)
 	if err != nil {
 		return Token{}, err

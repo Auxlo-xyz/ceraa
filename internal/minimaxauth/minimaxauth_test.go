@@ -2,6 +2,7 @@ package minimaxauth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -24,17 +25,25 @@ func initSecret(t *testing.T) {
 // The constants decide whether sign-in works at all, and a typo in any of them
 // fails at the provider rather than here.
 func TestConstantsMatchTheService(t *testing.T) {
-	// Pinned to MiniMax's own CLI client. The previous value was OpenClaw's, and
-	// authorizing it offered a one-day free trial under OpenClaw's name.
-	if OAuthClientID != "659cf4c1-615c-45f6-a5f6-4bf15eb476e5" {
+	// Pinned to the agent product's own public client, from
+	// minimax-code/packages/oauth-core/src/contracts.ts. Two clients came before:
+	// OpenClaw's, which put "Sign in with MiniMax to OpenClaw" on the consent
+	// page, and MiniMax's *CLI* client, which fixed the name but kept the
+	// agent-less coding_plan grant, and the account host answered that one with a
+	// one-day free trial instead of the account's Token Plan.
+	if OAuthClientID != "mcode-public" {
 		t.Errorf("client id = %q", OAuthClientID)
 	}
-	// coding_plan is what names a subscription rather than a trial. The API-key
-	// provider's scope here is what produced the free-trial offer.
-	for _, want := range []string{"coding_plan", "openid", "profile"} {
-		if !strings.Contains(Scope, want) {
-			t.Errorf("scope lost %q", want)
-		}
+	// agent.default is the agent grant. coding_plan was the CLI's, and asking for
+	// it is what produced the trial.
+	if Scope != "agent.default" {
+		t.Errorf("scope = %q, want the agent grant", Scope)
+	}
+	// The audience is what the account host mints the token against, and it is
+	// sent on all three requests. A login that omits it does not fail, it returns
+	// a token for no particular backend.
+	if Audience != "agent-backend" {
+		t.Errorf("audience = %q", Audience)
 	}
 	// The portal paths are part of the contract, and the previous client id was
 	// reached through a different pair entirely (/api/oauth/*).
@@ -69,7 +78,7 @@ func TestVerificationURLSurvivesTheLogin(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/oauth2/device/code") {
 			_, _ = w.Write([]byte(`{"user_code":"U-1","verification_uri":"` + verify +
-				`","verification_uri_complete":"` + verify + `&client=x","expired_in":1790519361298,"interval":3000}`))
+				`","verification_uri_complete":"` + verify + `","expires_in":300,"interval":3}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"status":"pending"}`))
@@ -104,7 +113,7 @@ func TestTokenPollCarriesTheVerifier(t *testing.T) {
 		}
 		if strings.HasSuffix(r.URL.Path, "/oauth2/device/code") {
 			codeChallenge = r.PostForm.Get("code_challenge")
-			_, _ = w.Write([]byte(`{"user_code":"U-3","verification_uri":"https://platform.minimax.io/x","expired_in":1790519361298,"interval":300}`))
+			_, _ = w.Write([]byte(`{"user_code":"U-3","verification_uri":"https://account.minimax.io/oauth-authorize","expires_in":300,"interval":3}`))
 			return
 		}
 		grantType = r.PostForm.Get("grant_type")
@@ -118,7 +127,7 @@ func TestTokenPollCarriesTheVerifier(t *testing.T) {
 			_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"code_verifier is required"}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"access_token":"acc-m","refresh_token":"ref-m","token_type":"Bearer","expired_in":1790519361298}`))
+		_, _ = w.Write([]byte(`{"access_token":"acc-m","refresh_token":"ref-m","token_type":"Bearer","expires_in":3600}`))
 	}))
 	defer srv.Close()
 
@@ -160,14 +169,14 @@ func TestCompletedLoginIsPersisted(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/oauth2/device/code"):
-			_, _ = w.Write([]byte(`{"user_code":"U-2","verification_uri":"https://platform.minimax.io/x","expired_in":1790519361298,"interval":300}`))
+			_, _ = w.Write([]byte(`{"user_code":"U-2","verification_uri":"https://account.minimax.io/oauth-authorize","expires_in":300,"interval":3}`))
 		default:
 			polls++
 			if polls < 2 {
 				_, _ = w.Write([]byte(`{"status":"pending"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"access_token":"acc-m","refresh_token":"ref-m","token_type":"Bearer","expired_in":1790519361298}`))
+			_, _ = w.Write([]byte(`{"access_token":"acc-m","refresh_token":"ref-m","token_type":"Bearer","expires_in":3600}`))
 		}
 	}))
 	defer srv.Close()
@@ -234,7 +243,7 @@ func TestRefreshKeepsTheExistingRefreshToken(t *testing.T) {
 	initSecret(t)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"acc-2","token_type":"Bearer","expired_in":1790519361298}`))
+		_, _ = w.Write([]byte(`{"access_token":"acc-2","token_type":"Bearer","expires_in":3600}`))
 	}))
 	defer srv.Close()
 
@@ -301,31 +310,110 @@ func TestPKCEChallengeIsUniquePerLogin(t *testing.T) {
 }
 
 // The dialect has to name every divergence, or the standard reader misreads the
-// response. These are the values observed from the live service.
+// response. These are the values observed from the live service for this grant.
 func TestDialectNamesEveryDivergence(t *testing.T) {
 	d := Dialect(pkcePair{Verifier: "verifier", Challenge: "challenge"})
 	if d.CodeField != "user_code" {
 		t.Errorf("code field = %q", d.CodeField)
 	}
-	// The official CLI posts the RFC 8628 device-code grant to /oauth2/token. The
+	// The agent product posts the RFC 8628 device-code grant to /oauth2/token. The
 	// user-code grant belonged to the older /oauth/code endpoint.
 	if d.GrantType != "urn:ietf:params:oauth:grant-type:device_code" {
 		t.Errorf("grant = %q, want the RFC 8628 device-code grant", d.GrantType)
 	}
-	if d.ExpiryField != "expired_in" {
+	if d.ExpiryField != "expires_in" {
 		t.Errorf("expiry field = %q", d.ExpiryField)
 	}
-	if !d.ExpiryAbsoluteMilliseconds {
-		t.Error("the expiry is absolute, not a duration")
+	// expires_in and interval are plain durations on this grant. The two flags
+	// below are the CLI grant's, and they are asserted absent rather than left
+	// unwritten: MiniMax serves both dialects from the same paths, so a change to
+	// OAuthClientID that kept them would read 300 seconds as 300 milliseconds and
+	// the year-58709 expiry as a half-second one, which is a login that cannot
+	// complete and says nothing about why.
+	if d.ExpiryAbsoluteMilliseconds {
+		t.Error("expiry read as an absolute timestamp; this grant returns seconds")
 	}
-	if !d.IntervalIsMilliseconds {
-		t.Error("the interval is in milliseconds")
+	if d.IntervalIsMilliseconds {
+		t.Error("interval read as milliseconds; this grant returns seconds")
+	}
+	// The base_resp envelope belongs to the CLI grant. Left set, a wrapped success
+	// is indistinguishable from a wrapped failure.
+	if d.ErrorStatusField != "" {
+		t.Errorf("error status path = %q; this grant returns standard OAuth errors", d.ErrorStatusField)
 	}
 	if d.PendingStatusField != "status" || d.PendingStatusValue != "pending" {
 		t.Errorf("pending = %q/%q; a 200 pending body would be read as a token", d.PendingStatusField, d.PendingStatusValue)
 	}
-	if d.ErrorStatusField != "base_resp.status_code" {
-		t.Errorf("error status path = %q; a flat lookup finds nothing", d.ErrorStatusField)
+}
+
+// The audience is part of the grant and has to reach all three requests. It is the
+// parameter whose absence does not fail: the host mints a token for no particular
+// backend instead of refusing.
+func TestAudienceReachesEveryRequest(t *testing.T) {
+	d := Dialect(pkcePair{Verifier: "verifier", Challenge: "challenge"})
+	if got := d.ExtraCodeParams.Get("audience"); got != Audience {
+		t.Errorf("device-code request audience = %q, want %q", got, Audience)
+	}
+	if got := d.ExtraRefreshParams.Get("audience"); got != Audience {
+		t.Errorf("refresh request audience = %q, want %q", got, Audience)
+	}
+	// The token exchange carries the verifier instead; the audience belongs to the
+	// device-code and refresh requests, as in the reference client.
+	if got := d.ExtraTokenParams.Get("code_verifier"); got != "verifier" {
+		t.Errorf("token request verifier = %q", got)
+	}
+	if got := d.ExtraCodeParams.Get("code_challenge_method"); got != "S256" {
+		t.Errorf("challenge method = %q, want S256", got)
+	}
+}
+
+// A credential minted under a different grant must not be reused. The token is
+// structurally valid, so nothing about it signals the mismatch; reusing it would
+// keep the trial the previous grant started.
+func TestACredentialFromAnotherGrantIsRefused(t *testing.T) {
+	initSecret(t)
+	base := Credential{AccessToken: "acc", RefreshToken: "ref", Region: RegionGlobal}
+	if err := Save(base); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := Load(RegionGlobal); err != nil {
+		t.Fatalf("a credential from this grant was refused: %v", err)
+	}
+
+	// Rewrite the stored record as the CLI grant's would have left it.
+	var stored record
+	value, err := secret.Get(secretName(RegionGlobal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(value), &stored); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*record){
+		func(r *record) {
+			r.ClientID = "659cf4c1-615c-45f6-a5f6-4bf15eb476e5"
+			r.Scope = "openid profile coding_plan"
+			r.Audience = ""
+		},
+		func(r *record) { r.Scope = "openid profile coding_plan" },
+		func(r *record) { r.Audience = "" },
+		func(r *record) { r.ClientID = ""; r.Scope = ""; r.Audience = "" },
+	} {
+		other := stored
+		mutate(&other)
+		rewritten, err := json.Marshal(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := secret.Set(secretName(RegionGlobal), string(rewritten)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(RegionGlobal); err != ErrGrantMismatch {
+			t.Errorf("load = %v, want ErrGrantMismatch for %+v", err, other)
+		}
+		if SignedIn(RegionGlobal) {
+			t.Error("a credential from another grant counted as signed in")
+		}
 	}
 }
 

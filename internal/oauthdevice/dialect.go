@@ -71,6 +71,15 @@ type Dialect struct {
 	// carrying only the challenge looks like a completed login that then produces
 	// no credential, and the verifier is the half that was being dropped.
 	ExtraTokenParams url.Values
+
+	// ExtraRefreshParams are added to the refresh request.
+	//
+	// A refresh is a second grant, and a provider that identifies the grant by an
+	// audience expects to be told it again here rather than inferred from the
+	// refresh token. MiniMax's agent product sends "audience" on the device-code
+	// request, on the token exchange and on the refresh, and omits it from none of
+	// the three.
+	ExtraRefreshParams url.Values
 }
 
 // Standard is the flow as RFC 8628 and RFC 6749 define it, and the zero value
