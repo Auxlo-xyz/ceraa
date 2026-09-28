@@ -116,3 +116,43 @@ func TestUnderTempDir(t *testing.T) {
 		}
 	}
 }
+
+// Where the workspace lands when nobody configured one, because that decides
+// whether a fresh install works at all.
+//
+// The "bin" special case is what makes the common install layouts work, and it
+// is also a trap: /opt/ceraa/bin/ceraa correctly yields /opt/ceraa/workspace,
+// but /usr/local/bin/ceraa yields /usr/local/workspace, which a non-root user
+// cannot create and is a poor place for a project regardless. Ceraa mkdirs the
+// workspace at startup, so the failure is a bot that will not start.
+func TestTheDerivedWorkspaceRootIsUsableForCommonInstallLayouts(t *testing.T) {
+	derive := func(executable string) string {
+		directory := filepath.Dir(executable)
+		if filepath.Base(directory) == "bin" {
+			directory = filepath.Dir(directory)
+		}
+		return filepath.Join(directory, "workspace")
+	}
+	for _, tc := range []struct{ executable, want string }{
+		// A versioned install directory: the useful case the special case exists for.
+		{"/opt/ceraa/bin/ceraa", "/opt/ceraa/workspace"},
+		{"/opt/ceraa/ceraa", "/opt/ceraa/workspace"},
+		{"/home/dev/myagent/ceraa", "/home/dev/myagent/workspace"},
+		{"/home/dev/myagent/bin/ceraa", "/home/dev/myagent/workspace"},
+	} {
+		if got := derive(tc.executable); got != tc.want {
+			t.Errorf("%s -> %s, want %s", tc.executable, got, tc.want)
+		}
+	}
+
+	// Documented, because it is the layout a systemd unit usually reaches for.
+	// CERAA_WORKSPACE_ROOT is the answer; the default is merely survivable when
+	// the process is root.
+	if got := derive("/usr/local/bin/ceraa"); got != "/usr/local/workspace" {
+		t.Fatalf("/usr/local/bin now derives %s; if this ever improves, the deployment "+
+			"note in REQUIREMENT.md should say so rather than relying on the env var alone", got)
+	}
+	if got := derive("/root/ceraa"); got != "/root/workspace" {
+		t.Fatalf("/root/ceraa now derives %s", got)
+	}
+}
