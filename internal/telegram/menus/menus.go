@@ -29,11 +29,20 @@ import (
 	"time"
 )
 
+// All is every menu the hub can offer, in the order it walks them.
+//
+// "eval", "command_catalog" and "mcp_catalog" were removed rather than hidden.
+// None was wanted: the evaluation screen was a dashboard nobody opened, the
+// command catalog restated /help with buttons, and the MCP catalog had no servers
+// to list and so only ever rendered its own empty state. Each is gone from All,
+// from both resolvers, from the advertised command list, and from every dispatch
+// site, so a stale keyboard carrying one of these names resolves through the
+// default to a bare Close rather than opening something that no longer exists.
 var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
-	"index", "snapshots", "message_history", "skills_catalog", "command_catalog", "mcp_catalog", "worktree",
-	"memory", "skill", "eval", "schedule", "secrets",
+	"index", "snapshots", "message_history", "skills_catalog", "worktree",
+	"memory", "skill", "schedule", "secrets",
 	"codex", "hermes", "xai", "minimax", "cline",
 }
 
@@ -139,8 +148,6 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 		return titleSettingsMenu()
 	case "skill":
 		return skillMenu()
-	case "eval":
-		return evalMenu()
 	case "schedule":
 		return scheduleMenu()
 	default:
@@ -211,10 +218,6 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return permissionMenu()
 	case "compaction_level":
 		return compactionMenu()
-	case "mcp_catalog":
-		return simpleMenu("MCP", "No MCP servers configured")
-	case "command_catalog":
-		return commandMenu()
 	case "index":
 		return indexMenu()
 	case "snapshots":
@@ -229,8 +232,6 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return memoryMenu(0, sessionID)
 	case "skill":
 		return skillMenu()
-	case "eval":
-		return evalMenu()
 	case "schedule":
 		return scheduleMenu()
 	default:
@@ -829,16 +830,6 @@ func historyMenu() map[string]any {
 	}}
 }
 
-func commandMenu() map[string]any {
-	rows := [][]map[string]string{}
-	for _, command := range Commands() {
-		name := "/" + strings.ReplaceAll(command.Command, "-", "_")
-		rows = append(rows, []map[string]string{{"text": name, "callback_data": "run_command:" + name}})
-	}
-	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
-	return map[string]any{"inline_keyboard": rows}
-}
-
 func worktreeMenu() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "🌿 Git worktrees", "callback_data": "worktree:list"}},
@@ -893,13 +884,6 @@ func skillMenu() map[string]any {
 	}
 	rows = append(rows, []map[string]string{{"text": "🔄 Refresh", "callback_data": "skill:view"}, {"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
-}
-
-func evalMenu() map[string]any {
-	return map[string]any{"inline_keyboard": [][]map[string]string{
-		{{"text": "🔄 Refresh baseline", "callback_data": "eval:view"}},
-		{{"text": "✕ Close", "callback_data": "close"}},
-	}}
 }
 
 func scheduleMenu() map[string]any {
@@ -1022,8 +1006,8 @@ func Hub() map[string]any {
 		"thinking": "🧠 Thinking", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
-		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools", "command_catalog": "⌘ Commands",
-		"mcp_catalog": "🔌 MCP", "worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "eval": "📈 Eval", "schedule": "⏰ Schedule",
+		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools",
+		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 	}

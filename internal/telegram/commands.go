@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"ceraa/harness/coordinator"
-	"ceraa/harness/evaluation"
 	"ceraa/harness/memory"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/search"
@@ -471,10 +470,6 @@ func handleCatalogCommand(token string, chatID int64, text string) {
 	switch strings.TrimPrefix(parts[0], "/") {
 	case "skills_catalog":
 		handleToolsCommand(token, chatID)
-	case "command_catalog":
-		handleFullHelp(token, chatID)
-	case "mcp_catalog":
-		send(token, chatID, "🔌 MCP catalog: no MCP servers configured")
 	default:
 		send(token, chatID, "Unknown catalog")
 	}
@@ -1144,32 +1139,6 @@ func handleSkillCommand(token string, chatID int64, text string) {
 		return
 	}
 	send(token, chatID, "Skill proposals:\n"+strings.Join(lines, "\n")+"\n\nApprove with /skill approve <proposal_id>")
-}
-
-func handleEvalCommand(token string, chatID int64) {
-	cfg, err := config.Load()
-	if err != nil {
-		send(token, chatID, "Config error: "+err.Error())
-		return
-	}
-	store, err := evaluation.New(cfg.EvaluationFile)
-	if err != nil {
-		send(token, chatID, "Evaluation store error: "+err.Error())
-		return
-	}
-	summary, err := store.Summary()
-	if err != nil {
-		send(token, chatID, "Evaluation load failed: "+err.Error())
-		return
-	}
-	sendMenuMarkup(token, chatID, fmt.Sprintf("📈 Evaluation baseline\n• Runs: %d\n• Success rate: %.1f%%\n• Average tokens: %.0f\n• Average requests: %.2f\n• Cost per known-cost task: $%.6f\n\nCandidate changes are rejected if quality drops or cost exceeds the configured threshold.", summary.TotalRuns, summary.SuccessRate*100, float64(summary.Tokens)/float64(maxInt(summary.TotalRuns, 1)), float64(summary.Requests)/float64(maxInt(summary.TotalRuns, 1)), summary.CostPerTask), menus.InlineForChat("eval", 0, chatID, currentSessionID(chatID)))
-}
-
-func maxInt(value, minimum int) int {
-	if value < minimum {
-		return minimum
-	}
-	return value
 }
 
 func handleScheduleCommand(token string, chatID int64, text string) {

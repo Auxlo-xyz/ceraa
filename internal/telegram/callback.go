@@ -341,10 +341,6 @@ func handleCallback(token string, q *callbackQuery) {
 		editCallback(token, chatID, q.Message.MessageID, "Skill proposal "+result, menus.InlineForChat("skill", 0, chatID, currentSessionID(chatID)))
 		return
 	}
-	if data == "eval:view" {
-		handleEvalCommand(token, chatID)
-		return
-	}
 	if data == "schedule:view" {
 		editCallback(token, chatID, q.Message.MessageID, "⏰ Scheduled jobs", menus.InlineForChat("schedule", 0, chatID, currentSessionID(chatID)))
 		return
@@ -1155,10 +1151,6 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 	case "/file_browser":
 		sendMenuMarkup(token, chatID, "📂 Workspace files", menus.InlineForChat("file_browser", 0, chatID, currentSessionID(chatID)))
 	case "/skills_catalog":
-		handleCatalogCommand(token, chatID, command)
-	case "/command_catalog":
-		handleCatalogCommand(token, chatID, command)
-	case "/mcp_catalog":
 		handleCatalogCommand(token, chatID, command)
 	case "/help":
 		handleFullHelp(token, chatID)

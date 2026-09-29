@@ -175,22 +175,36 @@ func TestTokenOnlyStartupIsAccepted(t *testing.T) {
 	}
 }
 
+// An empty menu must say why it is empty rather than presenting a bare Close,
+// which reads as a broken button rather than an empty list.
+//
+// This used to be pinned on mcp_catalog, which had no servers to list and so
+// rendered its own empty state as the whole feature. That menu is gone, so the
+// property is pinned on menus that still have empty states. It is the property
+// worth keeping: a menu with nothing in it and no explanation is
+// indistinguishable from a menu that failed to build.
 func TestEmptyMenusExplainTheirState(t *testing.T) {
-	markup := menus.Inline("mcp_catalog", 0)
-	keyboardRows, ok := markup["inline_keyboard"].([][]map[string]string)
-	if !ok || len(keyboardRows) == 0 {
-		t.Fatal("expected empty-state keyboard")
+	cases := map[string]string{
+		"todos": "No active session",
 	}
-	found := false
-	for _, row := range keyboardRows {
-		for _, button := range row {
-			if strings.Contains(button["text"], "No MCP servers configured") {
-				found = true
+	for name, want := range cases {
+		markup := menus.Inline(name, 0)
+		rows, ok := markup["inline_keyboard"].([][]map[string]string)
+		if !ok || len(rows) == 0 {
+			t.Errorf("/%s produced no keyboard at all", name)
+			continue
+		}
+		found := false
+		for _, row := range rows {
+			for _, button := range row {
+				if strings.Contains(button["text"], want) {
+					found = true
+				}
 			}
 		}
-	}
-	if !found {
-		t.Fatal("expected an explanation in the empty-state menu")
+		if !found {
+			t.Errorf("/%s did not explain its empty state (want %q): %#v", name, want, markup)
+		}
 	}
 }
 

@@ -38,8 +38,6 @@ func Commands() []CommandSpec {
 		{"revert", "Restore the latest snapshot"},
 		{"permission", "Open permission controls"},
 		{"skills_catalog", "Show available tool skills"},
-		{"command_catalog", "Show bot commands"},
-		{"mcp_catalog", "Show MCP servers"},
 		{"file_browser", "Browse workspace files"},
 		{"abort", "Stop the current run (alias: /stop)"},
 		{"stop", "Stop the current run"},

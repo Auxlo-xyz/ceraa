@@ -832,9 +832,6 @@ func Run() error {
 			case "/skill":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleSkillCommand(token, u.Message.Chat.ID, txt)
-			case "/eval":
-				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				handleEvalCommand(token, u.Message.Chat.ID)
 			case "/schedule":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleScheduleCommand(token, u.Message.Chat.ID, txt)
@@ -1390,7 +1387,7 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 		handleCompaction(token, chatID, txt)
 		return true
 	}
-	if txt == "/mcp_catalog" || txt == "/skills_catalog" || txt == "/command_catalog" {
+	if txt == "/skills_catalog" {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleCatalogCommand(token, chatID, txt)
 		return true
@@ -1403,11 +1400,6 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 	if txt == "/skill" || strings.HasPrefix(txt, "/skill ") {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleSkillCommand(token, chatID, txt)
-		return true
-	}
-	if txt == "/eval" {
-		GetDefaultInbox().CheckAndRecord(updateID)
-		handleEvalCommand(token, chatID)
 		return true
 	}
 	if txt == "/schedule" || strings.HasPrefix(txt, "/schedule ") {
