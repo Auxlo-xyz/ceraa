@@ -12,6 +12,7 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
+	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/secret"
@@ -1059,7 +1060,15 @@ func xaiHubLabel() string {
 }
 
 // minimaxHubLabel names the MiniMax entry by state.
+//
+// The active/signed-in split is decided by selection(), which re-reads
+// config.json on every call. A hub that rendered the wrong provider as active
+// while the file said otherwise would mean the read is stale, and nothing else in
+// the process could say so, so the value that decided it is logged. A hub render
+// that cannot explain itself is how this looked like a caching bug for a while.
 func minimaxHubLabel() string {
+	logger.Info(fmt.Sprintf("hub label minimax: active_provider=%q minimax_subscription=%q",
+		selection().ActiveProvider, llm.MiniMaxSubscription))
 	switch {
 	case minimaxauth.SignedIn(minimaxauth.RegionGlobal) && selection().ActiveProvider == llm.MiniMaxSubscription:
 		return "🎬 MiniMax · active"
