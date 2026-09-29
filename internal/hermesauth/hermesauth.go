@@ -358,11 +358,11 @@ func normalizeProvider(providerID string) string {
 func transportForProvider(providerID string) string {
 	switch providerID {
 	case "openai-codex":
-		return "codex_responses"
+		return TransportCodexResponses
 	case "minimax-oauth":
-		return "anthropic_messages"
+		return TransportAnthropicMessages
 	}
-	return "chat_completions"
+	return TransportChatCompletions
 }
 
 func defaultBaseURL(providerID string) string {

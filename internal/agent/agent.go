@@ -106,24 +106,15 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			modelConfig.CodexTokens = codexauth.NewManager()
 			return modelConfig, nil
 		case "hermes":
-			credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
+			store := hermesauth.NewStore()
+			credential, err := store.Resolve(ctx, provider.HermesProvider)
 			if err != nil {
 				return llm.ProviderConfig{}, err
 			}
-			if credential.Transport != "chat_completions" {
-				return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
-			}
-			modelConfig.BaseURL = credential.BaseURL
-			modelConfig.APIKey = credential.AccessToken
-			// Without this, Go's default User-Agent draws a Cloudflare 403 from the
-			// Nous Portal's inference host, so the run dies on a web page instead of
-			// reaching the API. A profile's own headers win.
-			modelConfig.ExtraHeaders = hermesauth.WithClientHeaders(modelConfig.ExtraHeaders)
-			// The transport depends on the resolved host, which the native Hermes
-			// adapter may have changed.
-			modelConfig.GeminiNative = llm.UsesGeminiNative(modelConfig.Model, modelConfig.BaseURL)
-			modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(modelConfig.Model, modelConfig.BaseURL)
-			return modelConfig, nil
+			// All three transports are chosen in one place. The two branches that
+			// used to live here and in the bridge each refused anything but chat
+			// completions, so the same gap existed twice.
+			return hermesauth.ApplyCredential(modelConfig, credential, store)
 		case "cline":
 			credential, err := clineauth.Resolve(ctx, nil)
 			if err != nil {

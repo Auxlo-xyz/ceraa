@@ -45,16 +45,29 @@ func codexResponsesURL(base string) string {
 // subscription rather than an API key.
 const CodexSubscription = "codex"
 
-// CodexModels are the model IDs observed to work on the Codex subscription
-// endpoint. The endpoint rejects anything else, and the rejection is a hard 400,
-// so an unknown ID has to be refused up front rather than sent and retried.
+// CodexModels are the model IDs served on the Codex subscription endpoint. The
+// endpoint rejects anything else, and the rejection is a hard 400, so an unknown
+// ID has to be refused up front rather than sent and retried.
 //
-// This list was established by probing the live endpoint, not copied from
-// another client: several IDs that client still ships are retired (404) or
-// unsupported on ChatGPT accounts (400).
+// Provenance matters here and has been wrong before. The list was previously
+// recorded as established by probing the live endpoint, and it was two IDs out of
+// eight, with no gpt-6 entry at all - which is how a stale list reads while it is
+// still being described as verified. It is the operator's list as of this commit,
+// not a probe, and the comment says so rather than claiming a verification that
+// nobody performed.
+//
+// The consequence of the stale version was silent: guardModel substitutes
+// DefaultModelFor anything the list does not contain, so selecting a valid
+// current model quietly activated an older one instead.
 var CodexModels = []string{
-	"gpt-5.6-luna",
+	"gpt-5.6",
+	"gpt-5.6-sol",
 	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
+	"gpt-6.1-sol",
 }
 
 // DefaultCodexModel is the model selected when Codex is chosen without one.

@@ -61,3 +61,49 @@ func TestSubscriptionModelsAreCopies(t *testing.T) {
 		t.Error("the package-level model list was mutated through the returned slice")
 	}
 }
+
+// The list is the operator's, and its shape is worth pinning: a stale allow-list
+// is silent because guardModel substitutes a default for anything missing, so a
+// valid current model is quietly replaced by an older one. Nothing errors.
+//
+// This asserts the families are present and that every entry is reachable through
+// the live gate, which is the path activation actually takes.
+func TestEveryListedCodexModelPassesTheActivationGate(t *testing.T) {
+	for _, model := range CodexModels {
+		if !IsSubscriptionModel(CodexSubscription, model) {
+			t.Errorf("%q is in CodexModels but the activation gate rejects it", model)
+		}
+		if !IsCodexModel(model) {
+			t.Errorf("%q is in CodexModels but IsCodexModel rejects it", model)
+		}
+	}
+}
+
+// The gpt-6 family was missing entirely while the comment claimed the list had
+// been verified against the live endpoint. That combination is what let it drift.
+func TestTheCodexListCoversEveryFamily(t *testing.T) {
+	families := []string{"gpt-5.6", "gpt-6", "gpt-6.1"}
+	for _, family := range families {
+		found := false
+		for _, model := range CodexModels {
+			if len(model) >= len(family) && model[:len(family)] == family {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no Codex model in the %q family", family)
+		}
+	}
+	if len(CodexModels) < 8 {
+		t.Errorf("CodexModels has %d entries, want the 8 the operator listed", len(CodexModels))
+	}
+}
+
+// The default has to be a member of the list, or activation substitutes a model
+// that is then not itself in the list.
+func TestTheDefaultCodexModelIsOnTheList(t *testing.T) {
+	if !IsCodexModel(DefaultCodexModel) {
+		t.Errorf("DefaultCodexModel = %q, which is not in CodexModels", DefaultCodexModel)
+	}
+}

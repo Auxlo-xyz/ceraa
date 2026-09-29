@@ -522,14 +522,28 @@ func TestUsesCodexNative(t *testing.T) {
 }
 
 func TestIsCodexModel(t *testing.T) {
-	if !IsCodexModel("gpt-5.6-luna") || !IsCodexModel("gpt-5.6-terra") {
-		t.Error("known codex models rejected")
+	// The allow-list is the operator's, and this test deliberately asserts only
+	// properties of the list rather than claims about the remote endpoint.
+	//
+	// It used to name gpt-5.6-sol and gpt-6-sol as IDs "another client still
+	// ships" that the endpoint refuses. Both are served, and the list went stale
+	// on exactly that reasoning: the previous list was informed by another client
+	// and pruned by what looked wrong, while its own comment claimed the
+	// opposite. A test cannot establish what a remote API serves; a probe or the
+	// operator can, and only one of those may be cited in a comment.
+	for _, model := range CodexModels {
+		if !IsCodexModel(model) {
+			t.Errorf("IsCodexModel(%q) = false, but it is in CodexModels", model)
+		}
 	}
-	// These are the IDs another client still ships; the live endpoint refuses
-	// them, so accepting them here would produce a guaranteed 400.
-	for _, retired := range []string{"gpt-5.5", "gpt-5.6-sol", "gpt-6-sol", "gpt-5-codex", "codex-mini-latest"} {
-		if IsCodexModel(retired) {
-			t.Errorf("IsCodexModel(%q) = true, but the endpoint rejects it", retired)
+
+	// What the function can prove locally is that it is an allow-list: anything
+	// absent is refused, so an unknown id is never sent and 400s.
+	for _, unknown := range []string{
+		"gpt-5-codex", "codex-mini-latest", "not-a-model", "", "GPT-5.6-LUNA-EXTRA",
+	} {
+		if IsCodexModel(unknown) {
+			t.Errorf("IsCodexModel(%q) = true, but it is not in the allow-list", unknown)
 		}
 	}
 }

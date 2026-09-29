@@ -443,27 +443,14 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			}
 			return model, nil
 		case "hermes":
-			credential, err := hermesauth.NewStore().Resolve(ctx, provider.HermesProvider)
+			store := hermesauth.NewStore()
+			credential, err := store.Resolve(ctx, provider.HermesProvider)
 			if err != nil {
 				return llm.ProviderConfig{}, err
 			}
-			if credential.BaseURL == "" {
-				return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q has no inference base URL", credential.Provider)
-			}
-			if credential.Transport != "chat_completions" {
-				return llm.ProviderConfig{}, fmt.Errorf("hermes provider %q requires the %s transport; native chat adapter is not available yet", credential.Provider, credential.Transport)
-			}
-			model.BaseURL = credential.BaseURL
-			model.APIKey = credential.AccessToken
-			// Without this, Go's default User-Agent draws a Cloudflare 403 from the
-			// Nous Portal's inference host, so the run dies on a web page instead of
-			// reaching the API. A profile's own headers win.
-			model.ExtraHeaders = hermesauth.WithClientHeaders(model.ExtraHeaders)
-			// The transport depends on the resolved host, which the native Hermes
-			// adapter may have changed.
-			model.GeminiNative = llm.UsesGeminiNative(model.Model, model.BaseURL)
-			model.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(model.Model, model.BaseURL)
-			return model, nil
+			// Shared with the CLI entry point, so the three transports cannot drift
+			// apart again.
+			return hermesauth.ApplyCredential(model, credential, store)
 		default:
 			return model, nil
 		}
