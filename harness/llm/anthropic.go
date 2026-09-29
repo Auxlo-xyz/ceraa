@@ -465,6 +465,19 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 	if attempts < 0 {
 		attempts = 0
 	}
+	// A credential rejected before its recorded expiry is recoverable, so one
+	// forced exchange is attempted and the request replayed once.
+	//
+	// The Responses transport has had this since it was written, and MiniMax did
+	// not get it with the port: TokenSource.RefreshToken has existed the whole
+	// time and nothing on this transport ever called it, because the only caller
+	// of the interface lives in streamResponses. A token revoked server-side
+	// therefore burned three retries with backoff re-sending the same rejected
+	// credential and then failed, on a provider whose access token can renew
+	// itself. The accessors also refresh proactively inside a skew, which does
+	// not help when the revocation is the reason for the 401.
+	refresher := codexRefresher(c.cfg.AnthropicTokens)
+	forced := false
 	for attempt := 0; attempt <= attempts; attempt++ {
 		if c.cfg.OnRetry != nil && attempt > 0 {
 			c.cfg.OnRetry(lastErr, attempt, backoff(attempt))
@@ -488,10 +501,22 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 			response.Body.Close()
 			message := anthropicErrorMessage(raw)
 			writeDebugNote("anthropic.log", fmt.Sprintf("anthropic status=%d detail=%s\n", response.StatusCode, message))
+			if response.StatusCode == http.StatusUnauthorized && !forced && refresher != nil {
+				forced = true
+				if refreshed, rerr := refresher.RefreshToken(ctx); rerr == nil && refreshed != "" {
+					token = refreshed
+					continue
+				}
+			}
+			// 401 is not retryable. It was, until the recovery above existed, which
+			// made it the worst case in the set: a credential that cannot be renewed
+			// was re-sent three times with 1s/3s/8s of backoff before reporting the
+			// same failure. The Responses transport has always excluded it for the
+			// same reason.
 			perr := &ProviderError{
 				Status:    response.StatusCode,
 				Body:      message,
-				Retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 || response.StatusCode == http.StatusUnauthorized,
+				Retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500,
 			}
 			lastErr = perr
 			if perr.Retryable && attempt < attempts {

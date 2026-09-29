@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -1195,5 +1196,176 @@ func TestUsageStillArrivesWhenTheStreamHasNoMessageStop(t *testing.T) {
 	}
 	if last == nil || last.InputTokens != 120 {
 		t.Errorf("terminal usage = %+v, want 120 input tokens", last)
+	}
+}
+
+// refreshingTokens is a token source that can also renew, which is the capability
+// the recovery path needs and the one plain stubTokens deliberately lacks.
+type refreshingTokens struct {
+	stubTokens
+	mu        sync.Mutex
+	refreshes int
+	failWith  error
+}
+
+func (r *refreshingTokens) RefreshToken(context.Context) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshes++
+	if r.failWith != nil {
+		return "", r.failWith
+	}
+	return "fresh-token", nil
+}
+
+func (r *refreshingTokens) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refreshes
+}
+
+// A credential rejected before its recorded expiry is recoverable, so one forced
+// exchange is attempted and the request replayed.
+//
+// This transport had no such path at all. TokenSource.RefreshToken has existed on
+// the MiniMax credential the whole time and nothing here ever called it, because
+// the only caller of the refresher interface lives in streamResponses. A token
+// revoked server-side therefore burned three retries re-sending the same rejected
+// credential and then failed, on a provider whose access token renews itself.
+func TestARejectedCredentialIsRefreshedOnceAndReplayed(t *testing.T) {
+	var mu sync.Mutex
+	var authHeaders []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authHeaders = append(authHeaders, r.Header.Get("x-api-key"))
+		attempt := len(authHeaders)
+		mu.Unlock()
+		if attempt == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"token expired"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	tokens := &refreshingTokens{stubTokens: stubTokens{token: "stale-token"}}
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model: "MiniMax-M3", BaseURL: srv.URL,
+			AnthropicNative: true, AnthropicTokens: tokens,
+			MaxRetries: 2, RetryBackoff: time.Millisecond,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 8,
+	}, func(ProviderResponse) {})
+
+	if err != nil {
+		t.Fatalf("a recoverable rejection failed instead of replaying: %v", err)
+	}
+	if got := tokens.count(); got != 1 {
+		t.Errorf("forced %d refresh(es), want exactly 1: a replay loop would hammer the token endpoint", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(authHeaders) != 2 {
+		t.Fatalf("made %d request(s), want 2 (one rejected, one replayed)", len(authHeaders))
+	}
+	if authHeaders[1] != "fresh-token" {
+		t.Errorf("replay sent %q, want the refreshed token", authHeaders[1])
+	}
+}
+
+// One replay, not a loop. If the refreshed token is rejected too, the run must
+// report the failure rather than exchanging credentials until the retries run
+// out.
+func TestTheRefreshIsNotRepeatedWhenTheNewTokenIsAlsoRejected(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"still bad"}}`))
+	}))
+	defer srv.Close()
+
+	tokens := &refreshingTokens{stubTokens: stubTokens{token: "stale-token"}}
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model: "MiniMax-M3", BaseURL: srv.URL,
+			AnthropicNative: true, AnthropicTokens: tokens,
+			MaxRetries: 3, RetryBackoff: time.Millisecond,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 8,
+	}, func(ProviderResponse) {})
+
+	if err == nil {
+		t.Fatal("a credential rejected twice reported success")
+	}
+	if got := tokens.count(); got != 1 {
+		t.Errorf("forced %d refresh(es), want 1", got)
+	}
+	// 401 is not retryable, so exactly two requests: the original and the one
+	// replay. Three retries of a credential that cannot be renewed is the delay
+	// this removed.
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Errorf("made %d request(s), want 2: a 401 is not retryable", calls)
+	}
+}
+
+// A credential that cannot renew at all - a plain API key, or a provider whose
+// token source has no refresher - must fail immediately rather than after three
+// backoffs re-sending it. The Responses transport has always behaved this way.
+func TestAnUnrecoverableRejectionIsNotRetried(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid x-api-key"}}`))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model: "MiniMax-M3", BaseURL: srv.URL,
+			AnthropicNative: true, AnthropicTokens: stubTokens{token: "wrong"},
+			MaxRetries: 3, RetryBackoff: time.Millisecond,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}}, MaxTokens: 8,
+	}, func(ProviderResponse) {})
+
+	if err == nil {
+		t.Fatal("a rejected credential reported success")
+	}
+	var perr *ProviderError
+	if !errors.As(err, &perr) {
+		t.Fatalf("error is %T, want *ProviderError", err)
+	}
+	if perr.Status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", perr.Status)
+	}
+	if perr.Retryable {
+		t.Error("a 401 is marked retryable, so a credential that cannot renew is re-sent with backoff")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("made %d request(s), want 1", calls)
 	}
 }
