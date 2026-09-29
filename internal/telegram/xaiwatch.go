@@ -112,7 +112,7 @@ func xaiStatusKeyboard(signedIn bool) map[string]any {
 	}
 	if signedIn {
 		return map[string]any{"inline_keyboard": [][]map[string]string{
-			{row("✅ Switch to xAI", "provider:xai"), row("🔁 Sign in again", "provider:xai")},
+			{row("✅ Switch to xAI", "provider:xai"), row("🔁 Sign in again", "provider:xai:relogin")},
 		}}
 	}
 	return map[string]any{"inline_keyboard": [][]map[string]string{

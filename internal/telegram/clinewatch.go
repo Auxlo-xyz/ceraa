@@ -112,7 +112,7 @@ func clineStatusKeyboard(signedIn bool) map[string]any {
 	}
 	if signedIn {
 		return map[string]any{"inline_keyboard": [][]map[string]string{
-			{row("✅ Switch to Cline", "provider:cline"), row("🔁 Sign in again", "provider:cline")},
+			{row("✅ Switch to Cline", "provider:cline"), row("🔁 Sign in again", "provider:cline:relogin")},
 		}}
 	}
 	return map[string]any{"inline_keyboard": [][]map[string]string{

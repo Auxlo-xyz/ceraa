@@ -118,7 +118,7 @@ func minimaxStatusKeyboard(signedIn bool) map[string]any {
 	}
 	if signedIn {
 		return map[string]any{"inline_keyboard": [][]map[string]string{
-			{row("✅ Switch to MiniMax", "provider:minimax"), row("🔁 Sign in again", "provider:minimax")},
+			{row("✅ Switch to MiniMax", "provider:minimax"), row("🔁 Sign in again", "provider:minimax:relogin")},
 		}}
 	}
 	return map[string]any{"inline_keyboard": [][]map[string]string{

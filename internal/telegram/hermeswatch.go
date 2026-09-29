@@ -143,15 +143,21 @@ func reportHermesLoginFailed(token string, chatID int64, state hermesauth.Termin
 //
 // The status replies used to instruct the user to type /hermes-login. That is a
 // dead end for anyone driving the bot from its menus, which is the only surface
-// available on a phone, so every state carries the button that does whatever the
-// text would have asked for.
+// available on a phone, so every state carries a button for what the user wants.
+//
+// "Switch to Hermes" and "Sign in again" were both provider:hermes, so both took
+// the activate branch and a signed-in user asking to re-authenticate was switched
+// to the provider they were already on, with no login and no message saying so.
+// The router has had a distinct :relogin case since it was extracted, and
+// subscriptionMenu has always emitted it; only these four status keyboards were
+// left pointing at the shared callback.
 func hermesStatusKeyboard(signedIn bool) map[string]any {
 	row := func(text, data string) map[string]string {
 		return map[string]string{"text": text, "callback_data": data}
 	}
 	if signedIn {
 		return map[string]any{"inline_keyboard": [][]map[string]string{
-			{row("✅ Switch to Hermes", "provider:hermes"), row("🔁 Sign in again", "provider:hermes")},
+			{row("✅ Switch to Hermes", "provider:hermes"), row("🔁 Sign in again", "provider:hermes:relogin")},
 		}}
 	}
 	return map[string]any{"inline_keyboard": [][]map[string]string{
