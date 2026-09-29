@@ -123,6 +123,27 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	logger.Info(fmt.Sprintf("agent run: provider=%s model=%s reasoning=%q native_gemini=%v host=%s",
 		providerID, providerConfig.Model, string(reasoning), llm.UsesGeminiNative(providerConfig.Model, providerConfig.URL), providerConfig.URL))
 	registry := telegramRegistry(cfg, user, memoryStore, skillStore)
+	// Subagents are attached here, where a run knows its provider, its project and
+	// its stores. Without this the task tool is registered and answers every call
+	// with "no factory is attached", which is the same failure the browser tool had:
+	// a tool the model can see and use that cannot do anything.
+	attachSubagents(registry, &subagentFactory{
+		cfg:             cfg,
+		user:            user,
+		parentSession:   sessionID,
+		projectRoot:     projectRoot,
+		providerID:      providerID,
+		providerCfg:     providerConfig,
+		reasoning:       reasoning,
+		parentPrompt:    prompt.System,
+		memoryStore:     memoryStore,
+		skillStore:      skillStore,
+		evaluationStore: evaluationStore,
+		store:           store,
+		memoryContext:   memoryContext,
+		skillContext:    skillContext,
+		WallClock:       15 * time.Minute,
+	})
 	// view_image follows the same resolved provider as the run, so a media call
 	// cannot drift onto a different model than the one doing the work.
 	attachVisionToRegistry(registry, resolveModel)

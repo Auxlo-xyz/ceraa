@@ -26,17 +26,30 @@ import (
 )
 
 type RunnerConfig struct {
-	SessionID           string
-	SystemPrompt        string
-	Reasoning           llm.ReasonLevel
-	StopWhenIdle        bool
-	Model               llm.ProviderConfig
-	ContextLimit        int
-	MaxOutputTokens     int
-	WorkDir             string
-	ToolOutputDir       string
-	MaxToolResultChars  int
-	MaxConcurrentTools  int
+	SessionID          string
+	SystemPrompt       string
+	Reasoning          llm.ReasonLevel
+	StopWhenIdle       bool
+	Model              llm.ProviderConfig
+	ContextLimit       int
+	MaxOutputTokens    int
+	WorkDir            string
+	ToolOutputDir      string
+	MaxToolResultChars int
+	MaxConcurrentTools int
+	// MaxRequests is a soft ceiling on model requests for one run, graduated rather
+	// than hard: past MaxRequests the run is told to wrap up, past YieldAt it is
+	// driven to a single final answer so partial findings still come back, and only
+	// past YieldAt+HardGrace is it abandoned.
+	//
+	// A hard cut would discard whatever the run had found, which is the worst
+	// outcome available: the work is paid for and thrown away. Zero means no limit.
+	MaxRequests int
+	// YieldAt and HardGrace are read only when MaxRequests is set.
+	YieldAt   int
+	HardGrace int
+	// BudgetNotice is delivered to the model when the soft ceiling is crossed.
+	BudgetNotice        func(requests, soft int) string
 	GoalDir             string
 	ModelCatalogURL     string
 	ModelCatalogCache   string
@@ -404,12 +417,52 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 
 	step := 0
+	// Graduated request budget. Counted here because this is the one place every
+	// turn passes through, including turns after compaction and goal continuations,
+	// so a cap placed at the call site would miss them.
+	soft, yieldAt, hardAt := r.budgetPoints()
+	budgetWarned, budgetYielded := false, false
 	goalUsageBase := 0
 	goalContinuations := 0
 	correctiveToolRetryUsed := false
 	finalContentRetryUsed := false
 	forceFinalResponse := false
 	for {
+		if soft > 0 {
+			switch {
+			case step >= hardAt:
+				// Past the grace after being told to stop. Abandon it, but say so
+				// rather than returning nothing, because the caller has to be able to
+				// tell "this child gave up" from "this child finished".
+				logger.Warn(fmt.Sprintf("run abandoned for %s: %d requests, hard limit %d", r.cfg.SessionID, step, hardAt))
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed,
+					fmt.Errorf("abandoned after %d requests", step))
+			case step >= yieldAt && !budgetYielded:
+				// Force one final text-only answer. The point is to convert what was
+				// found into a report before giving up on it.
+				budgetYielded = true
+				forceFinalResponse = true
+				sess.Messages = append(sess.Messages, sessionstore.Message{
+					Role:    llm.RoleUser,
+					Content: "Stop working and report now: what you found, what you changed, and what is unfinished. Do not call more tools.",
+				})
+				if err := r.store.Save(sess); err != nil {
+					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+				}
+			case step >= soft && !budgetWarned:
+				budgetWarned = true
+				notice := fmt.Sprintf("You have used %d requests in this run (soft budget: %d). "+
+					"Wrap up now: finish the current step and give your final report. At %d requests the run is "+
+					"stopped and asked to yield whatever it has.", step, soft, yieldAt)
+				if r.cfg.BudgetNotice != nil {
+					notice = r.cfg.BudgetNotice(step, soft)
+				}
+				sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: notice})
+				if err := r.store.Save(sess); err != nil {
+					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+				}
+			}
+		}
 		for i := range sess.Runs {
 			if sess.Runs[i].ID == runID {
 				sess.Runs[i].Step = step
@@ -1555,4 +1608,26 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 		tailLength = 1024
 	}
 	return fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), output[len(output)-tailLength:])
+}
+
+// budgetPoints resolves the three thresholds of the graduated request budget.
+//
+// The yield point defaults to 1.5x the soft ceiling and the grace to 5 requests,
+// matching omp's subagent budget. A child told to wrap up needs a turn or two to
+// do it, and cutting it off at the yield point would discard exactly the report the
+// graduation exists to preserve.
+func (r *Runner) budgetPoints() (soft, yieldAt, hardAt int) {
+	soft = r.cfg.MaxRequests
+	if soft <= 0 {
+		return 0, 0, 0
+	}
+	yieldAt = r.cfg.YieldAt
+	if yieldAt <= soft {
+		yieldAt = soft + soft/2
+	}
+	grace := r.cfg.HardGrace
+	if grace <= 0 {
+		grace = 5
+	}
+	return soft, yieldAt, yieldAt + grace
 }

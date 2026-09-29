@@ -54,6 +54,20 @@ func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
 }
 
+// Remove drops a tool by name, reporting whether it was there.
+//
+// A child agent must not be able to delegate further, and a child tool set that
+// still advertised the task tool would invite exactly that. Rebuilding a registry
+// to exclude one tool is heavier than removing it, and the registry is not
+// shared: a child builds its own.
+func (r *Registry) Remove(name string) bool {
+	if _, ok := r.tools[name]; !ok {
+		return false
+	}
+	delete(r.tools, name)
+	return true
+}
+
 func (r *Registry) All() []Tool {
 	out := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
@@ -314,6 +328,9 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	r.Register(NewBrowserTool())
+	// Registered without a factory and attached later by whoever knows how to build a
+	// runner: the tool layer cannot import the coordinator, which imports this one.
+	r.Register(NewTaskTool())
 	r.Register(&FTSSearchTool{})
 	r.Register(&QuestionTool{})
 	r.Register(&TodoWriteTool{})
