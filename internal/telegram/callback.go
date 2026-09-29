@@ -122,6 +122,19 @@ func removeCallbackMarkup(token string, chatID int64, messageID int, text string
 
 func closeCallbackMenu(token string, chatID int64, menuMessageID int, currentText string) {
 	if root, ok := menuRootForMessage(chatID, menuMessageID); ok && currentText != root.text {
+		// Re-render a named root rather than replaying it. The stored keyboard is a
+		// snapshot: it was drawn when this menu was opened, and anything that changed
+		// since then is invisible in it. A hub is the clearest case, because every
+		// provider row is labelled by state, so a snapshot taken before a provider
+		// switch goes on naming the old provider as active.
+		if root.name != "" {
+			body := "📋 " + root.name
+			if text, ok := menuReportText(root.name, chatID); ok {
+				body = text
+			}
+			editCallback(token, chatID, menuMessageID, body, menus.InlineForChat(root.name, 0, chatID, currentSessionID(chatID)))
+			return
+		}
 		editCallback(token, chatID, menuMessageID, root.text, root.markup)
 		return
 	}

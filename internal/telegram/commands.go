@@ -84,7 +84,16 @@ func startNewSession(token string, chatID int64) {
 	send(token, chatID, "🆕 New session started. Send a task to name it automatically.")
 }
 
+// menuRoot is the screen a submenu should return to.
+//
+// name is the menu to re-render, not just the markup that was drawn. Back used to
+// replay the stored text and keyboard verbatim, which froze the screen at the state
+// it had when it was first opened: a hub opened while one provider was active went
+// on showing that provider after switching to another, and re-rendering was
+// impossible because the stored copy had no idea which menu it was. A restart
+// cleared the map, which is why it looked like it needed one.
 type menuRoot struct {
+	name   string
 	text   string
 	markup map[string]any
 }
@@ -122,11 +131,18 @@ func menuRootForMessage(chatID int64, messageID int) (menuRoot, bool) {
 }
 
 func sendMenuMarkup(token string, chatID int64, text string, markup map[string]any) {
+	sendNamedMenuMarkup(token, chatID, "", text, markup)
+}
+
+// sendNamedMenuMarkup sends a menu and remembers which menu it was, so returning to
+// it re-renders from current state. An empty name keeps the stored copy, which is
+// the right fallback for a one-off keyboard that is not a menu at all.
+func sendNamedMenuMarkup(token string, chatID int64, name, text string, markup map[string]any) {
 	messageID := sendMessageWithMarkup(token, chatID, text, markup)
 	if messageID == 0 {
 		return
 	}
-	menuRootByMessage.Store(menuTriggerKey(chatID, messageID), menuRoot{text: text, markup: markup})
+	menuRootByMessage.Store(menuTriggerKey(chatID, messageID), menuRoot{name: name, text: text, markup: markup})
 	if trigger, ok := menuTriggerPending.LoadAndDelete(chatID); ok {
 		menuTriggerByMessage.Store(menuTriggerKey(chatID, messageID), trigger)
 	}

@@ -217,7 +217,9 @@ func send(token string, chatID int64, text string) int {
 	return sendWithKeyboard(token, chatID, text, keyboard.Main())
 }
 func sendHub(token string, chatID int64) {
-	sendMenuMarkup(token, chatID, "📋 Ceraa hub", menus.Hub())
+	// Named, so Back into the hub re-renders it. Replaying a snapshot left every
+	// provider row showing the state it had when the hub was first opened.
+	sendNamedMenuMarkup(token, chatID, "hub", "📋 Ceraa hub", menus.Hub())
 }
 
 func sendMessagePayload(token string, chatID int64, text string, parseMode string, kb map[string]any) (int, error) {
