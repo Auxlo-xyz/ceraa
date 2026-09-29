@@ -42,9 +42,17 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 cd "$(dirname "$0")/.."
-exec go build \
+go build \
   -trimpath \
   -buildvcs=false \
   -ldflags="-s -w" \
   -o bin/ceraa \
   .
+
+# The terms ship with the binary, and the notice is also compiled in. Both, because
+# they fail differently: a file beside the executable is lost the moment someone
+# copies the single binary, while the compiled-in notice cannot be removed by
+# someone who has not read the source.
+for doc in LICENSE NOTICE; do
+  cp -f "$doc" bin/"$doc"
+done

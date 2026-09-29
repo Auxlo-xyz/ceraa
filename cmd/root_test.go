@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"ceraa/internal/build"
 	"github.com/spf13/cobra"
 )
 
@@ -58,5 +59,22 @@ func TestRootRunEPassesTheJoinedPrompt(t *testing.T) {
 	}
 	if bytes.Contains([]byte(root.Short), []byte("\n")) {
 		t.Error("root Short contains a newline")
+	}
+}
+
+// The notice has to be printed, not merely present in a file beside the
+// executable. A licence file does not travel: the single binary is what gets
+// copied, and a redistributor who never saw LICENSE cannot have been told.
+func TestVersionPrintsTheTerms(t *testing.T) {
+	registerSubcommands()
+	var out bytes.Buffer
+	verCmd.SetOut(&out)
+	verCmd.SetErr(&out)
+	verCmd.Run(verCmd, nil)
+	got := out.String()
+	for _, want := range []string{build.Version, build.Owner, "All rights reserved"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("version output does not mention %q:\n%s", want, got)
+		}
 	}
 }

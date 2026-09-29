@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"ceraa/internal/agent"
+	"ceraa/internal/build"
 	"ceraa/internal/config"
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
@@ -37,7 +38,21 @@ var root = &cobra.Command{
 	},
 }
 
-var verCmd = &cobra.Command{Use: "version", Run: func(cmd *cobra.Command, args []string) { fmt.Println("ceraa 0.1.0") }}
+// verCmd prints the version and the terms.
+//
+// The notice travels inside the binary on purpose. A licence file beside the
+// executable does not travel: the single file is what gets copied, and a
+// redistributor who never saw LICENSE cannot have been told. It is a string, so
+// anyone determined can strip it -- it is not meant to be unremovable, it is meant
+// to be evidence of what the terms were at the moment the copy was made.
+var verCmd = &cobra.Command{
+	Use: "version",
+	Run: func(cmd *cobra.Command, args []string) {
+		// Through cobra's writer, not fmt.Printf: cobra's own redirection then works,
+		// which is what makes this assertable in a test and redirectable in a wrapper.
+		fmt.Fprintf(cmd.OutOrStdout(), "ceraa %s\n\n%s\n%s\n", build.Version, build.Notice, build.LicenseURL)
+	},
+}
 
 var startCmd = &cobra.Command{
 	Use:   "start",
