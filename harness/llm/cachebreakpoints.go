@@ -21,10 +21,18 @@ import (
 //     top-level cache_control is not a field the API reads; it is ignored without
 //     complaint, which is what the previous implementation did.
 //  2. The marked block must clear the provider's minimum cacheable size. Ours is
-//     roughly 860 tokens of system prompt, below the 1,024 floor several providers
-//     enforce, so a breakpoint placed only there would be discarded. The
-//     conversation is where the tokens are, so that is where the second
-//     breakpoint goes.
+//     about 1,390 tokens of system prompt, above the 1,024 floor several providers
+//     enforce, so the system block does clear it and is marked. It was previously
+//     documented here as roughly 860 tokens and below the floor, which was once
+//     true and stopped being true as prompt/system.txt grew; the comment then
+//     described a breakpoint being discarded when the code was sending one. A
+//     second, vaguer claim about the same figure lived in IMPLEMENTATION.md.
+//     Neither was load-bearing at runtime, but both would have had a reader
+//     concluding the prompt head is uncached when it is the part that is.
+//
+//     Either way the conversation is where the tokens are: a long session carries
+//     tens of thousands against a prompt head of about thirteen hundred, so the
+//     breakpoint that earns its place is the one on the last stable message.
 //  3. Blocks must concatenate to the same bytes every turn. Joining blocks
 //     naively means anything inserted later changes the bytes before it, so every
 //     block except the last is newline-terminated: each breakpoint then covers a
