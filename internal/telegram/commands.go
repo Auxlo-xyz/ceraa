@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
 	"ceraa/harness/memory"
 	"ceraa/harness/scheduler"
@@ -312,11 +313,18 @@ func statusReport(chatID int64) (string, error) {
 		agent = "build"
 	}
 	endpoint := providerHost(activeProviderURL(cfg))
-	return fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s input / %s output / %s reasoning reported\nCache read: %s\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
+	// "input" is the uncached count: Run.Usage reports the prompt total, and the
+	// cached part of it is billed at roughly a sixth of the price. Labelling it
+	// saved a misreading, because the same number next to a 92% cache rate looks
+	// like a cache that is not working.
+	report := fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s uncached input / %s output / %s reasoning reported\nCache read: %s\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
 		groupDigits(tokens), groupDigits(contextLimit), percent,
 		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
 		cacheRead, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
-		endpoint, agent), nil
+		endpoint, agent)
+	// The tool-output cap is the one cost control that can be tuned, so it is
+	// reported with the figure that chooses it: what a lower cap would have saved.
+	return report + "\n\n" + coordinator.ToolOutputStatsLine(cfg.MaxToolResultChars), nil
 }
 
 // handleContextCommand shows the status report. Kept as a distinct command because

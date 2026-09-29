@@ -1624,6 +1624,10 @@ func (r *Runner) resultText(runID string, result operation.ResultEvent) string {
 func (r *Runner) formatOutput(runID, operationID, output string) string {
 	limit := r.cfg.MaxToolResultChars
 	if limit <= 0 || len(output) <= limit {
+		// Counted here rather than after the trim, so the denominator is every
+		// result that reached the model, not only the ones that were cut. A trim
+		// rate measured only over trimmed results is 100% by construction.
+		recordToolOutput(len(output), len(output))
 		return output
 	}
 	dir := r.cfg.ToolOutputDir
@@ -1642,14 +1646,18 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 				tailLength = 1024
 			}
 			tail := output[len(output)-tailLength:]
-			return fmt.Sprintf("Large tool output saved to %s (%d bytes).\nTail:\n%s", path, len(output), tail)
+			trimmed := fmt.Sprintf("Large tool output saved to %s (%d bytes).\nTail:\n%s", path, len(output), tail)
+			recordToolOutput(len(output), len(trimmed))
+			return trimmed
 		}
 	}
 	tailLength := limit / 3
 	if tailLength < 1024 {
 		tailLength = 1024
 	}
-	return fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), output[len(output)-tailLength:])
+	trimmed := fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), output[len(output)-tailLength:])
+	recordToolOutput(len(output), len(trimmed))
+	return trimmed
 }
 
 // budgetPoints resolves the three thresholds of the graduated request budget.
