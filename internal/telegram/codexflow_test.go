@@ -245,7 +245,6 @@ func TestFailureIsReportedWithRecovery(t *testing.T) {
 	restore := swapAuthManager(t, codexauth.NewManagerWithOptions(stub.endpoints(), "client", stub.server.Client()))
 	defer restore()
 	registerCodexCompletion("test-token")
-	stub.denied.Store(true)
 
 	flow, err := authMgr.Start()
 	if err != nil {
@@ -253,6 +252,18 @@ func TestFailureIsReportedWithRecovery(t *testing.T) {
 	}
 	flowID := flow.Snapshot().FlowID
 	trackCodexFlow(flowID, 99, true, "")
+	// Denied is set only now, once the flow is tracked, because that is the order
+	// a real denial happens in: the code is not shown to anyone until the entry
+	// point has registered an owner and posted it, so nobody can deny it before
+	// that.
+	//
+	// Setting it before Start made the first poll terminal, and watch polls before
+	// it sleeps, so the completion raced the registration and arrived to find no
+	// owner. A local httptest server answers in microseconds, so it won that race
+	// often enough to fail the suite. The real endpoint is milliseconds of network
+	// against a microsecond map write and does not behave this way, so the ordering
+	// was modelling a race nobody gets, not the one under test.
+	stub.denied.Store(true)
 
 	if !awaitNotification(t, signal) {
 		t.Fatal("a denied login was never reported")
