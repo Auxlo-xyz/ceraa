@@ -156,3 +156,46 @@ func TestTheDerivedWorkspaceRootIsUsableForCommonInstallLayouts(t *testing.T) {
 		t.Fatalf("/root/ceraa now derives %s", got)
 	}
 }
+
+// Only CERAA_* is a supported prefix, and a bare legacy override broke that in a
+// way that reached the wrong provider.
+//
+// POOLSIDE_API_URL was the last remnant of a scheme that resolved a fixed set of
+// provider keys. It set cfg.LLM.URL unconditionally, which is the URL of the
+// built-in "default" profile, so setting it silently redefined what "default"
+// pointed at regardless of which provider was selected - and it was not
+// CERAA_-prefixed at all.
+//
+// Poolside itself is unaffected and still fully supported: it has an onboarding
+// button and its URL is seeded in the bridge. Only this competing second way to
+// point at it is gone.
+func TestALegacyUnprefixedOverrideCannotRedirectTheDefaultProvider(t *testing.T) {
+	t.Setenv("POOLSIDE_API_URL", "https://inference.poolside.ai/v1")
+
+	cfg := DefaultConfig()
+	cfg.LLM.URL = ""
+	applyEnv(cfg)
+
+	if cfg.LLM.URL != "" {
+		t.Errorf("POOLSIDE_API_URL set the default provider URL to %q; only CERAA_* may overlay config", cfg.LLM.URL)
+	}
+}
+
+// The supported variables still work, which is the half of that change that has
+// to keep working.
+func TestTheDocumentedEnvSeedStillApplies(t *testing.T) {
+	t.Setenv("CERAA_API_URL", "https://gateway.example/v1")
+	t.Setenv("CERAA_MODEL", "some-model")
+	t.Setenv("CERAA_API_KEY", "k")
+
+	cfg := DefaultConfig()
+	cfg.LLM.URL = ""
+	cfg.LLM.Model = ""
+	cfg.LLM.APIKey = ""
+	applyEnv(cfg)
+
+	if cfg.LLM.URL != "https://gateway.example/v1" || cfg.LLM.Model != "some-model" || cfg.LLM.APIKey != "k" {
+		t.Errorf("the documented env seed did not apply: url=%q model=%q key=%q",
+			cfg.LLM.URL, cfg.LLM.Model, cfg.LLM.APIKey)
+	}
+}

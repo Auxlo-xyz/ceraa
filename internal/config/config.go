@@ -452,12 +452,6 @@ func applyEnv(cfg *Config) {
 	if v := env("SCHEDULER_FILE"); v != "" {
 		cfg.SchedulerFile = v
 	}
-
-	// Poolside provider env override
-	if v := os.Getenv("POOLSIDE_API_URL"); v != "" {
-		cfg.LLM.URL = v
-	}
-
 }
 
 // loadedFrom records which file the last loadFile actually read, or empty when it
