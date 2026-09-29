@@ -144,30 +144,32 @@ func browserDownloadDir() string {
 func (d *rodDriver) Navigate(ctx context.Context, rawURL string) (pageInfo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	page := d.page.Context(ctx).Timeout(pageActionTimeout)
+	page := d.actionPage(ctx)
 	if err := page.Navigate(rawURL); err != nil {
 		return pageInfo{}, fmt.Errorf("navigate to %s: %w", rawURL, err)
 	}
 	// Navigation can resolve before client-side rendering settles, so wait for
 	// the document rather than returning a half-built page.
 	if err := page.WaitLoad(); err != nil {
-		return d.infoLocked()
+		return d.infoLocked(ctx)
 	}
+	// The rebound page replaces the original, so a later action that uses d.page
+	// directly inherits this call's context rather than the dead launch one.
 	d.page = page
-	return d.infoLocked()
+	return d.infoLocked(ctx)
 }
 
 func (d *rodDriver) Info(ctx context.Context) (pageInfo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.infoLocked()
+	return d.infoLocked(ctx)
 }
 
-func (d *rodDriver) infoLocked() (pageInfo, error) {
+func (d *rodDriver) infoLocked(ctx context.Context) (pageInfo, error) {
 	if d.page == nil {
 		return pageInfo{}, fmt.Errorf("browser has no page")
 	}
-	info, err := d.page.Info()
+	info, err := d.actionPage(ctx).Info()
 	if err != nil {
 		return pageInfo{}, fmt.Errorf("read page info: %w", err)
 	}
@@ -192,13 +194,14 @@ func (d *rodDriver) Screenshot(ctx context.Context, path string, fullPage bool, 
 		err error
 	)
 	if selector != "" {
-		element, findErr := d.page.Element(selector)
+		page := d.actionPage(ctx)
+		element, findErr := page.Element(selector)
 		if findErr != nil {
 			return fmt.Errorf("find %q: %w", selector, findErr)
 		}
 		png, err = element.Screenshot(proto.PageCaptureScreenshotFormatPng, 0)
 	} else {
-		png, err = d.page.Screenshot(fullPage, nil)
+		png, err = d.actionPage(ctx).Screenshot(fullPage, nil)
 	}
 	if err != nil {
 		return fmt.Errorf("capture screenshot: %w", err)
@@ -220,7 +223,7 @@ func screenshotTarget(selector string) string {
 }
 
 func (d *rodDriver) Text(ctx context.Context, selector string) (string, error) {
-	element, err := d.resolve(selector)
+	element, err := d.resolve(ctx, selector)
 	if err != nil {
 		return "", err
 	}
@@ -232,7 +235,7 @@ func (d *rodDriver) Text(ctx context.Context, selector string) (string, error) {
 }
 
 func (d *rodDriver) HTML(ctx context.Context, selector string) (string, error) {
-	element, err := d.resolve(selector)
+	element, err := d.resolve(ctx, selector)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +247,7 @@ func (d *rodDriver) HTML(ctx context.Context, selector string) (string, error) {
 }
 
 func (d *rodDriver) Click(ctx context.Context, selector string) error {
-	element, err := d.resolve(selector)
+	element, err := d.resolve(ctx, selector)
 	if err != nil {
 		return err
 	}
@@ -257,7 +260,7 @@ func (d *rodDriver) Click(ctx context.Context, selector string) error {
 func (d *rodDriver) Type(ctx context.Context, selector, text string, submit bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	element, err := d.resolveLocked(selector)
+	element, err := d.resolveLocked(ctx, selector)
 	if err != nil {
 		return err
 	}
@@ -285,7 +288,7 @@ func (d *rodDriver) Eval(ctx context.Context, script string) (string, error) {
 	if d.page == nil {
 		return "", fmt.Errorf("browser has no page")
 	}
-	page := d.page.Context(ctx).Timeout(pageActionTimeout)
+	page := d.actionPage(ctx)
 
 	// rod always sends the script as `function() { return (<js>).apply(this, arguments) }`,
 	// so a bare expression such as `document.title` would be called as a function
@@ -340,21 +343,37 @@ func (d *rodDriver) Close() error {
 	return nil
 }
 
-// resolve finds a single element, or the page body when no selector is given.
-func (d *rodDriver) resolve(selector string) (*rod.Element, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.resolveLocked(selector)
+// actionPage returns the page bound to this call's context and the action timeout.
+//
+// Every action must go through this. The page inherits the context Chromium was
+// launched with, and newRodDriver cancels that on return, so an action that uses
+// d.page directly reports "context canceled" for the rest of the browser's life.
+// Navigate and Eval had been rebinding all along, which is exactly why open and
+// eval worked while screenshot, text, html, click and type all failed against the
+// same open page.
+func (d *rodDriver) actionPage(ctx context.Context) *rod.Page {
+	if d.page == nil {
+		return nil
+	}
+	return d.page.Context(ctx).Timeout(pageActionTimeout)
 }
 
-func (d *rodDriver) resolveLocked(selector string) (*rod.Element, error) {
+// resolve finds a single element, or the page body when no selector is given.
+func (d *rodDriver) resolve(ctx context.Context, selector string) (*rod.Element, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.resolveLocked(ctx, selector)
+}
+
+func (d *rodDriver) resolveLocked(ctx context.Context, selector string) (*rod.Element, error) {
 	if d.page == nil {
 		return nil, fmt.Errorf("browser has no page")
 	}
+	page := d.actionPage(ctx)
 	if selector == "" {
-		return d.page.Element("body")
+		return page.Element("body")
 	}
-	element, err := d.page.Element(selector)
+	element, err := page.Element(selector)
 	if err != nil {
 		return nil, fmt.Errorf("find %q: %w", selector, err)
 	}
