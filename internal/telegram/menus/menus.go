@@ -151,6 +151,18 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 func InlineForSession(name string, page int, sessionID string) map[string]any {
 	_ = page
 	switch name {
+	// The hub is deliberately absent from All: it is the screen the hub links to,
+	// not one of the entries it lists, so listing it there would make it open
+	// itself. It still needs a case, because four menus emit "menu:hub" as their
+	// Back row - ProviderMenu, ModelMenu, subscriptionMenu and CodexMenu - and
+	// with no case here that data resolved to the default closeMenu(). Back from
+	// any provider or model screen therefore answered with a message reading
+	// "📋 hub" carrying nothing but a Close button.
+	//
+	// The regression guard walks All, which is why it never caught this: the name
+	// the buttons emit is not a name All contains.
+	case "hub":
+		return Hub()
 	case "status", "context":
 		return statusMenu(sessionID)
 	case "provider":

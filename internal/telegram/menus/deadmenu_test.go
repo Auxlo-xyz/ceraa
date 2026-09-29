@@ -79,3 +79,68 @@ func mustJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
 }
+
+// Every "menu:" callback_data any menu emits has to resolve to a real menu.
+//
+// This walks what the menus actually emit rather than what All lists, and that
+// difference is the whole defect. All does not contain "hub" - correctly, since
+// the hub is the screen the hub links to rather than an entry it lists - so the
+// guard that walks All could never see the name. Four menus emitted "menu:hub" as
+// their Back row (ProviderMenu, ModelMenu, subscriptionMenu, CodexMenu) and with
+// no case for it that data fell through to the default closeMenu(). Back from any
+// provider or model screen answered with a message reading "📋 hub" carrying
+// nothing but a Close button.
+//
+// The lesson is the deny-list one from the secrets work: a name that resolves
+// through a switch is a list, and anything outside it fails silently. Enumerating
+// the emitted names makes the negative space the thing under test.
+func TestEveryEmittedMenuCallbackResolvesToARealMenu(t *testing.T) {
+	build := map[string]map[string]any{"hub": Hub()}
+	for _, name := range All {
+		build[name] = InlineForChat(name, 0, 1, "")
+	}
+
+	seen := map[string]string{}
+	for source, keyboard := range build {
+		rows, ok := keyboard["inline_keyboard"].([][]map[string]string)
+		if !ok {
+			continue
+		}
+		for _, row := range rows {
+			for _, button := range row {
+				data := button["callback_data"]
+				if !strings.HasPrefix(data, "menu:") {
+					continue
+				}
+				seen[strings.TrimPrefix(data, "menu:")] = source
+			}
+		}
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("no menu callbacks emitted at all, so this guard is not looking at anything")
+	}
+	for name, source := range seen {
+		resolved := InlineForChat(name, 0, 1, "")
+		if isBareClose(resolved) {
+			t.Errorf("%s offers Back as menu:%s, which resolves to a bare Close button", source, name)
+		}
+	}
+}
+
+// isBareClose reports whether a menu carries nothing but the Close button, which
+// is what a name with no resolver case falls back to.
+func isBareClose(keyboard map[string]any) bool {
+	rows, ok := keyboard["inline_keyboard"].([][]map[string]string)
+	if !ok {
+		return true
+	}
+	for _, row := range rows {
+		for _, button := range row {
+			if button["callback_data"] != "close" {
+				return false
+			}
+		}
+	}
+	return true
+}

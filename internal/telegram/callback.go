@@ -128,14 +128,25 @@ func closeCallbackMenu(token string, chatID int64, menuMessageID int, currentTex
 		// provider row is labelled by state, so a snapshot taken before a provider
 		// switch goes on naming the old provider as active.
 		if root.name != "" {
-			body := "📋 " + root.name
+			// Keep the body the menu was sent with. Only the keyboard went stale -
+			// that is the entire point of re-rendering - and substituting a
+			// name-derived label would change the text a close compares against.
+			body := root.text
 			if text, ok := menuReportText(root.name, chatID); ok {
 				body = text
 			}
-			editCallback(token, chatID, menuMessageID, body, menus.InlineForChat(root.name, 0, chatID, currentSessionID(chatID)))
+			markup := menus.InlineForChat(root.name, 0, chatID, currentSessionID(chatID))
+			editCallback(token, chatID, menuMessageID, body, markup)
+			// Record what was just drawn. Returning here without updating left the
+			// original snapshot in place, so currentText never equalled root.text
+			// and every later Close re-rendered instead of deleting. The message
+			// could not be closed at all, and the second tap was refused by
+			// Telegram as "message is not modified".
+			menuRootByMessage.Store(menuTriggerKey(chatID, menuMessageID), menuRoot{name: root.name, text: body, markup: markup})
 			return
 		}
 		editCallback(token, chatID, menuMessageID, root.text, root.markup)
+		menuRootByMessage.Store(menuTriggerKey(chatID, menuMessageID), root)
 		return
 	}
 	triggerMessageID := menuTriggerForMessage(chatID, menuMessageID)
