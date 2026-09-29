@@ -18,16 +18,25 @@ import (
 type xaiFlowOwner struct {
 	chatID   int64
 	activate bool
+	// activeAtStart is the provider that was selected when this sign-in began, so
+	// the completion can tell whether the switch it was asked to make is still
+	// wanted. Read by the caller before the flow starts; see the MiniMax watcher.
+	activeAtStart string
 }
 
 var xaiFlows sync.Map
 
 // trackXaiFlow records the owner of a flow so its outcome can be reported.
-func trackXaiFlow(flowID string, chatID int64, activate bool) {
+//
+// Nothing is read here: the owner is stored in one map write, because the login
+// may already have finished and be waiting for an owner to talk to.
+func trackXaiFlow(flowID string, chatID int64, activate bool, activeAtStart string) {
 	if flowID == "" {
 		return
 	}
-	xaiFlows.Store(flowID, xaiFlowOwner{chatID: chatID, activate: activate})
+	xaiFlows.Store(flowID, xaiFlowOwner{
+		chatID: chatID, activate: activate, activeAtStart: activeAtStart,
+	})
 }
 
 func xaiFlowOwnerOf(flowID string) (xaiFlowOwner, bool) {
@@ -77,15 +86,15 @@ func xaiFailureDetail(message string) string {
 }
 
 // reportXaiSignedIn confirms the login and switches provider when that is what
-// the chat asked for.
+// the chat asked for, and when the choice has not since been made afresh.
 func reportXaiSignedIn(token string, owner xaiFlowOwner, flowID string) {
-	if owner.activate {
+	if flowActivationStillWanted("xAI", owner.activate, owner.activeAtStart) {
 		activateXaiProvider(token, owner.chatID, flowID)
 		return
 	}
 	xaiNotify(token, owner.chatID,
-		"✅ xAI sign-in completed. The Grok credential is stored and ready.\n\n"+
-			"xAI is signed in but not the active provider, because this sign-in did not ask to switch.",
+		"✅ xAI sign-in completed. The credential is stored and ready.\n\n"+
+			flowNotActiveReason("xAI", owner.activate),
 		xaiStatusKeyboard(false))
 }
 

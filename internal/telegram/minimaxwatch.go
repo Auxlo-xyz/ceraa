@@ -18,16 +18,28 @@ import (
 type minimaxFlowOwner struct {
 	chatID   int64
 	activate bool
+	// activeAtStart is the provider that was selected when this sign-in began, so
+	// the completion can tell whether the switch it was asked to make is still
+	// wanted. It is read by the caller before the flow starts rather than in here:
+	// the completion callback can arrive before the owner is registered, and a
+	// file read inside that window would widen it into a lost report.
+	activeAtStart string
 }
 
 var minimaxFlows sync.Map
 
 // trackMinimaxFlow records the owner of a flow so its outcome can be reported.
-func trackMinimaxFlow(flowID string, chatID int64, activate bool) {
+//
+// activeAtStart is what was selected when the sign-in started. Nothing is read in
+// here: the owner is stored in one map write, because the login may already have
+// finished and be waiting for an owner to talk to.
+func trackMinimaxFlow(flowID string, chatID int64, activate bool, activeAtStart string) {
 	if flowID == "" {
 		return
 	}
-	minimaxFlows.Store(flowID, minimaxFlowOwner{chatID: chatID, activate: activate})
+	minimaxFlows.Store(flowID, minimaxFlowOwner{
+		chatID: chatID, activate: activate, activeAtStart: activeAtStart,
+	})
 }
 
 func minimaxFlowOwnerOf(flowID string) (minimaxFlowOwner, bool) {
@@ -80,15 +92,15 @@ func minimaxFailureDetail(message string) string {
 }
 
 // reportMinimaxSignedIn confirms the login and switches provider when that is what
-// the chat asked for.
+// the chat asked for, and when the choice has not since been made afresh.
 func reportMinimaxSignedIn(token string, owner minimaxFlowOwner, flowID string) {
-	if owner.activate {
+	if flowActivationStillWanted("MiniMax", owner.activate, owner.activeAtStart) {
 		activateMinimaxProvider(token, owner.chatID, flowID)
 		return
 	}
 	minimaxNotify(token, owner.chatID,
-		"✅ MiniMax sign-in completed. The Grok credential is stored and ready.\n\n"+
-			"MiniMax is signed in but not the active provider, because this sign-in did not ask to switch.",
+		"✅ MiniMax sign-in completed. The credential is stored and ready.\n\n"+
+			flowNotActiveReason("MiniMax", owner.activate),
 		minimaxStatusKeyboard(false))
 }
 

@@ -37,7 +37,7 @@ func TestClineCompletionWithNoOwnerIsQuiet(t *testing.T) {
 
 func TestClineCompletionWithoutActivateSaysItStayedInactive(t *testing.T) {
 	seen := captureClineNotify(t)
-	trackClineFlow("f1", 5, false)
+	trackClineFlow("f1", 5, false, "")
 	defer clearClineFlow("f1")
 	deliverClineTerminal("test-token", oauthdevice.Snapshot{ID: "f1", Status: oauthdevice.StatusSucceeded})
 	if len(*seen) != 1 {
@@ -50,7 +50,7 @@ func TestClineCompletionWithoutActivateSaysItStayedInactive(t *testing.T) {
 
 func TestClineCancelIsNotReportedTwice(t *testing.T) {
 	seen := captureClineNotify(t)
-	trackClineFlow("f-cancel", 12, true)
+	trackClineFlow("f-cancel", 12, true, "")
 	defer clearClineFlow("f-cancel")
 	deliverClineTerminal("test-token", oauthdevice.Snapshot{ID: "f-cancel", Status: oauthdevice.StatusCanceled})
 	if len(*seen) != 0 {
@@ -63,7 +63,7 @@ func TestClineCancelIsNotReportedTwice(t *testing.T) {
 
 func TestClineSuccessReachesTheOwningChat(t *testing.T) {
 	seen := captureClineNotify(t)
-	trackClineFlow("f-ok", 88, false)
+	trackClineFlow("f-ok", 88, false, "")
 	defer clearClineFlow("f-ok")
 	deliverClineTerminal("test-token", oauthdevice.Snapshot{ID: "f-ok", Status: oauthdevice.StatusSucceeded})
 	if len(*seen) != 1 {
@@ -73,7 +73,7 @@ func TestClineSuccessReachesTheOwningChat(t *testing.T) {
 
 func TestClineSuccessIsNotDeliveredTwice(t *testing.T) {
 	seen := captureClineNotify(t)
-	trackClineFlow("f-once", 88, false)
+	trackClineFlow("f-once", 88, false, "")
 	defer clearClineFlow("f-once")
 	snapshot := oauthdevice.Snapshot{ID: "f-once", Status: oauthdevice.StatusSucceeded}
 	deliverClineTerminal("test-token", snapshot)
@@ -85,7 +85,7 @@ func TestClineSuccessIsNotDeliveredTwice(t *testing.T) {
 
 func TestClineLoginFailureExplainsAndOffersRetry(t *testing.T) {
 	seen := captureClineNotify(t)
-	trackClineFlow("f-fail", 6, true)
+	trackClineFlow("f-fail", 6, true, "")
 	defer clearClineFlow("f-fail")
 	deliverClineTerminal("test-token", oauthdevice.Snapshot{
 		ID: "f-fail", Status: oauthdevice.StatusFailed, Message: "Authorization expired",

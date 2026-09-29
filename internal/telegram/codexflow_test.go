@@ -173,7 +173,7 @@ func TestCompletionIsReportedWithoutTheCheckTap(t *testing.T) {
 	}
 	flowID := flow.Snapshot().FlowID
 	const chatID = int64(4242)
-	trackCodexFlow(flowID, chatID, true)
+	trackCodexFlow(flowID, chatID, true, "")
 	defer clearCodexFlow(flowID)
 	if got := flow.Snapshot().Status; got == codexauth.StatusSucceeded {
 		t.Fatal("flow succeeded before approval; the test would prove nothing")
@@ -252,7 +252,7 @@ func TestFailureIsReportedWithRecovery(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	flowID := flow.Snapshot().FlowID
-	trackCodexFlow(flowID, 99, true)
+	trackCodexFlow(flowID, 99, true, "")
 
 	if !awaitNotification(t, signal) {
 		t.Fatal("a denied login was never reported")
@@ -295,7 +295,7 @@ func TestCancelIsNotReportedAsAFailure(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	flowID := flow.Snapshot().FlowID
-	trackCodexFlow(flowID, 55, true)
+	trackCodexFlow(flowID, 55, true, "")
 	authMgr.Cancel(flowID)
 
 	select {

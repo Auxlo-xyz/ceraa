@@ -34,6 +34,10 @@ type hermesFlowOwner struct {
 	// the credential lands. A login started only to inspect status does not set
 	// it, and the outcome is then reported without switching provider unasked.
 	activate bool
+	// activeAtStart is the provider that was selected when this sign-in began, so
+	// the completion can tell whether the switch it was asked to make is still
+	// wanted. Read by the caller before the flow starts; see the MiniMax watcher.
+	activeAtStart string
 }
 
 // hermesFlows maps a flow id to the chat that owns it.
@@ -44,11 +48,16 @@ var hermesFlows sync.Map
 // Without this the callback cannot tell which chat to speak to. A login started
 // from the provider menu or from /hermes-login is otherwise invisible to the
 // completion path, which is why Hermes had no way to activate on its own.
-func trackHermesFlow(flowID string, chatID int64, activate bool) {
+//
+// Nothing is read here: the owner is stored in one map write, because the login
+// may already have finished and be waiting for an owner to talk to.
+func trackHermesFlow(flowID string, chatID int64, activate bool, activeAtStart string) {
 	if flowID == "" {
 		return
 	}
-	hermesFlows.Store(flowID, hermesFlowOwner{chatID: chatID, activate: activate})
+	hermesFlows.Store(flowID, hermesFlowOwner{
+		chatID: chatID, activate: activate, activeAtStart: activeAtStart,
+	})
 }
 
 // hermesFlowOwnerOf reports the owner of a flow.
@@ -108,7 +117,7 @@ func deliverHermesTerminal(token string, state hermesauth.TerminalState) {
 // conversation with nothing in the transcript to explain it is the surprising
 // outcome, so a silent success is not an option even when it would be tidier.
 func reportHermesSignedIn(token string, owner hermesFlowOwner, flowID string) {
-	if owner.activate {
+	if flowActivationStillWanted("Hermes", owner.activate, owner.activeAtStart) {
 		// activateHermesProvider sends its own confirmation naming the model, so
 		// posting another would be a duplicate.
 		activateHermesProvider(token, owner.chatID, flowID)
@@ -116,7 +125,7 @@ func reportHermesSignedIn(token string, owner hermesFlowOwner, flowID string) {
 	}
 	hermesNotify(token, owner.chatID,
 		"✅ Hermes sign-in completed. The Nous Portal credential is stored and ready.\n\n"+
-			"Hermes is signed in but not the active provider, because this sign-in did not ask to switch.",
+			flowNotActiveReason("Hermes", owner.activate),
 		hermesStatusKeyboard(false))
 }
 

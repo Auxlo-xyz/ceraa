@@ -39,6 +39,10 @@ type codexFlowOwner struct {
 	// the credential lands. A login started only to check status does not set it,
 	// and the outcome is then reported without switching provider unasked.
 	activate bool
+	// activeAtStart is the provider that was selected when this sign-in began, so
+	// the completion can tell whether the switch it was asked to make is still
+	// wanted. Read by the caller before the flow starts; see the MiniMax watcher.
+	activeAtStart string
 }
 
 // codexFlows maps a flow id to the chat that owns it.
@@ -49,11 +53,17 @@ var codexFlows sync.Map
 // Replaces the old pendingCodexActivation flag, which was keyed by chat and set
 // only by the provider menu. A login started from the typed command was therefore
 // invisible to the completion path and could never activate anything.
-func trackCodexFlow(flowID string, chatID int64, activate bool) {
+//
+// Nothing is read here: the owner is stored in one map write, because the login
+// may already have finished and be waiting for an owner to talk to. This matters
+// most for Codex, whose poller is already running by the time its id is known.
+func trackCodexFlow(flowID string, chatID int64, activate bool, activeAtStart string) {
 	if flowID == "" {
 		return
 	}
-	codexFlows.Store(flowID, codexFlowOwner{chatID: chatID, activate: activate})
+	codexFlows.Store(flowID, codexFlowOwner{
+		chatID: chatID, activate: activate, activeAtStart: activeAtStart,
+	})
 	pendingCodexActivation.Store(chatID, activate)
 }
 
@@ -103,23 +113,33 @@ func codexFlowForChat(chatID int64) *codexauth.Flow {
 // lookup would fail.
 func registerCodexCompletion(token string) {
 	authMgr.SetOnComplete(func(state codexauth.State) {
-		owner, ok := codexFlowOwnerOf(state.FlowID)
-		if !ok {
-			// Started by something other than a chat button, or already reported.
-			// Nothing to say to anyone in particular.
-			logger.Info("Codex login " + state.FlowID + " finished as " + state.Status + " with no owning chat")
-			return
-		}
-		clearCodexFlow(state.FlowID)
-		switch state.Status {
-		case codexauth.StatusSucceeded:
-			reportCodexSignedIn(token, owner)
-		case codexauth.StatusFailed:
-			reportCodexLoginFailed(token, owner.chatID, state)
-		case codexauth.StatusCanceled:
-			// Deliberate, and the button that did it already edited its own message.
-		}
+		deliverCodexTerminal(token, state)
 	})
+}
+
+// deliverCodexTerminal reports one terminal login state to the chat that owns it.
+//
+// Split out of the callback for the reason the other watchers did: registering it
+// hands a closure to the manager, and there is no way to make the manager deliver a
+// state on demand, so the branch that decides whether to speak at all is otherwise
+// reached only in production.
+func deliverCodexTerminal(token string, state codexauth.State) {
+	owner, ok := codexFlowOwnerOf(state.FlowID)
+	if !ok {
+		// Started by something other than a chat button, or already reported.
+		// Nothing to say to anyone in particular.
+		logger.Info("Codex login " + state.FlowID + " finished as " + state.Status + " with no owning chat")
+		return
+	}
+	clearCodexFlow(state.FlowID)
+	switch state.Status {
+	case codexauth.StatusSucceeded:
+		reportCodexSignedIn(token, owner)
+	case codexauth.StatusFailed:
+		reportCodexLoginFailed(token, owner.chatID, state)
+	case codexauth.StatusCanceled:
+		// Deliberate, and the button that did it already edited its own message.
+	}
 }
 
 // reportCodexSignedIn confirms a completed login and switches provider when that
@@ -129,7 +149,7 @@ func registerCodexCompletion(token string) {
 // conversation with nothing in the transcript to explain it is the surprising
 // outcome, so a silent success is not an option even when it would be tidier.
 func reportCodexSignedIn(token string, owner codexFlowOwner) {
-	if owner.activate {
+	if flowActivationStillWanted("Codex", owner.activate, owner.activeAtStart) {
 		// activateCodexProvider sends its own confirmation naming the model, so
 		// posting another would be a duplicate.
 		activateCodexProvider(token, owner.chatID)
@@ -137,7 +157,7 @@ func reportCodexSignedIn(token string, owner codexFlowOwner) {
 	}
 	codexNotify(token, owner.chatID,
 		"✅ Codex sign-in completed. Access token valid until "+codexExpiryLabel()+".\n\n"+
-			"Codex is signed in but not the active provider, because this sign-in did not ask to switch.",
+			flowNotActiveReason("Codex", owner.activate),
 		codexStatusKeyboard(true, false))
 }
 

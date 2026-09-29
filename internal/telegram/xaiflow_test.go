@@ -43,7 +43,7 @@ func TestXaiCompletionWithNoOwnerIsQuiet(t *testing.T) {
 func TestXaiCompletionWithoutActivateSaysItStayedInactive(t *testing.T) {
 	seen := captureXaiNotify(t)
 
-	trackXaiFlow("f1", 5, false)
+	trackXaiFlow("f1", 5, false, "")
 	defer clearXaiFlow("f1")
 	deliverXaiTerminal("test-token", oauthdevice.Snapshot{ID: "f1", Status: oauthdevice.StatusSucceeded})
 
@@ -59,7 +59,7 @@ func TestXaiCompletionWithoutActivateSaysItStayedInactive(t *testing.T) {
 func TestXaiCancelIsNotReportedTwice(t *testing.T) {
 	seen := captureXaiNotify(t)
 
-	trackXaiFlow("f-cancel", 12, true)
+	trackXaiFlow("f-cancel", 12, true, "")
 	defer clearXaiFlow("f-cancel")
 	deliverXaiTerminal("test-token", oauthdevice.Snapshot{ID: "f-cancel", Status: oauthdevice.StatusCanceled})
 
@@ -76,7 +76,7 @@ func TestXaiCancelIsNotReportedTwice(t *testing.T) {
 func TestXaiSuccessReachesTheOwningChat(t *testing.T) {
 	seen := captureXaiNotify(t)
 
-	trackXaiFlow("f-ok", 88, false)
+	trackXaiFlow("f-ok", 88, false, "")
 	defer clearXaiFlow("f-ok")
 	deliverXaiTerminal("test-token", oauthdevice.Snapshot{ID: "f-ok", Status: oauthdevice.StatusSucceeded})
 
@@ -92,7 +92,7 @@ func TestXaiSuccessReachesTheOwningChat(t *testing.T) {
 func TestXaiSuccessIsNotDeliveredTwice(t *testing.T) {
 	seen := captureXaiNotify(t)
 
-	trackXaiFlow("f-once", 88, false)
+	trackXaiFlow("f-once", 88, false, "")
 	defer clearXaiFlow("f-once")
 	snapshot := oauthdevice.Snapshot{ID: "f-once", Status: oauthdevice.StatusSucceeded}
 	deliverXaiTerminal("test-token", snapshot)
@@ -107,7 +107,7 @@ func TestXaiSuccessIsNotDeliveredTwice(t *testing.T) {
 func TestXaiLoginFailureExplainsAndOffersRetry(t *testing.T) {
 	seen := captureXaiNotify(t)
 
-	trackXaiFlow("f-fail", 6, true)
+	trackXaiFlow("f-fail", 6, true, "")
 	defer clearXaiFlow("f-fail")
 	deliverXaiTerminal("test-token", oauthdevice.Snapshot{
 		ID: "f-fail", Status: oauthdevice.StatusFailed, Message: "Authorization expired",

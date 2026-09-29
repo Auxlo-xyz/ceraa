@@ -37,7 +37,7 @@ func captureHermesNotify(t *testing.T) *[]string {
 func TestHermesCompletionActivatesProviderWithoutATap(t *testing.T) {
 	captureHermesNotify(t)
 
-	trackHermesFlow("flow-1", 4242, true)
+	trackHermesFlow("flow-1", 4242, true, "")
 	defer clearHermesFlow("flow-1")
 
 	owner, ok := hermesFlowOwnerOf("flow-1")
@@ -56,7 +56,7 @@ func TestHermesCompletionActivatesProviderWithoutATap(t *testing.T) {
 func TestReportedHermesFlowIsCleared(t *testing.T) {
 	captureHermesNotify(t) // a duplicate report would land here
 
-	trackHermesFlow("flow-dup", 7, false)
+	trackHermesFlow("flow-dup", 7, false, "")
 	clearHermesFlow("flow-dup")
 	if _, ok := hermesFlowOwnerOf("flow-dup"); ok {
 		t.Error("the flow survived being cleared, so it would report twice")
@@ -83,7 +83,7 @@ func TestHermesCompletionWithNoOwnerIsQuiet(t *testing.T) {
 func TestHermesCancelIsNotReportedTwice(t *testing.T) {
 	seen := captureHermesNotify(t)
 
-	trackHermesFlow("flow-cancel", 12, true)
+	trackHermesFlow("flow-cancel", 12, true, "")
 	defer clearHermesFlow("flow-cancel")
 	deliverHermesTerminal("test-token", hermesauth.TerminalState{
 		FlowID: "flow-cancel", Status: hermesauth.StatusCanceled,
@@ -102,7 +102,7 @@ func TestHermesCancelIsNotReportedTwice(t *testing.T) {
 func TestHermesSuccessReachesTheOwningChat(t *testing.T) {
 	seen := captureHermesNotify(t)
 
-	trackHermesFlow("flow-ok", 88, false)
+	trackHermesFlow("flow-ok", 88, false, "")
 	defer clearHermesFlow("flow-ok")
 	deliverHermesTerminal("test-token", hermesauth.TerminalState{
 		FlowID: "flow-ok", Status: hermesauth.StatusSucceeded,
@@ -120,7 +120,7 @@ func TestHermesSuccessReachesTheOwningChat(t *testing.T) {
 func TestHermesSuccessIsNotDeliveredTwice(t *testing.T) {
 	seen := captureHermesNotify(t)
 
-	trackHermesFlow("flow-once", 88, false)
+	trackHermesFlow("flow-once", 88, false, "")
 	defer clearHermesFlow("flow-once")
 	state := hermesauth.TerminalState{FlowID: "flow-once", Status: hermesauth.StatusSucceeded}
 	deliverHermesTerminal("test-token", state)

@@ -39,7 +39,7 @@ func TestMinimaxCompletionWithNoOwnerIsQuiet(t *testing.T) {
 
 func TestMinimaxCompletionWithoutActivateSaysItStayedInactive(t *testing.T) {
 	seen := captureMinimaxNotify(t)
-	trackMinimaxFlow("f1", 5, false)
+	trackMinimaxFlow("f1", 5, false, "")
 	defer clearMinimaxFlow("f1")
 	deliverMinimaxTerminal("test-token", oauthdevice.Snapshot{ID: "f1", Status: oauthdevice.StatusSucceeded})
 	if len(*seen) != 1 {
@@ -53,7 +53,7 @@ func TestMinimaxCompletionWithoutActivateSaysItStayedInactive(t *testing.T) {
 // A cancel is the user's own action and must not be reported as a failure.
 func TestMinimaxCancelIsNotReportedTwice(t *testing.T) {
 	seen := captureMinimaxNotify(t)
-	trackMinimaxFlow("f-cancel", 12, true)
+	trackMinimaxFlow("f-cancel", 12, true, "")
 	defer clearMinimaxFlow("f-cancel")
 	deliverMinimaxTerminal("test-token", oauthdevice.Snapshot{ID: "f-cancel", Status: oauthdevice.StatusCanceled})
 	if len(*seen) != 0 {
@@ -66,7 +66,7 @@ func TestMinimaxCancelIsNotReportedTwice(t *testing.T) {
 
 func TestMinimaxSuccessReachesTheOwningChat(t *testing.T) {
 	seen := captureMinimaxNotify(t)
-	trackMinimaxFlow("f-ok", 88, false)
+	trackMinimaxFlow("f-ok", 88, false, "")
 	defer clearMinimaxFlow("f-ok")
 	deliverMinimaxTerminal("test-token", oauthdevice.Snapshot{ID: "f-ok", Status: oauthdevice.StatusSucceeded})
 	if len(*seen) != 1 {
@@ -76,7 +76,7 @@ func TestMinimaxSuccessReachesTheOwningChat(t *testing.T) {
 
 func TestMinimaxSuccessIsNotDeliveredTwice(t *testing.T) {
 	seen := captureMinimaxNotify(t)
-	trackMinimaxFlow("f-once", 88, false)
+	trackMinimaxFlow("f-once", 88, false, "")
 	defer clearMinimaxFlow("f-once")
 	snapshot := oauthdevice.Snapshot{ID: "f-once", Status: oauthdevice.StatusSucceeded}
 	deliverMinimaxTerminal("test-token", snapshot)
@@ -88,7 +88,7 @@ func TestMinimaxSuccessIsNotDeliveredTwice(t *testing.T) {
 
 func TestMinimaxLoginFailureExplainsAndOffersRetry(t *testing.T) {
 	seen := captureMinimaxNotify(t)
-	trackMinimaxFlow("f-fail", 6, true)
+	trackMinimaxFlow("f-fail", 6, true, "")
 	defer clearMinimaxFlow("f-fail")
 	deliverMinimaxTerminal("test-token", oauthdevice.Snapshot{
 		ID: "f-fail", Status: oauthdevice.StatusFailed, Message: "Authorization expired",

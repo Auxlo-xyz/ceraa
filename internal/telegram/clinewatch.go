@@ -18,16 +18,25 @@ import (
 type clineFlowOwner struct {
 	chatID   int64
 	activate bool
+	// activeAtStart is the provider that was selected when this sign-in began, so
+	// the completion can tell whether the switch it was asked to make is still
+	// wanted. Read by the caller before the flow starts; see the MiniMax watcher.
+	activeAtStart string
 }
 
 var clineFlows sync.Map
 
 // trackClineFlow records the owner of a flow so its outcome can be reported.
-func trackClineFlow(flowID string, chatID int64, activate bool) {
+//
+// Nothing is read here: the owner is stored in one map write, because the login
+// may already have finished and be waiting for an owner to talk to.
+func trackClineFlow(flowID string, chatID int64, activate bool, activeAtStart string) {
 	if flowID == "" {
 		return
 	}
-	clineFlows.Store(flowID, clineFlowOwner{chatID: chatID, activate: activate})
+	clineFlows.Store(flowID, clineFlowOwner{
+		chatID: chatID, activate: activate, activeAtStart: activeAtStart,
+	})
 }
 
 func clineFlowOwnerOf(flowID string) (clineFlowOwner, bool) {
@@ -77,15 +86,15 @@ func clineFailureDetail(message string) string {
 }
 
 // reportClineSignedIn confirms the login and switches provider when that is what
-// the chat asked for.
+// the chat asked for, and when the choice has not since been made afresh.
 func reportClineSignedIn(token string, owner clineFlowOwner, flowID string) {
-	if owner.activate {
+	if flowActivationStillWanted("Cline", owner.activate, owner.activeAtStart) {
 		activateClineProvider(token, owner.chatID, flowID)
 		return
 	}
 	clineNotify(token, owner.chatID,
-		"✅ Cline sign-in completed. The Grok credential is stored and ready.\n\n"+
-			"Cline is signed in but not the active provider, because this sign-in did not ask to switch.",
+		"✅ Cline sign-in completed. The credential is stored and ready.\n\n"+
+			flowNotActiveReason("Cline", owner.activate),
 		clineStatusKeyboard(false))
 }
 

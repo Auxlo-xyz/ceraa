@@ -1431,6 +1431,9 @@ func handleHermesLogin(token string, chatID int64, text string) {
 			model = parts[2]
 		}
 	}
+	// Captured before the flow starts: by the time the id is known the poller may
+	// already have finished, and the owner has to be registered in one write.
+	activeAtStart := defaultState.provider()
 	flow, err := hermesAuthMgr.Start(context.Background(), "nous")
 	if err != nil {
 		send(token, chatID, "Failed to start Hermes login: "+err.Error())
@@ -1439,7 +1442,7 @@ func handleHermesLogin(token string, chatID int64, text string) {
 	hermesLoginModels.Store(flow.ID, model)
 	// Record the owner so the completion path can post the outcome to this chat
 	// and activate the provider. A typed command used to be invisible to it.
-	trackHermesFlow(flow.ID, chatID, model != "")
+	trackHermesFlow(flow.ID, chatID, model != "", activeAtStart)
 	keyboard, _ := flow.InlineKeyboardJSON()
 	var markup map[string]any
 	if err := json.Unmarshal(keyboard, &markup); err != nil {
@@ -1493,23 +1496,28 @@ func activateHermesProvider(token string, chatID int64, flowID string) {
 }
 
 func handleCodexLogin(token string, chatID int64) {
+	// Captured before the flow starts; see handleHermesLogin.
+	activeAtStart := defaultState.provider()
 	state, err := authMgr.Start()
 	if err != nil {
 		send(token, chatID, "Failed to start Codex login: "+err.Error())
 		return
 	}
+	// Registered before the menu is even built, so the watcher can post the
+	// outcome to this chat without the user having to tap Check. A login started
+	// from the typed command goes through here too, which is what it did not do
+	// before: pendingCodexActivation was only set by the provider menu, so a
+	// command-started login could never finish on its own.
+	//
+	// Also first for timing: the poller starts with the flow and answers on a
+	// loop, so no file read belongs between Start and this registration.
+	trackCodexFlow(state.Snapshot().FlowID, chatID, true, activeAtStart)
 	kb, _ := state.InlineKeyboardJSON()
 	var markup map[string]any
 	if err := json.Unmarshal(kb, &markup); err != nil {
 		send(token, chatID, "Failed to encode Codex login menu: "+err.Error())
 		return
 	}
-	// Record the owner so the watcher can post the outcome to this chat without
-	// the user having to tap Check. A login started from the typed command goes
-	// through here too, which is what it did not do before: pendingCodexActivation
-	// was only set by the provider menu, so a command-started login could never
-	// finish on its own.
-	trackCodexFlow(state.Snapshot().FlowID, chatID, true)
 	sendHTML(token, chatID, codexProgressHTML(state.Snapshot()), markup)
 }
 
@@ -1631,11 +1639,15 @@ func selectCodexProvider(token string, chatID int64) {
 		activateCodexProvider(token, chatID)
 		return
 	}
+	// Captured before the flow starts; see handleHermesLogin.
+	activeAtStart := defaultState.provider()
 	flow, err := authMgr.Start()
 	if err != nil {
 		send(token, chatID, "Failed to start Codex login: "+err.Error())
 		return
 	}
+	// Registered first, for the reason handleCodexLogin gives.
+	trackCodexFlow(flow.Snapshot().FlowID, chatID, true, activeAtStart)
 	kb, err := flow.InlineKeyboardJSON()
 	if err != nil {
 		send(token, chatID, "Failed to encode Codex login menu: "+err.Error())
@@ -1646,7 +1658,6 @@ func selectCodexProvider(token string, chatID int64) {
 		send(token, chatID, "Failed to encode Codex login menu.")
 		return
 	}
-	trackCodexFlow(flow.Snapshot().FlowID, chatID, true)
 	sendHTML(token, chatID,
 		"Sign in to ChatGPT to use Codex. Open the link, approve the code, and Ceraa will switch to Codex on its own — no need to press Check.\n\n"+codexProgressHTML(flow.Snapshot()),
 		markup)
@@ -1770,11 +1781,16 @@ var selectHermesProviderImpl = func(token string, chatID int64) {
 // startHermesLogin begins a Hermes device login whether or not a credential
 // exists. Reachable only from an explicit "Sign in again"; see startMinimaxLogin.
 func startHermesLogin(token string, chatID int64) {
+	// Captured before the flow starts; see handleHermesLogin.
+	activeAtStart := defaultState.provider()
 	flow, err := hermesAuthMgr.Start(context.Background(), "nous")
 	if err != nil {
 		send(token, chatID, "Failed to start Hermes login: "+err.Error())
 		return
 	}
+	// activate: true, because reaching Hermes from the provider menu is a request
+	// to use it. A typed /hermes-status is a request to look, not to switch.
+	trackHermesFlow(flow.ID, chatID, true, activeAtStart)
 	keyboard, err := flow.InlineKeyboardJSON()
 	if err != nil {
 		send(token, chatID, "Failed to encode Hermes login menu: "+err.Error())
@@ -1785,9 +1801,6 @@ func startHermesLogin(token string, chatID int64) {
 		send(token, chatID, "Failed to encode Hermes login menu.")
 		return
 	}
-	// activate: true, because reaching Hermes from the provider menu is a request
-	// to use it. A typed /hermes-status is a request to look, not to switch.
-	trackHermesFlow(flow.ID, chatID, true)
 	sendHTML(token, chatID,
 		"Sign in to Nous Portal to use Hermes. Open the link, approve the code, and Ceraa will switch to Hermes on its own — no need to press Check.\n\n"+flow.ResultMessage(),
 		markup)
@@ -1815,13 +1828,15 @@ var xaiEntryPoint = func(token string, chatID int64) {
 // startXaiLogin begins an xAI device login whether or not a credential exists.
 // Reachable only from an explicit "Sign in again"; see startMinimaxLogin.
 func startXaiLogin(token string, chatID int64) {
+	// Captured before the flow starts; see handleHermesLogin.
+	activeAtStart := defaultState.provider()
 	flow, err := xaiLogin.Start(context.Background())
 	if err != nil {
 		send(token, chatID, "Failed to start xAI login: "+err.Error())
 		return
 	}
 	snapshot := flow.Snapshot()
-	trackXaiFlow(snapshot.ID, chatID, true)
+	trackXaiFlow(snapshot.ID, chatID, true, activeAtStart)
 	sendHTML(token, chatID,
 		"Sign in to xAI to use Grok. Open the link, approve the code, and Ceraa will switch to xAI on its own — no need to press Check.\n\n"+
 			"🔐 xAI Device Login\n\n1. Open: "+snapshot.VerificationURL+"\n2. Enter code: <code>"+snapshot.UserCode+"</code>\n3. Approve in the browser, then it activates by itself",
@@ -1922,13 +1937,15 @@ var minimaxEntryPoint = func(token string, chatID int64) {
 // credential lives in the encrypted store. Re-authentication was therefore
 // unreachable by any route.
 func startMinimaxLogin(token string, chatID int64) {
+	// Captured before the flow starts; see handleHermesLogin.
+	activeAtStart := defaultState.provider()
 	flow, err := minimaxLogin.Start(context.Background())
 	if err != nil {
 		send(token, chatID, "Failed to start MiniMax login: "+err.Error())
 		return
 	}
 	snapshot := flow.Snapshot()
-	trackMinimaxFlow(snapshot.ID, chatID, true)
+	trackMinimaxFlow(snapshot.ID, chatID, true, activeAtStart)
 	sendHTML(token, chatID,
 		"Sign in to MiniMax to use it. Open the link, enter the code, approve, and Ceraa will switch to MiniMax on its own — no need to press Check.\n\n"+
 			"🔐 MiniMax Device Login\n\n1. Open: "+snapshot.VerificationURL+"\n2. Enter code: <code>"+snapshot.UserCode+"</code>\n3. Approve in the browser, then it activates by itself",
@@ -2042,13 +2059,15 @@ var clineEntryPoint = func(token string, chatID int64) {
 // startClineLogin begins a Cline device login whether or not a credential exists.
 // Reachable only from an explicit "Sign in again"; see startMinimaxLogin.
 func startClineLogin(token string, chatID int64) {
+	// Captured before the flow starts; see handleHermesLogin.
+	activeAtStart := defaultState.provider()
 	flow, err := clineLogin.Start(context.Background())
 	if err != nil {
 		send(token, chatID, "Failed to start Cline login: "+err.Error())
 		return
 	}
 	snapshot := flow.Snapshot()
-	trackClineFlow(snapshot.ID, chatID, true)
+	trackClineFlow(snapshot.ID, chatID, true, activeAtStart)
 	sendHTML(token, chatID,
 		"Sign in to your Cline Account to use the Cline gateway. Open the link, enter the code, approve, and Ceraa will switch on its own — no need to press Check.\n\n"+
 			"🔐 Cline Account Login\n\n1. Open: "+snapshot.VerificationURL+"\n2. Enter code: <code>"+snapshot.UserCode+"</code>\n3. Approve in the browser, then it activates by itself",
