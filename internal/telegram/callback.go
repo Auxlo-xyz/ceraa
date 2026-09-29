@@ -900,7 +900,24 @@ func handleCallback(token string, q *callbackQuery) {
 		}
 		status, _, _ := flow.StatusSnapshot()
 		if status == "succeeded" {
-			activateHermesProvider(token, chatID, flowID)
+			// The watcher decides this normally, and it refuses an activation
+			// whose switch was superseded. Pressing Check reached the activation
+			// without passing through that guard, so a user who signed in, switched
+			// to another provider while waiting, and then tapped Check was switched
+			// back by a button labelled with a flow id.
+			//
+			// An unowned flow is reported and not switched. The owner is cleared
+			// once the watcher has delivered, so a Check after that finds nothing
+			// and correctly does nothing: the decision was already made, in the
+			// one place that makes it.
+			if owner, owned := hermesFlowOwnerOf(flowID); owned &&
+				flowActivationStillWanted("Hermes", owner.activate, owner.activeAtStart) {
+				activateHermesProvider(token, chatID, flowID)
+				return
+			}
+			editCallback(token, chatID, q.Message.MessageID,
+				"✅ Hermes sign-in completed. The Nous Portal credential is stored and ready.",
+				hermesStatusKeyboard(false))
 			return
 		}
 		editCallback(token, chatID, q.Message.MessageID, flow.ResultMessage(), nil)

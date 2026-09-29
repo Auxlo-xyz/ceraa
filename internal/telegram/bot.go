@@ -1446,19 +1446,36 @@ func handleHermesLogin(token string, chatID int64, text string) {
 	sendHTML(token, chatID, flow.ResultMessage(), markup)
 }
 
+// handleHermesStatus reports whether a Nous Portal credential is stored and what
+// this chat has in flight.
+//
+// It never changes the active provider. It used to: it walked every Hermes flow
+// on the host and activated on the first that had succeeded, so typing
+// /hermes-status switched the model answering underneath the conversation. The
+// sign-in watchers already refuse an activation whose switch was superseded, and
+// this path never went through them at all. handleCodexStatus has always been
+// only a query, which is what this is now.
+//
+// Credential state is read first because flows are transient. Sign in yesterday
+// and no flow exists today, which the old code answered with "no completed login"
+// for a credential that was sitting there working. The question being asked is
+// whether Hermes can be used, not whether a flow object happens to be resident.
 func handleHermesStatus(token string, chatID int64) {
-	for _, flow := range hermesAuthMgr.ListFlows() {
-		status, _, userCode := flow.StatusSnapshot()
-		if status == "succeeded" {
-			activateHermesProvider(token, chatID, flow.ID)
+	if hermesauth.SignedIn() {
+		if defaultState.provider() == llm.HermesSubscription {
+			hermesNotify(token, chatID, "✅ Nous Portal credential stored. Hermes is the active provider.", hermesStatusKeyboard(true))
 			return
 		}
-		if status == "waiting" || status == "checking" {
-			send(token, chatID, "🔄 Hermes login in progress. Code: "+userCode)
+		hermesNotify(token, chatID, "✅ Nous Portal credential stored. Another provider is active.", hermesStatusKeyboard(true))
+		return
+	}
+	if flow := hermesFlowForChat(chatID); flow != nil {
+		if status, _, userCode := flow.StatusSnapshot(); status == "waiting" || status == "checking" {
+			hermesNotify(token, chatID, "🔄 Hermes login in progress. Code: "+userCode, nil)
 			return
 		}
 	}
-	send(token, chatID, "❌ No completed Hermes login. Use /hermes-login to start Nous Portal login.")
+	hermesNotify(token, chatID, "❌ No Nous Portal credential stored. Use /hermes-login to sign in.", hermesStatusKeyboard(false))
 }
 
 func activateHermesProvider(token string, chatID int64, flowID string) {

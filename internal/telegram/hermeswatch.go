@@ -76,6 +76,30 @@ func clearHermesFlow(flowID string) {
 	hermesFlows.Delete(flowID)
 }
 
+// hermesFlowForChat returns the login flow a chat started.
+//
+// Scoped to the chat on purpose. ListFlows is every flow on the host, so a status
+// reply built from it describes someone else's login: it would report a device
+// code belonging to a different chat and answer a question the asker did not
+// ask. Mirrors codexFlowForChat.
+func hermesFlowForChat(chatID int64) *hermesauth.LoginFlow {
+	var found *hermesauth.LoginFlow
+	hermesFlows.Range(func(key, value any) bool {
+		owner, ok := value.(hermesFlowOwner)
+		if !ok || owner.chatID != chatID {
+			return true
+		}
+		flowID, _ := key.(string)
+		flow, err := hermesAuthMgr.Check(flowID)
+		if err != nil {
+			return true
+		}
+		found = flow
+		return false
+	})
+	return found
+}
+
 // registerHermesCompletion wires the manager's completion callback to the
 // reporting below. Called once at startup.
 func registerHermesCompletion(token string) {
