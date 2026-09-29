@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,74 @@ type Entry struct {
 	SessionID string    `json:"session_id,omitempty"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+	// Seen counts how many times this exact memory has been asserted. It is the
+	// corroboration count, and Add maintains it rather than treating a repeat as a
+	// duplicate to discard.
+	//
+	// The old behaviour returned the existing entry unchanged on a repeat, so
+	// re-stating something the agent already knew was worth nothing: the store
+	// could not tell a preference mentioned once from one confirmed many times.
+	Seen int `json:"seen,omitempty"`
+	// SeenAt is when it was last asserted, which is what decay is measured from.
+	//
+	// CreatedAt is deliberately not reused for that. Decay is about how long since
+	// anyone last confirmed it, not how long ago the file learned about it, and
+	// conflating them would make a repeatedly confirmed old preference fade at the
+	// rate of an unconfirmed new one.
+	SeenAt time.Time `json:"seen_at,omitempty"`
+}
+
+// Decay and corroboration, and why the score is never stored.
+//
+// memoryHalfLifeDays is how long a single unconfirmed assertion takes to halve in
+// weight. One constant and no config: the shape Hermes uses for this is a
+// DecayConfig with an enabled flag and two dialects, and nothing here needs either,
+// because the cost of being wrong is a preference that fades and can be re-asserted
+// rather than a preference that is never learned.
+const memoryHalfLifeDays = 30.0
+
+// memoryScoreFloor is the weight below which an entry is not worth the prompt
+// bytes. Entries fade rather than disappear, so this is what keeps a long-lived
+// store from rendering its entire history forever.
+//
+// It is low on purpose. The failure this guards against is unbounded growth in the
+// tail of the prompt, and anything genuinely relevant will be re-confirmed by the
+// next time it matters, which pushes it straight back above the floor.
+const memoryScoreFloor = 0.08
+
+// corroborationWeight maps a confirmation count onto [0,1), saturating.
+//
+// 1 - exp(-k*n) rises steeply for the first few confirmations and then flattens, so
+// the difference between once and twice counts for much more than the difference
+// between nine times and ten. A preference does not become more trustworthy
+// linearly with repetition, and a linear count would let a frequently-touched
+// trivial note outrank a genuinely load-bearing one.
+func corroborationWeight(seen int) float64 {
+	if seen < 1 {
+		seen = 1
+	}
+	return 1 - math.Exp(-0.3*float64(seen))
+}
+
+// score is one entry's weight at a point in time: corroboration discounted by age.
+//
+// Computed, never persisted. The store is read on every turn by Live, so a stored
+// score would be a number that has to be refreshed, snapshotted and migrated;
+// computing it here means it cannot be stale, and there is nothing to restore.
+//
+// A zero Seen means the entry predates this field. It is treated as one
+// confirmation rather than zero, so an existing store keeps working unchanged
+// instead of every memory falling below the floor on upgrade.
+func score(entry Entry, now time.Time) float64 {
+	corroboration := corroborationWeight(entry.Seen)
+	if entry.SeenAt.IsZero() {
+		return corroboration
+	}
+	ageDays := now.Sub(entry.SeenAt).Hours() / 24
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	return corroboration * math.Exp(-math.Ln2*ageDays/memoryHalfLifeDays)
 }
 
 type Store struct {
@@ -75,14 +145,22 @@ func (s *Store) Add(projectID, sessionID, content string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	for i := range doc.Entries {
 		if sameMemory(doc.Entries[i], projectID, sessionID, content) {
+			// A repeat is evidence, not a duplicate. Returning early here is what
+			// made a re-confirmed preference worth exactly as much as one asserted
+			// once, so the count and the refresh below are the whole change.
+			doc.Entries[i].Seen++
+			doc.Entries[i].SeenAt = now
+			if err := save(s.path, doc); err != nil {
+				return nil, err
+			}
 			entry := doc.Entries[i]
 			return &entry, nil
 		}
 	}
 
-	now := time.Now().UTC()
 	entry := Entry{
 		ID:        memoryID(projectID, sessionID, content),
 		Scope:     scopeFor(sessionID),
@@ -90,6 +168,8 @@ func (s *Store) Add(projectID, sessionID, content string) (*Entry, error) {
 		SessionID: sessionID,
 		Content:   content,
 		CreatedAt: now,
+		Seen:      1,
+		SeenAt:    now,
 	}
 	doc.Entries = append(doc.Entries, entry)
 	if err := save(s.path, doc); err != nil {
@@ -157,6 +237,55 @@ func (s *Store) Remove(id string) error {
 	return fmt.Errorf("remove memory %s: %w", id, os.ErrNotExist)
 }
 
+// Confirm records that an existing memory still holds, strengthening it and
+// resetting its decay.
+//
+// By id rather than by content on purpose. Add asserts a statement and dedups on
+// exact wording, so a model asked to "confirm" something from the rendered context
+// has to reproduce the stored text byte for byte to hit the same entry. Restating
+// it with different punctuation creates a second, near-duplicate memory instead,
+// which is the failure this method exists to make impossible.
+//
+// Scoped like every other write: an id from another project or session is not
+// found, so a guess cannot corroborate something it cannot see.
+func (s *Store) Confirm(projectID, sessionID, id string) error {
+	projectID = strings.TrimSpace(projectID)
+	sessionID = strings.TrimSpace(sessionID)
+	id = strings.TrimSpace(id)
+	if projectID == "" {
+		return fmt.Errorf("project ID is required")
+	}
+	if id == "" {
+		return fmt.Errorf("memory ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := flock.Acquire(filepath.Join(s.dir, ".memory.lock"))
+	if err != nil {
+		return fmt.Errorf("lock memory store: %w", err)
+	}
+	defer lock.Release()
+
+	doc, err := load(s.path)
+	if err != nil {
+		return err
+	}
+	for i := range doc.Entries {
+		entry := &doc.Entries[i]
+		if entry.ID != id {
+			continue
+		}
+		if entry.ProjectID != projectID || (entry.SessionID != "" && entry.SessionID != sessionID) {
+			return fmt.Errorf("confirm memory %s: %w", id, os.ErrNotExist)
+		}
+		entry.Seen++
+		entry.SeenAt = time.Now().UTC()
+		return save(s.path, doc)
+	}
+	return fmt.Errorf("confirm memory %s: %w", id, os.ErrNotExist)
+}
+
 func (s *Store) RenderContext(projectID, sessionID string, maxBytes int) (string, error) {
 	entries, err := s.List(projectID, sessionID)
 	if err != nil {
@@ -170,10 +299,26 @@ func RenderContext(entries []Entry, maxBytes int) string {
 		return ""
 	}
 	const prefix = "<memory>\n"
+	now := time.Now()
+
+	// Order by weight rather than by recency, and drop what has faded below the
+	// floor. Newest-first meant a store only ever forgot by being scrolled off the
+	// byte budget, which is a memory that cannot expire.
+	//
+	// A stable sort by descending weight, so equal scores keep insertion order and
+	// two memories asserted in the same turn cannot swap places between renders.
+	ranked := make([]Entry, len(entries))
+	copy(ranked, entries)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return score(ranked[i], now) > score(ranked[j], now)
+	})
+
 	var out strings.Builder
 	out.WriteString(prefix)
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
+	for _, entry := range ranked {
+		if score(entry, now) < memoryScoreFloor {
+			continue
+		}
 		item := fmt.Sprintf("<memory-entry scope=%q project=%q", entry.Scope, html.EscapeString(entry.ProjectID))
 		if entry.SessionID != "" {
 			item += fmt.Sprintf(" session=%q", html.EscapeString(entry.SessionID))

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
@@ -15,13 +16,13 @@ type MemoryTool struct {
 
 func (m *MemoryTool) Name() string { return "memory" }
 func (m *MemoryTool) Description() string {
-	return "Store or retrieve compact project and session memory. Use for durable preferences, decisions, and unfinished work, not full transcripts."
+	return "Store or retrieve compact project and session memory. Use for durable preferences, decisions, and unfinished work, not full transcripts. Memories fade unless re-asserted, so confirm one that still holds and contradict one the user has reversed."
 }
 func (m *MemoryTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action":  map[string]any{"type": "string", "enum": []string{"add", "list", "remove"}},
+			"action":  map[string]any{"type": "string", "enum": []string{"add", "confirm", "contradict", "list", "remove"}},
 			"content": map[string]any{"type": "string", "description": "Compact memory to add"},
 			"id":      map[string]any{"type": "string", "description": "Memory ID to remove"},
 		},
@@ -30,8 +31,8 @@ func (m *MemoryTool) Schema() map[string]any {
 }
 func (m *MemoryTool) Translate(args map[string]any) (operation.Spec, error) {
 	action, _ := args["action"].(string)
-	if action != "add" && action != "list" && action != "remove" {
-		return operation.Spec{}, fmt.Errorf("memory action must be add, list, or remove")
+	if action != "add" && action != "confirm" && action != "contradict" && action != "list" && action != "remove" {
+		return operation.Spec{}, fmt.Errorf("memory action must be add, confirm, contradict, list, or remove")
 	}
 	return operation.Spec{Type: "memory", Args: args}, nil
 }
@@ -53,6 +54,31 @@ func (m *MemoryTool) RunContext(ctx context.Context, spec operation.Spec) (strin
 			return "", err
 		}
 		return fmt.Sprintf("Memory saved: %s", entry.ID), nil
+	case "confirm":
+		// The id of an existing memory that still holds. Add is the assertion
+		// path and dedups on content, so confirm and add differ only in intent:
+		// confirm restates something already known and must not invent wording
+		// that misses the exact-content match and creates a second entry.
+		id, _ := spec.Args["id"].(string)
+		if strings.TrimSpace(id) == "" {
+			return "", fmt.Errorf("confirm needs the id of an existing memory")
+		}
+		if err := m.Store.Confirm(project, sessionID, id); err != nil {
+			return "", err
+		}
+		return "Memory confirmed: " + id, nil
+	case "contradict":
+		// The user has reversed this. Removing it is the whole point: leaving it
+		// behind leaves a preference that is still being rendered and still reads
+		// as current.
+		id, _ := spec.Args["id"].(string)
+		if strings.TrimSpace(id) == "" {
+			return "", fmt.Errorf("contradict needs the id of an existing memory")
+		}
+		if err := m.Store.Remove(id); err != nil {
+			return "", err
+		}
+		return "Memory contradicted and dropped: " + id, nil
 	case "list":
 		return m.Store.RenderContext(project, sessionID, 3000)
 	case "remove":
