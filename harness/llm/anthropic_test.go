@@ -1126,3 +1126,74 @@ func testPNG(t *testing.T) []byte {
 	}
 	return buf.Bytes()
 }
+
+// TestUsageIsDeliveredOncePerStream is the assertion the other stream tests in
+// this file structurally cannot make. They each keep the last usage they see, so
+// a usage delivered twice and a usage delivered once are indistinguishable.
+//
+// The coordinator adds every delta it receives and counts the prompt locally
+// once per request, so a stream that delivered usage on message_stop and again
+// when the body ended reported each request's tokens twice. That is exactly 2.0x
+// our own count, and because a real tokenizer counts more than the local len/4
+// estimate it crossed the 2.0 agreement bound in ReconcileUsage and the run was
+// marked untrusted. An untrusted run is not noisy: it reports no cost at all and
+// a 0% cache read ratio, so both figures an operator uses to judge a provider
+// went to zero. MiniMax runs on this transport.
+func TestUsageIsDeliveredOncePerStream(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"MiniMax-M3"},"usage":{"input_tokens":120,"output_tokens":0}}`,
+		`data: {"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`data: {"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+		`data: {"type":"message_delta","usage":{"output_tokens":42}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var deliveries int
+	var summed UsageInfo
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			deliveries++
+			summed.Add(*r.Usage)
+		}
+	}); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	if deliveries != 1 {
+		t.Errorf("usage delivered %d times, want 1: the coordinator sums every delta, so twice is 2.0x the local count", deliveries)
+	}
+	if summed.InputTokens != 120 || summed.OutputTokens != 42 {
+		t.Errorf("summed usage = %d in / %d out, want 120 / 42", summed.InputTokens, summed.OutputTokens)
+	}
+}
+
+// The end-of-body emit is the fallback for a stream that ends without
+// message_stop, which a truncated-but-clean body does. Guarding the duplicate
+// must not take that safety net with it.
+func TestUsageStillArrivesWhenTheStreamHasNoMessageStop(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"MiniMax-M3"},"usage":{"input_tokens":120,"output_tokens":42}}`,
+		`data: {"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`data: {"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+	}, "\n\n") + "\n"
+
+	var deliveries int
+	var last *UsageInfo
+	client := &StreamingClient{}
+	if err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if r.Usage != nil {
+			deliveries++
+			last = r.Usage
+		}
+	}); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	if deliveries != 1 {
+		t.Errorf("usage delivered %d times, want 1", deliveries)
+	}
+	if last == nil || last.InputTokens != 120 {
+		t.Errorf("terminal usage = %+v, want 120 input tokens", last)
+	}
+}

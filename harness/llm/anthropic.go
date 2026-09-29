@@ -665,6 +665,22 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 	// double the tokens, which is the same class of error as the one the usage
 	// trust guard exists to catch.
 	var usage *UsageInfo
+	// sawStop records that a terminal event already carried the usage out.
+	//
+	// message_stop emits the final delta and the end of the body emits one again,
+	// so a well-formed stream reported its tokens twice. The coordinator adds
+	// every delta it receives and counts the prompt locally once per request, so
+	// the run's reported input landed at exactly 2x ours - and since a real
+	// tokenizer counts more than the local len/4 estimate, that pushed a healthy
+	// provider past the 2.0 agreement bound and the run was marked untrusted.
+	// An untrusted run is not merely noisy: it reports no cost at all and a 0%
+	// cache ratio, so the two figures an operator uses to judge a provider both
+	// went to zero. Every test here kept only the last usage value, so none of
+	// them could see the first one arriving.
+	//
+	// Both emits are kept. message_stop is the real terminal event, and the
+	// post-loop one is the fallback for a body that simply ends without it.
+	var sawStop bool
 	// Tool input arrives as JSON fragments keyed by the block index, so partial
 	// JSON has to be buffered per block rather than appended to one string.
 	//
@@ -802,6 +818,7 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 			// Replaces what message_start reported rather than adding to it.
 			mergeUsage(event.Usage)
 		case "message_stop":
+			sawStop = true
 			if onDelta != nil {
 				onDelta(ProviderResponse{Done: true, Usage: usage})
 			}
@@ -810,7 +827,9 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 	if err := scanner.Err(); err != nil {
 		return &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
 	}
-	if onDelta != nil {
+	// Only when the stream never sent message_stop. Emitting unconditionally
+	// duplicated the usage for every request on this transport.
+	if onDelta != nil && !sawStop {
 		onDelta(ProviderResponse{Done: true, Usage: usage})
 	}
 	return nil
