@@ -667,7 +667,7 @@ func (c *StreamingClient) postAnthropic(ctx context.Context, endpoint, token str
 	for key, value := range c.cfg.ExtraHeaders {
 		request.Header.Set(key, value)
 	}
-	response, err := c.http.Do(request)
+	response, err := c.doRequest(request)
 	if err != nil {
 		return nil, &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
 	}

@@ -90,7 +90,7 @@ func (c *StreamingClient) describeMediaAnthropic(ctx context.Context, media []*M
 	for key, value := range c.cfg.ExtraHeaders {
 		req.Header.Set(key, value)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return "", &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
 	}
@@ -198,7 +198,7 @@ func (c *StreamingClient) describeMediaCodex(ctx context.Context, media []*Media
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	resp, err := c.http.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return "", &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
 	}
@@ -288,7 +288,7 @@ func (c *StreamingClient) streamGeminiOnce(ctx context.Context, body geminiReque
 	if err != nil {
 		return "", err
 	}
-	response, err := c.http.Do(request)
+	response, err := c.doRequest(request)
 	if err != nil {
 		return "", fmt.Errorf("request: %w", err)
 	}
@@ -348,7 +348,7 @@ func (c *StreamingClient) postOnce(ctx context.Context, body map[string]any, ans
 	if err != nil {
 		return err
 	}
-	response, err := c.http.Do(request)
+	response, err := c.doRequest(request)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}

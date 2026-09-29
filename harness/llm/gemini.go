@@ -696,7 +696,7 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 		for key, value := range c.cfg.ExtraHeaders {
 			hreq.Header.Set(key, value)
 		}
-		resp, err := c.http.Do(hreq)
+		resp, err := c.doRequest(hreq)
 		if err != nil {
 			lastErr = fmt.Errorf("request: %w", err)
 			if attempt < c.cfg.MaxRetries {

@@ -444,7 +444,7 @@ func (c *StreamingClient) postCodex(ctx context.Context, url, token string, enco
 	for key, value := range c.cfg.ExtraHeaders {
 		hreq.Header.Set(key, value)
 	}
-	resp, err := c.http.Do(hreq)
+	resp, err := c.doRequest(hreq)
 	if err != nil {
 		return nil, &ProviderError{Status: 0, Body: err.Error(), Retryable: true}
 	}

@@ -58,7 +58,20 @@ type ProviderConfig struct {
 	MaxRetries      int
 	// RetryBackoff scales the delay between attempts. Zero uses the production
 	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
-	RetryBackoff    time.Duration
+	RetryBackoff time.Duration
+	// Timeout bounds how long the provider may go without sending anything, not
+	// how long a whole request may take.
+	//
+	// It was a total budget on http.Client, which is the wrong shape for a
+	// streaming API: a Gemini model at HIGH thinking can spend longer than two
+	// minutes producing its first token, and every intermediate `data:` line
+	// resets nothing because the deadline was set once when the request began.
+	// A model that was working was reported as having timed out.
+	//
+	// As an idle window it has the meaning it should have had. The deadline resets
+	// on every byte the provider sends, so a long stream runs as long as it keeps
+	// making progress and a genuinely wedged connection still fails. Zero
+	// disables it.
 	Timeout         time.Duration
 	ToolChoice      string
 	PromptCacheMode string
@@ -136,7 +149,8 @@ func FromEnv() ProviderConfig {
 		APIKey:     key,
 		Model:      model,
 		MaxRetries: 3,
-		Timeout:    120 * time.Second,
+		// Idle window, not a total budget. See ProviderConfig.Timeout.
+		Timeout: 120 * time.Second,
 	}
 }
 
@@ -153,7 +167,8 @@ func FromProvider(baseURL, apiKey, model string) ProviderConfig {
 		GeminiNative:            UsesGeminiNative(model, baseURL),
 		GeminiThoughtSignatures: UsesGeminiThoughtSignatures(model, baseURL),
 		MaxRetries:              3,
-		Timeout:                 120 * time.Second,
+		// Idle window, not a total budget. See ProviderConfig.Timeout.
+		Timeout: 120 * time.Second,
 	}
 }
 
@@ -472,7 +487,11 @@ type StreamingClient struct {
 func New(cfg ProviderConfig) *StreamingClient {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: cfg.Timeout}
+		// No total Timeout. It capped the whole exchange including the body, so a
+		// long stream was killed while it was still producing tokens. cfg.Timeout
+		// is applied as an idle window on the response body instead, and the header
+		// wait is bounded here since body traffic cannot reset that phase.
+		httpClient = &http.Client{Transport: idleTimeoutTransport(cfg.Timeout)}
 	}
 	return &StreamingClient{cfg: cfg, http: httpClient}
 }
@@ -906,7 +925,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		if c.cfg.APIKey != "" {
 			hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		}
-		resp, err := c.http.Do(hreq)
+		resp, err := c.doRequest(hreq)
 		if err != nil {
 			lastErr = fmt.Errorf("request: %w", err)
 			if attempt < c.cfg.MaxRetries {
