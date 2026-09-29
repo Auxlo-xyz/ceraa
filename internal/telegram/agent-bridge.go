@@ -174,6 +174,9 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 				spec.Args["db_path"] = search.ProjectIndexPath(cfg.WorkspaceRootPath(), projectRoot)
 			}
 		},
+		// Keeps the search index current as the agent writes, so fts_search returns
+		// results instead of "No matches" against an index that was never built.
+		OnFileMutated:    searchFollower(cfg, projectRoot).Note,
 		ForcedCompaction: func() bool { return consumeForcedCompaction(sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
 			return needsPermission(name, fmt.Sprint(args))

@@ -32,7 +32,11 @@ func Open(dbPath string) (*Index, error) {
 			return nil, err
 		}
 	}
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL", dbPath)
+	// busy_timeout matters once indexing happens in the background: SQLite allows
+	// one writer at a time, and without it a concurrent writer fails immediately
+	// with SQLITE_BUSY rather than waiting. That turns a harmless overlap between a
+	// background index and a search into a hard error the user sees.
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000", dbPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

@@ -63,14 +63,22 @@ type RunnerConfig struct {
 	// so for a long-lived daemon the file on disk and the memory in the prompt
 	// diverged with nothing logging it. A per-turn function makes the file the
 	// source of truth rather than a startup snapshot of it.
-	MemoryContextFunc  func() (string, error)
-	SkillContext       string
-	EvaluationStore    *evaluation.Store
-	Inbox              *inbox.Inbox
-	OperationPool      *operation.LocalManager
-	Compactor          *compaction.Compactor
-	ResolveModel       func(context.Context) (llm.ProviderConfig, error)
-	ForcedCompaction   func() bool
+	MemoryContextFunc func() (string, error)
+	SkillContext      string
+	EvaluationStore   *evaluation.Store
+	Inbox             *inbox.Inbox
+	OperationPool     *operation.LocalManager
+	Compactor         *compaction.Compactor
+	ResolveModel      func(context.Context) (llm.ProviderConfig, error)
+	ForcedCompaction  func() bool
+	// OnFileMutated is called once per successfully completed file mutation, with
+	// the path. It exists so a search index can be kept current at the point the
+	// write actually succeeded, rather than by a timer or a watcher.
+	//
+	// At the tool boundary specifically because that is the only place the written
+	// path is known to be on disk, and the only place where "the agent changed a
+	// file" is an event rather than an inference.
+	OnFileMutated      func(path string)
 	AuthorizeTool      func(context.Context, string, string, map[string]any) (bool, error)
 	NeedsAuthorization func(string, map[string]any) bool
 	AdjustSpec         func(*operation.Spec)
@@ -750,6 +758,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
+				r.noteFileMutation(sess, result)
 				r.notifyToolDone(sess, result)
 			case <-ctx.Done():
 				r.opMgr.CancelAll()
@@ -1439,6 +1448,39 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		}
 	}
 	return dispatched, results, corrective, nil
+}
+
+// fileMutatingSpecs are the operations whose whole purpose is to change a file.
+// The index is refreshed for these and nothing else.
+var fileMutatingSpecs = map[string]bool{
+	"write":           true,
+	"edit_line":       true,
+	"edit":            true,
+	"batch_edit_file": true,
+}
+
+// noteFileMutation reports a completed file write so a search index can follow it.
+//
+// Only on success. A failed write leaves the old contents on disk, and indexing
+// them would put a file into the index that the agent believes it has changed.
+func (r *Runner) noteFileMutation(sess *sessionstore.Session, result operation.ResultEvent) {
+	if r.cfg.OnFileMutated == nil {
+		return
+	}
+	if result.Status != operation.StatusCompleted {
+		return
+	}
+	for _, op := range sess.Operations {
+		if op.ID != result.OpID || !fileMutatingSpecs[op.SpecType] {
+			continue
+		}
+		path, _ := op.SpecArgs["path"].(string)
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		r.cfg.OnFileMutated(path)
+		return
+	}
 }
 
 func (r *Runner) notifyToolDone(sess *sessionstore.Session, result operation.ResultEvent) {

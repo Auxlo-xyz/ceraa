@@ -287,3 +287,25 @@ func attachSubagents(registry *tool.Registry, factory *subagentFactory) {
 		wired.WallClock = factory.WallClock
 	}
 }
+
+// searchFollowers is the process-wide set of index followers, one per project.
+//
+// A follower is a debounced writer, so sharing one per project rather than one per
+// run is what makes the debounce work: two runs against the same tree would
+// otherwise each flush their own batch.
+var (
+	searchFollowersMu sync.Mutex
+	searchFollowers   = map[string]*search.Follower{}
+)
+
+func searchFollower(cfg *config.Config, projectRoot string) *search.Follower {
+	dbPath := search.ProjectIndexPath(cfg.WorkspaceRootPath(), projectRoot)
+	searchFollowersMu.Lock()
+	defer searchFollowersMu.Unlock()
+	if f, ok := searchFollowers[dbPath]; ok {
+		return f
+	}
+	f := search.NewFollower(dbPath, projectRoot)
+	searchFollowers[dbPath] = f
+	return f
+}
