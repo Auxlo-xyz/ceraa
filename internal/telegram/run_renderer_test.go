@@ -53,10 +53,7 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	telegramAPIBase = server.URL + "/bot"
 	defer func() { telegramAPIBase = oldBase }()
 
-	pinned := NewPinnedManager("token", 42)
-	defer pinned.close()
-	pinned.Init()
-	renderer := newRunRenderer("token", 42, pinned)
+	renderer := newRunRenderer("token", 42)
 	defer renderer.close()
 	answer := "## Heading\n\n1. Step\n\nTelegram Message\n    ↓"
 	renderer.content("## Heading\n\n1. Step\n\nTelegram Message\n    ↓")
@@ -124,10 +121,7 @@ func TestFinishDrainsPreviewBeforeFinalEdit(t *testing.T) {
 	telegramAPIBase = server.URL + "/bot"
 	defer func() { telegramAPIBase = oldBase }()
 
-	pinned := NewPinnedManager("token", 42)
-	defer pinned.close()
-	pinned.Init()
-	renderer := newRunRenderer("token", 42, pinned)
+	renderer := newRunRenderer("token", 42)
 	answer := "Complete answer"
 	renderer.content("Complete")
 	<-previewStarted
@@ -192,10 +186,7 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 	telegramAPIBase = server.URL + "/bot"
 	defer func() { telegramAPIBase = oldBase }()
 
-	pinned := NewPinnedManager("token", 42)
-	defer pinned.close()
-	pinned.Init()
-	renderer := newRunRenderer("token", 42, pinned)
+	renderer := newRunRenderer("token", 42)
 	answer := "## Heading\n\n1. Step"
 	renderer.content(answer)
 	renderer.finish(answer)
@@ -264,10 +255,7 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	telegramAPIBase = server.URL + "/bot"
 	defer func() { telegramAPIBase = oldBase }()
 
-	pinned := NewPinnedManager("token", 42)
-	defer pinned.close()
-	pinned.Init()
-	renderer := newRunRenderer("token", 42, pinned)
+	renderer := newRunRenderer("token", 42)
 	renderer.reasoning("first step")
 	renderer.reasoning("first step\nsecond step")
 	renderer.finish("done")
@@ -301,7 +289,6 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	var mu sync.Mutex
 	var liveText string
 	var finalMarkdown string
-	var pinnedText string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body map[string]any
@@ -310,11 +297,6 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":14}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
-			if text, ok := body["text"].(string); ok {
-				mu.Lock()
-				pinnedText = text
-				mu.Unlock()
-			}
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":12}}`))
 		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
 			if messageID, ok := body["message_id"].(float64); ok && messageID == 14 {
@@ -344,10 +326,7 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	telegramAPIBase = server.URL + "/bot"
 	defer func() { telegramAPIBase = oldBase }()
 
-	pinned := NewPinnedManager("token", 42)
-	defer pinned.close()
-	pinned.Init()
-	renderer := newRunRenderer("token", 42, pinned)
+	renderer := newRunRenderer("token", 42)
 	renderer.tool("read-1", "🔄 📚 Read file · /workspace/ceraa")
 	renderer.tool("read-1", "✅ 📚 Read file completed")
 	renderer.finish("Done")
@@ -356,7 +335,6 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	mu.Lock()
 	live := liveText
 	final := finalMarkdown
-	pinnedStatus := pinnedText
 	mu.Unlock()
 	if !strings.Contains(live, "📚 Read file") || !strings.Contains(live, "✓") || strings.Contains(live, "⏳") {
 		t.Fatalf("live assistant message = %q", live)
@@ -364,15 +342,15 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	if final != "Done" {
 		t.Fatalf("final assistant message = %q", final)
 	}
-	if strings.Contains(pinnedStatus, "🛠 Tools") {
-		t.Fatalf("pinned message contains tools: %q", pinnedStatus)
-	}
+	// This used to assert that a pinned status message carried no tool activity.
+	// There is no pinned message: PinnedManager was removed, having been
+	// unreachable since newRunRenderer started discarding it, so the assertion had
+	// nothing left to read and could no longer fail. Tool activity staying on the
+	// assistant message is what the two assertions above cover.
 }
 
 func TestRunRendererStopCancelsTheRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	pinned := NewPinnedManager("token", 42)
-	defer pinned.close()
 	renderer := &runRenderer{}
 	renderer.setCancel(cancel)
 	renderer.stop()
@@ -390,15 +368,6 @@ func TestToolActivityIsReadableAndRedacted(t *testing.T) {
 	summary := toolArgsSummary("read", map[string]any{"args": `{"path":"/workspace/ceraa/.env"}`})
 	if summary != " · /workspace/ceraa/.env" {
 		t.Fatalf("tool argument summary = %q", summary)
-	}
-	if got := formatToolStatus("🔄 📚 Read file · /workspace/ceraa"); got != "📚 Read file · /workspace/ceraa" {
-		t.Fatalf("running tool status = %q", got)
-	}
-	if got := formatToolStatus("🔄 >_ Run command · ls"); got != ">_ Run command · ls" {
-		t.Fatalf("running command status = %q", got)
-	}
-	if got := formatToolStatus("✅ Read file completed"); got != "✓ Read file completed" {
-		t.Fatalf("completed tool status = %q", got)
 	}
 }
 

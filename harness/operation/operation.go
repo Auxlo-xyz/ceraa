@@ -690,10 +690,6 @@ func runFTSSearch(ctx context.Context, dbPath, query string, limit int, args map
 	return b.String(), nil
 }
 
-func runFTSSearchInternal(ctx context.Context, dbPath, query string, limit int, args map[string]any) (string, error) {
-	return runFTSSearch(ctx, dbPath, query, limit, args)
-}
-
 func operationPath(path, workDir string) string {
 	if path == "" {
 		path = "."

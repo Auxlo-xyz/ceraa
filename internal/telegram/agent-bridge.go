@@ -34,20 +34,12 @@ import (
 	"ceraa/internal/xaiauth"
 )
 
-func runAgent(sessionID string, user string, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
-	return runAgentContext(context.Background(), sessionID, user, nil, onReasoning, onTool, onAnswer)
-}
-
 func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer)
-}
-
-func runAgentWithConfig(sessionID string, user string, cfg *config.Config, onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
-	return runAgentWithConfigContext(context.Background(), sessionID, user, cfg, nil, onReasoning, onTool, onAnswer)
 }
 
 func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
@@ -239,19 +231,14 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 					}
 				}
 			},
-			OnUsage: func(usage llm.UsageInfo) {
-				tokens := usage.InputTokens + usage.OutputTokens
-				event.Default.Publish(event.Event{Type: event.TypeTokens, SessionID: sessionID, Data: map[string]any{"tokens": tokens}})
-			},
-			OnCost: func(cost llm.CostInfo, status string) {
-				text := "unavailable"
-				if cost.Known {
-					text = fmt.Sprintf("$%.6f", cost.TotalUSD)
-				} else if status != "" && status != "unavailable" {
-					text += " (" + status + ")"
-				}
-				event.Default.Publish(event.Event{Type: event.TypeCost, SessionID: sessionID, Data: map[string]any{"cost": text, "status": status}})
-			},
+			// Deliberately not forwarding usage and cost onto the event bus. The
+			// only production subscriber handles permission and question requests,
+			// so TypeTokens and TypeCost were published on every usage delta of
+			// every run and consumed by nobody. They existed for the pinned-message
+			// manager, which is gone; see the removal of internal/telegram/pinned.go.
+			//
+			// The coordinator still computes and stores both. They drive cost and the
+			// cache-read ratio in the session record and /status, which are live.
 			OnDone: func(answer string) {
 				if onAnswer != nil && answer != "" {
 					onAnswer(answer)

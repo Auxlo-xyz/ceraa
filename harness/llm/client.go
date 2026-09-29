@@ -496,13 +496,6 @@ func New(cfg ProviderConfig) *StreamingClient {
 	return &StreamingClient{cfg: cfg, http: httpClient}
 }
 
-func geminiExtraContent(signature string, enabled bool) map[string]any {
-	if !enabled || signature == "" {
-		return nil
-	}
-	return map[string]any{"google": map[string]any{"thought_signature": signature}}
-}
-
 // skipThoughtSignatureValidator is one of the two sentinels Google documents
 // for a functionCall part that did not come from the API and therefore can
 // never carry a real signature. The native transport uses it for exactly that

@@ -224,12 +224,3 @@ func (in *Inbox) SeenIDs() []RequestID {
 func (in *Inbox) Stop() {
 	in.cancel(context.Canceled)
 }
-
-func cloneRaw(b json.RawMessage) json.RawMessage {
-	if b == nil {
-		return nil
-	}
-	cp := make(json.RawMessage, len(b))
-	copy(cp, b)
-	return cp
-}

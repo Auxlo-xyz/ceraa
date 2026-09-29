@@ -116,12 +116,9 @@ func (c *countingTelegram) newRenderer(t *testing.T) (*runRenderer, func()) {
 	srv := c.server(t)
 	old := telegramAPIBase
 	telegramAPIBase = srv.URL + "/bot"
-	pinned := NewPinnedManager("token", 42)
-	pinned.Init()
-	r := newRunRenderer("token", 42, pinned)
+	r := newRunRenderer("token", 42)
 	return r, func() {
 		r.close()
-		pinned.close()
 		telegramAPIBase = old
 		srv.Close()
 	}

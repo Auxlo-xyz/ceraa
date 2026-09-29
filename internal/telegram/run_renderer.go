@@ -54,7 +54,20 @@ type runRenderer struct {
 	streamClosed bool
 }
 
-func newRunRenderer(token string, chatID int64, _ ...*PinnedManager) *runRenderer {
+// truncateStatus shortens a status line to fit a button label.
+//
+// It lived in pinned.go, which this change removed: it was the one symbol there
+// still in use, so deleting the file would not have compiled and moving it next to
+// its single caller is where a reader will look for it.
+func truncateStatus(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func newRunRenderer(token string, chatID int64) *runRenderer {
 	renderer := &runRenderer{
 		token:        token,
 		chatID:       chatID,

@@ -36,17 +36,6 @@ type bridgeState struct {
 	AlwaysAllow     map[string]bool   `json:"always_allow,omitempty"`
 }
 
-// retiredStateFields are the keys an older bridge-state.json carried and this
-// build no longer reads.
-//
-// They are listed so the migration can detect and drop them, rather than leaving
-// a stale `provider` sitting in the file where a future reader could find it and
-// believe it.
-var retiredStateFields = []string{
-	"model", "provider", "provider_profiles", "agent", "reasoning",
-	"auto_compaction", "auto_compaction_set",
-}
-
 var defaultState = loadBridgeState()
 var forcedCompactions sync.Map
 
