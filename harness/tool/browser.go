@@ -107,6 +107,17 @@ var browserArgSpec = map[string]struct {
 	"close":      {},
 }
 
+// browserActionAlias maps an action name a model is likely to reach for onto the
+// real one. Only collisions with an argument name belong here; every other
+// misspelling should still be rejected, because a rejected name tells the model it
+// guessed wrong, while a silently accepted one hides it.
+var browserActionAlias = map[string]string{
+	// The argument for the JavaScript action is `script`, and the action is `eval`.
+	"script": "eval",
+	// Likewise `js`, which is the other name a model reaches for.
+	"js": "eval",
+}
+
 // describeBrowserArgs renders what an action accepts, for the rejection message.
 //
 // Naming only the offending argument left the model with no way to recover: it
@@ -135,6 +146,16 @@ func (b *BrowserTool) Translate(args map[string]any) (operation.Spec, error) {
 	action = strings.ToLower(strings.TrimSpace(action))
 	if action == "" {
 		return operation.Spec{}, errors.New("action is required")
+	}
+	// "eval" is the only action whose name differs from the argument it takes, and
+	// that mismatch was the single most common way this tool was called wrong: a
+	// model asked for action=script because the argument is called script, and got
+	// told the action did not exist. Accepting the argument's own name is free and
+	// removes the collision at its source, rather than describing it again — the
+	// descriptions already spell out which arguments belong to which action, and a
+	// model paired them wrongly 14 times in a row against that longer text.
+	if alias, ok := browserActionAlias[action]; ok {
+		action = alias
 	}
 	spec, known := browserArgSpec[action]
 	if !known {

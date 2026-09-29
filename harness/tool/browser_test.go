@@ -497,3 +497,46 @@ func TestBrowserDescriptionOmitsTheActionList(t *testing.T) {
 	}
 
 }
+
+// The JavaScript action is the only one whose name differs from the argument it
+// takes, and that mismatch was the most common way this tool was called wrong: a
+// model asked for action=script because the argument is called script, and was
+// told the action did not exist. Accepting the argument's own name removes the
+// collision rather than describing it again — the descriptions already spell out
+// the mapping and a model paired them wrongly 14 times in a row against it.
+func TestBrowserActionAcceptsTheArgumentNameAsAnAlias(t *testing.T) {
+	tool := NewBrowserTool()
+	cases := []struct{ action, want string }{
+		{"script", "eval"},
+		{"js", "eval"},
+		{"eval", "eval"},
+		{"SCRIPT", "eval"},
+		{"  Script  ", "eval"},
+	}
+	for _, tc := range cases {
+		spec, err := tool.Translate(map[string]any{"action": tc.action, "script": "1+1"})
+		if err != nil {
+			t.Errorf("action %q was rejected: %v", tc.action, err)
+			continue
+		}
+		if spec.Args["action"] != tc.want {
+			t.Errorf("action %q translated to %v, want %q", tc.action, spec.Args["action"], tc.want)
+		}
+	}
+}
+
+// An alias must not turn a real misspelling into a silent success, and must not
+// let a different argument through. The alias only renames the action.
+func TestBrowserAliasDoesNotLoosenArgumentChecking(t *testing.T) {
+	tool := NewBrowserTool()
+	if _, err := tool.Translate(map[string]any{"action": "script", "url": "https://example.com"}); err == nil {
+		t.Error("action=script accepted url, which belongs to open")
+	}
+	if _, err := tool.Translate(map[string]any{"action": "scrpt"}); err == nil {
+		t.Error("a misspelling was accepted; a rejected name is what tells the model it guessed")
+	}
+	// The alias must not let the action borrow the script argument for itself.
+	if _, err := tool.Translate(map[string]any{"action": "script"}); err == nil {
+		t.Error("action=script with no script was accepted; eval requires one")
+	}
+}
