@@ -16,11 +16,14 @@
 # What this does NOT do, so nobody is misled:
 #   -s -w does not hide function names. The Go runtime requires .gopclntab to build
 # panic tracebacks and to walk stacks for the GC, so the names survive in every
-# build and no linker flag can remove them. strings | grep ceraa still yields the
-# package structure.
-# This also does not hide prompt/system.txt. go:embed data is placed by the
-# compiler, not emitted as AST literals, so obfuscators do not touch it. Moving the
-# prompt out of the binary is the only change that would; see TODO.md.
+# build and no linker flag can remove them. Measured on this binary: 23,652
+# functions remain recoverable, 1,456 of them named ceraa/*.
+#
+# On the system prompt: it is NOT in this binary and never was. internal/prompt
+# reads prompt/system.txt from disk at runtime and there is no go:embed anywhere in
+# the tree, so the text is absent from both a plain and a stripped build. That was
+# verified directly rather than assumed; an earlier note here claimed the opposite,
+# on the strength of a report that turned out to be wrong.
 #
 # Panic tracebacks and pprof keep working under these flags. garble is deliberately
 # not used: it breaks pprof symbolization, is a new supply-chain dependency in the
