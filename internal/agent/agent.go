@@ -194,6 +194,8 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
 		MemoryContextFunc:   liveMemory,
+		MemoryDelivery:      cfg.MemoryDelivery,
+		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,
@@ -234,4 +236,18 @@ func regionForProvider(provider config.LLMProvider) minimaxauth.Region {
 		return minimaxauth.RegionCN
 	}
 	return minimaxauth.RegionGlobal
+}
+
+// memoryEntries lists the store for sidekick delivery.
+//
+// A closure rather than a slice, because the store is the source of truth and a
+// snapshot taken here would be a copy taken before the first tool call. That is
+// the same divergence the live prompt renderer was rewritten to avoid.
+func memoryEntries(store *memory.Store, projectID, sessionID string) func() ([]memory.Entry, error) {
+	if store == nil {
+		return nil
+	}
+	return func() ([]memory.Entry, error) {
+		return store.List(projectID, sessionID)
+	}
 }

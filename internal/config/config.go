@@ -46,9 +46,15 @@ type Config struct {
 	TitleAPIURL              string         `json:"title_api_url,omitempty"`
 	TitleModel               string         `json:"title_model,omitempty"`
 	MemoryFile               string         `json:"memory_file,omitempty"`
-	SkillFile                string         `json:"skill_file,omitempty"`
-	EvaluationFile           string         `json:"evaluation_file,omitempty"`
-	SchedulerFile            string         `json:"scheduler_file,omitempty"`
+	// MemoryDelivery selects where memory reaches the model: "prompt" renders a
+	// block after the cache seam, "sidekick" annotates tool results instead and
+	// leaves the system prompt fully static. Unset means prompt, so a config that
+	// predates this field keeps today's behaviour rather than silently moving
+	// memory somewhere new.
+	MemoryDelivery string `json:"memory_delivery,omitempty"`
+	SkillFile      string `json:"skill_file,omitempty"`
+	EvaluationFile string `json:"evaluation_file,omitempty"`
+	SchedulerFile  string `json:"scheduler_file,omitempty"`
 }
 
 // LLMProvider holds LLM API settings.
@@ -442,6 +448,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := env("MEMORY_FILE"); v != "" {
 		cfg.MemoryFile = v
+	}
+	if v := env("MEMORY_DELIVERY"); v != "" {
+		cfg.MemoryDelivery = v
 	}
 	if v := env("SKILL_FILE"); v != "" {
 		cfg.SkillFile = v

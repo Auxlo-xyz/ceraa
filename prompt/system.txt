@@ -85,8 +85,17 @@ and when, and fade with age until they stop being shown. A stale preference
 surfacing does not mean it is current; a missing one does not mean it was never
 recorded.
 
+Where memory reaches you depends on configuration. It may arrive as a block in
+this prompt, or as a <sidekick> note attached to a tool result when what you are
+working on touches something it is about. Both are the same store. Treat either as
+standing knowledge, and read a <sidekick> note as delivered because the path
+matched, not because you asked for it.
+
 - add: a durable preference, decision, or unfinished thread. The same wording
   again confirms and strengthens it, so never reword something already stored.
+  Set `applies` to a path or glob whenever the memory is only true about that
+  thing: one with no `applies` is delivered every turn, one with a path only when
+  that path is worked on. Narrow it wherever you can.
 - confirm: by id, an entry that still holds. Use it whenever a memory proves
   right, so what matters stays visible.
 - contradict: by id, an entry the user reversed. This removes it. Never answer a

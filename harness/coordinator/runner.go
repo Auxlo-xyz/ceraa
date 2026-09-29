@@ -19,6 +19,7 @@ import (
 	"ceraa/harness/goal"
 	"ceraa/harness/inbox"
 	"ceraa/harness/llm"
+	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
@@ -64,13 +65,20 @@ type RunnerConfig struct {
 	// diverged with nothing logging it. A per-turn function makes the file the
 	// source of truth rather than a startup snapshot of it.
 	MemoryContextFunc func() (string, error)
-	SkillContext      string
-	EvaluationStore   *evaluation.Store
-	Inbox             *inbox.Inbox
-	OperationPool     *operation.LocalManager
-	Compactor         *compaction.Compactor
-	ResolveModel      func(context.Context) (llm.ProviderConfig, error)
-	ForcedCompaction  func() bool
+	// MemoryDelivery selects where memory reaches the model: "prompt" (default)
+	// renders a <memory> block after the cache seam, "sidekick" suppresses the
+	// block and annotates tool results at the point of use instead.
+	MemoryDelivery string
+	// MemoryEntries lists stored memories for sidekick delivery. Nil disables it,
+	// which is what keeps the prompt path working with nothing configured.
+	MemoryEntries    func() ([]memory.Entry, error)
+	SkillContext     string
+	EvaluationStore  *evaluation.Store
+	Inbox            *inbox.Inbox
+	OperationPool    *operation.LocalManager
+	Compactor        *compaction.Compactor
+	ResolveModel     func(context.Context) (llm.ProviderConfig, error)
+	ForcedCompaction func() bool
 	// OnFileMutated is called once per successfully completed file mutation, with
 	// the path. It exists so a search index can be kept current at the point the
 	// write actually succeeded, rather than by a timer or a watcher.
@@ -132,6 +140,10 @@ type Runner struct {
 	contextLimit  int
 	contextSource llm.ContextWindowSource
 	contextLogged bool
+
+	// delivery and sidekick are the memory delivery mode and its per-run state.
+	delivery memory.Delivery
+	sidekick *sidekickState
 }
 
 // ContextLimit reports the effective context budget and where it came from.
@@ -197,6 +209,13 @@ func (r *Runner) recalibrateContextLimit(meta llm.ModelMetadata, lookupErr error
 // likely thing to change mid-session, so it belongs in the varying suffix where an
 // edit invalidates only the tail rather than the whole cached prefix.
 func (r *Runner) memoryContext() string {
+	// Sidekick delivery suppresses the block entirely. That is what makes the
+	// system prompt fully static: with the block gone, the date is the only
+	// remaining volatile part, so the whole prompt is one cached prefix and
+	// memory costs nothing on a turn where nothing fires.
+	if r.delivery == memory.DeliverySidekick {
+		return ""
+	}
 	if r.cfg.MemoryContextFunc != nil {
 		rendered, err := r.cfg.MemoryContextFunc()
 		if err != nil {
@@ -252,6 +271,10 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	opMgr.SetConcurrencyLimit(cfg.MaxConcurrentTools)
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
+	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
+	if r.delivery == memory.DeliverySidekick && cfg.MemoryEntries != nil {
+		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.WorkDir)
+	}
 	// Seed the budget from what is known without a network call, and push it into
 	// the compactor now. The run refines this from the catalog, but between
 	// construction and that lookup the compactor must not be holding whatever
@@ -391,6 +414,17 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				if runErr != nil {
 					sess.Runs[i].Error = runErr.Error()
 				}
+				// Recorded here rather than at start, because the counts are only
+				// final once the run has finished delivering.
+				//
+				// This is the whole measurement story for now: a run record that says
+				// which mode ran and what it delivered, so a later analysis can
+				// compare outcomes instead of inferring the mode from the build.
+				delivery := r.DeliveryReport()
+				sess.Runs[i].MemoryDelivery = delivery.Mode
+				sess.Runs[i].MemoryGeneralSent = delivery.GeneralInjected
+				sess.Runs[i].MemoryTargetedSent = delivery.TargetedInjects
+				sess.Runs[i].MemoryBelowGate = delivery.SuppressedByGate
 			}
 		}
 		if r.evaluation != nil {
@@ -754,7 +788,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					continue
 				}
 				delete(pending, result.OpID)
-				results[result.OpID] = r.resultText(runID, result)
+				// Annotated only on the model-facing path. persistResult keeps the
+				// bare result in the session file, because that record is what the
+				// tool actually returned and a later reader should not have to know
+				// which memories happened to be in the store at the time.
+				results[result.OpID] = r.resultText(runID, result) + r.sidekickNote(sess, result)
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
@@ -1619,6 +1657,22 @@ func (r *Runner) resultText(runID string, result operation.ResultEvent) string {
 		return "Error: " + result.Error
 	}
 	return formatted
+}
+
+// sidekickNote is the injected block for a completed operation, or "".
+func (r *Runner) sidekickNote(sess *sessionstore.Session, result operation.ResultEvent) string {
+	if r.sidekick == nil {
+		return ""
+	}
+	return r.sidekick.annotate(sess, result)
+}
+
+// DeliveryReport says how memory was delivered for the run that just finished.
+func (r *Runner) DeliveryReport() memory.DeliveryReport {
+	report := r.sidekick.deliveryReport()
+	report.Mode = string(r.delivery)
+	report.PromptBlock = r.delivery == memory.DeliveryPrompt && r.memoryContext() != ""
+	return report
 }
 
 func (r *Runner) formatOutput(runID, operationID, output string) string {

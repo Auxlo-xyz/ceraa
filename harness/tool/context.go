@@ -24,6 +24,8 @@ func (m *MemoryTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"action":  map[string]any{"type": "string", "enum": []string{"add", "confirm", "contradict", "list", "remove"}},
 			"content": map[string]any{"type": "string", "description": "Compact memory to add"},
+			"applies": map[string]any{"type": "string", "description": "Optional path or glob this memory is about, so it is delivered only when work touches that path"},
+			"why":     map[string]any{"type": "string", "description": "Optional short reason, so the memory carries why it holds rather than only what it says"},
 			"id":      map[string]any{"type": "string", "description": "Memory ID to remove"},
 		},
 		"required": []string{"action"},
@@ -49,9 +51,17 @@ func (m *MemoryTool) RunContext(ctx context.Context, spec operation.Spec) (strin
 	switch spec.Args["action"] {
 	case "add":
 		content, _ := spec.Args["content"].(string)
-		entry, err := m.Store.Add(project, sessionID, content)
+		applies, _ := spec.Args["applies"].(string)
+		why, _ := spec.Args["why"].(string)
+		entry, err := m.Store.AddScoped(project, sessionID, content, applies, why)
 		if err != nil {
 			return "", err
+		}
+		// The scope is echoed because it decides where the memory will surface,
+		// and a memory saved with no applies lands in every turn while one saved
+		// with a path surfaces only when that path is worked on.
+		if entry.Applies != "" {
+			return fmt.Sprintf("Memory saved: %s (applies to %s)", entry.ID, entry.Applies), nil
 		}
 		return fmt.Sprintf("Memory saved: %s", entry.ID), nil
 	case "confirm":

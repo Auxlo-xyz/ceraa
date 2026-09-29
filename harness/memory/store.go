@@ -42,6 +42,22 @@ type Entry struct {
 	// re-stating something the agent already knew was worth nothing: the store
 	// could not tell a preference mentioned once from one confirmed many times.
 	Seen int `json:"seen,omitempty"`
+	// Applies narrows this memory to a path or glob, so it can be delivered at
+	// the point of use instead of on every turn.
+	//
+	// Empty means a standing preference that applies everywhere, which is what the
+	// prompt block is for. Set means "this is about this path", and it is what
+	// makes a deterministic trigger possible - the operation already knows which
+	// path it is touching, so no retrieval step has to be right.
+	Applies string `json:"applies,omitempty"`
+	// Why is the optional rationale.
+	//
+	// A benchmark of four production memory systems found that preserving the
+	// rationale alongside the instruction was necessary but not sufficient, and
+	// that what mattered was retaining the constraints anchoring it to the target.
+	// That is the reason this field exists, and the reason it is bounded at render
+	// time rather than trusted to be short.
+	Why string `json:"why,omitempty"`
 	// SeenAt is when it was last asserted, which is what decay is measured from.
 	//
 	// CreatedAt is deliberately not reused for that. Decay is about how long since
@@ -123,6 +139,16 @@ func New(dir string) (*Store, error) {
 }
 
 func (s *Store) Add(projectID, sessionID, content string) (*Entry, error) {
+	return s.AddScoped(projectID, sessionID, content, "", "")
+}
+
+// AddScoped adds a memory that is optionally narrowed to a path and carries a
+// rationale.
+//
+// Add remains the two-argument form so the existing callers and tests are
+// untouched; there is no reason for a caller that has no path to pass two empty
+// strings to say so.
+func (s *Store) AddScoped(projectID, sessionID, content, applies, why string) (*Entry, error) {
 	projectID = strings.TrimSpace(projectID)
 	sessionID = strings.TrimSpace(sessionID)
 	content = compact(content)
@@ -167,6 +193,8 @@ func (s *Store) Add(projectID, sessionID, content string) (*Entry, error) {
 		ProjectID: projectID,
 		SessionID: sessionID,
 		Content:   content,
+		Applies:   strings.TrimSpace(applies),
+		Why:       compact(why),
 		CreatedAt: now,
 		Seen:      1,
 		SeenAt:    now,
@@ -342,6 +370,12 @@ func scopeFor(sessionID string) Scope {
 	return Session
 }
 
+// sameMemory is identity: the project, the session, and the wording.
+//
+// Applies is deliberately not part of it. Two memories can share a subject and
+// apply to different paths - "the build needs JAVA_HOME set" for the backend, "the
+// site deploys from /srv/www" for the frontend - and folding the path in here
+// would silently keep only the first one written.
 func sameMemory(entry Entry, projectID, sessionID, content string) bool {
 	return entry.ProjectID == projectID && entry.SessionID == sessionID && compact(entry.Content) == content
 }

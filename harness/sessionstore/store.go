@@ -121,8 +121,20 @@ type Run struct {
 	PricingModel string         `json:"pricing_model,omitempty"`
 	// ProviderHost is the endpoint the run was billed by, so cache behaviour can
 	// be attributed to a route rather than only to a model name.
-	ProviderHost       string    `json:"provider_host,omitempty"`
-	PricingStatus      string    `json:"pricing_status,omitempty"`
+	ProviderHost  string `json:"provider_host,omitempty"`
+	PricingStatus string `json:"pricing_status,omitempty"`
+	// MemoryDelivery records how memory was delivered for this run, so the two
+	// modes can be told apart in an analysis rather than inferred from which
+	// build produced the file.
+	//
+	// Recorded because a memory change that is never attributed cannot be
+	// evaluated: two sessions differing in outcome, one with the block and one
+	// with sidekick notes, are otherwise indistinguishable from a change in the
+	// task.
+	MemoryDelivery     string    `json:"memory_delivery,omitempty"`
+	MemoryGeneralSent  int       `json:"memory_general_sent,omitempty"`
+	MemoryTargetedSent int       `json:"memory_targeted_sent,omitempty"`
+	MemoryBelowGate    int       `json:"memory_below_gate,omitempty"`
 	PricingFetchedAt   time.Time `json:"pricing_fetched_at,omitempty"`
 	ModelContextWindow int       `json:"model_context_window,omitempty"`
 	ModelMaxTokens     int       `json:"model_max_tokens,omitempty"`

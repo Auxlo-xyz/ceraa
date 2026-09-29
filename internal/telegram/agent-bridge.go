@@ -34,6 +34,19 @@ import (
 	"ceraa/internal/xaiauth"
 )
 
+// memoryEntries lists the store for sidekick delivery.
+//
+// A closure rather than a slice, so an edit to the store during a long run reaches
+// the next tool call instead of being frozen at construction.
+func memoryEntries(store *memory.Store, projectID, sessionID string) func() ([]memory.Entry, error) {
+	if store == nil {
+		return nil
+	}
+	return func() ([]memory.Entry, error) {
+		return store.List(projectID, sessionID)
+	}
+}
+
 func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -157,6 +170,8 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
 		MemoryContextFunc:   liveMemory,
+		MemoryDelivery:      cfg.MemoryDelivery,
+		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,
