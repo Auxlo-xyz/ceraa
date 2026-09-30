@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -126,9 +127,14 @@ func (b Brief) matches(target string) bool {
 	return false
 }
 
-// Select returns the targeted memories for one operation, strongest first.
-func Select(entries []Entry, target string, now time.Time, limit int) []Brief {
-	if target == "" || limit <= 0 {
+// Select returns the targeted memories bearing on any of the given targets,
+// strongest first.
+//
+// A slice rather than one string because a single operation can touch several
+// files: one shell command that rewrites three of them should surface what is
+// known about all three, not only the first.
+func Select(entries []Entry, targets []string, now time.Time, limit int) []Brief {
+	if len(targets) == 0 || limit <= 0 {
 		return nil
 	}
 	var out []Brief
@@ -141,8 +147,11 @@ func Select(entries []Entry, target string, now time.Time, limit int) []Brief {
 			continue
 		}
 		brief := briefOf(entry, weight)
-		if brief.matches(target) {
-			out = append(out, brief)
+		for _, target := range targets {
+			if brief.matches(target) {
+				out = append(out, brief)
+				break
+			}
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -196,14 +205,16 @@ func briefOf(entry Entry, weight float64) Brief {
 // is to place instruction next to the work it concerns; and it makes the block
 // findable by the memory tooling when the agent chooses to confirm or contradict
 // something it was just shown.
-func Annotate(target string, targeted, general []Brief) string {
+func Annotate(targets []string, targeted, general []Brief) string {
 	if len(targeted) == 0 && len(general) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n\n<sidekick note=\"")
-	if target != "" {
-		b.WriteString(escapeAttr(target))
+	if len(targets) == 1 {
+		b.WriteString(escapeAttr(targets[0]))
+	} else if len(targets) > 1 {
+		b.WriteString(escapeAttr(targets[0]) + " +" + strconv.Itoa(len(targets)-1) + " more")
 	} else {
 		b.WriteString("start-of-run")
 	}
@@ -215,7 +226,7 @@ func Annotate(target string, targeted, general []Brief) string {
 		}
 	}
 	if len(targeted) > 0 {
-		b.WriteString("Known about " + escapeAttr(target) + ":\n")
+		b.WriteString("Known about " + escapeAttr(joinTargets(targets)) + ":\n")
 		for _, item := range targeted {
 			line := "- " + oneLine(item)
 			if item.Why != "" {
@@ -249,6 +260,19 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// joinTargets names what the operation is about, in a form that reads as a
+// statement rather than a list of full paths.
+func joinTargets(targets []string) string {
+	if len(targets) == 1 {
+		return targets[0]
+	}
+	parts := make([]string, 0, len(targets))
+	for _, t := range targets {
+		parts = append(parts, filepath.Base(t))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func escapeAttr(value string) string {

@@ -26,13 +26,13 @@ func TestTargetedMemoryOnlyMatchesItsPath(t *testing.T) {
 		brief("the build needs JAVA_HOME set", "/srv/api", "gradle picked the wrong jdk", 6, 1, now),
 	}
 
-	if got := Select(entries, "/srv/api/build.gradle", now, 4); len(got) != 1 {
+	if got := Select(entries, []string{"/srv/api/build.gradle"}, now, 4); len(got) != 1 {
 		t.Errorf("a path under the memory's directory did not match: %#v", got)
 	}
-	if got := Select(entries, "/srv/web/package.json", now, 4); len(got) != 0 {
+	if got := Select(entries, []string{"/srv/web/package.json"}, now, 4); len(got) != 0 {
 		t.Errorf("an unrelated path was annotated: %#v", got)
 	}
-	if got := Select(entries, "", now, 4); len(got) != 0 {
+	if got := Select(entries, []string{""}, now, 4); len(got) != 0 {
 		t.Errorf("an operation with no path was annotated: %#v", got)
 	}
 }
@@ -56,7 +56,7 @@ func TestGlobsAndBareFilenamesMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		entries := []Entry{brief("x", tc.applies, "", 6, 1, now)}
-		got := len(Select(entries, tc.target, now, 4)) == 1
+		got := len(Select(entries, []string{tc.target}, now, 4)) == 1
 		if got != tc.want {
 			t.Errorf("applies=%q target=%q matched=%v, want %v", tc.applies, tc.target, got, tc.want)
 		}
@@ -73,7 +73,7 @@ func TestGeneralMemoriesAreSelectedSeparately(t *testing.T) {
 		brief("JAVA_HOME is set here", "/srv/api", "", 6, 1, now),
 	}
 
-	if got := Select(entries, "/srv/api/main.go", now, 4); len(got) != 1 || got[0].Content != "JAVA_HOME is set here" {
+	if got := Select(entries, []string{"/srv/api/main.go"}, now, 4); len(got) != 1 || got[0].Content != "JAVA_HOME is set here" {
 		t.Errorf("per-operation select returned the wrong set: %#v", got)
 	}
 	general := SelectGeneral(entries, now, 3)
@@ -88,11 +88,11 @@ func TestGeneralMemoriesAreSelectedSeparately(t *testing.T) {
 func TestTheGateHoldsBackWeakMemories(t *testing.T) {
 	now := time.Now()
 	weak := []Entry{brief("barely confirmed", "/srv/api", "", 1, 40, now)}
-	if got := Select(weak, "/srv/api/main.go", now, 4); len(got) != 0 {
+	if got := Select(weak, []string{"/srv/api/main.go"}, now, 4); len(got) != 0 {
 		t.Errorf("a below-gate memory was injected: %#v", got)
 	}
 	strong := []Entry{brief("well confirmed", "/srv/api", "", 8, 1, now)}
-	if got := Select(strong, "/srv/api/main.go", now, 4); len(got) != 1 {
+	if got := Select(strong, []string{"/srv/api/main.go"}, now, 4); len(got) != 1 {
 		t.Errorf("a strong memory was held back: %#v", got)
 	}
 }
@@ -105,7 +105,7 @@ func TestSelectionIsOrderedByWeightAndBounded(t *testing.T) {
 		brief("strong", "/srv/api", "", 20, 1, now),
 		brief("middle", "/srv/api", "", 8, 1, now),
 	}
-	got := Select(entries, "/srv/api/main.go", now, 2)
+	got := Select(entries, []string{"/srv/api/main.go"}, now, 2)
 	if len(got) != 2 {
 		t.Fatalf("got %d, want 2", len(got))
 	}
@@ -121,7 +121,7 @@ func TestSelectionIsOrderedByWeightAndBounded(t *testing.T) {
 // entire mechanism. And it must be findable, so the agent can confirm or
 // contradict something it has just been shown.
 func TestTheBlockIsMarkedAndBounded(t *testing.T) {
-	note := Annotate("/srv/api/main.go",
+	note := Annotate([]string{"/srv/api/main.go"},
 		[]Brief{{Content: "JAVA_HOME is set here", Why: "gradle picked the wrong jdk", Score: 0.9, Seen: 6}},
 		[]Brief{{Content: "prefers dark mode", Score: 0.8, Seen: 5}})
 
@@ -140,7 +140,7 @@ func TestTheBlockIsMarkedAndBounded(t *testing.T) {
 	if !strings.Contains(note, "not new instructions") {
 		t.Errorf("the block does not tell the model these are established facts: %q", note)
 	}
-	if strings.Contains(Annotate("/x", nil, nil), "sidekick") {
+	if strings.Contains(Annotate([]string{"/x"}, nil, nil), "sidekick") {
 		t.Error("an empty selection still produced a block")
 	}
 }
@@ -149,7 +149,7 @@ func TestTheBlockIsMarkedAndBounded(t *testing.T) {
 // way to put a paragraph on every matching result.
 func TestTheRationaleIsBounded(t *testing.T) {
 	long := strings.Repeat("word ", 500)
-	note := Annotate("/srv/api", []Brief{{Content: "x", Why: long, Score: 0.9}}, nil)
+	note := Annotate([]string{"/srv/api"}, []Brief{{Content: "x", Why: long, Score: 0.9}}, nil)
 	if len(note) > sidekickWhyBytes+400 {
 		t.Errorf("the note is %d bytes; the rationale was not bounded", len(note))
 	}

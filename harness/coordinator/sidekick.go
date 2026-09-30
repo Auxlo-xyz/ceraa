@@ -1,15 +1,12 @@
 package coordinator
 
 import (
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
-	"ceraa/harness/tool"
 )
 
 // sidekickState carries what tool-output delivery needs, and records what it
@@ -52,14 +49,14 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 		return ""
 	}
 	now := time.Now()
-	target := s.targetFor(sess, result)
+	targets := s.targetsFor(sess, result)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var targeted, general []memory.Brief
-	if target != "" {
-		targeted = memory.Select(entries, target, now, memory.SidekickTargetLimit)
+	if len(targets) > 0 {
+		targeted = memory.Select(entries, targets, now, memory.SidekickTargetLimit)
 		s.report.TargetedInjects++
 	}
 	if !s.generalDelivered {
@@ -71,7 +68,7 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 		s.report.NoteSuppressed(belowGate(entries, now))
 		return ""
 	}
-	return memory.Annotate(target, targeted, general)
+	return memory.Annotate(targets, targeted, general)
 }
 
 // belowGate counts what the gate held back, so a run that delivered nothing can be
@@ -86,29 +83,15 @@ func belowGate(entries []memory.Entry, now time.Time) int {
 	return n
 }
 
-// targetFor is the path the operation is about, or "" when it has none.
-//
-// Deliberately limited to operations that carry an explicit path. A bash command
-// has no single target, and extracting one means parsing a shell string, which is
-// the opposite of the property this whole mechanism exists for: a rule that
-// cannot be wrong. A targeted memory about a path is therefore not delivered
-// alongside a bash call, only alongside the tool that touches that path.
-func (s *sidekickState) targetFor(sess *sessionstore.Session, result operation.ResultEvent) string {
+// targetsFor is every path the completed operation was about.
+func (s *sidekickState) targetsFor(sess *sessionstore.Session, result operation.ResultEvent) []string {
 	for _, op := range sess.Operations {
 		if op.ID != result.OpID {
 			continue
 		}
-		path, _ := op.SpecArgs["path"].(string)
-		if strings.TrimSpace(path) == "" {
-			return ""
-		}
-		resolved, err := tool.ResolvePathFrom(s.workDir, path)
-		if err != nil {
-			return ""
-		}
-		return filepath.Clean(resolved)
+		return s.targetsForSpec(op.SpecType, op.SpecArgs)
 	}
-	return ""
+	return nil
 }
 
 func (s *sidekickState) deliveryReport() memory.DeliveryReport {
