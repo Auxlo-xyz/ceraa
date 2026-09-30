@@ -27,10 +27,16 @@ func TestLiveQoderDeviceAuth(t *testing.T) {
 	if os.Getenv("CERAA_LIVE_QODER") != "1" {
 		t.Skip("set CERAA_LIVE_QODER=1 to run the live device login")
 	}
-	// A temp store, so a real token never lands in the working tree or in a
-	// shared data directory. The machine id is fresh for the same reason: this
-	// is a probe, not a migration.
-	dir := t.TempDir()
+	// CERAA_PROBE_HOME overrides the temp store, so a token obtained for
+	// probing survives the test process and can be reused for inference probes
+	// without another approval. Unset, the default is a temp dir that vanishes,
+	// so a real token never lands in the working tree by accident.
+	dir := os.Getenv("CERAA_PROBE_HOME")
+	if dir == "" {
+		dir = t.TempDir()
+	} else if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("probe home: %v", err)
+	}
 	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
 		t.Fatalf("secret store: %v", err)
 	}

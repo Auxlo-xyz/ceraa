@@ -200,11 +200,31 @@ var MiniMaxModels = []string{
 }
 
 // QoderModels are the models Qoder's own CLI reports for an account, established by
-// running qodercli --list-models against a logged-in session rather than by
+// running qodercli --list-models against a signed-in session rather than by
 // guessing from another provider's catalogue.
+//
+// Seventeen entries, from the routing aliases (Auto, Ultimate) through to the
+// third-party models, so this list is refreshed from the CLI rather than curated
+// by hand. An alias such as Auto is a real choice: it lets Qoder route the turn,
+// which is a different request from naming a model.
 var QoderModels = []string{
+	"Auto",
+	"Ultimate",
+	"Performance",
+	"Efficient",
+	"Sonus",
+	"Cantus",
 	"Qwen3.8-Max",
 	"Qwen3.8-Flash",
+	"Qwen3.7-Max",
+	"Qwen3.7-Plus",
+	"Kimi-K3",
+	"Kimi-K2.8-Preview",
+	"GLM-5.3",
+	"GLM-5.3-Flash",
+	"DeepSeek-V4-Pro",
+	"DeepSeek-Flash",
+	"MiniMax-M3",
 }
 
 // IsQoderModel reports whether a model id is one the subscription serves.
