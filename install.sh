@@ -77,18 +77,27 @@ base="https://github.com/$REPO/releases/download/$VERSION"
 info "downloading"
 curl -fsSL -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
+# The system prompt is optional in the sense that an older release predates it, so
+# a 404 here is not fatal; it is only fatal that the binary then runs degraded.
+curl -fsSL -o "$tmp/system.txt" "$base/system.txt" 2>/dev/null || rm -f "$tmp/system.txt"
 
 # Checksum. The line is "<sha256>  <filename>", so the filename is matched
 # exactly and not by prefix: a substring match would also accept
 # "ceraa-linux-amd64-notreally".
 info "verifying checksum"
-( cd "$tmp" && grep " $asset\$" SHA256SUMS > "$tmp/expected" ) || die "no checksum for $asset in SHA256SUMS"
-want="$(awk '{print $1}' "$tmp/expected")"
-got="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
-[ "$want" = "$got" ] || die "checksum mismatch
+verify() {
+  name="$1"
+  ( cd "$tmp" && grep " $name\$" SHA256SUMS > "$tmp/expected" ) \
+    || die "no checksum for $name in SHA256SUMS"
+  want="$(awk '{print $1}' "$tmp/expected")"
+  got="$(sha256sum "$tmp/$name" | awk '{print $1}')"
+  [ "$want" = "$got" ] || die "checksum mismatch for $name
   expected $want
   got      $got
 The download is corrupt or was tampered with. Do not run it."
+}
+verify "$asset"
+[ -f "$tmp/system.txt" ] && verify system.txt
 
 if [ "$VERIFY_ONLY" -eq 1 ]; then
   info "checksum OK. Not installing because --verify-only was passed."
@@ -111,6 +120,28 @@ chmod 0755 "$tmp/$asset"
 mv "$tmp/$asset" "$INSTALL_DIR/ceraa" || die "could not write $INSTALL_DIR/ceraa"
 
 info "installed $INSTALL_DIR/ceraa"
+
+# The system prompt ships as a file beside the binary, not inside it.
+#
+# Ceraa reads prompt/system.txt from disk and never embeds it, on purpose: there
+# is exactly one copy, so an edit cannot be silently shadowed by a stale build.
+# The loader already searches the executable's directory, so installing the file
+# next to the binary is all that is needed. Without this the agent runs on a
+# one-line fallback and most of its behaviour is gone.
+if [ -f "$tmp/system.txt" ]; then
+  prompt_dir="$INSTALL_DIR/prompt"
+  mkdir -p "$prompt_dir" || die "could not create $prompt_dir"
+  if cp -f "$tmp/system.txt" "$prompt_dir/system.txt"; then
+    info "installed $prompt_dir/system.txt"
+  else
+    info "warning: could not install the system prompt."
+    info "Ceraa will start on a minimal fallback prompt until you do:"
+    info "    mkdir -p $prompt_dir"
+    info "    curl -fsSL -o $prompt_dir/system.txt $base/system.txt"
+  fi
+else
+  info "warning: the release has no system.txt, so Ceraa will start degraded."
+fi
 
 # Make it reachable without a PATH edit, but only if the user has to do it.
 case ":$PATH:" in
