@@ -1,0 +1,126 @@
+#!/usr/bin/env sh
+# Install Ceraa from a prebuilt binary.
+#
+# The release contains compiled binaries only. There is no source in it, and this
+# script does not need any: a Go binary is a self-contained executable, so
+# installing Ceraa is a file download and nothing more.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | sh -s -- --version v0.1.0
+#
+# Options, passed after `--`:
+#   --version VERSION   release tag to install (default: the latest release)
+#   --dir PATH          install directory (default: /usr/local/bin, else ~/.local/bin)
+#   --verify-only       check the download and checksum, then stop
+set -eu
+
+REPO="Auxlo-xyz/ceraa"
+VERSION=""
+INSTALL_DIR=""
+VERIFY_ONLY=0
+
+die() { echo "install: $*" >&2; exit 1; }
+info() { echo "install: $*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) VERSION="${2:?--version needs a value}"; shift 2 ;;
+    --dir) INSTALL_DIR="${2:?--dir needs a value}"; shift 2 ;;
+    --verify-only) VERIFY_ONLY=1; shift ;;
+    -h|--help)
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) die "unknown option $1" ;;
+  esac
+done
+
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not on PATH"; }
+need uname
+need tar
+
+# Platform detection. The release names files ceraa-<os>-<arch>, so this only has
+# to agree with the names built by the release workflow.
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$os" in
+  linux)  os="linux" ;;
+  darwin) os="darwin" ;;
+  *) die "unsupported operating system: $os (this release ships linux and darwin builds)" ;;
+esac
+
+arch="$(uname -m)"
+case "$arch" in
+  x86_64|amd64)  arch="amd64" ;;
+  aarch64|arm64) arch="arm64" ;;
+  *) die "unsupported architecture: $arch (this release ships amd64 and arm64 builds)" ;;
+esac
+
+asset="ceraa-$os-$arch"
+
+# Resolve the release. The API is used rather than the /releases/latest redirect so
+# a wrong tag produces a clear message instead of an HTML page.
+if [ -z "$VERSION" ]; then
+  api="https://api.github.com/repos/$REPO/releases/latest"
+  info "resolving the latest release"
+  body="$(curl -fsSL "$api")" || die "could not reach $api"
+  VERSION="$(printf '%s' "$body" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$VERSION" ] || die "could not read a tag_name from the GitHub API response"
+else
+  api="https://api.github.com/repos/$REPO/releases/tags/$VERSION"
+fi
+info "installing $VERSION ($asset)"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+base="https://github.com/$REPO/releases/download/$VERSION"
+info "downloading"
+curl -fsSL -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
+curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
+
+# Checksum. The line is "<sha256>  <filename>", so the filename is matched
+# exactly and not by prefix: a substring match would also accept
+# "ceraa-linux-amd64-notreally".
+info "verifying checksum"
+( cd "$tmp" && grep " $asset\$" SHA256SUMS > "$tmp/expected" ) || die "no checksum for $asset in SHA256SUMS"
+want="$(awk '{print $1}' "$tmp/expected")"
+got="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+[ "$want" = "$got" ] || die "checksum mismatch
+  expected $want
+  got      $got
+The download is corrupt or was tampered with. Do not run it."
+
+if [ "$VERIFY_ONLY" -eq 1 ]; then
+  info "checksum OK. Not installing because --verify-only was passed."
+  exit 0
+fi
+
+# Install location. A system directory needs root, and asking for sudo in a pipe
+# is a bad idea, so an unwritable /usr/local/bin falls back to ~/.local/bin.
+if [ -z "$INSTALL_DIR" ]; then
+  if [ -w /usr/local/bin ] 2>/dev/null || [ "$(id -u)" = "0" ]; then
+    INSTALL_DIR=/usr/local/bin
+  else
+    INSTALL_DIR="$HOME/.local/bin"
+  fi
+fi
+mkdir -p "$INSTALL_DIR" || die "could not create $INSTALL_DIR"
+[ -w "$INSTALL_DIR" ] || die "$INSTALL_DIR is not writable"
+
+chmod 0755 "$tmp/$asset"
+mv "$tmp/$asset" "$INSTALL_DIR/ceraa" || die "could not write $INSTALL_DIR/ceraa"
+
+info "installed $INSTALL_DIR/ceraa"
+
+# Make it reachable without a PATH edit, but only if the user has to do it.
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *)
+    info ""
+    info "$INSTALL_DIR is not on your PATH. Add this to your shell profile:"
+    info "    export PATH=\"\$PATH:$INSTALL_DIR\""
+    info ""
+    ;;
+esac
+
+info "run 'ceraa chat' to start, or 'ceraa setup' for the Telegram bridge"
