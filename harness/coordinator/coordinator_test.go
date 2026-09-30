@@ -714,3 +714,138 @@ func TestEditToolDefinitionsStaySmall(t *testing.T) {
 		}
 	}
 }
+
+// Reading a long file twice in one task is common: the tail is not what the model
+// needed, so it reads again, and the cap trims it to the same pointer it already
+// has. Measured on a real 53-message session, one 21k file was read five times and
+// the identical 4145-byte notice was sent seven times across the run.
+func TestARepeatedTrimIsNotResentInFull(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	output := strings.Repeat("a long line of file content\n", 1500) // 43,500 B
+
+	first := runner.formatOutput("run1", "call1", output)
+	if !strings.Contains(first, "Tail:") {
+		t.Fatalf("first result should carry a tail, got %q", first)
+	}
+	second := runner.formatOutput("run1", "call2", output)
+	if strings.Contains(second, "Tail:") {
+		t.Errorf("a repeat re-sent the tail: %d bytes", len(second))
+	}
+	if !strings.Contains(second, "Identical to a tool result earlier in this run") {
+		t.Errorf("a repeat should say it is identical, got %q", second)
+	}
+	if len(second) >= len(first)/2 {
+		t.Errorf("a repeat is %d bytes against a first of %d, which is no saving",
+			len(second), len(first))
+	}
+	// The file is still written, so the path it names resolves.
+	if !strings.Contains(second, filepath.Join(dir, "run1", "call2.txt")) {
+		t.Errorf("a repeat should still name a readable file, got %q", second)
+	}
+	if _, err := os.ReadFile(filepath.Join(dir, "run1", "call2.txt")); err != nil {
+		t.Errorf("the repeat's file was not written: %v", err)
+	}
+}
+
+// Keyed on content, not operation ID, which is what makes a re-read of the same
+// file a repeat at all.
+func TestADifferentFileIsNotTreatedAsARepeat(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	base := strings.Repeat("shared prefix line\n", 1000)
+	runner.formatOutput("run1", "call1", base+"first file tail\n")
+	other := runner.formatOutput("run1", "call2", base+"a different file tail\n")
+	if !strings.Contains(other, "Tail:") {
+		t.Errorf("distinct content was collapsed as a repeat: %q", other)
+	}
+}
+
+// An edit changes the content, so the next read of the same path is not a repeat
+// and must come back whole.
+func TestAChangedFileIsNotTreatedAsARepeat(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	before := strings.Repeat("line before the edit\n", 1000)
+	after := strings.Repeat("line before the edit\n", 999) + "line after the edit\n"
+	runner.formatOutput("run1", "call1", before)
+	changed := runner.formatOutput("run1", "call2", after)
+	if !strings.Contains(changed, "Tail:") {
+		t.Errorf("an edited file was collapsed as a repeat: %q", changed)
+	}
+}
+
+// Only trimmed results are remembered. A small result stays cheap, and a model
+// re-reading a short file is often checking something specific rather than
+// looping, so collapsing it would trade real information for a few hundred bytes.
+func TestASmallResultIsNeverCollapsed(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	small := "one short line\n"
+	first := runner.formatOutput("run1", "call1", small)
+	second := runner.formatOutput("run1", "call2", small)
+	if first != second {
+		t.Errorf("a small result was rewritten: %q vs %q", first, second)
+	}
+}
+
+// Bounded, because this is a cache of strings that a long run keeps adding to.
+func TestTheRepeatCacheIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	for i := 0; i < 200; i++ {
+		runner.formatOutput("run1", fmt.Sprintf("call%d", i), strings.Repeat(fmt.Sprintf("body %d\n", i), 1200))
+	}
+	runner.trimmedMu.Lock()
+	n := len(runner.trimmedSeen)
+	runner.trimmedMu.Unlock()
+	if n > 64 {
+		t.Errorf("cache holds %d entries, over the bound of 64", n)
+	}
+}
+
+// The shape taken from a real 53-message session: three long files, read nine
+// times between them, every call with its own operation ID.
+//
+// The repeats were not byte-identical as they reached the model, because each
+// notice embedded its own output path, so a dedupe keyed on the formatted text
+// would have missed every one of them. The key has to be the content the tool
+// returned, which is what formatOutput holds.
+func TestRepeatedReadsOfLongFilesCollapseToOneNoticeEach(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 12000, ToolOutputDir: dir}}
+
+	// The three files and the read counts the session actually made.
+	files := map[string]int{"index.ts": 5, "audit.md": 2, "metadata.json": 2}
+	bodies := make(map[string]string, len(files))
+	for name := range files {
+		size := map[string]int{"index.ts": 21536, "audit.md": 52053, "metadata.json": 15905}[name]
+		body := strings.Repeat("content line for "+name+"\n", size/(len("content line for "+name+"\n"))+1)
+		bodies[name] = body[:size]
+	}
+
+	before, after, collapsed := 0, 0, 0
+	calls := 0
+	for name, reads := range files {
+		for i := 0; i < reads; i++ {
+			formatted := runner.formatOutput("run1", fmt.Sprintf("call-%s-%d", name, i), bodies[name])
+			after += len(formatted)
+			calls++
+			if strings.Contains(formatted, "Identical to a tool result earlier") {
+				collapsed++
+			}
+			// What each read costs with no dedupe: a trim notice plus its tail.
+			tail := 12000 / 3
+			before += len(fmt.Sprintf("Large tool output saved to /tmp/x/%s-%d.txt (%d bytes).\nTail:\n%s",
+				name, i, len(bodies[name]), bodies[name][len(bodies[name])-tail:]))
+		}
+	}
+	if collapsed != calls-len(files) {
+		t.Errorf("collapsed %d of %d repeats, want %d", collapsed, calls-len(files), calls-len(files))
+	}
+	t.Logf("%d reads of %d files: %d B -> %d B, saving %d B = %d tok",
+		calls, len(files), before, after, before-after, (before-after)/4)
+	if after >= before/2 {
+		t.Errorf("dedupe left %d B against %d B, which is no real saving", after, before)
+	}
+}

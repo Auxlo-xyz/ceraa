@@ -144,6 +144,16 @@ type Runner struct {
 	// delivery and sidekick are the memory delivery mode and its per-run state.
 	delivery memory.Delivery
 	sidekick *sidekickState
+
+	// trimmedSeen remembers, per run, the trimmed tool results already sent, keyed
+	// by a hash of the content. Scoped to the run because that is where the repeat
+	// happens: a model that reads a long file, loses the tail to the cap, and
+	// reads it again within the same task. Re-reading across runs is rarer, and
+	// carrying the map between them would need persistence and invalidation for a
+	// smaller win.
+	trimmedMu    sync.Mutex
+	trimmedSeen  map[string]struct{}
+	trimmedOrder []string
 }
 
 // ContextLimit reports the effective context budget and where it came from.
@@ -1676,6 +1686,19 @@ func (r *Runner) DeliveryReport() memory.DeliveryReport {
 }
 
 func (r *Runner) formatOutput(runID, operationID, output string) string {
+	// Repeated content is collapsed before the cap is consulted, because the
+	// repeats that actually cost anything are not the trimmed ones.
+	//
+	// A 21k file trims to a 4k notice, and that notice then sits comfortably under
+	// the cap, so every later read of the same file passes straight through and
+	// re-sends it. Measured on a real session: one file read five times, its
+	// identical 4,145-byte notice sent seven times, 25k of context for content
+	// the model already had. Gating this on the trim branch missed all of it.
+	if r.alreadySent(output) {
+		notice := r.repeatNotice(runID, operationID, output)
+		recordToolOutput(len(output), len(notice))
+		return notice
+	}
 	limit := r.cfg.MaxToolResultChars
 	if limit <= 0 || len(output) <= limit {
 		// Counted here rather than after the trim, so the denominator is every
@@ -1688,11 +1711,7 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 	if dir == "" {
 		dir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
 	}
-	safeID := filepath.Base(operationID)
-	if safeID == "." || safeID == string(filepath.Separator) || safeID == "" {
-		safeID = "result"
-	}
-	path := filepath.Join(dir, runID, safeID+".txt")
+	path := filepath.Join(dir, runID, r.safeResultName(operationID)+".txt")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
 		if err := os.WriteFile(path, []byte(output), 0o600); err == nil {
 			tailLength := limit / 3
@@ -1712,6 +1731,75 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 	trimmed := fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), output[len(output)-tailLength:])
 	recordToolOutput(len(output), len(trimmed))
 	return trimmed
+}
+
+// repeatNotice points at the content instead of resending it.
+//
+// The file is written on a repeat too, not only on the first send, so the path
+// quoted here always resolves. It matters because the earlier copy can be gone
+// from the model's context by compaction, and a reference to a file that is not
+// there is worse than the repetition it saves.
+func (r *Runner) repeatNotice(runID, operationID, output string) string {
+	dir := r.cfg.ToolOutputDir
+	if dir == "" {
+		dir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
+	}
+	path := filepath.Join(dir, runID, r.safeResultName(operationID)+".txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Sprintf("Identical to a tool result earlier in this run (%d bytes); not repeated.", len(output))
+	}
+	if err := os.WriteFile(path, []byte(output), 0o600); err != nil {
+		return fmt.Sprintf("Identical to a tool result earlier in this run (%d bytes); not repeated.", len(output))
+	}
+	return fmt.Sprintf(
+		"Identical to a tool result earlier in this run (%d bytes); not repeated. Full content: %s",
+		len(output), path)
+}
+
+// safeResultName keeps an operation ID from escaping the output directory.
+func (r *Runner) safeResultName(operationID string) string {
+	safe := filepath.Base(operationID)
+	if safe == "." || safe == string(filepath.Separator) || safe == "" {
+		return "result"
+	}
+	return safe
+}
+
+// alreadySent reports whether this exact content has already gone to the model in
+// this run, recording it the first time.
+//
+// Keyed on content, not operation, because the repeat is the same file read twice
+// and the two calls carry different IDs.
+//
+// The floor keeps short results out of it. A model re-reading a 200-byte file is
+// usually checking something specific, and collapsing that would trade real
+// information for a few hundred bytes. A thousand bytes is where a repeat starts
+// costing more than the certainty is worth.
+//
+// Bounded because a long run keeps adding to this and it holds strings.
+func (r *Runner) alreadySent(output string) bool {
+	const minRepeatWorthCollapsing = 1000
+	if len(output) < minRepeatWorthCollapsing {
+		return false
+	}
+	sum := sha256.Sum256([]byte(output))
+	key := string(sum[:])
+	r.trimmedMu.Lock()
+	defer r.trimmedMu.Unlock()
+	if r.trimmedSeen == nil {
+		r.trimmedSeen = make(map[string]struct{})
+	}
+	if _, seen := r.trimmedSeen[key]; seen {
+		return true
+	}
+	const maxRemembered = 64
+	if len(r.trimmedOrder) >= maxRemembered {
+		delete(r.trimmedSeen, r.trimmedOrder[0])
+		r.trimmedOrder = r.trimmedOrder[1:]
+	}
+	r.trimmedSeen[key] = struct{}{}
+	r.trimmedOrder = append(r.trimmedOrder, key)
+	return false
 }
 
 // budgetPoints resolves the three thresholds of the graduated request budget.
