@@ -22,8 +22,13 @@ package tui
 // recognisable at a glance and the banner does not jump shape as a run changes
 // state.
 const (
-	// mascotIdle is the resting wink.
-	mascotIdle = `             ▄▄████████▄▄
+	// mascot is the whole drawing: a three-lobed cloud, one tall open oval
+	// eye and one wide flat eye beside it that reads as a wink.
+	//
+	// It is static. An earlier version carried five states and swapped
+	// the features between them, which was animation nobody asked for and
+	// five drawings to keep in sync with the PNG they came from.
+	mascot = `             ▄▄████████▄▄
           ▄███████████████▄
          ███████████████████▄▄▄▄▄
     ▄▄█████████████████████████████▄
@@ -32,78 +37,6 @@ const (
 ██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
 ▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
  ▀██████▄     ██   ─────────    ──████▄
-   ████████▄  ▄███████████████████████
-  ████████████████████████████████████
-   ██████████████████████████████████
-    ▀█████████████████████████████▀▀
-       ▀▀▀▀▀▀███████████████▀
-              ▀▀████████▀▀`
-
-	// mascotThinking narrows the open eye into a dash, so a run that is only
-	// waiting reads differently from one that is doing something.
-	mascotThinking = `             ▄▄████████▄▄
-          ▄███████████████▄
-         ███████████████████▄▄▄▄▄
-    ▄▄█████████████████████████████▄
- ▄███████████████████████████████████
-▄█████████▀▀████████████▀▀▀▀▀█████████▄
-██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
-▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
- ▀██████▄     ██   ── ─ ─ ─      ····██▄
-   ████████▄  ▄███████████████████████
-  ████████████████████████████████████
-   ██████████████████████████████████
-    ▀█████████████████████████████▀▀
-       ▀▀▀▀▀▀███████████████▀
-              ▀▀████████▀▀`
-
-	// mascotWorking opens the wink into a small round mouth, the one state whose
-	// face is doing visible work.
-	mascotWorking = `             ▄▄████████▄▄
-          ▄███████████████▄
-         ███████████████████▄▄▄▄▄
-    ▄▄█████████████████████████████▄
- ▄███████████████████████████████████
-▄█████████▀▀████████████▀▀▀▀▀█████████▄
-██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
-▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
- ▀██████▄     ██   ─────────    ()  ███▄
-   ████████▄  ▄███████████████████████
-  ████████████████████████████████████
-   ██████████████████████████████████
-    ▀█████████████████████████████▀▀
-       ▀▀▀▀▀▀███████████████▀
-              ▀▀████████▀▀`
-
-	// mascotDone keeps the wink and closes the open eye a little further, which
-	// reads as satisfied without needing a second drawing.
-	mascotDone = `             ▄▄████████▄▄
-          ▄███████████████▄
-         ███████████████████▄▄▄▄▄
-    ▄▄█████████████████████████████▄
- ▄███████████████████████████████████
-▄█████████▀▀████████████▀▀▀▀▀█████████▄
-██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
-▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
- ▀██████▄     ██   ─╴───╴─     ──▴████▄
-   ████████▄  ▄███████████████████████
-  ████████████████████████████████████
-   ██████████████████████████████████
-    ▀█████████████████████████████▀▀
-       ▀▀▀▀▀▀███████████████▀
-              ▀▀████████▀▀`
-
-	// mascotError flattens the wink, so a failure is still unmistakably the same
-	// face rather than a different drawing.
-	mascotError = `             ▄▄████████▄▄
-          ▄███████████████▄
-         ███████████████████▄▄▄▄▄
-    ▄▄█████████████████████████████▄
- ▄███████████████████████████████████
-▄█████████▀▀████████████▀▀▀▀▀█████████▄
-██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
-▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
- ▀██████▄     ██   ─────────    ─△─█████
    ████████▄  ▄███████████████████████
   ████████████████████████████████████
    ██████████████████████████████████
@@ -150,22 +83,6 @@ func (s State) String() string {
 	}
 }
 
-// face returns the drawing for a state.
-func (s State) face() string {
-	switch s {
-	case StateThinking:
-		return mascotThinking
-	case StateWorking:
-		return mascotWorking
-	case StateDone:
-		return mascotDone
-	case StateError:
-		return mascotError
-	default:
-		return mascotIdle
-	}
-}
-
 // spinnerFrames is a braille cycle, which advances in one cell so the status line
 // does not reflow while it turns.
 //
@@ -183,18 +100,12 @@ func Spinner(tick int) string {
 	return spinnerFrames[((tick%n)+n)%n]
 }
 
-// RenderMascot draws the mascot for a state, in bold when colour is on.
-//
-// The whole block is emitted as one write so the face cannot be torn by an
-// interleaved write from a concurrent tool callback.
-func (p Palette) RenderMascot(s State) string { return p.Bold(s.face()) }
-
 // Banner is the startup block: the mascot, the name, and the resolved provider,
 // so the first thing on screen says which model is answering before any prompt
 // is typed.
 func (p Palette) Banner(version, model, provider string) string {
 	var b []byte
-	b = append(b, p.Bold(mascotIdle)...)
+	b = append(b, p.Bold(mascot)...)
 	b = append(b, '\n')
 	b = append(b, p.Bold("  Ceraa")...)
 	b = append(b, p.Dim("  "+version+"\n")...)
