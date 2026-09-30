@@ -13,8 +13,14 @@ FROM debian:bookworm-slim
 ARG CERAA_UID=10001
 ARG CERAA_GID=10001
 
+# ripgrep is here because the model reaches for it by prior, not because it was
+# asked to. A real session spent two of its calls on `rg` before falling back to
+# grep, and this image is what it was running in: debian-slim with only
+# ca-certificates, so the binary simply was not present. Adding the package costs
+# 2 MB and two round trips per session; naming it in the prompt without it being
+# here is what teaches the model to reach for a tool that will fail.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid "${CERAA_GID}" ceraa \
     && useradd --uid "${CERAA_UID}" --gid "${CERAA_GID}" --home-dir /data/ceraa --create-home --shell /usr/sbin/nologin ceraa \

@@ -61,7 +61,7 @@ func runShell(parent context.Context, command string, workDir string, timeout ti
 	err := cmd.Run()
 	result := PrimitiveResult{Content: output.String(), OutputPath: filePath(file)}
 	if err != nil {
-		result.Error = err.Error()
+		result.Error = explainMissingBinary(output.String(), err.Error())
 	}
 	if ctx.Err() != nil {
 		result.Error = ctx.Err().Error()
@@ -146,4 +146,36 @@ func joinPaths(paths []string) string {
 		result += "\n" + p
 	}
 	return result
+}
+
+// explainMissingBinary names the substitute when a command is not installed.
+//
+// A real session ran `rg` twice and got "command not found" both times before
+// falling back to grep, so the cost of a binary being absent is two wasted round
+// trips per session. Naming the equivalent turns the second one into a corrected
+// call instead of a repeat.
+//
+// The hint goes in the error, not in the prompt. Whether a binary is installed is
+// a property of the deployment, and putting it in the system prompt would put
+// per-environment text in the cached prefix, which is where volatile content does
+// the most damage.
+func explainMissingBinary(output, errText string) string {
+	if !strings.Contains(output, "command not found") {
+		return errText
+	}
+	hint := ""
+	switch {
+	case strings.Contains(output, "rg: command not found"):
+		hint = "ripgrep is not installed here; use grep -rn, or find for file names"
+	case strings.Contains(output, "fd: command not found"):
+		hint = "fd is not installed here; use find"
+	case strings.Contains(output, "fd: No such file"):
+		hint = "fd is not installed here; use find"
+	case strings.Contains(output, "jq: command not found"):
+		hint = "jq is not installed here; use grep, or a python3 -c one-liner for JSON"
+	}
+	if hint == "" {
+		return errText
+	}
+	return errText + " - " + hint
 }

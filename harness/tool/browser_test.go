@@ -421,13 +421,26 @@ func TestBrowserStillRejectsNonWebSchemes(t *testing.T) {
 // TestPrefersSystemBrowserOverDownload pins that a browser already on the host is
 // used, so the tool does not download a private copy it does not need.
 func TestPrefersSystemBrowserOverDownload(t *testing.T) {
+	// Skipped on the absence of a system browser rather than on the absence of any
+	// browser, which is what the previous guard tested and why this never passed
+	// on a host with only the private download. There is nothing to compare
+	// against here, so there is no preference to assert.
+	hasSystem := false
+	for _, candidate := range systemBrowserCandidates {
+		if _, ok := executableExists(candidate); ok {
+			hasSystem = true
+			break
+		}
+	}
+	if !hasSystem {
+		t.Skip("no system browser on this host, so there is nothing to prefer over the download")
+	}
 	found, err := resolveBrowserBinary(context.Background())
 	if err != nil {
-		t.Skipf("no browser available on this host: %v", err)
+		t.Fatalf("a system browser is installed but resolution failed: %v", err)
 	}
 	if _, installed := executableExists(found); !installed {
-		// The downloaded fallback is legitimate when nothing is installed.
-		t.Skip("no system browser, so the private download is the only option")
+		t.Fatalf("resolved %q, which is not executable", found)
 	}
 	for _, candidate := range systemBrowserCandidates {
 		if expected, ok := executableExists(candidate); ok {
