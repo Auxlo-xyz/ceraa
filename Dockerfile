@@ -16,11 +16,22 @@ ARG CERAA_GID=10001
 # ripgrep is here because the model reaches for it by prior, not because it was
 # asked to. A real session spent two of its calls on `rg` before falling back to
 # grep, and this image is what it was running in: debian-slim with only
-# ca-certificates, so the binary simply was not present. Adding the package costs
-# 2 MB and two round trips per session; naming it in the prompt without it being
-# here is what teaches the model to reach for a tool that will fail.
+# ca-certificates, so the binary simply was not present.
+#
+# The install is deliberately allowed to fail. It is a separate step from
+# ca-certificates, which is required, because a package with no build for the
+# target architecture would otherwise abort the whole RUN and the image would not
+# build at all - a hard break for anyone on that architecture, in exchange for a
+# faster search. This bot runs for several users whose machines are not this
+# machine, so the image has to build everywhere.
+#
+# A missing ripgrep is not a broken deployment: the prompt resolves its search
+# instruction at startup from what is actually installed, and names grep when
+# ripgrep is absent.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ripgrep \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && (apt-get install -y --no-install-recommends ripgrep \
+        || echo "ceraa: ripgrep unavailable for this architecture; the prompt will name grep instead") \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid "${CERAA_GID}" ceraa \
     && useradd --uid "${CERAA_UID}" --gid "${CERAA_GID}" --home-dir /data/ceraa --create-home --shell /usr/sbin/nologin ceraa \
