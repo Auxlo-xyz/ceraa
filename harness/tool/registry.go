@@ -207,20 +207,19 @@ func (e *EditTool) Name() string { return "edit_line" }
 // is the tool's contract, and a rule about when to prefer it over a sibling is
 // the prompt's job. TestDescriptionsCarryNoUsageGuidance enforces that split.
 func (e *EditTool) Description() string {
-	return "Replace one exact occurrence of old_text with new_text in a file. " +
-		"Fails without writing if old_text is absent, naming the line where it " +
-		"differs only in whitespace, or if it matches more than once, naming every " +
-		"line. On a repeat match, pass occurrence to choose which one; otherwise " +
-		"old_text must be unique."
+	return "Replace one exact occurrence of old_text with new_text. " +
+		"old_text must be unique unless occurrence, 1-based, picks a repeat. " +
+		"Never writes on failure: it names the line of every match, and names the " +
+		"line when old_text is present but differs only in whitespace."
 }
 func (e *EditTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"path":       map[string]any{"type": "string", "description": "File path"},
-			"old_text":   map[string]any{"type": "string", "description": "Existing text to replace"},
-			"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
-			"occurrence": map[string]any{"type": "integer", "description": "Which match to replace when old_text is not unique, counting from 1. Omit when it is unique."},
+			"old_text":   map[string]any{"type": "string", "description": "exact text to find"},
+			"new_text":   map[string]any{"type": "string", "description": "its replacement"},
+			"occurrence": map[string]any{"type": "integer", "description": "1-based match index, optional"},
 		},
 		"required": []string{"path", "old_text", "new_text"},
 	}
@@ -257,11 +256,10 @@ type BatchEditFileTool struct{}
 
 func (b *BatchEditFileTool) Name() string { return "batch_edit_file" }
 func (b *BatchEditFileTool) Description() string {
-	return "Apply several replacements to one file together, as a single write. " +
-		"Give each change as an old_text and a new_text pair; every one must match " +
-		"exactly once unless it names an occurrence. Fails without writing anything " +
-		"if any change does not match, reporting all of them at once with the lines " +
-		"involved."
+	return "Apply several old_text to new_text replacements to one file in a " +
+		"single write. Each must be unique unless it names occurrence, 1-based. " +
+		"Never writes on failure: every failing edit is reported at once, with the " +
+		"lines involved."
 }
 func (b *BatchEditFileTool) Schema() map[string]any {
 	return map[string]any{
@@ -270,13 +268,13 @@ func (b *BatchEditFileTool) Schema() map[string]any {
 			"path": map[string]any{"type": "string", "description": "File path"},
 			"edits": map[string]any{
 				"type":        "array",
-				"description": "Replacements to apply in order. All must match exactly once.",
+				"description": "applied in order, all or nothing",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"old_text":   map[string]any{"type": "string", "description": "Existing text to replace"},
-						"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
-						"occurrence": map[string]any{"type": "integer", "description": "Which match to replace when old_text is not unique, counting from 1. Omit when it is unique."},
+						"old_text":   map[string]any{"type": "string", "description": "exact text to find"},
+						"new_text":   map[string]any{"type": "string", "description": "its replacement"},
+						"occurrence": map[string]any{"type": "integer", "description": "1-based match index, optional"},
 					},
 					"required": []string{"old_text", "new_text"},
 				},

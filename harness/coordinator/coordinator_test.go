@@ -681,3 +681,36 @@ func TestInProcessToolIsOfferedAndDispatched(t *testing.T) {
 		t.Fatal("the in-process tool never produced a result")
 	}
 }
+
+// Every tool definition is resent in every request for the whole session, so its
+// cost is multiplied by the turn count while the calls it enables usually happen
+// a handful of times. A batch_edit_file definition costs more per turn than a
+// three-change call costs outright, which is the opposite of the intuition that
+// only the calls count.
+//
+// A per-tool budget is what catches this. The total-size test above passed while
+// both edit definitions carried a 92-character description for occurrence that
+// nobody read, because the aggregate still had headroom.
+func TestEditToolDefinitionsStaySmall(t *testing.T) {
+	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "s"}}
+	budgets := map[string]int{
+		// Set just above the current size, so this is a ratchet: it catches the
+		// next description that grows, and never fires on its own.
+		"batch_edit_file": 780,
+		"edit_line":       650,
+	}
+	for _, def := range runner.toolDefs() {
+		budget, watched := budgets[def.Name]
+		if !watched {
+			continue
+		}
+		size, err := json.Marshal(def)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(size) > budget {
+			t.Errorf("%s definition is %d bytes, over the %d budget; trim the description or drop a property",
+				def.Name, len(size), budget)
+		}
+	}
+}
