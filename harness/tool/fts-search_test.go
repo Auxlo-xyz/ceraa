@@ -1,6 +1,7 @@
 package tool
 
 import (
+	systemprompt "ceraa/internal/prompt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,8 +31,14 @@ func TestFTSSearchPointsAtBashNotARemovedTool(t *testing.T) {
 	if !strings.Contains(text, "fts_search") {
 		t.Error("the prompt no longer mentions fts_search at all")
 	}
-	if !strings.Contains(text, "bash") || !strings.Contains(text, "grep -rn") {
+	// Resolved for the same reason: the search instruction is substituted at
+	// startup, and either branch of it points literal search at the shell.
+	resolved := systemprompt.Resolve(text)
+	if !strings.Contains(resolved, "bash") {
 		t.Error("the prompt no longer points exact-regex search at bash")
+	}
+	if !strings.Contains(resolved, "rg -n") && !strings.Contains(resolved, "grep -rn") {
+		t.Error("neither ripgrep nor grep is named as the literal-search tool")
 	}
 	// Naming a binary that is not installed is the mistake worth preventing, since
 	// it reads as authoritative and the call fails.

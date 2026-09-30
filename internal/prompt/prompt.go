@@ -3,6 +3,7 @@ package prompt
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -44,7 +45,7 @@ func load() string {
 	for _, candidate := range candidates() {
 		contents, err := os.ReadFile(candidate)
 		if err == nil && len(strings.TrimSpace(string(contents))) > 0 {
-			return string(contents)
+			return resolveSearchTool(string(contents), candidate)
 		}
 	}
 	fmt.Fprintf(os.Stderr,
@@ -52,6 +53,63 @@ func load() string {
 		SystemPromptPath)
 	return degraded
 }
+
+// searchPlaceholder carries the literal-search instruction.
+//
+// It is substituted once, at startup, because the search tool differs by
+// deployment and this bot runs for several users whose images are not the same
+// image. Naming ripgrep to a deployment that does not have it teaches the model
+// to reach for a binary that will fail, which is the same mistake as naming a
+// tool that has been removed.
+//
+// Resolving at startup rather than per request is what keeps the cached prefix
+// stable: one process serves one prompt, so the line is byte-identical for every
+// turn of every session that process handles, and each deployment gets the line
+// that is true for it.
+const searchPlaceholder = "{{SEARCH}}"
+
+const (
+	// searchLineRipgrep names the flags that matter rather than the binary alone,
+	// because the model otherwise invents its own invocation and loses the
+	// gitignore behaviour that makes it worth having.
+	searchLineRipgrep = `Use rg, which is installed here: rg -n "pattern" PATH to find a literal with line numbers, ` +
+		`rg --files PATH to list files, and rg -n --glob "!node_modules" to skip build output. ` +
+		`It already skips anything in .gitignore, so do not exclude directories by hand.`
+
+	// searchLineGrep is the fallback for a deployment without ripgrep, and it
+	// carries the exclusions explicitly because grep has no such default.
+	searchLineGrep = `find . -name "*.go" -not -path "*/node_modules/*" to list, and ` +
+		`grep -rn --exclude-dir=node_modules --exclude-dir=.git "pattern" PATH to find a literal.`
+)
+
+// resolveSearchTool substitutes the search instruction for whichever tool this
+// deployment actually has.
+func resolveSearchTool(text, source string) string {
+	if !strings.Contains(text, searchPlaceholder) {
+		return text
+	}
+	line := searchLineGrep
+	if _, err := exec.LookPath("rg"); err == nil {
+		line = searchLineRipgrep
+	}
+	resolved := strings.ReplaceAll(text, searchPlaceholder, line)
+	// A placeholder left in place would reach the model as literal text, which
+	// reads as an instruction to search for the string "{{SEARCH}}". Failing here
+	// is better than that, and better still than shipping a typo unnoticed.
+	if strings.Contains(resolved, "{{") {
+		fmt.Fprintf(os.Stderr,
+			"ceraa: %s still contains an unresolved placeholder after substitution; check the spelling.\n", source)
+	}
+	return resolved
+}
+
+// Resolve substitutes the search instruction the way startup does.
+//
+// Exported so a test that asserts on the shipped guidance reads the prompt the
+// model actually receives. Two tests failed on the raw file once the search line
+// moved behind a placeholder, and re-implementing the substitution in each test
+// is how they would drift apart.
+func Resolve(text string) string { return resolveSearchTool(text, SystemPromptPath) }
 
 func candidates() []string {
 	paths := []string{SystemPromptPath}

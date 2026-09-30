@@ -28,8 +28,13 @@ func TestLoadReadsTheCanonicalFile(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	if got := load(); got != string(contents) {
-		t.Errorf("loader returned different content than the file (%d vs %d bytes)", len(got), len(contents))
+	// The loader substitutes the search instruction, so its output is legitimately
+	// longer than the file. Compared through the same substitution rather than
+	// byte-for-byte, which is what pinned "the file is the prompt" and would now
+	// fail for a change that is the whole point of the loader.
+	want := resolveSearchTool(string(contents), SystemPromptPath)
+	if got := load(); got != want {
+		t.Errorf("loader returned different content than the resolved file (%d vs %d bytes)", len(got), len(want))
 	}
 }
 

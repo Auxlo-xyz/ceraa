@@ -1,6 +1,7 @@
 package tool
 
 import (
+	systemprompt "ceraa/internal/prompt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,7 +126,14 @@ func TestThePromptNamesRangedReadRatherThanSed(t *testing.T) {
 	}
 	// A search line that does not exclude the noise directories fills results with
 	// lines nobody reads, which is what made the offload notice necessary.
-	if !strings.Contains(text, "Exclude node_modules, .git and build output") {
+	// The search instruction is substituted at startup, so the raw file carries a
+	// placeholder where the guidance lives. Resolved, because the guidance is what
+	// is under test and the placeholder is not what the model reads.
+	resolved := systemprompt.Resolve(text)
+	if strings.Contains(resolved, "{{SEARCH}}") {
+		t.Error("the search instruction did not resolve, so the model would be told to search for a placeholder")
+	}
+	if !strings.Contains(resolved, "node_modules") || !strings.Contains(resolved, ".git") {
 		t.Error("the search guidance does not tell the model to exclude the noise directories")
 	}
 }
