@@ -71,6 +71,34 @@ func ProvisionReason() string {
 	return reason
 }
 
+// Report writes one line per process describing what provisioning did, and is
+// called from service startup.
+//
+// It exists because a silent step is an unowned one. Provisioning was originally
+// reached from a package init, so it ran at startup and nobody could see it: not
+// in the log, not in the sequence, and impossible to tell from outside whether a
+// machine had been provisioned or already had the tool. A step that changes what
+// is on disk owes the operator a line saying so.
+//
+// Success is reported as plainly as failure. "Already present" and "installed
+// now" are different facts and an operator debugging a slow start needs to tell
+// them apart.
+func Report(w io.Writer) {
+	ok := EnsureRipgrep()
+	note := ProvisionReason()
+	if ok && note == "" {
+		fmt.Fprintf(w, "ceraa: ripgrep ready\n")
+		return
+	}
+	if ok {
+		fmt.Fprintf(w, "ceraa: ripgrep ready (%s)\n", note)
+		return
+	}
+	fmt.Fprintf(w, "ceraa: ripgrep NOT available: %s\n"+
+		"        the prompt names rg, so searches will fail until it is installed.\n"+
+		"        On Debian or Ubuntu: apt-get install ripgrep\n", note)
+}
+
 func ensure() (bool, string) {
 	if path, err := exec.LookPath("rg"); err == nil {
 		return true, "found on PATH at " + path

@@ -18,6 +18,7 @@ import (
 	"ceraa/internal/oauthdevice"
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
+	"ceraa/internal/provision"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/keyboard"
 	"ceraa/internal/telegram/menus"
@@ -492,6 +493,12 @@ func Run() error {
 		return err
 	}
 	token := startup.token
+
+	// Provision before the logger, because the line below is the first thing an
+	// operator sees when a machine is slow to come up, and the answer to "is
+	// search broken here" is usually in it. A deliberate startup step, reported
+	// once, rather than a side effect of a package init nobody can see.
+	provision.Report(os.Stderr)
 
 	// Initialize logger -> maps to soraacode observability/logging.ts initializeLogger
 	if _, err := logger.Initialize(""); err != nil {

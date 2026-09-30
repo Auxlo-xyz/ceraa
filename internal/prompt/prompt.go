@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"ceraa/internal/provision"
 )
 
 // System is the system prompt handed to the model.
@@ -67,19 +65,14 @@ const searchLine = `Use rg, which is provisioned for you: rg -n "pattern" PATH t
 	`numbers, rg --files PATH to list files, and -g to filter by type such as -g "*.ts". It respects ` +
 	`.gitignore, so do not exclude directories by hand.`
 
-// resolveSearchTool provisions ripgrep and substitutes the search instruction.
+// resolveSearchTool substitutes the search instruction.
+//
+// It does not provision anything. Provisioning used to happen here, from a
+// package init, which meant it was invisible: no log line, no deliberate place in
+// the startup sequence, and it ran for any command that transitively imported
+// this package, including `ceraa --version`. It is now an explicit step in the
+// service startup, which reports what it did.
 func resolveSearchTool(text, source string) string {
-	// Provisioning runs here, before the prompt is handed to anything, and it is
-	// not optional: the prompt names rg, so rg has to exist. A failure is
-	// reported loudly rather than worked around, because a silent fallback to a
-	// slower tool is how a deployment ends up quietly worse than it was configured
-	// to be with nobody knowing why.
-	if !provision.EnsureRipgrep() {
-		fmt.Fprintf(os.Stderr,
-			"ceraa: ripgrep could not be provisioned, and the prompt will name a tool that is not present: %s\n"+
-				"        searches will fail until it is installed. On Debian or Ubuntu: apt-get install ripgrep\n",
-			provision.ProvisionReason())
-	}
 	resolved := strings.ReplaceAll(text, "{{SEARCH}}", searchLine)
 	// A placeholder left in place reaches the model as an instruction to search
 	// for the literal string {{SEARCH}}, so it is reported rather than shipped.

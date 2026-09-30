@@ -1,10 +1,12 @@
 package provision
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -137,5 +139,63 @@ func TestIsRipgrepRejectsSomethingThatIsNotRipgrep(t *testing.T) {
 	}
 	if isRipgrep(filepath.Join(dir, "absent")) {
 		t.Error("a missing file passed the check")
+	}
+}
+
+// A step that changes what is on disk owes the operator a line saying so. This
+// was reached from a package init, so it ran and nothing said anything.
+func TestReportSaysWhatProvisioningDid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CERAA_HOME", home)
+	t.Setenv("PATH", "/nonexistent-for-this-test")
+
+	// reset the once so the report is the one under test, not a leftover from
+	// another test in this package.
+	once = sync.Once{}
+	var out bytes.Buffer
+	Report(&out)
+	line := out.String()
+	if !strings.Contains(line, "ripgrep") {
+		t.Errorf("report = %q, want it to mention ripgrep", line)
+	}
+	if strings.Contains(line, "NOT available") {
+		t.Skipf("this host cannot fetch the release, so the failure path was reported instead: %s", line)
+	}
+	if !strings.Contains(line, "ready") {
+		t.Errorf("report = %q, want it to say ripgrep is ready", line)
+	}
+	// Ready and already-present are different facts.
+	if strings.Contains(line, "ready ()") {
+		t.Errorf("report = %q, want the reason to be filled in rather than empty", line)
+	}
+	// Reported once per process, not once per call.
+	second := &bytes.Buffer{}
+	Report(second)
+	if second.String() == "" {
+		t.Error("a second report was silent, so the step is not idempotent in its output")
+	}
+}
+
+// A failure names the tool, says the prompt depends on it, and gives the command
+// that fixes it. A log line that only says "failed" costs a round trip to the
+// documentation.
+func TestReportExplainsAFailure(t *testing.T) {
+	// Consume the once before injecting the outcome, or Report runs the real
+	// provisioning and overwrites the values this test is about.
+	once = sync.Once{}
+	once.Do(func() {})
+	available, reason = false, "no published build for test/none"
+	defer func() {
+		once = sync.Once{}
+		available, reason = false, ""
+	}()
+
+	var out bytes.Buffer
+	Report(&out)
+	line := out.String()
+	for _, want := range []string{"NOT available", "no published build", "apt-get install ripgrep"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("report = %q, want it to contain %q", line, want)
+		}
 	}
 }
