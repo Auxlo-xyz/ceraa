@@ -1,0 +1,123 @@
+name: Release artifacts
+
+# This repository holds no source, so it cannot build Ceraa. What it can do is
+# check the thing a user actually downloads: the published release. Two of the
+# three releases so far shipped broken artifacts, and in both cases every other
+# signal was green. The prompt was missing from the bundle in one, and the binary
+# reported a version the tag did not name in the next.
+#
+# The failure is silent in both cases. A missing prompt does not crash; the agent
+# starts and behaves unlike the build you tested. A wrong version string still
+# looks like a version string. So these assertions are on the artifact's own
+# output, not on a build that could have succeeded while the upload did not.
+#
+# Public repositories do not consume Actions minutes, so this runs even when the
+# private source repository's CI is blocked.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  artifacts:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve the tag under test
+        id: target
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${1:-}"
+            if [ -z "$tag" ]; then
+              tag=$(gh release view --json tagName --jq .tagName)
+            fi
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "testing $tag"
+
+      - name: Download the release assets
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh release download "${{ steps.target.outputs.tag }}" \
+            --pattern 'ceraa-linux-amd64' \
+            --pattern 'system.txt' \
+            --pattern 'SHA256SUMS' \
+            --dir out
+          chmod +x out/ceraa-linux-amd64
+          ls -l out
+
+      # A checksum that does not match is a corrupt or substituted download, and
+      # it must fail before anything is executed.
+      #
+      # --ignore-missing, and only because SHA256SUMS lists all four platform
+      # binaries while this job downloads one. A plain `sha256sum -c` exits
+      # non-zero on the three files it was never given, so it fails the job for
+      # the wrong reason and the failure looks like a corrupt download. This way a
+      # mismatch in a file that is present still fails, and only that fails.
+      - name: Verify the checksums of what was downloaded
+        run: |
+          set -euo pipefail
+          cd out
+          # Refuse to pass having verified nothing.
+          checked=$(sha256sum -c --ignore-missing SHA256SUMS | grep -c ': OK$' || true)
+          echo "verified $checked file(s)"
+          if [ "$checked" -lt 2 ]; then
+            echo "::error::expected to verify ceraa-linux-amd64 and system.txt, verified $checked"
+            exit 1
+          fi
+
+      # The 0.1.1 bug: the binary reported 0.1.0 while the tag said 0.1.1. A user
+      # filing a bug names a version, and it has to be the real one.
+      - name: The binary reports the version the tag names
+        run: |
+          set -euo pipefail
+          want="ceraa ${{ steps.target.outputs.tag }}"
+          want="${want#v}"
+          got=$(./out/ceraa-linux-amd64 version | head -1)
+          echo "tag says: $want"
+          echo "binary says: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the binary reports '$got' but the tag says '$want'"
+            exit 1
+          fi
+
+      # The prompt bug, in the layout the release page actually ships: the binary
+      # and system.txt side by side, which is what someone who downloads the two
+      # files by hand ends up with. install.sh creates a prompt/ directory, so the
+      # installer path worked and hid this.
+      #
+      # Asserted on the absence of the loader's own warning, because a degraded
+      # prompt produces no error. It only shows up later as the agent behaving
+      # unlike the one you tested.
+      - name: A hand-installed release does not run degraded
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/handinstall
+          mkdir -p /tmp/handinstall/work
+          cp out/ceraa-linux-amd64 /tmp/handinstall/ceraa
+          cp out/system.txt /tmp/handinstall/system.txt
+          cd /tmp/handinstall/work
+          output=$(/tmp/handinstall/ceraa version 2>&1)
+          echo "$output"
+          if grep -q 'using a minimal fallback' <<<"$output"; then
+            echo "::error::the binary and system.txt side by side run on the fallback prompt"
+            exit 1
+          fi
+
+      # A release with no prompt is not a release, and the loader degrades rather
+      # than failing, so assert the asset is present at all.
+      - name: The release ships a non-empty prompt
+        run: |
+          set -euo pipefail
+          if [ ! -s out/system.txt ]; then
+            echo "::error::system.txt is missing or empty; every install starts degraded"
+            exit 1
+          fi
+          wc -c out/system.txt
