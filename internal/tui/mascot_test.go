@@ -7,17 +7,17 @@ import (
 )
 
 func TestMascotIsNotEmpty(t *testing.T) {
-	if strings.TrimSpace(mascot) == "" {
+	if strings.TrimSpace(mascotMark) == "" {
 		t.Fatal("the mascot is empty")
 	}
 }
 
 func TestMascotFitsAReasonableTerminal(t *testing.T) {
-	// The mascot is drawn for a terminal, so a row wider than a narrow terminal
-	// wraps and corrupts everything printed after it. Runes, not bytes: the block
+	// The mark stands over the startup block, so a row wider than a phone wraps
+	// and corrupts everything printed after it. Runes, not bytes: the block
 	// glyphs are three-byte UTF-8.
-	const minTerminal = 44
-	for i, r := range strings.Split(strings.TrimRight(mascot, "\n"), "\n") {
+	const minTerminal = 24
+	for i, r := range strings.Split(strings.TrimRight(mascotMark, "\n"), "\n") {
 		if cols := utf8.RuneCountInString(r); cols > minTerminal {
 			t.Errorf("row %d is %d columns, wider than %d: %q", i, cols, minTerminal, r)
 		}
@@ -28,18 +28,20 @@ func TestMascotHasBothEyes(t *testing.T) {
 	// The wink and the open eye are the character, and a drawing that loses
 	// either is a different face.
 	//
-	// The mascot is drawn in the foreground, so both features are absences of
+	// The mark is drawn in the foreground, so both features are absences of
 	// ink. The open eye is the wide void left of centre; the wink is the pair of
 	// shorter voids to its right on one row. Asserting on the specific voids is
-	// what makes this catch a redesign that loses a feature, which asserting on
-	// row counts would not.
-	rows := strings.Split(mascot, "\n")
+	// what makes this catch a redraw that loses a feature, which asserting on
+	// row counts would not. Rows are measured past their indent, so the padding
+	// that stands the mark off the margin cannot stand in for an eye.
+	rows := strings.Split(mascotMark, "\n")
 
-	// The open eye: the widest run of spaces inside a row that also holds ink.
+	// The open eye: the widest interior run of spaces in a row that holds ink.
 	widestEye := 0
 	// The wink: two runs of the same length, well short of the eye, on one row.
-	winkLen, winkFound := 0, false
+	winkFound := false
 	for _, r := range rows {
+		r = strings.TrimLeft(r, " ")
 		if !strings.ContainsAny(r, "\u2588\u2580\u2584") {
 			continue
 		}
@@ -61,17 +63,16 @@ func TestMascotHasBothEyes(t *testing.T) {
 		}
 		for i := 0; i+1 < len(short); i++ {
 			if short[i] == short[i+1] {
-				winkFound, winkLen = true, short[i]
+				winkFound = true
 			}
 		}
 	}
-	if widestEye < 6 {
-		t.Errorf("the open eye is too small (widest void %d, want at least 6):\n%s", widestEye, mascot)
+	if widestEye < 4 {
+		t.Errorf("the open eye is too small (widest void %d, want at least 4):\n%s", widestEye, mascotMark)
 	}
 	if !winkFound {
-		t.Errorf("no wink found: no matched pair of short voids on any row:\n%s", mascot)
+		t.Errorf("no wink found: no matched pair of short voids on any row:\n%s", mascotMark)
 	}
-	_ = winkLen
 }
 
 // widestEyeFor returns the longest space run in a row, which is the open eye.
@@ -150,17 +151,17 @@ func spaceRuns(row string) []int {
 // fitArt gives up indent before it gives up art, and the two tests below are the
 // whole contract: shifting is allowed, cutting is not.
 func TestFitArtSpendsItsIndentBeforeItsArt(t *testing.T) {
-	got, ok := fitArt(mascot, 40)
+	got, ok := fitArt(mascotMark, 20)
 	if !ok {
-		t.Fatal("fitArt(40) refused art that has 2 cells of indent to spend")
+		t.Fatal("fitArt(20) refused art that has 2 cells of indent to spend")
 	}
-	want := strings.Split(mascot, "\n")
+	want := strings.Split(mascotMark, "\n")
 	have := strings.Split(got, "\n")
 	if len(have) != len(want) {
 		t.Fatalf("fitArt changed the row count: %d, want %d", len(have), len(want))
 	}
 	for i := range want {
-		if w := runeLen(have[i]); w > 40 {
+		if w := runeLen(have[i]); w > 20 {
 			t.Errorf("row %d is %d cells: %q", i, w, have[i])
 		}
 		// The row's own shape is identical; only the padding in front moved.
@@ -174,31 +175,31 @@ func TestFitArtSpendsItsIndentBeforeItsArt(t *testing.T) {
 }
 
 func TestFitArtLeavesArtAloneWhenItFits(t *testing.T) {
-	for _, width := range []int{42, 60, 120} {
-		got, ok := fitArt(mascot, width)
+	for _, width := range []int{22, 60, 120} {
+		got, ok := fitArt(mascotMark, width)
 		if !ok {
 			t.Errorf("fitArt(%d) dropped art that fits", width)
 			continue
 		}
-		if got != mascot {
+		if got != mascotMark {
 			t.Errorf("fitArt(%d) rewrote art it did not need to touch", width)
 		}
 	}
 }
 
-// Below the width that indent can cover there is no honest way to draw the face,
-// so it is not drawn. A mascot cut through the cheek is worse than none.
+// Below the width that indent can cover there is no honest way to draw the
+// logo, so it is not drawn. A mark cut through its edge is worse than none.
 func TestFitArtDropsArtItCannotDraw(t *testing.T) {
-	if _, ok := fitArt(mascot, 30); ok {
-		t.Error("fitArt(30) drew art it could not fit")
+	if _, ok := fitArt(mascotMark, 19); ok {
+		t.Error("fitArt(19) drew art it could not fit")
 	}
-	if _, ok := fitArt(mascot, 0); ok {
+	if _, ok := fitArt(mascotMark, 0); ok {
 		t.Error("fitArt(0) drew art for an unknown width")
 	}
 }
 
 func TestBannerNeverOverflowsTheTerminal(t *testing.T) {
-	for _, width := range []int{40, 44, 60, 100} {
+	for _, width := range []int{20, 40, 44, 60, 100} {
 		got := Plain().Banner("0.1.0", "gpt-5.5", "openai", width)
 		for i, row := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
 			if w := visibleWidth(row); w > width {
@@ -209,11 +210,14 @@ func TestBannerNeverOverflowsTheTerminal(t *testing.T) {
 }
 
 func TestBannerDropsTheArtRatherThanCuttingIt(t *testing.T) {
-	got := Plain().Banner("0.1.0", "gpt-5.5", "openai", 30)
+	// Nineteen is the exact width where the mark has to go but the words still
+	// fit: the mark is 22 wide with 2 of indent to spend, and with only the
+	// provider row set the longest text row is 19.
+	got := Plain().Banner("0.1.0", "", "openai", 19)
 	if strings.ContainsAny(got, "▄█▀") {
-		t.Errorf("art was drawn on a 30-column terminal:\n%s", got)
+		t.Errorf("art was drawn on a 19-column terminal:\n%s", got)
 	}
-	for _, want := range []string{"Ceraa", "gpt-5.5", "openai"} {
+	for _, want := range []string{"Ceraa", "openai"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the banner lost %q when the art went:\n%s", want, got)
 		}

@@ -2,56 +2,33 @@ package tui
 
 import "strings"
 
-// The mascot is Ceraa's face, drawn from mascot.png: a rounded three-lobed
-// cloud, one large open oval eye and one wide flat eye that reads as a wink.
-// It is written in block characters so it needs no image support, no colour and
-// no font beyond a terminal's default.
+// The mark is Ceraa's face at logo size, drawn from mascot.PNG: a rounded
+// three-lobed cloud, one large open oval eye and one wide flat eye that reads
+// as a wink. It is written in block characters so it needs no image support, no
+// colour and no font beyond a terminal's default.
 //
-// The PNG is the source of truth for the geometry, and the numbers came from
-// measuring it rather than from guessing. The cloud body occupies 784x810 pixels
-// of the source. The two features were found by flood-filling the black regions
-// enclosed by white, which gives the open eye at x 190-356 y 268-535, a tall
-// oval 167 wide by 268 high, and the wink at x 412-644 y 350-448, a wide flat
-// shape 233 wide by 99 high. Both sit on roughly the same line (y 400), which is
-// what makes the face read as a wink rather than as two eyes looking around.
+// It was rasterised, not hand-drawn: the white cloud on black, cropped to the
+// bytes that hold ink (x 233-1016, y 228-1037 of the 1254 square), scaled to 20
+// wide, thresholded at half brightness, and paired into half-block rows so 11
+// lines carry 22 scanlines. The open eye survives as the wide void left of
+// centre and the wink as the short notch to its right; at this size neither is
+// geometry you could measure off the PNG, but both are gaps, and the test below
+// holds the gaps rather than the rows.
 //
-// An earlier version of this drew a generic rounded face with two dot eyes and
-// a straight mouth. That is a different character: the wink and the lobed cloud
-// are the entire personality, and a drawing that keeps neither is not this
-// mascot however legible it is.
-//
-// The five states keep one silhouette and swap only the features, so the face is
-// recognisable at a glance and the banner does not jump shape as a run changes
-// state.
-const (
-	// mascot is the whole drawing: the three-lobed cloud from mascot.PNG with
-	// its tall open eye and its flat wink.
-	//
-	//	// The cloud is drawn in the FOREGROUND, not filled with block characters.
-	// The PNG is a white cloud on black, and a terminal is normally light text
-	// on a dark background. Filling the shape made the face render as two holes
-	// punched in a black slab: the silhouette vanished and only the eyes
-	// survived. Drawn as ink it is the cloud, and the eyes are the absence of
-	// ink, which is what the PNG actually is.
-	//
-	// Half-blocks double the vertical resolution, so the 16 rows below carry the
-	// 32 scanlines the shape needs to stay round rather than squashed.
-	mascot = `               ▄▄▄████████▄▄
-             ▄████████████████▄
-           ▄███████████████████▄▄▄▄▄
-      ▄▄██████████████████████████████▄▄
-   ▄█████████████████████████████████████
-  ▄██████████▀    ▀███████████████████████
-  ██████████        ██████▀▀▀▀▀▀█████████▀
-  ▀█████████        ███▀   ▄▄▄▄   ▀█████▀
-   ▀████████        ████▄████████▄███████
-     ▄███████▄▄  ▄▄███████████████████████
-     █████████████████████████████████████
-     ████████████████████████████████████
-      ▀███████████████████████████████▀▀
-         ▀▀▀▀▀▀▀███████████████▀
-                 ▀▀████████▀▀▀`
-)
+// The two-space indent is part of the constant. It matches the detail block the
+// mark stands over, and keeping it here lets fitArt spend it when the terminal
+// narrows instead of special-casing the logo.
+const mascotMark = `        ▄▄████▄
+       █████████▄
+    ▄▄██████████████▄
+  ▄█████▀▀███████████▄
+  █████    ███████████
+  █████    ██  ▄  ███
+   ▀███    ███████████
+   ███████████████████
+   ▀█████████████████▀
+    ▀▀███████████▀▀▀
+         ▀█████▀`
 
 // State is what the mascot is currently doing.
 //
@@ -108,23 +85,21 @@ func Spinner(tick int) string {
 	return spinnerFrames[((tick%n)+n)%n]
 }
 
-// Banner is the startup block: the mascot, the name and version, and the
+// Banner is the startup block: the mark, the name and version, and the
 // resolved provider, so the first thing on screen says which model is answering
 // before a prompt is typed.
 //
 // The details go through the same aligned block as /status rather than a
 // hand-counted pad, so the two cannot disagree about where the value column is.
 //
-// The art is shown only when it fits. The face is 42 cells across, and a
-// terminal narrower than that hard-wraps each row, which turns the block into a
-// smear of orphaned cells - the same failure as every other line here, and the
-// one that is hardest to read because nothing in it is text. fitArt gives up the
-// indent that centres the face before it gives up any of the face, and reports
-// false when even that is not enough; a mascot missing a slice of its cheek is
-// worse than no mascot.
+// The mark is shown only when it fits. A row the terminal has to wrap turns the
+// drawing into a smear of orphaned cells, which is the one failure nothing in
+// the block can survive because none of it is text. fitArt gives up the indent
+// before it gives up any of the drawing, and reports false when even that is
+// not enough; a logo missing a slice of its edge is worse than no logo.
 func (p Palette) Banner(version, model, provider string, width int) string {
 	var b []byte
-	if art, ok := fitArt(mascot, width); ok {
+	if art, ok := fitArt(mascotMark, width); ok {
 		b = append(b, p.Bold(art)...)
 		b = append(b, '\n')
 	}
