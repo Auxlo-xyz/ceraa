@@ -49,6 +49,14 @@ func (b *block) gutter() int {
 
 func runeLen(s string) int { return len([]rune(s)) }
 
+// unset is what an empty value renders as.
+//
+// An empty cell reads as a rendering fault rather than as an absent setting: the
+// label is there, so the reader looks for a value and finds trailing whitespace.
+// A fresh install with no provider configured printed "model" followed by nothing
+// and looked broken when nothing was wrong with it.
+const unset = "unset"
+
 // render draws the block. The label is dim and the value is not, so the eye lands
 // on the value without needing a colour.
 func (b *block) render(p Palette, indent string, width int) []string {
@@ -64,8 +72,15 @@ func (b *block) render(p Palette, indent string, width int) []string {
 		if pad < 0 {
 			pad = 0
 		}
-		line := indent + strings.Repeat(" ", pad) + p.Dim(label) + "  " + r[1]
-		out = append(out, p.fit(line, width))
+		value := r[1]
+		if strings.TrimSpace(value) == "" {
+			// Dim, so an absent setting recedes the way a missing label does.
+			value = p.Dim(unset)
+		}
+		// The value is appended only when it is non-empty, which is also what
+		// keeps a blank cell from shipping trailing whitespace to the terminal.
+		line := indent + strings.Repeat(" ", pad) + p.Dim(label) + "  " + value
+		out = append(out, strings.TrimRight(p.fit(line, width), " "))
 	}
 	if b.note != "" {
 		out = append(out, p.Dim(indent+b.note))

@@ -129,13 +129,50 @@ func defaultWorkspaceRoot() string {
 			if filepath.Base(directory) == "bin" {
 				directory = filepath.Dir(directory)
 			}
-			return filepath.Join(directory, "workspace")
+			candidate := filepath.Join(directory, "workspace")
+			// Only when it can actually be used. A binary installed to
+			// /usr/local/bin resolves here to /usr/local/workspace, which a
+			// non-root user cannot create, so every relative path the agent
+			// resolves would fail against a directory that does not exist. The
+			// symptom is the agent reporting files it can plainly see, so the
+			// fallback has to be picked before the first command rather than
+			// after it goes wrong.
+			if creatable(candidate) {
+				return candidate
+			}
 		}
 	}
 	if workingDirectory, err := os.Getwd(); err == nil && !underTempDir(workingDirectory) {
 		return filepath.Join(workingDirectory, "workspace")
 	}
 	return paths.DefaultWorkspaceRoot()
+}
+
+// creatable reports whether a directory could be used at path by this process.
+//
+// True when it already exists and is writable, or when it does not exist but its
+// nearest existing parent is. A path that does not exist yet is the normal case
+// for a first run, so treating "missing" as unusable would reject every fresh
+// install and send it to the fallback.
+func creatable(path string) bool {
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return info.IsDir() && info.Mode().Perm()&0o200 != 0
+	case !os.IsNotExist(err):
+		return false
+	}
+	for parent := filepath.Dir(path); ; {
+		info, err := os.Stat(parent)
+		if err == nil {
+			return info.IsDir() && info.Mode().Perm()&0o200 != 0
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return false
+		}
+		parent = next
+	}
 }
 
 // underTempDir reports whether a path is inside the system temp directory.
@@ -181,16 +218,34 @@ func DefaultConfig() *Config {
 	}
 }
 
+// WorkspaceRootEnv is the environment override for the agent's workspace root.
+//
+// It takes precedence over the config file, the same way CERAA_SYSTEM_PROMPT
+// takes precedence over the built-in prompt path: an environment variable is a
+// deliberate setting for one invocation, a config file is the standing default.
+// The installer writes this into the config rather than exporting it, so this is
+// here for the cases an installer cannot cover, such as a container image or a
+// CI job whose workspace has to be a mounted volume.
+const WorkspaceRootEnv = "CERAA_WORKSPACE_ROOT"
+
 func (c *Config) WorkspaceRootPath() string {
-	root := c.WorkspaceRoot
-	if root == "" {
-		root = defaultWorkspaceRoot()
-	}
-	abs, err := filepath.Abs(root)
+	abs, err := filepath.Abs(resolveWorkspaceRoot(c.WorkspaceRoot))
 	if err != nil {
-		return root
+		return resolveWorkspaceRoot(c.WorkspaceRoot)
 	}
 	return abs
+}
+
+// resolveWorkspaceRoot applies the override, kept separate so the precedence is
+// stated once and testable without touching the filesystem.
+func resolveWorkspaceRoot(configured string) string {
+	if override := strings.TrimSpace(os.Getenv(WorkspaceRootEnv)); override != "" {
+		return override
+	}
+	if configured != "" {
+		return configured
+	}
+	return defaultWorkspaceRoot()
 }
 
 // mergeProfile overlays a profile onto a base provider, field by field.
