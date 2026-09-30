@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription:
 		return true
 	default:
 		return false
@@ -199,6 +199,24 @@ var MiniMaxModels = []string{
 	"MiniMax-M2.7",
 }
 
+// QoderModels are the models Qoder's own CLI reports for an account, established by
+// running qodercli --list-models against a logged-in session rather than by
+// guessing from another provider's catalogue.
+var QoderModels = []string{
+	"Qwen3.8-Max",
+	"Qwen3.8-Flash",
+}
+
+// IsQoderModel reports whether a model id is one the subscription serves.
+func IsQoderModel(model string) bool {
+	for _, m := range QoderModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
 // IsMiniMaxModel reports whether a model id is one the subscription serves.
 func IsMiniMaxModel(model string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(model))
@@ -287,6 +305,8 @@ func SubscriptionModels(subscription string) []string {
 			out = append(out, model.ID)
 		}
 		return out
+	case QoderSubscription:
+		return append([]string(nil), QoderModels...)
 	default:
 		return nil
 	}
