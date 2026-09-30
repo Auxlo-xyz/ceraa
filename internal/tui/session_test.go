@@ -178,7 +178,12 @@ func TestSessionIsResumableByID(t *testing.T) {
 			SessionFile: filepath.Join(dir, "sessions"),
 			MemoryFile:  filepath.Join(dir, "memory"),
 			SkillFile:   filepath.Join(dir, "skills"),
-			LLM:         config.LLMProvider{URL: srv.URL, Model: "stub/model", APIKey: "test"},
+			// Every store path is absolute and inside the temp dir. A relative one
+			// resolves against the package directory, so a test that omits it writes
+			// evaluations.json into the source tree.
+			EvaluationFile: filepath.Join(dir, "evals.json"),
+			ToolOutputDir:  filepath.Join(dir, "toolout"),
+			LLM:            config.LLMProvider{URL: srv.URL, Model: "stub/model", APIKey: "test"},
 		}
 		var out strings.Builder
 		s, err := NewSession(SessionOptions{

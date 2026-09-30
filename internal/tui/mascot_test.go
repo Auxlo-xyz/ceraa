@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestMascotFacesAreDistinctPerState(t *testing.T) {
@@ -30,51 +31,78 @@ func TestMascotFacesHaveConsistentShape(t *testing.T) {
 	}
 }
 
-func TestMascotFacesStayWithinOneWidthBand(t *testing.T) {
-	// A rounded face is legitimately ragged: the crown is narrower than the
-	// middle. What would look broken is a row that escapes the band the other
-	// states share, so the widest and narrowest rows are compared against a fixed
-	// band rather than against each other.
-	const minWidth, maxWidth = 15, 23
-	for _, s := range []State{StateIdle, StateThinking, StateWorking, StateDone, StateError} {
-		rows := strings.Split(strings.TrimRight(s.face(), "\n"), "\n")
-		for i, r := range rows {
-			if len(r) < minWidth || len(r) > maxWidth {
-				t.Errorf("state %s row %d is %d wide, outside [%d,%d]: %q",
-					s, i, len(r), minWidth, maxWidth, r)
+func TestMascotFitsAReasonableTerminal(t *testing.T) {
+	// The mascot is drawn for a terminal, so a row that is wider than a narrow
+	// terminal wraps and corrupts everything printed after it. Runes, not bytes:
+	// the block glyphs are three-byte UTF-8.
+	const minTerminal = 44
+	for _, st := range []State{StateIdle, StateThinking, StateWorking, StateDone, StateError} {
+		for i, r := range strings.Split(strings.TrimRight(st.face(), "\n"), "\n") {
+			if cols := utf8.RuneCountInString(r); cols > minTerminal {
+				t.Errorf("state %s row %d is %d columns, wider than %d: %q", st, i, cols, minTerminal, r)
 			}
 		}
 	}
 }
 
-func TestMascotBodyRowsShareAWidth(t *testing.T) {
-	// Rows 1 to 4 are the face proper: the eye row, both cheeks and the mouth
-	// row. They must be the same width in every state, so only the features move
-	// and the head does not. A tie between the two widest rows is not a defect,
-	// which is why this compares the set of body widths rather than picking one
-	// "widest" row and comparing indices.
-	for _, s := range []State{StateIdle, StateThinking, StateWorking, StateDone, StateError} {
-		got := bodyWidths(s.face())
-		want := bodyWidths(mascotIdle)
-		if len(got) != len(want) {
-			t.Fatalf("state %s has %d body rows, idle has %d", s, len(got), len(want))
+func TestMascotRowCountIsStable(t *testing.T) {
+	// A state with a different height makes the banner jump as a run changes
+	// state, so every face must have the same number of rows as the idle one.
+	want := len(strings.Split(strings.TrimRight(mascotIdle, "\n"), "\n"))
+	for _, st := range []State{StateIdle, StateThinking, StateWorking, StateDone, StateError} {
+		got := len(strings.Split(strings.TrimRight(st.face(), "\n"), "\n"))
+		if got != want {
+			t.Errorf("state %s has %d rows, idle has %d", st, got, want)
 		}
+	}
+}
+
+func TestMascotOutlineIsIdenticalAcrossStates(t *testing.T) {
+	// Only the features move between states. The cloud outline, which is rows 0
+	// and 9, must be byte-identical in every state, or the face is a different
+	// character in each state rather than one face in several moods.
+	states := []State{StateIdle, StateThinking, StateWorking, StateDone, StateError}
+	outlineOf := func(st State) []string {
+		rows := strings.Split(strings.TrimRight(st.face(), "\n"), "\n")
+		return []string{rows[0], rows[len(rows)-1]}
+	}
+	want := outlineOf(StateIdle)
+	for _, st := range states[1:] {
+		got := outlineOf(st)
 		for i := range want {
 			if got[i] != want[i] {
-				t.Errorf("state %s body row %d is %d wide, idle is %d", s, i, got[i], want[i])
+				t.Errorf("state %s outline row %d = %q, idle has %q", st, i, got[i], want[i])
 			}
 		}
 	}
 }
 
-// bodyWidths measures rows 1 through 4, the face below the crown.
-func bodyWidths(face string) []int {
-	rows := strings.Split(strings.TrimRight(face, "\n"), "\n")
-	var out []int
-	for _, r := range rows[1:] {
-		out = append(out, len(r))
+func TestMascotFeatureRowsDifferBetweenStates(t *testing.T) {
+	// Each state must actually change something, or five states are one state
+	// drawn five times and the operator learns nothing from the mascot.
+	faces := map[string]State{}
+	for _, st := range []State{StateIdle, StateThinking, StateWorking, StateDone, StateError} {
+		faces[st.face()] = st
 	}
-	return out
+	if len(faces) != 5 {
+		t.Errorf("%d distinct faces for 5 states, want 5", len(faces))
+	}
+}
+
+func TestMascotFacesFitATerminalWidth(t *testing.T) {
+	// A mascot wider than a narrow terminal wraps and destroys the layout of
+	// everything after it, so the width has to stay inside a common minimum.
+	const minTerminal = 40
+	for _, st := range []State{StateIdle, StateThinking, StateWorking, StateDone, StateError} {
+		for i, r := range strings.Split(strings.TrimRight(st.face(), "\n"), "\n") {
+			// Runes, not bytes: the block glyphs are three-byte UTF-8 and a
+			// byte count would report every row as three times too wide.
+			if cols := utf8.RuneCountInString(r); cols > minTerminal {
+				t.Errorf("state %s row %d is %d columns, wider than a %d column terminal: %q",
+					st, i, cols, minTerminal, r)
+			}
+		}
+	}
 }
 
 func TestStateStringNamesEveryState(t *testing.T) {

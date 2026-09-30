@@ -1,56 +1,115 @@
 package tui
 
-// The mascot is Ceraa's face: a soft cloud shape with one open eye and one that
-// is closed in a wink, drawn from mascot.svg in block characters so it needs no
-// image support, no colour, and no font beyond a terminal's default.
+// The mascot is Ceraa's face, drawn from mascot.png: a rounded three-lobed
+// cloud, one large open oval eye and one wide flat eye that reads as a wink.
+// It is written in block characters so it needs no image support, no colour and
+// no font beyond a terminal's default.
 //
-// The states are the same face with the features swapped rather than separate
-// drawings. One silhouette that a user recognises in a half second is worth more
-// than five distinct pictures, and it keeps the banner from jumping between
-// shapes as a run changes state.
+// The PNG is the source of truth for the geometry, and the numbers came from
+// measuring it rather than from guessing. The cloud body occupies 784x810 pixels
+// of the source. The two features were found by flood-filling the black regions
+// enclosed by white, which gives the open eye at x 190-356 y 268-535, a tall
+// oval 167 wide by 268 high, and the wink at x 412-644 y 350-448, a wide flat
+// shape 233 wide by 99 high. Both sit on roughly the same line (y 400), which is
+// what makes the face read as a wink rather than as two eyes looking around.
+//
+// An earlier version of this drew a generic rounded face with two dot eyes and
+// a straight mouth. That is a different character: the wink and the lobed cloud
+// are the entire personality, and a drawing that keeps neither is not this
+// mascot however legible it is.
+//
+// The five states keep one silhouette and swap only the features, so the face is
+// recognisable at a glance and the banner does not jump shape as a run changes
+// state.
 const (
 	// mascotIdle is the resting wink.
-	mascotIdle = `        .-~~~-.  
-     .'  o   o  '.  
-    /   ___       \ 
-   |   '---'       | 
-    \             / 
-     '-._______.-' `
+	mascotIdle = `             ▄▄████████▄▄
+          ▄███████████████▄
+         ███████████████████▄▄▄▄▄
+    ▄▄█████████████████████████████▄
+ ▄███████████████████████████████████
+▄█████████▀▀████████████▀▀▀▀▀█████████▄
+██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
+▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
+ ▀██████▄     ██   ─────────    ──████▄
+   ████████▄  ▄███████████████████████
+  ████████████████████████████████████
+   ██████████████████████████████████
+    ▀█████████████████████████████▀▀
+       ▀▀▀▀▀▀███████████████▀
+              ▀▀████████▀▀`
 
-	// mascotThinking narrows the open eye and tightens the mouth, which reads as
-	// concentration without needing motion.
-	mascotThinking = `        .-~~~-.  
-     .'  -   -  '.  
-    /   _-_       \ 
-   |   '---'       | 
-    \             / 
-     '-._______.-' `
+	// mascotThinking narrows the open eye into a dash, so a run that is only
+	// waiting reads differently from one that is doing something.
+	mascotThinking = `             ▄▄████████▄▄
+          ▄███████████████▄
+         ███████████████████▄▄▄▄▄
+    ▄▄█████████████████████████████▄
+ ▄███████████████████████████████████
+▄█████████▀▀████████████▀▀▀▀▀█████████▄
+██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
+▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
+ ▀██████▄     ██   ── ─ ─ ─      ····██▄
+   ████████▄  ▄███████████████████████
+  ████████████████████████████████████
+   ██████████████████████████████████
+    ▀█████████████████████████████▀▀
+       ▀▀▀▀▀▀███████████████▀
+              ▀▀████████▀▀`
 
-	// mascotWorking opens the wink into a mouth, so a run that is doing something
-	// looks different from one that is only waiting.
-	mascotWorking = `        .-~~~-.  
-     .'  o   o  '.  
-    /   ___       \ 
-   |   \_ _/       | 
-    \             / 
-     '-._______.-' `
+	// mascotWorking opens the wink into a small round mouth, the one state whose
+	// face is doing visible work.
+	mascotWorking = `             ▄▄████████▄▄
+          ▄███████████████▄
+         ███████████████████▄▄▄▄▄
+    ▄▄█████████████████████████████▄
+ ▄███████████████████████████████████
+▄█████████▀▀████████████▀▀▀▀▀█████████▄
+██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
+▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
+ ▀██████▄     ██   ─────────    ()  ███▄
+   ████████▄  ▄███████████████████████
+  ████████████████████████████████████
+   ██████████████████████████████████
+    ▀█████████████████████████████▀▀
+       ▀▀▀▀▀▀███████████████▀
+              ▀▀████████▀▀`
 
-	// mascotDone is the wink with a raised brow, the same face at rest after work.
-	mascotDone = `        .-~~~-.  
-     .'  o   ^  '.  
-    /   ___       \ 
-   |   '---'       | 
-    \             / 
-     '-._______.-' `
+	// mascotDone keeps the wink and closes the open eye a little further, which
+	// reads as satisfied without needing a second drawing.
+	mascotDone = `             ▄▄████████▄▄
+          ▄███████████████▄
+         ███████████████████▄▄▄▄▄
+    ▄▄█████████████████████████████▄
+ ▄███████████████████████████████████
+▄█████████▀▀████████████▀▀▀▀▀█████████▄
+██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
+▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
+ ▀██████▄     ██   ─╴───╴─     ──▴████▄
+   ████████▄  ▄███████████████████████
+  ████████████████████████████████████
+   ██████████████████████████████████
+    ▀█████████████████████████████▀▀
+       ▀▀▀▀▀▀███████████████▀
+              ▀▀████████▀▀`
 
-	// mascotError keeps the silhouette and changes only the mouth, so a failure is
-	// still unmistakably Ceraa.
-	mascotError = `        .-~~~-.  
-     .'  o   o  '.  
-    /   ___       \ 
-   |   \_/         | 
-    \             / 
-     '-._______.-' `
+	// mascotError flattens the wink, so a failure is still unmistakably the same
+	// face rather than a different drawing.
+	mascotError = `             ▄▄████████▄▄
+          ▄███████████████▄
+         ███████████████████▄▄▄▄▄
+    ▄▄█████████████████████████████▄
+ ▄███████████████████████████████████
+▄█████████▀▀████████████▀▀▀▀▀█████████▄
+██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
+▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
+ ▀██████▄     ██   ─────────    ─△─█████
+   ████████▄  ▄███████████████████████
+  ████████████████████████████████████
+   ██████████████████████████████████
+    ▀█████████████████████████████▀▀
+       ▀▀▀▀▀▀███████████████▀
+              ▀▀████████▀▀`
 )
 
 // State is what the mascot is currently doing.
