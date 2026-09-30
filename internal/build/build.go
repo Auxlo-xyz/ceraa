@@ -12,9 +12,6 @@
 package build
 
 const (
-	// Version is the release version.
-	Version = "0.1.0"
-
 	// Owner is the copyright holder.
 	Owner = "emperormk01"
 
@@ -24,3 +21,14 @@ const (
 	// LicenseURL points at the terms.
 	LicenseURL = "See the LICENSE file distributed with this software."
 )
+
+// Version is the release version, injected at link time.
+//
+// It was a constant, which meant every release reported 0.1.0 forever: the tag
+// named one version and the binary named another, and nothing failed. A tester
+// installing v0.1.1 was told it had 0.1.0. The release build now sets it with
+// -ldflags "-X", and the default below is what a plain `go build` from the tree
+// reports, which is a development build rather than pretending to be a release.
+//
+// The value is a var, not a const, because -X can only set a string variable.
+var Version = "0.1.0-dev"

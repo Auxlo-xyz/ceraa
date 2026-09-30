@@ -42,6 +42,10 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 cd "$(dirname "$0")/.."
+# The version is deliberately left at its -dev default here. scripts/build.sh
+# makes a working binary from the tree, not a release; scripts/release.sh is the
+# release path and it injects the tag. Injecting "0.1.0" here is what made every
+# release claim to be 0.1.0 regardless of its tag.
 go build \
   -trimpath \
   -buildvcs=false \

@@ -82,3 +82,31 @@ func TestMissingPromptIsReported(t *testing.T) {
 		t.Errorf("a missing prompt was not reported:\n%s", out)
 	}
 }
+
+// A released binary must report the version its release is tagged with. The
+// version was a compile-time constant once, so v0.1.1 shipped a binary that
+// reported 0.1.0 and nothing failed. This runs the built binary when one is
+// present and compares it to the version asked for.
+func TestReleasedBinaryReportsTheReleaseVersion(t *testing.T) {
+	release := os.Getenv("CERAA_RELEASE_VERSION")
+	if release == "" {
+		t.Skip("set CERAA_RELEASE_VERSION to the tag being verified")
+	}
+	dist, err := filepath.Abs(filepath.Join("..", "..", "dist"))
+	if err != nil {
+		t.Skipf("cannot resolve dist: %v", err)
+	}
+	bin := filepath.Join(dist, "ceraa-linux-amd64")
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("no built linux binary: %v", err)
+	}
+	out, err := exec.Command(bin, "version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the release binary: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	want := "ceraa " + strings.TrimPrefix(release, "v")
+	if got != want {
+		t.Errorf("the binary reports %q but the release is tagged %q", got, want)
+	}
+}
