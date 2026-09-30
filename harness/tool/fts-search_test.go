@@ -40,9 +40,12 @@ func TestFTSSearchPointsAtBashNotARemovedTool(t *testing.T) {
 	if !strings.Contains(resolved, "rg -n") && !strings.Contains(resolved, "grep -rn") {
 		t.Error("neither ripgrep nor grep is named as the literal-search tool")
 	}
-	// Naming a binary that is not installed is the mistake worth preventing, since
-	// it reads as authoritative and the call fails.
-	if strings.Contains(text, "rg ") {
-		t.Error("the prompt still names rg, which is not installed on this host")
+	// ripgrep is named unconditionally now, because it is provisioned rather than
+	// assumed. The old guard here asserted the opposite: that the prompt must not
+	// name a binary missing from the host. That was right when availability was a
+	// property of the image and nothing installed it, and wrong now that
+	// provisioning makes the name true wherever the agent runs.
+	if !strings.Contains(resolved, "rg -n") {
+		t.Error("the prompt does not name ripgrep as the literal-search tool")
 	}
 }

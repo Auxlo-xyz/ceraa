@@ -3,9 +3,10 @@ package prompt
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"ceraa/internal/provision"
 )
 
 // System is the system prompt handed to the model.
@@ -54,48 +55,34 @@ func load() string {
 	return degraded
 }
 
-// searchPlaceholder carries the literal-search instruction.
+// searchLine is the literal-search instruction, and it is static.
 //
-// It is substituted once, at startup, because the search tool differs by
-// deployment and this bot runs for several users whose images are not the same
-// image. Naming ripgrep to a deployment that does not have it teaches the model
-// to reach for a binary that will fail, which is the same mistake as naming a
-// tool that has been removed.
-//
-// Resolving at startup rather than per request is what keeps the cached prefix
-// stable: one process serves one prompt, so the line is byte-identical for every
-// turn of every session that process handles, and each deployment gets the line
-// that is true for it.
-const searchPlaceholder = "{{SEARCH}}"
+// There is no environment branch and no placeholder. ripgrep is provisioned at
+// startup, so by the time this reaches the model there is one correct line, and a
+// prompt that never varies is a prompt that stays byte-identical in the cached
+// prefix for every turn. The earlier version picked between rg and grep by
+// probing PATH, which put a per-deployment value into the prefix to save a
+// sentence.
+const searchLine = `Use rg, which is provisioned for you: rg -n "pattern" PATH to find a literal with line ` +
+	`numbers, rg --files PATH to list files, and -g to filter by type such as -g "*.ts". It respects ` +
+	`.gitignore, so do not exclude directories by hand.`
 
-const (
-	// searchLineRipgrep names the flags that matter rather than the binary alone,
-	// because the model otherwise invents its own invocation and loses the
-	// gitignore behaviour that makes it worth having.
-	searchLineRipgrep = `Use rg, which is installed here: rg -n "pattern" PATH to find a literal with line numbers, ` +
-		`rg --files PATH to list files, and rg -n --glob "!node_modules" to skip build output. ` +
-		`It already skips anything in .gitignore, so do not exclude directories by hand.`
-
-	// searchLineGrep is the fallback for a deployment without ripgrep, and it
-	// carries the exclusions explicitly because grep has no such default.
-	searchLineGrep = `find . -name "*.go" -not -path "*/node_modules/*" to list, and ` +
-		`grep -rn --exclude-dir=node_modules --exclude-dir=.git "pattern" PATH to find a literal.`
-)
-
-// resolveSearchTool substitutes the search instruction for whichever tool this
-// deployment actually has.
+// resolveSearchTool provisions ripgrep and substitutes the search instruction.
 func resolveSearchTool(text, source string) string {
-	if !strings.Contains(text, searchPlaceholder) {
-		return text
+	// Provisioning runs here, before the prompt is handed to anything, and it is
+	// not optional: the prompt names rg, so rg has to exist. A failure is
+	// reported loudly rather than worked around, because a silent fallback to a
+	// slower tool is how a deployment ends up quietly worse than it was configured
+	// to be with nobody knowing why.
+	if !provision.EnsureRipgrep() {
+		fmt.Fprintf(os.Stderr,
+			"ceraa: ripgrep could not be provisioned, and the prompt will name a tool that is not present: %s\n"+
+				"        searches will fail until it is installed. On Debian or Ubuntu: apt-get install ripgrep\n",
+			provision.ProvisionReason())
 	}
-	line := searchLineGrep
-	if _, err := exec.LookPath("rg"); err == nil {
-		line = searchLineRipgrep
-	}
-	resolved := strings.ReplaceAll(text, searchPlaceholder, line)
-	// A placeholder left in place would reach the model as literal text, which
-	// reads as an instruction to search for the string "{{SEARCH}}". Failing here
-	// is better than that, and better still than shipping a typo unnoticed.
+	resolved := strings.ReplaceAll(text, "{{SEARCH}}", searchLine)
+	// A placeholder left in place reaches the model as an instruction to search
+	// for the literal string {{SEARCH}}, so it is reported rather than shipped.
 	if strings.Contains(resolved, "{{") {
 		fmt.Fprintf(os.Stderr,
 			"ceraa: %s still contains an unresolved placeholder after substitution; check the spelling.\n", source)
@@ -103,12 +90,10 @@ func resolveSearchTool(text, source string) string {
 	return resolved
 }
 
-// Resolve substitutes the search instruction the way startup does.
+// Resolve returns the prompt as the model receives it.
 //
-// Exported so a test that asserts on the shipped guidance reads the prompt the
-// model actually receives. Two tests failed on the raw file once the search line
-// moved behind a placeholder, and re-implementing the substitution in each test
-// is how they would drift apart.
+// Exported so a test asserting on the shipped guidance reads what the model
+// reads, rather than the file with a placeholder still in it.
 func Resolve(text string) string { return resolveSearchTool(text, SystemPromptPath) }
 
 func candidates() []string {

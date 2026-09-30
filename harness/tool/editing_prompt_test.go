@@ -78,17 +78,17 @@ func TestThePromptRoutesLargeFileLookupsToGrep(t *testing.T) {
 	}
 	text := string(raw)
 
-	// The behavioural instruction, not one phrasing of it.
-	if !strings.Contains(text, "grep it rather than reading it") {
-		t.Error("the prompt does not say to grep a file instead of reading it to find something")
+	// The behavioural instruction, not one phrasing of it: search, do not read.
+	if !strings.Contains(text, "search it rather than reading it") {
+		t.Error("the prompt does not say to search a file instead of reading it to find something")
 	}
 	// Why, and the fact that a large read shows only its end.
 	if !strings.Contains(text, "only the end") {
 		t.Error("the prompt does not say that a large read shows only the end of the file")
 	}
 	// The offloaded path has to be described as usable, or the loop has no exit.
-	if !strings.Contains(text, "greppable from bash") {
-		t.Error("the prompt does not say a trimmed result's full output is greppable")
+	if !strings.Contains(text, "searchable from bash") {
+		t.Error("the prompt does not say a trimmed result's full output can be searched")
 	}
 }
 
@@ -133,7 +133,10 @@ func TestThePromptNamesRangedReadRatherThanSed(t *testing.T) {
 	if strings.Contains(resolved, "{{SEARCH}}") {
 		t.Error("the search instruction did not resolve, so the model would be told to search for a placeholder")
 	}
-	if !strings.Contains(resolved, "node_modules") || !strings.Contains(resolved, ".git") {
-		t.Error("the search guidance does not tell the model to exclude the noise directories")
+	// ripgrep respects .gitignore, so the model must be told not to exclude by
+	// hand. Without it, it repeats --exclude-dir on every call, which is what the
+	// previous grep-based line existed to prevent.
+	if !strings.Contains(resolved, "respects .gitignore") {
+		t.Error("the search guidance does not say ripgrep already skips ignored directories")
 	}
 }

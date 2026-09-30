@@ -151,9 +151,9 @@ func joinPaths(paths []string) string {
 // explainMissingBinary names the substitute when a command is not installed.
 //
 // A real session ran `rg` twice and got "command not found" both times before
-// falling back to grep, so the cost of a binary being absent is two wasted round
-// trips per session. Naming the equivalent turns the second one into a corrected
-// call instead of a repeat.
+// being told to use a tool that is not there. Provisioning covers the common
+// case, so this fires only when it failed, and then the useful thing to say is
+// how to install it rather than what to use instead.
 //
 // The hint goes in the error, not in the prompt. Whether a binary is installed is
 // a property of the deployment, and putting it in the system prompt would put
@@ -166,13 +166,13 @@ func explainMissingBinary(output, errText string) string {
 	hint := ""
 	switch {
 	case strings.Contains(output, "rg: command not found"):
-		hint = "ripgrep is not installed here; use grep -rn, or find for file names"
+		hint = "ripgrep is not installed. Ceraa provisions it automatically; if this persists, install it with: apt-get install ripgrep"
 	case strings.Contains(output, "fd: command not found"):
 		hint = "fd is not installed here; use find"
 	case strings.Contains(output, "fd: No such file"):
 		hint = "fd is not installed here; use find"
 	case strings.Contains(output, "jq: command not found"):
-		hint = "jq is not installed here; use grep, or a python3 -c one-liner for JSON"
+		hint = "jq is not installed here; use rg for text and a python3 -c one-liner for JSON"
 	}
 	if hint == "" {
 		return errText
