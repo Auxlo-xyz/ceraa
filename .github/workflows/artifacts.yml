@@ -90,9 +90,14 @@ jobs:
       - name: The binary reports the version the tag names
         run: |
           set -euo pipefail
-          want="ceraa ${{ steps.target.outputs.tag }}"
-          want="${want#v}"
-          got=$(./out/ceraa-linux-amd64 version | head -1)
+          # Strip the leading v from the tag, then build the expected line. Doing
+          # it in the other order is a no-op, because "ceraa v0.1.2" starts with
+          # a c, so ${want#v} leaves it alone and the job fails demanding
+          # "ceraa v0.1.2" against a binary that correctly said "ceraa 0.1.2".
+          tag="${{ steps.target.outputs.tag }}"
+          tag="${tag#v}"
+          want="ceraa $tag"
+          got=$(./out/ceraa-linux-amd64 version 2>/dev/null | head -1)
           echo "tag says: $want"
           echo "binary says: $got"
           if [ "$got" != "$want" ]; then
