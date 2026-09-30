@@ -223,9 +223,21 @@ func maskToken(s string) string {
 // It is separate from Execute so the wiring is testable: registering inside
 // Execute meant the subcommands did not exist until the binary ran, so nothing
 // could assert that they still resolve.
+//
+// It is idempotent because tests call it once per test, and cobra appends
+// rather than replaces: a second call used to register every subcommand twice,
+// so help listed two asks and two chats.
+var subcommandsRegistered bool
+
 func registerSubcommands() {
+	if subcommandsRegistered {
+		return
+	}
+	subcommandsRegistered = true
+	useWrappedHelp(root)
 	attach := func(command *cobra.Command) {
 		root.AddCommand(command)
+		useWrappedHelp(command)
 		recordSubcommand(command)
 	}
 	attach(verCmd)

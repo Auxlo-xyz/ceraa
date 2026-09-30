@@ -153,6 +153,15 @@ func width() int {
 	return w
 }
 
+// WrapText hard-wraps s to n display cells on word boundaries, preserving blank
+// lines and existing line breaks.
+//
+// Exported so the command help lays out the same way model output does. Cobra's
+// default template leaves long descriptions alone, and a terminal left alone
+// cuts them wherever the edge is, which on a narrow screen is the middle of a
+// word. A help page laid out here never gives the terminal that chance.
+func WrapText(s string, n int) []string { return wrapText(s, n) }
+
 // wrapText hard-wraps to n display cells on word boundaries.
 //
 // Model output is unwrapped prose and a 200 column terminal turns every
