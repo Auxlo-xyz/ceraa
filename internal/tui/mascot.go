@@ -22,27 +22,33 @@ package tui
 // recognisable at a glance and the banner does not jump shape as a run changes
 // state.
 const (
-	// mascot is the whole drawing: a three-lobed cloud, one tall open oval
-	// eye and one wide flat eye beside it that reads as a wink.
+	// mascot is the whole drawing: the three-lobed cloud from mascot.PNG with
+	// its tall open eye and its flat wink.
 	//
-	// It is static. An earlier version carried five states and swapped
-	// the features between them, which was animation nobody asked for and
-	// five drawings to keep in sync with the PNG they came from.
-	mascot = `             ▄▄████████▄▄
-          ▄███████████████▄
-         ███████████████████▄▄▄▄▄
-    ▄▄█████████████████████████████▄
- ▄███████████████████████████████████
-▄█████████▀▀████████████▀▀▀▀▀█████████▄
-██████████    ████▀▀▀▀▀▀▀▀▀▀██████████
-▀████████     ██▀  ▀▀▀▀▀▀▀▀▀▀  ▀▀█████▀
- ▀██████▄     ██   ─────────    ──████▄
-   ████████▄  ▄███████████████████████
-  ████████████████████████████████████
-   ██████████████████████████████████
-    ▀█████████████████████████████▀▀
-       ▀▀▀▀▀▀███████████████▀
-              ▀▀████████▀▀`
+	//	// The cloud is drawn in the FOREGROUND, not filled with block characters.
+	// The PNG is a white cloud on black, and a terminal is normally light text
+	// on a dark background. Filling the shape made the face render as two holes
+	// punched in a black slab: the silhouette vanished and only the eyes
+	// survived. Drawn as ink it is the cloud, and the eyes are the absence of
+	// ink, which is what the PNG actually is.
+	//
+	// Half-blocks double the vertical resolution, so the 16 rows below carry the
+	// 32 scanlines the shape needs to stay round rather than squashed.
+	mascot = `               ▄▄▄████████▄▄
+             ▄████████████████▄
+           ▄███████████████████▄▄▄▄▄
+      ▄▄██████████████████████████████▄▄
+   ▄█████████████████████████████████████
+  ▄██████████▀    ▀███████████████████████
+  ██████████        ██████▀▀▀▀▀▀█████████▀
+  ▀█████████        ███▀   ▄▄▄▄   ▀█████▀
+   ▀████████        ████▄████████▄███████
+     ▄███████▄▄  ▄▄███████████████████████
+     █████████████████████████████████████
+     ████████████████████████████████████
+      ▀███████████████████████████████▀▀
+         ▀▀▀▀▀▀▀███████████████▀
+                 ▀▀████████▀▀▀`
 )
 
 // State is what the mascot is currently doing.

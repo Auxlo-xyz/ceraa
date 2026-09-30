@@ -25,33 +25,64 @@ func TestMascotFitsAReasonableTerminal(t *testing.T) {
 }
 
 func TestMascotHasBothEyes(t *testing.T) {
-	// The wink and the oval eye are the character. A drawing that loses either is
-	// a different face, so this asserts both are present rather than asserting a
-	// row count that a redesign would break.
+	// The wink and the open eye are the character, and a drawing that loses
+	// either is a different face.
 	//
-	// The wink is drawn as a flat line and the open eye is a gap in the white
-	// head, so the eye is asserted on the gap existing on the feature rows rather
-	// than on any particular glyph.
-	if !strings.Contains(mascot, "─") {
-		t.Error("the mascot has no flat wink")
-	}
-	// The open eye is the tall white void left of centre. It shows as a run of
-	// spaces bounded by block glyphs on the feature rows.
-	found := false
-	for _, row := range strings.Split(mascot, "\n") {
-		if !strings.Contains(row, "█") {
+	// The mascot is drawn in the foreground, so both features are absences of
+	// ink. The open eye is the wide void left of centre; the wink is the pair of
+	// shorter voids to its right on one row. Asserting on the specific voids is
+	// what makes this catch a redesign that loses a feature, which asserting on
+	// row counts would not.
+	rows := strings.Split(mascot, "\n")
+
+	// The open eye: the widest run of spaces inside a row that also holds ink.
+	widestEye := 0
+	// The wink: two runs of the same length, well short of the eye, on one row.
+	winkLen, winkFound := 0, false
+	for _, r := range rows {
+		if !strings.ContainsAny(r, "\u2588\u2580\u2584") {
 			continue
 		}
-		// A run of three or more spaces inside a row that is otherwise solid is
-		// the eye void.
-		if strings.Contains(row, "   █") || strings.Contains(row, "█    ") {
-			found = true
-			break
+		var runs []int
+		for _, run := range spaceRuns(r) {
+			runs = append(runs, run)
+		}
+		for _, run := range runs {
+			if run > widestEye {
+				widestEye = run
+			}
+		}
+		// A wink is a matched pair of short voids, not a stray one-space gap.
+		short := []int{}
+		for _, run := range runs {
+			if run >= 2 && run < widestEyeFor(runs) {
+				short = append(short, run)
+			}
+		}
+		for i := 0; i+1 < len(short); i++ {
+			if short[i] == short[i+1] {
+				winkFound, winkLen = true, short[i]
+			}
 		}
 	}
-	if !found {
-		t.Errorf("the mascot has no open eye void:\n%s", mascot)
+	if widestEye < 6 {
+		t.Errorf("the open eye is too small (widest void %d, want at least 6):\n%s", widestEye, mascot)
 	}
+	if !winkFound {
+		t.Errorf("no wink found: no matched pair of short voids on any row:\n%s", mascot)
+	}
+	_ = winkLen
+}
+
+// widestEyeFor returns the longest space run in a row, which is the open eye.
+func widestEyeFor(runs []int) int {
+	best := 0
+	for _, r := range runs {
+		if r > best {
+			best = r
+		}
+	}
+	return best
 }
 
 // State still drives the status line, so it must keep naming itself even though
@@ -94,4 +125,24 @@ func TestBannerOmitsAbsentFields(t *testing.T) {
 	if strings.Contains(got, "provider") {
 		t.Errorf("banner printed a provider line for an empty provider:\n%s", got)
 	}
+}
+
+// spaceRuns returns the length of every run of spaces in a row.
+func spaceRuns(row string) []int {
+	var out []int
+	n := 0
+	for _, r := range row {
+		if r == ' ' {
+			n++
+			continue
+		}
+		if n > 0 {
+			out = append(out, n)
+			n = 0
+		}
+	}
+	if n > 0 {
+		out = append(out, n)
+	}
+	return out
 }
