@@ -349,6 +349,10 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				result.Status = StatusCompleted
 				break
 			}
+			if ranged, ok := readLineRange(op.Spec.Args, p); ok {
+				executeRangedRead(p, ranged.Offset, ranged.Limit, &result)
+				break
+			}
 			r, err := primitives.ReadFile(p)
 			result.Output = r.Content
 			if err != nil {
@@ -738,4 +742,90 @@ func listDirectory(path string) string {
 		b.WriteString(name)
 	}
 	return b.String()
+}
+
+// readLineRange is the requested line window, and whether one was asked for at
+// all. Absent is not the same as zero: a read with no range takes the whole file,
+// which is what it has always done.
+type readRange struct {
+	Offset int
+	Limit  int
+}
+
+func readLineRange(args map[string]any, _ string) (readRange, bool) {
+	offset, hasOffset := args["offset"].(int)
+	limit, hasLimit := args["limit"].(int)
+	if !hasOffset && !hasLimit {
+		return readRange{}, false
+	}
+	if offset <= 0 {
+		offset = 1
+	}
+	if limit <= 0 {
+		// A range with no count runs to the end of the file, which is what
+		// "from line 300" means and is the useful reading of it.
+		limit = 0
+	}
+	return readRange{Offset: offset, Limit: limit}, true
+}
+
+// executeRangedRead returns part of a file, counted in lines.
+//
+// This exists because the alternative was worse. A real session that needed three
+// specific regions of a 21,536-byte file reached for `sed -n`, and a real session
+// that could not see the top of a trimmed file reached for `sed -n` on the
+// offloaded copy. Both went through bash, both spent a round trip, and both
+// returned whatever the shell tool's own cap allowed, which is smaller than this
+// one. A range expressed on the read tool costs no extra call and gets the read
+// cap.
+//
+// The header names the range and the file's length, so a partial read is honest
+// about being partial and the model can ask for the next window instead of
+// assuming it reached the end.
+// splitLines splits into lines the way an editor and `wc -l` count them.
+//
+// strings.Split alone reports one extra line for any file ending in a newline,
+// because the trailing newline leaves a final empty element. That is not cosmetic
+// here: a range reading the last line of a file would return an empty string, and
+// the model reads that as a blank line rather than as having asked one line too
+// far. It would also put the file length in every range header one over.
+func splitLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func executeRangedRead(path string, offset, limit int, result *ResultEvent) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		result.Error = err.Error()
+		result.Status = StatusFailed
+		return
+	}
+	lines := splitLines(string(data))
+	total := len(lines)
+	if offset > total {
+		result.Error = fmt.Sprintf("%s has %d lines, so offset %d is past the end", filepath.Base(path), total, offset)
+		result.Status = StatusFailed
+		return
+	}
+	end := total
+	if limit > 0 && offset+limit-1 < total {
+		end = offset + limit - 1
+	}
+	window := strings.Join(lines[offset-1:end], "\n")
+	header := fmt.Sprintf("%s lines %d-%d of %d", filepath.Base(path), offset, end, total)
+	if end < total {
+		header += fmt.Sprintf(" (more below: ask for offset %d)", end+1)
+	}
+	if offset > 1 {
+		header += fmt.Sprintf(" (lines 1-%d above)", offset-1)
+	}
+	result.Output = header + "\n" + window
+	result.Status = StatusCompleted
 }

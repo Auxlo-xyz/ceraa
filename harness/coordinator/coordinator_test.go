@@ -963,7 +963,12 @@ func TestTheSystemPromptStaysSmall(t *testing.T) {
 	}
 	// Just above the current size. It fires on the next accidental line, and
 	// never on its own.
-	const budget = 6800
+	//
+	// Raised from 6800 deliberately, not by drift. Naming ranged read costs 331
+	// bytes and every turn, and it retires the `sed -n` workaround that a real
+	// session used three times in one task. That is a trade, so the number it was
+	// raised to is written down here rather than just moved.
+	const budget = 7100
 	if len(raw) > budget {
 		t.Errorf("prompt/system.txt is %d bytes, over the %d budget; cut something before adding",
 			len(raw), budget)

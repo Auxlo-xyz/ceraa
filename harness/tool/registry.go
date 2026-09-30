@@ -139,7 +139,9 @@ func (r *ReadTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Absolute or relative path"},
+			"path":   map[string]any{"type": "string", "description": "Absolute or relative path"},
+			"offset": map[string]any{"type": "integer", "description": "First line to return, counting from 1. Use it to read part of a large file instead of all of it."},
+			"limit":  map[string]any{"type": "integer", "description": "How many lines to return from offset."},
 		},
 		"required": []string{"path"},
 	}
@@ -149,7 +151,40 @@ func (r *ReadTool) Translate(args map[string]any) (operation.Spec, error) {
 	if !ok || p == "" {
 		return operation.Spec{}, fmt.Errorf("path is required")
 	}
-	return operation.Spec{Type: "read", Args: map[string]any{"path": p}}, nil
+	spec := map[string]any{"path": p}
+	// Carried only when given, so a read without a range keeps the exact spec
+	// shape it has always had and an older session replays unchanged.
+	offset, hasOffset := positiveIntArg(args["offset"])
+	limit, hasLimit := positiveIntArg(args["limit"])
+	if hasOffset {
+		spec["offset"] = offset
+	}
+	if hasLimit {
+		spec["limit"] = limit
+	}
+	// A limit with no offset is a read of the first N lines, which is a
+	// reasonable thing to ask for. Naming it in the spec is what makes the
+	// operation able to tell it from a whole-file read.
+	return operation.Spec{Type: "read", Args: spec}, nil
+}
+
+// positiveIntArg narrows a JSON-decoded number to a positive int, treating
+// anything else as absent.
+//
+// A zero or negative offset would otherwise become a slice bound that reads
+// nothing or panics, and passing one through is worse than ignoring it.
+func positiveIntArg(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if n := int(typed); n > 0 && float64(n) == typed {
+			return n, true
+		}
+	case int:
+		if typed > 0 {
+			return typed, true
+		}
+	}
+	return 0, false
 }
 func (r *ReadTool) TranslateResult(op operation.Operation) string {
 	return op.Output

@@ -103,3 +103,29 @@ func TestTheToolResultCapIsStillInPlace(t *testing.T) {
 		t.Error("the tool rules block is gone, so the cap and the edit guidance went with it")
 	}
 }
+
+// Ranged read exists because a real session reached for `sed -n` to look at three
+// specific regions of a 21,536-byte file, and again to reach the top of a trimmed
+// file it could not otherwise see. Both cost a shell round trip and the shell
+// tool's smaller output cap.
+//
+// The prompt has to name it, or a capability that exists is one the model has no
+// reason to reach for.
+func TestThePromptNamesRangedReadRatherThanSed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "offset and limit") {
+		t.Error("the prompt does not tell the model that read can return part of a file")
+	}
+	if !strings.Contains(text, "instead of sed -n") {
+		t.Error("the prompt does not steer the model away from the sed workaround")
+	}
+	// A search line that does not exclude the noise directories fills results with
+	// lines nobody reads, which is what made the offload notice necessary.
+	if !strings.Contains(text, "Exclude node_modules, .git and build output") {
+		t.Error("the search guidance does not tell the model to exclude the noise directories")
+	}
+}

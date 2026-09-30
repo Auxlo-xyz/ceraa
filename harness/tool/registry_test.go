@@ -127,3 +127,45 @@ func TestTheSchemasOfferOccurrence(t *testing.T) {
 		}
 	}
 }
+
+// offset and limit have to survive the trip from the model's JSON to the
+// operation spec, or read silently returns the whole file and the model thinks it
+// asked for a window.
+func TestRangedReadReachesTheSpec(t *testing.T) {
+	spec, err := (&ReadTool{}).Translate(map[string]any{
+		"path": "f.txt", "offset": float64(400), "limit": float64(60),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Args["offset"] != 400 || spec.Args["limit"] != 60 {
+		t.Errorf("spec = %+v, want offset 400 and limit 60", spec.Args)
+	}
+}
+
+// A read with no range must keep the spec shape it always had, so a session
+// written before this replays unchanged and nothing narrows by default.
+func TestAPlainReadCarriesNoRange(t *testing.T) {
+	spec, err := (&ReadTool{}).Translate(map[string]any{"path": "f.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Args) != 1 {
+		t.Errorf("args = %+v, want only path", spec.Args)
+	}
+}
+
+// A zero, negative or fractional offset would become a slice bound that reads
+// nothing or panics. Dropping it is worse than a failed call and far better than
+// a wrong one.
+func TestAnUnusableRangeIsTreatedAsAbsent(t *testing.T) {
+	for _, bad := range []any{float64(0), float64(-5), 1.5, "10", true, nil} {
+		spec, err := (&ReadTool{}).Translate(map[string]any{"path": "f.txt", "offset": bad, "limit": bad})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, present := spec.Args["offset"]; present {
+			t.Errorf("offset %v was forwarded, want it dropped", bad)
+		}
+	}
+}
