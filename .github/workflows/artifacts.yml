@@ -18,6 +18,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to test. Defaults to the latest.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -25,15 +30,19 @@ permissions:
 jobs:
   artifacts:
     runs-on: ubuntu-24.04
+    # gh needs a token. Without this the first run dies on authentication, which
+    # is how a workflow that was never executed gets mistaken for a working one.
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Resolve the tag under test
         id: target
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            tag="${1:-}"
+            tag="${{ inputs.tag }}"
             if [ -z "$tag" ]; then
-              tag=$(gh release view --json tagName --jq .tagName)
+              tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
             fi
           else
             tag="${{ github.event.release.tag_name }}"
@@ -45,7 +54,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
+          # --repo is explicit because this job never checks the repository out,
+          # so there is no git remote for gh to infer the repository from.
           gh release download "${{ steps.target.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
             --pattern 'ceraa-linux-amd64' \
             --pattern 'system.txt' \
             --pattern 'SHA256SUMS' \
