@@ -969,3 +969,86 @@ func TestTheSystemPromptStaysSmall(t *testing.T) {
 			len(raw), budget)
 	}
 }
+
+// The run total sizes a problem; the per-request list says which request created
+// it. Without the list the only answer to "tool output is 71% of input" is a
+// number, and the number does not say what to change.
+//
+// This covers the shape and the round trip rather than the append inside the
+// request loop, which needs a live provider to reach. That is a real limit of the
+// test and is stated rather than papered over.
+func TestRunRecordsItsPerRequestSplit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sessionstore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &sessionstore.Session{ID: "perreq", Version: 2}
+	sess.Runs = append(sess.Runs, sessionstore.Run{
+		ID:     "run1",
+		Status: sessionstore.RunCompleted,
+		// The totals are the sum of the two requests below, so the invariant the
+		// test checks holds. A fixture that claims 14 requests while listing 2
+		// would fail for a reason that has nothing to do with the code.
+		InputBreakdown: llm.TokenBreakdown{
+			ToolOutput: 4103, System: 3504, Tools: 5138,
+		},
+		RequestBreakdown: []llm.RequestTokenBreakdown{
+			{Step: 0, PromptTokens: 5576, CachedTokens: 1152, Breakdown: llm.TokenBreakdown{System: 1752, Tools: 2569}},
+			{Step: 1, PromptTokens: 24000, CachedTokens: 20000, Breakdown: llm.TokenBreakdown{System: 1752, Tools: 2569, ToolOutput: 4103}},
+		},
+	})
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := sessionstore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.Load("perreq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Runs[0].RequestBreakdown) != 2 {
+		t.Fatalf("per-request split did not survive the round trip: %+v", got.Runs[0].RequestBreakdown)
+	}
+	first := got.Runs[0].RequestBreakdown[0]
+	if first.Step != 0 || first.CachedTokens != 1152 || first.Breakdown.System != 1752 {
+		t.Errorf("first request = %+v, want its step, cache count and system share", first)
+	}
+	// The per-request figures have to add up to the run total, or the two views
+	// disagree and the smaller one is the one that gets believed.
+	var sum llm.TokenBreakdown
+	for _, r := range got.Runs[0].RequestBreakdown {
+		sum.Add(r.Breakdown)
+	}
+	if sum.System != got.Runs[0].InputBreakdown.System {
+		t.Errorf("per-request system tokens sum to %d, run total says %d", sum.System, got.Runs[0].InputBreakdown.System)
+	}
+}
+
+// A run that never reached a request keeps an empty list rather than a zero entry,
+// so "no requests" is distinguishable from "requests with no tokens".
+func TestARunWithNoRequestsHasAnEmptySplit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sessionstore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &sessionstore.Session{ID: "empty", Version: 2}
+	sess.Runs = append(sess.Runs, sessionstore.Run{ID: "run1", Status: sessionstore.RunFailed})
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := sessionstore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.Load("empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Runs[0].RequestBreakdown) != 0 {
+		t.Errorf("a run with no requests recorded %d entries", len(got.Runs[0].RequestBreakdown))
+	}
+}

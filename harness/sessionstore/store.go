@@ -113,6 +113,16 @@ type Run struct {
 	Usage          llm.UsageInfo      `json:"usage,omitempty"`
 	Cost           llm.CostInfo       `json:"cost"`
 	InputBreakdown llm.TokenBreakdown `json:"input_breakdown,omitempty"`
+	// Requests records the per-request split, not just the run total. The total
+	// says a run cost 197,084 tokens of tool output; this says which request made
+	// it jump, which is the difference between an opportunity that can be acted on
+	// and one that can only be sized.
+	//
+	// The counts are the local estimate, computed from the messages actually sent,
+	// so they are available before the provider answers and are trustworthy even
+	// when its own reporting is a running total. A run that never reaches a
+	// request keeps an empty list rather than a zero entry.
+	RequestBreakdown []llm.RequestTokenBreakdown `json:"request_breakdown,omitempty"`
 	// UsageTrust records whether the provider's token counts describe these
 	// requests. Some endpoints report a running total instead, which makes both
 	// the cache ratio and the cost fiction, so cost is left unpriced when it does

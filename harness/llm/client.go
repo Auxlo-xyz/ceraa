@@ -283,6 +283,21 @@ func (e *ProviderError) Error() string {
 	return detail
 }
 
+// RequestTokenBreakdown is one request's share of the input, by source.
+type RequestTokenBreakdown struct {
+	// Step is the loop iteration, so the requests line up with the transcript.
+	Step int `json:"step"`
+	// PromptTokens is the provider-reported input for this request when it is
+	// available, and zero when it is not. A provider that reports a running total
+	// leaves this empty rather than a wrong per-request number.
+	PromptTokens int `json:"prompt_tokens,omitempty"`
+	// CachedTokens is the cached part of PromptTokens. Present only when the
+	// provider distinguishes it, because the ratio is the number that decides
+	// whether a cache change worked.
+	CachedTokens int            `json:"cached_tokens,omitempty"`
+	Breakdown    TokenBreakdown `json:"breakdown"`
+}
+
 type TokenBreakdown struct {
 	System       int `json:"system,omitempty"`
 	Tools        int `json:"tools,omitempty"`

@@ -366,6 +366,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 	var runUsage llm.UsageInfo
 	var runBreakdown llm.TokenBreakdown
+	// runRequests is the per-request split, persisted with the run on finish.
+	runRequests := make([]llm.RequestTokenBreakdown, 0, 16)
 	// runTrust is the verdict on whether the provider's counts describe these
 	// requests. Held per run so cost and the reported cache ratio can be withheld
 	// when they do not. Starts trusted because an unmeasured run is not evidence
@@ -418,6 +420,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Usage = runUsage
 				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].RequestBreakdown = runRequests
 				sess.Runs[i].UsageTrust = runTrust
 				sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 				sess.Runs[i].PricingStatus = pricingStatus
@@ -523,6 +526,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Usage = runUsage
 				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].RequestBreakdown = runRequests
 				sess.Runs[i].UsageTrust = runTrust
 				sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 				sess.Runs[i].UpdatedAt = time.Now()
@@ -554,6 +558,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						if sess.Runs[i].ID == runID {
 							sess.Runs[i].Usage = runUsage
 							sess.Runs[i].InputBreakdown = runBreakdown
+							sess.Runs[i].RequestBreakdown = runRequests
 							sess.Runs[i].UsageTrust = runTrust
 							sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 						}
@@ -595,6 +600,10 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		countRequestBeforeUse(&runBreakdown, breakdown)
+		// Kept per request rather than only summed into the run total. The sum
+		// sizes the problem; the list says which request created it, which is what
+		// makes an opportunity actionable instead of merely large.
+		runRequests = append(runRequests, llm.RequestTokenBreakdown{Step: step, Breakdown: breakdown})
 		var content strings.Builder
 		var reasoning strings.Builder
 		var reasoningDetails []json.RawMessage
@@ -636,6 +645,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].Usage = runUsage
 				sess.Runs[i].Cost = runCost
 				sess.Runs[i].InputBreakdown = runBreakdown
+				sess.Runs[i].RequestBreakdown = runRequests
 				sess.Runs[i].UsageTrust = runTrust
 				sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 			}
@@ -658,6 +668,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						if sess.Runs[i].ID == runID {
 							sess.Runs[i].Usage = runUsage
 							sess.Runs[i].InputBreakdown = runBreakdown
+							sess.Runs[i].RequestBreakdown = runRequests
 							sess.Runs[i].UsageTrust = runTrust
 							sess.Runs[i].ProviderHost = r.cfg.Model.BaseURL
 						}
@@ -788,8 +799,13 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			}
 		}
 		pending := make(map[string]struct{}, len(prepared))
+		// The tool name is only known here, while the call is still in hand, and
+		// the result arrives as a bare operation id. Without this the tally could
+		// only count failures, never the denominator they are rates against.
+		toolByCall := make(map[string]string, len(prepared))
 		for _, item := range prepared {
 			pending[item.call.ID] = struct{}{}
+			toolByCall[item.call.ID] = item.tool.Name()
 		}
 		timeout := time.NewTimer(180 * time.Second)
 		for len(pending) > 0 {
@@ -799,6 +815,16 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					continue
 				}
 				delete(pending, result.OpID)
+				// Every tool outcome reaches this point, so it is the one place the
+				// tally can be complete: a call counted whatever happened to it, and
+				// a failure filed under a class that separates a missing target from
+				// a harness bug.
+				if name := toolByCall[result.OpID]; name != "" {
+					recordToolCall(name)
+					if result.Error != "" {
+						recordToolError(name, result.Error)
+					}
+				}
 				// Annotated only on the model-facing path. persistResult keeps the
 				// bare result in the session file, because that record is what the
 				// tool actually returned and a later reader should not have to know
