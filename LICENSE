@@ -1,0 +1,57 @@
+Ceraa — proprietary licence
+Copyright (c) 2026 emperormk01. All rights reserved.
+
+This software is not open source. No permission is granted to use, copy, modify,
+publish, sublicense, or redistribute it except under the terms below.
+
+1. GRANT OF LICENCE
+
+   You are granted a non-exclusive, non-transferable, revocable licence to install
+   and run Ceraa for your own internal use, and to run it on infrastructure you
+   control. The licence covers use, not ownership: Ceraa remains the property of
+   the copyright holder.
+
+   Running an unmodified copy is permitted. Distributing a modified copy, publicly
+   publishing it, offering it as a service to third parties, or removing or
+   concealing the notice printed by `ceraa version` are not.
+
+2. WHAT THIS LICENCE IS FOR
+
+   The point of it is to be evidence. The binary carries the copyright and these
+   terms internally, so an artifact found in someone else's hands states what it
+   was and on what basis. That is what a dispute or a takedown turns on.
+
+   It is not an attempt to make the software unreadable. Anyone holding a copy can
+   read it; see IMPLEMENTATION.md and TODO.md for what is and is not technically
+   recoverable from the shipped binary, measured rather than assumed.
+
+3. ATTRIBUTION
+
+   If you write about Ceraa, benchmark it, or show its output, please say Ceraa
+   and name the version. `ceraa version` prints the version, the copyright and
+   these terms.
+
+4. NO WARRANTY
+
+   Ceraa is provided as is, without warranty of any kind, express or implied,
+   including the warranties of merchantability, fitness for a particular purpose
+   and non-infringement. In no event shall the copyright holder be liable for any
+   claim, damages or other liability arising from the software or its use.
+
+5. TERMINATION
+
+   This licence terminates automatically if you breach it. On termination you must
+   stop using and delete every copy. It terminates immediately, without notice, if
+   the copyright holder withdraws the licence.
+
+6. DMCA
+
+   The copyright holder will pursue removal of unauthorised copies under the
+   Digital Millennium Copyright Act and equivalent law. Notices should go to the
+   repository owner. A copy obtained from the holder, or built from a source
+   snapshot the holder published, is not an infringing copy — provenance is
+   determinable, and the binary's embedded notice is part of that trail.
+
+7. NO OBLIGATION TO SUPPORT
+
+   No support, maintenance, or update commitment is made or implied.
