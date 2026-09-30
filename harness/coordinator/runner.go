@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ceraa/harness/compaction"
 	"ceraa/harness/contextbuilder"
@@ -1714,23 +1715,56 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 	path := filepath.Join(dir, runID, r.safeResultName(operationID)+".txt")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
 		if err := os.WriteFile(path, []byte(output), 0o600); err == nil {
-			tailLength := limit / 3
-			if tailLength < 1024 {
-				tailLength = 1024
-			}
-			tail := output[len(output)-tailLength:]
-			trimmed := fmt.Sprintf("Large tool output saved to %s (%d bytes).\nTail:\n%s", path, len(output), tail)
+			trimmed := fmt.Sprintf("%s\nTail:\n%s", offloadNotice(path, len(output)), tailWindow(output, limit))
 			recordToolOutput(len(output), len(trimmed))
 			return trimmed
 		}
 	}
-	tailLength := limit / 3
-	if tailLength < 1024 {
-		tailLength = 1024
-	}
-	trimmed := fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), output[len(output)-tailLength:])
+	trimmed := fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), tailWindow(output, limit))
 	recordToolOutput(len(output), len(trimmed))
 	return trimmed
+}
+
+// offloadNotice tells the model the content exists, where it is, and that the
+// location is usable.
+//
+// The last part is the one that was missing. A real session was handed this path
+// five times for the same unchanged file and never once ran grep against it,
+// re-reading the identical tail each time instead, while the answer sat in the
+// part of the file it could not see. A path is only useful if the reader knows
+// it can open it.
+func offloadNotice(path string, size int) string {
+	return fmt.Sprintf(
+		"Large tool output saved to %s (%d bytes). It is greppable from bash, and you can read any part of it from that path; re-reading the source will only return this notice again.",
+		path, size)
+}
+
+func tailWindow(output string, limit int) string {
+	n := limit / 3
+	if n < 1024 {
+		n = 1024
+	}
+	if n > len(output) {
+		n = len(output)
+	}
+	return runeSafe(output[len(output)-n:])
+}
+
+// runeSafe backs a cut back to a rune boundary.
+//
+// Cutting mid-sequence produces invalid UTF-8, which a strict decoder rejects
+// and a lenient one turns into replacement characters. Slicing on bytes is the
+// cheap way to trim and the easy way to get this wrong, and it now happens twice
+// per result instead of once.
+func runeSafe(s string) string {
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size > 1 {
+			return s
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // repeatNotice points at the content instead of resending it.

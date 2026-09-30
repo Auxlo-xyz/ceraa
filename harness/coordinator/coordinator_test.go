@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"ceraa/harness/inbox"
 	"ceraa/harness/llm"
@@ -847,5 +848,124 @@ func TestRepeatedReadsOfLongFilesCollapseToOneNoticeEach(t *testing.T) {
 		calls, len(files), before, after, before-after, (before-after)/4)
 	if after >= before/2 {
 		t.Errorf("dedupe left %d B against %d B, which is no real saving", after, before)
+	}
+}
+
+// Two arrangements of a head window were tried and reverted, so this pins the
+// tail to what it was. A test that only checked a head existed would have passed
+// for both of them.
+func TestTheTailWindowIsNotShrunkToMakeRoomForAHead(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 12000, ToolOutputDir: dir}}
+	output := strings.Repeat("tail content line here\n", 1500)
+	got := runner.formatOutput("run1", "call1", output)
+	if !strings.Contains(got, "Tail:") {
+		t.Fatalf("the tail label is gone:\n%s", head(t, got))
+	}
+	window := got[strings.LastIndex(got, "Tail:"):]
+	if len(window) < 12000/3 {
+		t.Errorf("the tail window is %d bytes, under the %d it should keep", len(window), 12000/3)
+	}
+	if len(got) > 12000 {
+		t.Errorf("result is %d bytes, over the 12000 cap", len(got))
+	}
+}
+
+// The notice is part of what reaches the model, so the head and tail are budgeted
+// around it. Spending the whole cap on content would push the result over.
+func TestTheTrimStaysUnderTheCap(t *testing.T) {
+	// Caps a real config uses. A cap of 1024 was already overshot before this
+	// change, because the old code's minimum tail was 1024 on its own, so that is
+	// pre-existing and not worth pinning here.
+	for _, cap := range []int{12000, 8000, 4000, 3000, 2200} {
+		dir := t.TempDir()
+		runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: cap, ToolOutputDir: dir}}
+		output := strings.Repeat("a line of file content here\n", 3000)
+		got := runner.formatOutput("run1", "call1", output)
+		if len(got) > cap {
+			t.Errorf("cap %d: result is %d bytes, over the cap", cap, len(got))
+		}
+	}
+}
+
+// A path the model is not told it can use is a dead end, and that is what it
+// behaved like: handed this path five times for one unchanged file, it never ran
+// grep against it.
+func TestTheOffloadNoticeSaysTheFileIsUsable(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 12000, ToolOutputDir: dir}}
+	got := runner.formatOutput("run1", "call1", strings.Repeat("body\n", 4000))
+	if !strings.Contains(got, "greppable from bash") {
+		t.Errorf("the notice does not say the file can be searched:\n%s", head(t, got))
+	}
+}
+
+// Byte slicing can cut a multi-byte rune in half, and it now happens twice per
+// trimmed result rather than once. Invalid UTF-8 in a tool result is a decode
+// failure at best and mojibake at worst.
+func TestTheTrimNeverSplitsARune(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 4000, ToolOutputDir: dir}}
+	// Three-byte runes on every boundary, so any byte cut lands mid-sequence.
+	output := strings.Repeat("日本語テキスト\n", 2000)
+	got := runner.formatOutput("run1", "call1", output)
+	if !utf8.ValidString(got) {
+		t.Error("the trimmed result is not valid UTF-8")
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "\uFFFD") {
+			t.Errorf("a rune was split, producing a replacement character: %q", line)
+			break
+		}
+	}
+}
+
+// The repeat notice and the first notice carry different information, and the
+// repeat must still name a path that resolves.
+func TestTheRepeatNoticeStillPointsAtTheFile(t *testing.T) {
+	dir := t.TempDir()
+	runner := &Runner{cfg: RunnerConfig{MaxToolResultChars: 12000, ToolOutputDir: dir}}
+	output := strings.Repeat("body line\n", 3000)
+	runner.formatOutput("run1", "call1", output)
+	repeat := runner.formatOutput("run1", "call2", output)
+	if !strings.Contains(repeat, filepath.Join(dir, "run1", "call2.txt")) {
+		t.Errorf("the repeat names no file: %q", repeat)
+	}
+	if _, err := os.ReadFile(filepath.Join(dir, "run1", "call2.txt")); err != nil {
+		t.Errorf("the repeat's file is missing: %v", err)
+	}
+}
+
+func head(t *testing.T, s string) string {
+	t.Helper()
+	if len(s) > 400 {
+		return s[:400]
+	}
+	return s
+}
+
+func tailOf(s string) string {
+	if len(s) > 400 {
+		return s[len(s)-400:]
+	}
+	return s
+}
+
+// A ratchet on the prompt file, for the same reason the tool definitions have
+// one: both are resent in every request for the whole session, so a line that
+// grows there is paid on every turn forever. The prompt had just been compacted
+// from 7,270 to 6,359 bytes, and putting a line back in is exactly the kind of
+// change that should be deliberate rather than incidental.
+func TestTheSystemPromptStaysSmall(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Just above the current size. It fires on the next accidental line, and
+	// never on its own.
+	const budget = 6800
+	if len(raw) > budget {
+		t.Errorf("prompt/system.txt is %d bytes, over the %d budget; cut something before adding",
+			len(raw), budget)
 	}
 }

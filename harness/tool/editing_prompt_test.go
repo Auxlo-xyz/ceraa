@@ -62,3 +62,44 @@ func TestThePromptStillSteersEditingAwayFromShell(t *testing.T) {
 		t.Error("the prompt no longer says why: a shell edit succeeds whether or not the file matched")
 	}
 }
+
+// The prompt line that closes the trimmed-read loop, and the offload notice it
+// refers to, are the only things standing between the model and re-reading a
+// large file until it runs out of context.
+//
+// A real session read a 21,536-byte file five times looking for a route
+// registration at line 155, received only the last 4,000 bytes each time, and
+// solved it with grep for 1,849 bytes. Nothing told it that was the cheaper move.
+func TestThePromptRoutesLargeFileLookupsToGrep(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+
+	// The behavioural instruction, not one phrasing of it.
+	if !strings.Contains(text, "grep it rather than reading it") {
+		t.Error("the prompt does not say to grep a file instead of reading it to find something")
+	}
+	// Why, and the fact that a large read shows only its end.
+	if !strings.Contains(text, "only the end") {
+		t.Error("the prompt does not say that a large read shows only the end of the file")
+	}
+	// The offloaded path has to be described as usable, or the loop has no exit.
+	if !strings.Contains(text, "greppable from bash") {
+		t.Error("the prompt does not say a trimmed result's full output is greppable")
+	}
+}
+
+// The cap is load-bearing: it kept 293,217 bytes of file content out of the
+// context across ten results in a real session. It should not be raised casually,
+// and this records what it is currently protecting.
+func TestTheToolResultCapIsStillInPlace(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "<toolrules>") {
+		t.Error("the tool rules block is gone, so the cap and the edit guidance went with it")
+	}
+}
