@@ -99,6 +99,13 @@ func candidates() []string {
 		directory := filepath.Dir(executable)
 		paths = append(paths,
 			filepath.Join(directory, SystemPromptPath),
+			// The release ships system.txt flat, beside the binary, so that a
+			// user who downloads the two files by hand and drops them in one
+			// directory gets a working install. This candidate is what makes
+			// that layout load. install.sh creates the prompt/ directory
+			// itself, so it masked the gap: the installer worked, the release
+			// page did not, and nothing tested the release page.
+			filepath.Join(directory, "system.txt"),
 			filepath.Join(directory, "..", SystemPromptPath),
 		)
 	}

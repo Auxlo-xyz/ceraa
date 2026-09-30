@@ -55,6 +55,60 @@ func TestLoaderFindsThePromptBesideTheExecutable(t *testing.T) {
 	t.Errorf("candidates %q do not include %q", paths, want)
 }
 
+// The release page offers the binary and system.txt as two files in one
+// directory, and that is what a user downloads. This runs the real released
+// binary out of exactly that layout and asserts it does not fall back.
+//
+// The test above could not have caught this: it asserts that a prompt/ path is a
+// candidate, and one is, while the layout the release actually ships has no
+// prompt/ directory at all. install.sh creates that directory, so the installer
+// path stayed green and only a hand-installed release degraded.
+func TestReleasedBinaryLoadsTheFlatReleaseLayout(t *testing.T) {
+	if os.Getenv("CERAA_PROMPT_TEST_CHILD") == "1" {
+		load()
+		return
+	}
+	bin, err := filepath.Abs(filepath.Join("..", "..", "dist", "ceraa-linux-amd64"))
+	if err != nil {
+		t.Skipf("cannot resolve the release binary: %v", err)
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("no built release binary; run scripts/release.sh first")
+	}
+	shipped, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
+	if err != nil {
+		t.Fatalf("prompt/system.txt: %v", err)
+	}
+
+	// A directory holding the two released files and nothing else, and a working
+	// directory elsewhere, so the prompt can only be found beside the executable.
+	install := t.TempDir()
+	if err := os.WriteFile(filepath.Join(install, "system.txt"), shipped, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	copied := filepath.Join(install, "ceraa")
+	body, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(copied, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	work := t.TempDir()
+	cmd := exec.Command(copied, "version")
+	cmd.Dir = work
+	cmd.Env = append(os.Environ(), "CERAA_SYSTEM_PROMPT=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the released binary: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "using a minimal fallback") {
+		t.Errorf("a binary and system.txt side by side, as the release page ships them, "+
+			"still runs on the fallback prompt:\n%s", out)
+	}
+}
+
 // A missing prompt must be loud, because "starts fine but behaves wrong" is the
 // worst way for it to fail.
 func TestMissingPromptIsReported(t *testing.T) {

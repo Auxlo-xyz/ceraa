@@ -6,7 +6,10 @@ test:
 
 check:
 	go vet ./...
-	gofmt -l cmd harness internal
+	# "." is the main package that `build` compiles, so it belongs here. It was
+	# omitted once and nothing caught it, because a formatting slip in main.go is
+	# invisible to every other target.
+	gofmt -l . cmd harness internal
 
 fuzz:
 	go test -run Fuzz -fuzz=FuzzInboxControlValidation -fuzztime=10s ./harness/coordinator/...
