@@ -28,13 +28,14 @@ import (
 	"ceraa/internal/secret"
 )
 
-// defaultClientID is the credential Qoder's own CLI presents.
+// defaultClientID is the credential Qoder's own CLI presents on the approval page.
 //
-// It differs from the one on the web approval page, which identifies the web
-// client. The log of a real login showed only the web id, so using it would
-// authenticate as the wrong client and be rejected. This value came from the
-// vendor bundle next to the poll construction, not from a log.
-const defaultClientID = "e93fe488-5778-4c35-a6fc-0f54ed7b3139"
+// The bundle carries two ids chosen by flag, and reading either one in isolation
+// gives the wrong answer. The other id was used first and the page answered
+// "Parameter invalid". This is the id from an approval URL of a login that
+// actually succeeded, which is the only evidence that counts, so it is the only
+// one named here.
+const defaultClientID = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
 
 // Endpoints for the production service. The poll and auth hosts came from the
 // vendor's endpoint discovery in a live log; the paths came from the bundle.

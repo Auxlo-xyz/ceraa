@@ -86,8 +86,8 @@ func TestStartBuildsTheApprovalURLTheVendorExpects(t *testing.T) {
 	}
 	// The default is the CLI client from the bundle, not the web one from the
 	// login page. Using the web id would authenticate as the wrong client.
-	if defaultClientID != "e93fe488-5778-4c35-a6fc-0f54ed7b3139" {
-		t.Errorf("default client = %q, which is not the CLI id from the vendor bundle", defaultClientID)
+	if defaultClientID != "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb" {
+		t.Errorf("default client = %q, which is not the id from a working approval URL", defaultClientID)
 	}
 }
 
