@@ -51,12 +51,14 @@ func TestRendererSurvivesConcurrentCallbacks(t *testing.T) {
 	// The footer is written last and under the same lock as the usage it reports.
 	// Which worker wins is not deterministic, so the assertion is that a footer
 	// exists and that its numbers came from one of the workers rather than being
-	// interleaved or dropped.
+	// interleaved or dropped. The footer is located by its rule, not by a fixed
+	// marker string, so restyling it does not break this.
 	got := out.String()
-	footer := got[strings.LastIndex(got, "-----"):]
-	if !strings.HasPrefix(footer, "-----") {
-		t.Fatalf("no footer was written:\n%s", tail(got))
+	at := strings.LastIndex(got, "─")
+	if at < 0 {
+		t.Fatalf("no footer rule was written:\n%s", tail(got))
 	}
+	footer := got[at:]
 	if !strings.Contains(footer, "in ") || !strings.Contains(footer, "out ") {
 		t.Errorf("footer did not report usage: %q", footer)
 	}

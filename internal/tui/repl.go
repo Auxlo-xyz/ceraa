@@ -27,8 +27,10 @@ type Loop struct {
 	// cancel is the current turn's cancel, held so Ctrl-C interrupts the run
 	// rather than the loop. A second Ctrl-C is left to the default handler and
 	// kills the process, which is the escape hatch for a wedged run.
-	cancel      context.CancelFunc
-	interrupted bool
+	cancel context.CancelFunc
+	// lastSession remembers the id the context line last showed, so a new session
+	// is visibly a new session.
+	lastSession string
 }
 
 // NewLoop builds a loop over a session.
@@ -96,24 +98,35 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 }
 
-// prompt writes the input prompt.
+// prompt writes the context line and the input chevron.
 //
-// The prompt carries the mascot's state so the operator can see whether the last
-// turn finished without scrolling, and the session id so a transcript can be
-// traced back to a conversation.
+// The prompt itself is one bare chevron. It used to repeat "ceraa
+// cli-1790786005 >" on every turn, which put a fourteen-character prefix in front
+// of every line the operator typed and buried the caret. Aster does the same
+// thing: the composer is a single glyph, and everything else lives in a status
+// line above it. The session id moves there too, so a transcript is still
+// traceable without the prompt carrying it.
 func (l *Loop) prompt() {
-	st := l.render.State()
-	mark := ">"
-	if st == StateError {
-		mark = "!"
+	provider, model := l.session.Model()
+	mode := l.render.State().String()
+	width := l.pal.width()
+	if l.lastSession != l.session.SessionID() {
+		// The context line is redrawn every prompt, so a new session shows its own
+		// id without the prompt line carrying it.
+		l.lastSession = l.session.SessionID()
 	}
-	prefix := l.pal.Bold("ceraa") + l.pal.Dim(" "+l.session.SessionID()+" ")
-	fmt.Fprint(l.out, prefix+l.pal.Reverse(" "+mark+" ")+" ")
+	fmt.Fprint(l.out, l.pal.statusLine(width, model, provider, mode, l.session.SessionID())+"\n")
+	// The chevron sits at the left margin, where a shell prompt does, so the caret
+	// is where the eye expects it.
+	fmt.Fprint(l.out, l.pal.Bold(glyph("prompt")+" "))
 }
 
-// hint prints the first-run key hints, once per process.
+// hint prints the key hints, once.
+//
+// One dim line. It used to be a full sentence about typing a request, which is
+// what a prompt already implies, and it was printed on every launch.
 func (l *Loop) hint() {
-	l.render.line(l.pal.Dim("  type a request, or /help for commands. Ctrl-C interrupts a run, Ctrl-D leaves."))
+	l.render.line(l.pal.hintBar(l.pal.width()))
 	l.render.line("")
 }
 
@@ -244,25 +257,34 @@ func (l *Loop) help() {
 	l.render.line("")
 }
 
-// status prints what the next turn would run with.
+// status prints what the next turn would run with, as an aligned block.
+//
+// The labels used to be printed with a hand-counted pad, so "session" and
+// "provider" put their values in different columns and the block read as three
+// unrelated lines. Right-aligning every label into one gutter makes it a table.
 func (l *Loop) status() {
 	provider, model := l.session.Model()
-	l.render.line("")
-	l.render.line(l.pal.Bold("  status"))
-	l.render.line("  " + l.pal.Dim("session  ") + l.session.SessionID())
-	l.render.line("  " + l.pal.Dim("provider ") + provider)
-	l.render.line("  " + l.pal.Dim("model    ") + model)
-	l.render.line("  " + l.pal.Dim("workdir  ") + l.session.WorkDir())
-	l.render.line("")
+	b := &block{title: "  status"}
+	b.add("model", model)
+	b.add("provider", provider)
+	b.add("session", l.session.SessionID())
+	b.add("workdir", l.session.WorkDir())
+	if r := l.render; r != nil {
+		r.writeBlock("status", b.render(l.pal, "  ", l.pal.width()))
+		r.line("")
+	}
 }
 
 // model shows the active model and, when the config has more than one, the list.
 func (l *Loop) model() {
 	provider, model := l.session.Model()
+	b := &block{title: "  model"}
+	b.add("active", model)
+	b.add("provider", provider)
+	if l.render != nil {
+		l.render.writeBlock("model", b.render(l.pal, "  ", l.pal.width()))
+	}
 	l.render.line("")
-	l.render.line(l.pal.Bold("  model"))
-	l.render.line("  " + l.pal.Dim("active   ") + model)
-	l.render.line("  " + l.pal.Dim("provider ") + provider)
 	var ids []string
 	if l.session.cfg != nil {
 		ids = l.session.cfg.ProviderIDs()

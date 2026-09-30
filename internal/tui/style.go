@@ -131,6 +131,12 @@ func (p Palette) Reset() string {
 	return ansiReset
 }
 
+// width reports the terminal width, for callers that need it to lay out a line.
+func (p Palette) width() int { return width() }
+
+// Width reports the terminal width.
+func (p Palette) Width() int { return width() }
+
 // width reports the usable column count.
 //
 // The terminal is asked through its ioctl, and a failure or a nonsense answer

@@ -96,25 +96,22 @@ func (r *Renderer) write(s string) {
 	fmt.Fprint(r.out, s)
 }
 
+// live writes a block of pre-laid-out lines, each already fitted to the width.
+//
+// A block is passed rather than a callback because a caller assembling a table
+// needs the rendered lines to be written together: interleaving them with a
+// concurrent tool line would break the alignment the table exists to provide.
+func (r *Renderer) writeBlock(_ string, lines []string) {
+	for _, l := range lines {
+		r.write(l + "\n")
+	}
+}
+
 // line emits s followed by a newline, wrapped to the terminal width.
 func (r *Renderer) line(s string) {
 	for _, l := range wrapText(s, r.cols) {
 		r.write(l + "\n")
 	}
-}
-
-// rule is the horizontal separator, drawn with a glyph that is one cell wide in
-// every terminal rather than a box-drawing character that some fonts render
-// double width.
-func (r *Renderer) rule() {
-	n := r.cols
-	if n > 72 {
-		n = 72
-	}
-	if n < 8 {
-		n = 8
-	}
-	r.write(r.pal.Dim(strings.Repeat("-", n)) + "\n")
 }
 
 // TurnStart marks the beginning of a turn and starts the spinner.
@@ -237,15 +234,18 @@ func (r *Renderer) ToolDone(name string, res operation.ResultEvent) {
 		r.live--
 	}
 	r.mu.Unlock()
-	mark := "[ok]"
+	status := "ok"
+	if res.Status != operation.StatusCompleted || res.Error != "" {
+		status = "error"
+	}
 	detail := ToolResultSummary(res)
-	if res.Status != operation.StatusCompleted {
-		mark = "[!!]"
+	line := formatToolLine(status, ToolLabel(name), detail)
+	if status == "error" {
+		line = r.pal.Bold(line)
+	} else {
+		line = r.pal.Dim(line)
 	}
-	if res.Error != "" {
-		mark = "[!!]"
-	}
-	r.line(r.pal.Dim(mark) + " " + ToolLabel(name) + " " + r.pal.Dim(detail))
+	r.line(r.pal.fit(line, r.cols))
 }
 
 // Retry reports an upstream retry, naming the wait.
@@ -254,25 +254,25 @@ func (r *Renderer) ToolDone(name string, res operation.ResultEvent) {
 // is indistinguishable from a hang, so the wait is stated rather than logged.
 func (r *Renderer) Retry(err error, attempt int, delay time.Duration) {
 	r.closeStream()
-	msg := fmt.Sprintf("upstream error, retry %d in %s", attempt, delay.Round(time.Second))
+	msg := fmt.Sprintf("retry %d in %s", attempt, delay.Round(time.Second))
 	if err != nil {
 		msg += ": " + ShortError(err)
 	}
-	r.line(r.pal.Dim("[..] " + msg))
+	r.line(r.pal.fit(r.pal.Dim(glyph("warn")+" "+msg), r.cols))
 }
 
 // Compaction reports context compaction starting and finishing.
 func (r *Renderer) Compaction(done bool, err error) {
 	r.closeStream()
 	if err != nil {
-		r.line(r.pal.Dim("[!!] compaction skipped: " + ShortError(err)))
+		r.line(r.pal.fit(r.pal.Dim(glyph("error")+" compaction skipped: "+ShortError(err)), r.cols))
 		return
 	}
 	verb := "compacting context"
 	if done {
 		verb = "context compacted"
 	}
-	r.line(r.pal.Dim("[..] " + verb))
+	r.line(r.pal.fit(r.pal.Dim(glyph("info")+" "+verb), r.cols))
 }
 
 // Usage records provider token counts for the footer.
@@ -295,7 +295,7 @@ func (r *Renderer) Error(err error) {
 	r.setState(StateError)
 	r.closeStream()
 	if err != nil {
-		r.line(r.pal.Bold("[!!] ") + ShortError(err))
+		r.line(r.pal.fit(r.pal.Bold(glyph("error")+" "+ShortError(err)), r.cols))
 	}
 }
 
@@ -305,32 +305,33 @@ func (r *Renderer) Error(err error) {
 // does not support prompt caching reports zero and printing a confident 0% would
 // read as "caching is not working" rather than "this provider cannot".
 func (r *Renderer) footer(usage llm.UsageInfo, cost llm.CostInfo, costModel string, runErr error) {
-	parts := []string{}
+	in, out, cache, reason := "", "", "", ""
 	if usage.InputTokens > 0 {
-		parts = append(parts, "in "+strconv.Itoa(usage.InputTokens))
+		in = strconv.Itoa(usage.InputTokens)
 	}
 	if usage.OutputTokens > 0 {
-		parts = append(parts, "out "+strconv.Itoa(usage.OutputTokens))
+		out = strconv.Itoa(usage.OutputTokens)
 	}
+	// Cache is only printed when the provider reported it: a provider without
+	// prompt caching reports zero, and a confident "cache 0" reads as "caching is
+	// broken" rather than "this provider cannot".
 	if usage.CachedInputTokens > 0 {
-		parts = append(parts, "cache "+strconv.Itoa(usage.CachedInputTokens))
+		cache = strconv.Itoa(usage.CachedInputTokens)
 	}
 	if usage.ReasoningTokens > 0 {
-		parts = append(parts, "think "+strconv.Itoa(usage.ReasoningTokens))
+		reason = strconv.Itoa(usage.ReasoningTokens)
 	}
+	money := ""
 	if cost.TotalUSD > 0 {
-		amount := "$" + strconv.FormatFloat(cost.TotalUSD, 'f', 4, 64)
+		money = "$" + strconv.FormatFloat(cost.TotalUSD, 'f', 4, 64)
 		if costModel != "" {
-			amount += " " + costModel
+			money += " " + costModel
 		}
-		parts = append(parts, amount)
 	}
-	if len(parts) == 0 && runErr == nil {
-		return
-	}
-	r.rule()
-	if len(parts) > 0 {
-		r.line(r.pal.Dim("  " + strings.Join(parts, "  ")))
+	line := summariseRun(r.cols, r.pal, in, out, cache, reason, money, "")
+	if line != "" {
+		r.write(r.pal.rule(r.cols) + "\n")
+		r.line(line)
 	}
 }
 

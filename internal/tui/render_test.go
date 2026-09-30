@@ -97,12 +97,12 @@ func TestToolArgsSummaryCollapsesNewlines(t *testing.T) {
 func TestToolDoneMarksFailureDistinctly(t *testing.T) {
 	r, out := renderInto()
 	r.ToolDone("bash", operation.ResultEvent{Status: operation.StatusCompleted, Output: "done"})
-	if !strings.Contains(out.String(), "[ok]") {
+	if !strings.Contains(out.String(), glyph("ok")) {
 		t.Errorf("a completed tool was not marked ok: %q", out.String())
 	}
 	out.Reset()
 	r.ToolDone("bash", operation.ResultEvent{Status: operation.StatusFailed, Error: "exit 1"})
-	if !strings.Contains(out.String(), "[!!]") {
+	if !strings.Contains(out.String(), glyph("error")) {
 		t.Errorf("a failed tool was not marked: %q", out.String())
 	}
 }

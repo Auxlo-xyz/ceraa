@@ -1,5 +1,7 @@
 package tui
 
+import "strings"
+
 // The mascot is Ceraa's face, drawn from mascot.png: a rounded three-lobed
 // cloud, one large open oval eye and one wide flat eye that reads as a wink.
 // It is written in block characters so it needs no image support, no colour and
@@ -106,20 +108,22 @@ func Spinner(tick int) string {
 	return spinnerFrames[((tick%n)+n)%n]
 }
 
-// Banner is the startup block: the mascot, the name, and the resolved provider,
-// so the first thing on screen says which model is answering before any prompt
-// is typed.
+// Banner is the startup block: the mascot, the name and version, and the
+// resolved provider, so the first thing on screen says which model is answering
+// before a prompt is typed.
+//
+// The details go through the same aligned block as /status rather than a
+// hand-counted pad, so the two cannot disagree about where the value column is.
 func (p Palette) Banner(version, model, provider string) string {
 	var b []byte
 	b = append(b, p.Bold(mascot)...)
 	b = append(b, '\n')
-	b = append(b, p.Bold("  Ceraa")...)
-	b = append(b, p.Dim("  "+version+"\n")...)
-	if model != "" {
-		b = append(b, p.Dim("  model    ")+p.Bold(model)+"\n"...)
-	}
-	if provider != "" {
-		b = append(b, p.Dim("  provider ")+provider+"\n"...)
+	b = append(b, p.Bold("  Ceraa")+p.Dim("  "+version+"\n")...)
+	blk := &block{}
+	blk.addIf("model", model)
+	blk.addIf("provider", provider)
+	if len(blk.rows) > 0 {
+		b = append(b, []byte(strings.Join(blk.render(p, "  ", 0), "\n")+"\n")...)
 	}
 	return string(b)
 }
