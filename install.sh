@@ -143,6 +143,27 @@ else
   info "warning: the release has no system.txt, so Ceraa will start degraded."
 fi
 
+# Create the agent's workspace, so the first run does not fail on a missing
+# directory, and say where it is.
+#
+# Ceraa prefers a workspace beside the binary when it can write there, so a
+# checkout keeps the agent next to the project. Installed to /usr/local/bin that
+# resolves to /usr/local/workspace, which a non-root user cannot create, and the
+# symptom is an agent reporting files it can plainly see. Ceraa now falls back to
+# this path on its own when the beside-the-binary one is unusable, so all this has
+# to do is create it and confirm it, rather than write a setting that would
+# override a later decision.
+#
+# Set CERAA_WORKSPACE_ROOT to choose a different one, which is what a container or
+# a CI job needs when the workspace has to be a mounted volume.
+workspace="$HOME/ceraa/workspace"
+if mkdir -p "$workspace" 2>/dev/null && [ -w "$workspace" ]; then
+  info "workspace $workspace"
+else
+  info "warning: could not create $workspace."
+  info "Ceraa will fall back to it anyway; set CERAA_WORKSPACE_ROOT if this matters."
+fi
+
 # Make it reachable without a PATH edit, but only if the user has to do it.
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
