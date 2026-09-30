@@ -19,7 +19,9 @@ type FTSSearchTool struct {
 func (f *FTSSearchTool) Name() string { return "fts_search" }
 func (f *FTSSearchTool) Description() string {
 	return "Indexed full-text search via SQLite FTS5. Returns ranked candidate files " +
-		"without scanning the workspace."
+		"without scanning the workspace. Pass path to restrict results to one " +
+		"directory; the index is workspace-wide, so an unscoped search returns " +
+		"matches from every project."
 }
 func (f *FTSSearchTool) Schema() map[string]any {
 	return map[string]any{
@@ -28,7 +30,7 @@ func (f *FTSSearchTool) Schema() map[string]any {
 			"query": map[string]any{"type": "string", "description": "FTS5 query: terms, phrase \"session persistence\", prefix session*, NEAR, AND/OR"},
 			"limit": map[string]any{"type": "integer", "description": "Max results (default 20)"},
 			"index": map[string]any{"type": "boolean", "description": "If true, re-index workspace before searching"},
-			"path":  map[string]any{"type": "string", "description": "Workspace root to index (default .)"},
+			"path":  map[string]any{"type": "string", "description": "Restrict results to this directory subtree, and index it when indexing. Omit to search the whole workspace."},
 		},
 		"required": []string{"query"},
 	}
@@ -83,9 +85,19 @@ func (r *FTSSearchRunner) Run(spec operation.Spec) (string, error) {
 	if dbPath == "" {
 		dbPath = search.DefaultPath()
 	}
+	// The scope is read once and used for both jobs: what gets indexed, and what
+	// gets returned. It used to drive only the indexing, so a caller passing a
+	// directory got workspace-wide results back and no indication why — the
+	// schema describes path as the root to index, which reads as scope.
+	scope, _ := spec.Args["path"].(string)
+	if scope != "" {
+		if abs, err := filepath.Abs(scope); err == nil {
+			scope = abs
+		}
+	}
 	// Optionally re-index
 	if doIndex, _ := spec.Args["index"].(bool); doIndex {
-		root, _ := spec.Args["path"].(string)
+		root := scope
 		if root == "" {
 			root = "."
 		}
@@ -109,7 +121,7 @@ func (r *FTSSearchRunner) Run(spec operation.Spec) (string, error) {
 	var cnt int
 	_ = idx.DB().QueryRow(`SELECT count(*) FROM files`).Scan(&cnt)
 	if cnt == 0 {
-		root, _ := spec.Args["path"].(string)
+		root := scope
 		if root == "" {
 			if cwd, err := os.Getwd(); err == nil {
 				root = cwd
@@ -120,7 +132,7 @@ func (r *FTSSearchRunner) Run(spec operation.Spec) (string, error) {
 		_, _ = idx.IndexDir(root)
 	}
 
-	results, err := idx.Search(query, limit)
+	results, err := idx.SearchIn(query, scope, limit)
 	if err != nil {
 		return "", err
 	}

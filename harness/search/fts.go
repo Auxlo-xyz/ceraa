@@ -276,6 +276,17 @@ func isBinary(data []byte) bool {
 
 // Search performs an FTS5 query and returns ranked results.
 func (idx *Index) Search(query string, limit int) ([]Result, error) {
+	return idx.SearchIn(query, "", limit)
+}
+
+// SearchIn performs an FTS5 query restricted to one directory subtree.
+//
+// The restriction is in the SQL rather than a filter over the returned rows,
+// because the LIMIT is applied by the query. Filtering afterwards would cap the
+// scan at `limit` rows first and then throw most of them away, so a scoped
+// search would quietly return fewer results than asked for the moment the
+// workspace held more than `limit` matching files.
+func (idx *Index) SearchIn(query, dir string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -283,7 +294,19 @@ func (idx *Index) Search(query string, limit int) ([]Result, error) {
 	if query == "" {
 		return nil, nil
 	}
-	rows, err := idx.db.Query(`SELECT path, rank FROM content WHERE content MATCH ? ORDER BY rank LIMIT ?`, query, limit)
+	// A trailing separator is what makes this a subtree rather than a string
+	// prefix: without it, scoping to /workspace/auxlo would also match
+	// /workspace/auxlo-xyz.
+	prefix := dirPrefix(dir)
+	var rows *sql.Rows
+	var err error
+	if prefix == "" {
+		rows, err = idx.db.Query(`SELECT path, rank FROM content WHERE content MATCH ? ORDER BY rank LIMIT ?`, query, limit)
+	} else {
+		rows, err = idx.db.Query(
+			`SELECT path, rank FROM content WHERE content MATCH ? AND path LIKE ? ESCAPE '\' ORDER BY rank LIMIT ?`,
+			query, prefix+`%`, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +320,29 @@ func (idx *Index) Search(query string, limit int) ([]Result, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// dirPrefix normalises a scope to an absolute directory prefix ending in a
+// separator, ready to be a LIKE pattern. Empty means unscoped.
+func dirPrefix(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	dir = filepath.Clean(dir)
+	if dir == string(filepath.Separator) {
+		return dir
+	}
+	if !strings.HasSuffix(dir, string(filepath.Separator)) {
+		dir += string(filepath.Separator)
+	}
+	// LIKE wildcards in a path are legal on disk and would silently widen the
+	// scope, so they are escaped to match the ESCAPE clause above.
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(dir)
 }
 
 // sanitizeQuery escapes FTS5 special characters and ensures valid query.

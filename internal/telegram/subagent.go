@@ -199,10 +199,7 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		YieldAt:     budget.YieldAt,
 		HardGrace:   budget.HardAfter,
 		AdjustSpec: func(spec *operation.Spec) {
-			if spec.Type == "fts_search" {
-				spec.Args["path"] = f.projectRoot
-				spec.Args["db_path"] = search.ProjectIndexPath(f.cfg.WorkspaceRootPath(), f.projectRoot)
-			}
+			applySearchScope(spec, f.projectRoot, f.cfg.WorkspaceRootPath())
 		},
 		// A child cannot ask the person anything. The question tool blocks on an
 		// answer that cannot arrive, because the prompt it would surface is the
