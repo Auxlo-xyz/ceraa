@@ -109,7 +109,7 @@ func TestStateStringNamesEveryState(t *testing.T) {
 
 func TestBannerCarriesModelAndProvider(t *testing.T) {
 	p := Plain()
-	got := p.Banner("0.1.0", "gpt-5.5", "openai")
+	got := p.Banner("0.1.0", "gpt-5.5", "openai", 80)
 	for _, want := range []string{"Ceraa", "0.1.0", "gpt-5.5", "openai"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("banner is missing %q:\n%s", want, got)
@@ -118,7 +118,7 @@ func TestBannerCarriesModelAndProvider(t *testing.T) {
 }
 
 func TestBannerOmitsAbsentFields(t *testing.T) {
-	got := Plain().Banner("0.1.0", "", "")
+	got := Plain().Banner("0.1.0", "", "", 80)
 	if strings.Contains(got, "model") {
 		t.Errorf("banner printed a model line for an empty model:\n%s", got)
 	}
@@ -145,4 +145,77 @@ func spaceRuns(row string) []int {
 		out = append(out, n)
 	}
 	return out
+}
+
+// fitArt gives up indent before it gives up art, and the two tests below are the
+// whole contract: shifting is allowed, cutting is not.
+func TestFitArtSpendsItsIndentBeforeItsArt(t *testing.T) {
+	got, ok := fitArt(mascot, 40)
+	if !ok {
+		t.Fatal("fitArt(40) refused art that has 2 cells of indent to spend")
+	}
+	want := strings.Split(mascot, "\n")
+	have := strings.Split(got, "\n")
+	if len(have) != len(want) {
+		t.Fatalf("fitArt changed the row count: %d, want %d", len(have), len(want))
+	}
+	for i := range want {
+		if w := runeLen(have[i]); w > 40 {
+			t.Errorf("row %d is %d cells: %q", i, w, have[i])
+		}
+		// The row's own shape is identical; only the padding in front moved.
+		if strings.TrimLeft(have[i], " ") != strings.TrimLeft(want[i], " ") {
+			t.Errorf("row %d lost art:\n have %q\nwant %q", i, have[i], want[i])
+		}
+		if runeLen(have[i]) > runeLen(want[i]) {
+			t.Errorf("row %d gained width: %d, want at most %d", i, runeLen(have[i]), runeLen(want[i]))
+		}
+	}
+}
+
+func TestFitArtLeavesArtAloneWhenItFits(t *testing.T) {
+	for _, width := range []int{42, 60, 120} {
+		got, ok := fitArt(mascot, width)
+		if !ok {
+			t.Errorf("fitArt(%d) dropped art that fits", width)
+			continue
+		}
+		if got != mascot {
+			t.Errorf("fitArt(%d) rewrote art it did not need to touch", width)
+		}
+	}
+}
+
+// Below the width that indent can cover there is no honest way to draw the face,
+// so it is not drawn. A mascot cut through the cheek is worse than none.
+func TestFitArtDropsArtItCannotDraw(t *testing.T) {
+	if _, ok := fitArt(mascot, 30); ok {
+		t.Error("fitArt(30) drew art it could not fit")
+	}
+	if _, ok := fitArt(mascot, 0); ok {
+		t.Error("fitArt(0) drew art for an unknown width")
+	}
+}
+
+func TestBannerNeverOverflowsTheTerminal(t *testing.T) {
+	for _, width := range []int{40, 44, 60, 100} {
+		got := Plain().Banner("0.1.0", "gpt-5.5", "openai", width)
+		for i, row := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+			if w := visibleWidth(row); w > width {
+				t.Errorf("width %d: banner row %d is %d cells: %q", width, i, w, row)
+			}
+		}
+	}
+}
+
+func TestBannerDropsTheArtRatherThanCuttingIt(t *testing.T) {
+	got := Plain().Banner("0.1.0", "gpt-5.5", "openai", 30)
+	if strings.ContainsAny(got, "▄█▀") {
+		t.Errorf("art was drawn on a 30-column terminal:\n%s", got)
+	}
+	for _, want := range []string{"Ceraa", "gpt-5.5", "openai"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the banner lost %q when the art went:\n%s", want, got)
+		}
+	}
 }

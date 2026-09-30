@@ -41,7 +41,7 @@ func NewLoop(session *Session, in io.Reader, out io.Writer, pal Palette, version
 // Run drives the loop until EOF, /exit or an interrupt.
 func (l *Loop) Run(ctx context.Context) error {
 	provider, model := l.session.Model()
-	fmt.Fprint(l.out, l.pal.Banner(l.version, model, provider))
+	fmt.Fprint(l.out, l.pal.Banner(l.version, model, provider, l.render.width()))
 	l.hint()
 	sc := bufio.NewScanner(l.in)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)

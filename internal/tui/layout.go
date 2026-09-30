@@ -57,6 +57,78 @@ func runeLen(s string) int { return len([]rune(s)) }
 // and looked broken when nothing was wrong with it.
 const unset = "unset"
 
+// escapeEnd returns the index just past the escape sequence starting at i.
+//
+// Only CSI sequences (`ESC [ ... final`) are recognised, which is every SGR a
+// Palette emits. Any other escape is taken as ESC plus one byte, so an unknown
+// sequence is consumed rather than counted as visible text.
+func escapeEnd(rs []rune, i int) int {
+	if i+1 >= len(rs) {
+		return i + 1
+	}
+	if rs[i+1] != '[' {
+		return i + 2
+	}
+	j := i + 2
+	for j < len(rs) && !ansiFinal(rs[j]) {
+		j++
+	}
+	if j < len(rs) {
+		j++
+	}
+	return j
+}
+
+// ansiFinal reports whether r terminates a CSI sequence: the final byte of a CSI
+// is in the range 0x40-0x7E, and the parameter bytes before it are 0x30-0x3F.
+func ansiFinal(r rune) bool { return r >= 0x40 && r <= 0x7e }
+
+// visibleWidth is the number of terminal cells a styled string occupies.
+//
+// Counting runes is wrong the moment the palette is on: an SGR sequence is
+// several runes and zero cells, so a line measured with those runes in the count
+// is judged wider than it looks and is truncated several characters early. That
+// is what cut `no provider endpoint configured f…`, `/help for commands … int…`
+// and `error · session cli-1790795697…` mid-word on a narrow screen: the line
+// had four real cells left and four of them were spent on escape bytes.
+func visibleWidth(s string) int {
+	n := 0
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] != '\x1b' {
+			n++
+			continue
+		}
+		i = escapeEnd(rs, i) - 1
+	}
+	return n
+}
+
+// cutCells returns the prefix of s that occupies at most limit cells.
+//
+// Escape sequences are carried through without costing a cell, so a cut can
+// never land inside one and leave an unbalanced sequence behind; the caller
+// closes a run that it had to break.
+func cutCells(s string, limit int) string {
+	var b strings.Builder
+	n := 0
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] == '\x1b' {
+			j := escapeEnd(rs, i)
+			b.WriteString(string(rs[i:j]))
+			i = j - 1
+			continue
+		}
+		if n == limit {
+			return b.String()
+		}
+		b.WriteRune(rs[i])
+		n++
+	}
+	return b.String()
+}
+
 // render draws the block. The label is dim and the value is not, so the eye lands
 // on the value without needing a colour.
 func (b *block) render(p Palette, indent string, width int) []string {
@@ -90,19 +162,54 @@ func (b *block) render(p Palette, indent string, width int) []string {
 
 // fit truncates a line to the terminal width by display width.
 //
-// Truncation is by rune with a trailing ellipsis rather than by byte, so a
-// multi-byte glyph at the boundary cannot split into a replacement character.
+// Three things a naive cut gets wrong, and all three were on screen:
+//
+//   - It measured runes, so a styled line lost a cell for every escape byte and
+//     came up short of the width it was allowed.
+//   - It cut at a fixed cell, so a word was left as `f…` and `int…`, where the
+//     reader has to guess the rest instead of reading a whole line.
+//   - It could cut before a reset, leaving the terminal styled after the line.
+//
+// So: cut by visible cells, pull back to the last space when that keeps most of
+// the line, and close the run if it was still open.
 func (p Palette) fit(s string, width int) string {
-	if width < 12 || runeLen(s) <= width {
+	if width < 4 || visibleWidth(s) <= width {
 		return s
 	}
-	r := []rune(s)
-	// Reserve one cell for the ellipsis.
-	keep := width - 1
-	if keep < 1 {
-		keep = 1
+	kept := cutCells(s, width-1)
+	// Pull back to a word boundary only when that does not throw most of the line
+	// away: a line of one long token, such as a URL or an id, has no space to
+	// break at and a hard cut is the only option left.
+	if i := strings.LastIndexByte(kept, ' '); i > 0 && visibleWidth(kept[:i])*2 >= (width-1) {
+		kept = kept[:i]
 	}
-	return string(r[:keep]) + "…"
+	if p.color && sgrOpen(kept) {
+		kept += ansiReset
+	}
+	return kept + "…"
+}
+
+// sgrOpen reports whether the last style sequence in s left an attribute on.
+//
+// The palette only ever opens with bold, dim, reverse or underline and closes
+// with a reset, so "open" is simply "the final SGR is not a reset".
+func sgrOpen(s string) bool {
+	rs := []rune(s)
+	open := false
+	for i := 0; i < len(rs); i++ {
+		if rs[i] != '\x1b' {
+			continue
+		}
+		j := escapeEnd(rs, i)
+		seq := string(rs[i:j])
+		// Only an SGR (`ESC [ ... m`) carries attributes.
+		if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+			params := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b["), "m")
+			open = params != "" && params != "0"
+		}
+		i = j - 1
+	}
+	return open
 }
 
 // elide shortens a list to fit, naming how many were dropped.
@@ -150,13 +257,31 @@ func joinDots(segments ...string) string {
 // nothing between turns, so the model in use was only visible in the banner that
 // scrolled away. This is a single dim line, redrawn at every prompt, and it is
 // the one line that answers "what am I about to talk to".
+//
+// On a narrow screen it degrades by dropping whole fields rather than by being
+// cut through the middle: the session id is traceability and the provider prefix
+// repeats what the model already says, so those go first, and the mode - what the
+// run is actually doing - is what survives. Truncating the assembled line instead
+// left `session cli-1790795697` with the rest of the id gone, which is worse than
+// showing no id at all, because it looks like an id.
 func (p Palette) statusLine(width int, model, provider, mode, session string) string {
-	line := joinDots(
-		kv(provider, model),
-		mode,
-		kv("session", session),
-	)
-	return p.fit(p.Dim("  "+line), width)
+	withSession := joinDots(kv(provider, model), mode, kv("session", session))
+	noSession := joinDots(kv(provider, model), mode)
+	noProvider := joinDots(model, mode)
+	modeOnly := mode
+	for _, line := range []string{withSession, noSession, noProvider, modeOnly} {
+		if line == "" {
+			continue
+		}
+		if visibleWidth("  "+line) <= width {
+			return p.Dim("  " + line)
+		}
+	}
+	if mode == "" {
+		return ""
+	}
+	// Even the mode is wider than the screen; cut it, but at a word boundary.
+	return p.fit(p.Dim("  "+mode), width)
 }
 
 // rule is a short divider, not a full-width one.
@@ -180,8 +305,21 @@ func (p Palette) rule(width int) string {
 // Aster keeps this to one line and names the most useful keys rather than all of
 // them; ours printed a full sentence on every launch. It is shown once, at the
 // first prompt, and never repeated.
+//
+// Hints are dropped from the end as width runs out. `/help` is the one hint that
+// always earns its place - it is the door to the rest - while the interrupt and
+// quit keys are discoverable from /help, so a narrow terminal shows less rather
+// than showing `ctrl-c int…`, which names no key at all.
 func (p Palette) hintBar(width int) string {
-	return p.fit(p.Dim("  /help for commands  "+dotRule+"  ctrl-c interrupts  "+dotRule+"  ctrl-d quits"), width)
+	all := joinDots("/help for commands", "ctrl-c interrupts", "ctrl-d quits")
+	basics := joinDots("/help for commands", "ctrl-c interrupts")
+	one := "/help for commands"
+	for _, line := range []string{all, basics, one} {
+		if visibleWidth("  "+line) <= width {
+			return p.Dim("  " + line)
+		}
+	}
+	return p.fit(p.Dim("  "+one), width)
 }
 
 // glyph is the marker in front of a prompt or a result line.
@@ -225,14 +363,20 @@ func formatToolLine(status, name, detail string) string {
 // Ours used a full-width rule and a bare list, which read as a wall between the
 // answer and the prompt.
 func summariseRun(width int, p Palette, in, out, cache, reasoning, cost, elapsed string) string {
-	seg := joinDots(
-		kv("in", in), kv("out", out), kv("cache", cache),
-		kv("think", reasoning), cost, elapsed,
-	)
-	if seg == "" {
-		return ""
+	all := []string{kv("in", in), kv("out", out), kv("cache", cache),
+		kv("think", reasoning), cost, elapsed}
+	// Drop from the tail so the two numbers that answer "how big was this turn"
+	// survive a narrow screen, and the decorative tail goes first.
+	for n := len(all); n > 0; n-- {
+		seg := joinDots(all[:n]...)
+		if seg == "" {
+			continue
+		}
+		if visibleWidth("  "+seg) <= width {
+			return p.Dim("  " + seg)
+		}
 	}
-	return p.fit(p.Dim("  "+seg), width)
+	return ""
 }
 
 // plural returns "" or "s" for a count, so a line does not say "1 tools".

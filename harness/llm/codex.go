@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -390,7 +389,7 @@ func (c *StreamingClient) streamResponses(ctx context.Context, req StreamRequest
 
 	note := fmt.Sprintf("%s model=%s host=%s input=%d tools=%d effort=%q\n", profile.logName,
 		c.cfg.Model, requestHost(c.cfg.BaseURL), len(input), len(req.Tools), string(req.Reason))
-	fmt.Fprint(os.Stderr, "ceraa: "+note)
+	diagNote(note)
 	writeDebugNote(profile.logName+".log", note)
 
 	var lastErr error

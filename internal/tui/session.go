@@ -217,7 +217,12 @@ func (s *Session) callbacks() coordinator.Callbacks {
 		OnCompactionDone:  s.render.Compaction,
 		OnUsage:           s.render.Usage,
 		OnCost:            s.render.Cost,
-		OnError:           s.render.Error,
+		// Deliberately not wired to render.Error. The runner fires OnError for
+		// every error it returns, and the loop reports the same error once the
+		// turn is back, so wiring it here printed the message twice - three
+		// wrapped rows, then the same three rows again - and turned an interrupt
+		// into `x context canceled` followed by `interrupted`. The loop is the
+		// single place a failure reaches the screen.
 	}
 }
 

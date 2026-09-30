@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,11 @@ type Renderer struct {
 	// say "3 running" rather than only that something is.
 	live int
 
+	// painted records that the repaint ticker has left a status line on screen
+	// with no newline after it. Erasing is then conditional on having painted,
+	// so a plain log does not fill up with carriage returns.
+	painted bool
+
 	// saidSomething records that the model produced text, because a turn can be
 	// productive and still report no tokens on a provider that does not count them.
 	saidSomething bool
@@ -59,14 +65,37 @@ type Renderer struct {
 
 // NewRenderer builds a renderer writing to out.
 //
-// A non-terminal destination gets a plain palette and a fixed width, so the same
-// code path serves an interactive run and a captured log.
+// A destination that is not a terminal has no window size, so it gets a fixed
+// width and the same code path serves a captured log. A terminal does have a
+// size, and colour being off must not freeze it at a guess: laying a 40-column
+// phone out at 100 columns is what let the terminal hard-wrap our own rows
+// mid-word, which is how `/help` came back as `hel` / `o`.
 func NewRenderer(out io.Writer, pal Palette) *Renderer {
 	r := &Renderer{out: out, pal: pal, cols: width(), state: StateIdle, now: time.Now}
-	if !pal.Color() {
+	if !term.isTerminal(os.Stdout.Fd()) {
 		r.cols = 100
 	}
 	return r
+}
+
+// width is the current terminal width, re-read on every use.
+//
+// It is re-read rather than cached because a terminal is resized: a phone
+// rotates, a split is resized, a window is maximised. A width captured at
+// startup and trusted forever lays out lines the terminal has already stopped
+// being wide enough for.
+//
+// The refresh is gated on the destination being a real terminal, so a captured
+// log keeps the fixed width it was given and a test that pins a width keeps it.
+func (r *Renderer) width() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if f, ok := r.out.(*os.File); ok && term.isTerminal(os.Stdout.Fd()) && term.isTerminal(f.Fd()) {
+		if w := width(); w >= 20 {
+			r.cols = w
+		}
+	}
+	return r.cols
 }
 
 // Out exposes the destination so the loop can read and write the same stream.
@@ -87,12 +116,19 @@ func (r *Renderer) setState(s State) {
 	r.mu.Unlock()
 }
 
-// write emits s as one write, so concurrent tool lines never interleave inside
-// a line of their own.
+// write emits s as one write, under the renderer's lock.
+//
+// Holding the lock across the write is what keeps concurrent tool lines from
+// interleaving inside a line of their own: the coordinator dispatches tools from
+// several goroutines and the repaint ticker writes from another, so without it
+// two callbacks can land in the same row. The lock is never taken by a caller
+// that already holds it, so a repaint cannot deadlock here.
 func (r *Renderer) write(s string) {
 	if s == "" {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	fmt.Fprint(r.out, s)
 }
 
@@ -102,16 +138,25 @@ func (r *Renderer) write(s string) {
 // needs the rendered lines to be written together: interleaving them with a
 // concurrent tool line would break the alignment the table exists to provide.
 func (r *Renderer) writeBlock(_ string, lines []string) {
-	for _, l := range lines {
-		r.write(l + "\n")
-	}
+	r.closeStream()
+	r.draw(func() {
+		for _, l := range lines {
+			fmt.Fprint(r.out, l+"\n")
+		}
+	})
 }
 
 // line emits s followed by a newline, wrapped to the terminal width.
 func (r *Renderer) line(s string) {
-	for _, l := range wrapText(s, r.cols) {
-		r.write(l + "\n")
-	}
+	// The answer, if one is still open, has to be closed before our own line or
+	// ours lands at the end of its last row.
+	r.closeStream()
+	rows := wrapText(s, r.width())
+	r.draw(func() {
+		for _, l := range rows {
+			fmt.Fprint(r.out, l+"\n")
+		}
+	})
 }
 
 // TurnStart marks the beginning of a turn and starts the spinner.
@@ -166,7 +211,10 @@ func (r *Renderer) Content(s string) {
 	r.saidSomething = true
 	r.mu.Unlock()
 	if first {
-		r.write("\n" + r.pal.BoldOn())
+		// The frame the ticker left on the current line has to be cleared before
+		// the newline, or it stays behind as a dangling line of its own. Erasing
+		// first is what keeps the answer from starting under a status frame.
+		r.draw(func() { fmt.Fprint(r.out, "\n"+r.pal.BoldOn()) })
 	}
 	r.write(s)
 }
@@ -187,7 +235,7 @@ func (r *Renderer) Reasoning(s string) {
 	r.saidSomething = true
 	r.mu.Unlock()
 	if first {
-		r.write("\n" + r.pal.DimOn())
+		r.draw(func() { fmt.Fprint(r.out, "\n"+r.pal.DimOn()) })
 	}
 	r.write(r.pal.Dim(s))
 }
@@ -201,10 +249,12 @@ func (r *Renderer) closeStream() {
 	wasStreaming := r.streaming
 	r.streaming = false
 	r.mu.Unlock()
-	if wasStreaming {
-		r.write(r.pal.Reset())
-		r.write("\n")
+	if !wasStreaming {
+		return
 	}
+	// One write for the reset and the newline, so a repaint cannot be observed
+	// between them with the style already reset and the newline not yet sent.
+	r.draw(func() { fmt.Fprint(r.out, r.pal.Reset()+"\n") })
 }
 
 // ToolStart reports a tool beginning.
@@ -228,7 +278,6 @@ func (r *Renderer) ToolStart(name string, args map[string]any) {
 // failed on the machine, because the first is the model's to fix and the second
 // is not.
 func (r *Renderer) ToolDone(name string, res operation.ResultEvent) {
-	r.stopSpinnerLine()
 	r.mu.Lock()
 	if r.live > 0 {
 		r.live--
@@ -245,7 +294,10 @@ func (r *Renderer) ToolDone(name string, res operation.ResultEvent) {
 	} else {
 		line = r.pal.Dim(line)
 	}
-	r.line(r.pal.fit(line, r.cols))
+	// Fitted rather than wrapped: a tool line is already an aligned single row,
+	// and breaking it mid-detail would lose the detail it exists to carry while
+	// leaving no alignment to preserve.
+	r.line(r.pal.fit(line, r.width()))
 }
 
 // Retry reports an upstream retry, naming the wait.
@@ -258,21 +310,23 @@ func (r *Renderer) Retry(err error, attempt int, delay time.Duration) {
 	if err != nil {
 		msg += ": " + ShortError(err)
 	}
-	r.line(r.pal.fit(r.pal.Dim(glyph("warn")+" "+msg), r.cols))
+	// Not fitted: the wait is the important half and the cause is the other half,
+	// and truncating mid-cause leaves a retry with no reason. Wrapping keeps both.
+	r.line(r.pal.Dim(glyph("warn") + " " + msg))
 }
 
 // Compaction reports context compaction starting and finishing.
 func (r *Renderer) Compaction(done bool, err error) {
 	r.closeStream()
 	if err != nil {
-		r.line(r.pal.fit(r.pal.Dim(glyph("error")+" compaction skipped: "+ShortError(err)), r.cols))
+		r.line(r.pal.Dim(glyph("error") + " compaction skipped: " + ShortError(err)))
 		return
 	}
 	verb := "compacting context"
 	if done {
 		verb = "context compacted"
 	}
-	r.line(r.pal.fit(r.pal.Dim(glyph("info")+" "+verb), r.cols))
+	r.line(r.pal.Dim(glyph("info") + " " + verb))
 }
 
 // Usage records provider token counts for the footer.
@@ -291,11 +345,16 @@ func (r *Renderer) Cost(c llm.CostInfo, model string) {
 }
 
 // Error reports a run-level failure.
+//
+// The message is wrapped rather than fitted. Every failure worth acting on ends
+// in a remedy - which variable to set, which command to run - and fitting it to
+// the terminal dropped that remedy on the floor exactly when it was the only
+// line that told the operator what to do next.
 func (r *Renderer) Error(err error) {
 	r.setState(StateError)
 	r.closeStream()
 	if err != nil {
-		r.line(r.pal.fit(r.pal.Bold(glyph("error")+" "+ShortError(err)), r.cols))
+		r.line(r.pal.Bold(glyph("error") + " " + ShortError(err)))
 	}
 }
 
@@ -328,11 +387,20 @@ func (r *Renderer) footer(usage llm.UsageInfo, cost llm.CostInfo, costModel stri
 			money += " " + costModel
 		}
 	}
-	line := summariseRun(r.cols, r.pal, in, out, cache, reason, money, "")
-	if line != "" {
-		r.write(r.pal.rule(r.cols) + "\n")
-		r.line(line)
-	}
+	w := r.width()
+	line := summariseRun(w, r.pal, in, out, cache, reason, money, "")
+	// The draw runs even when there is nothing to summarise, because the ticker
+	// may have left a frame on the current line and TurnEnd is the last word in
+	// the turn: leaving it would park a status frame under the next prompt.
+	r.draw(func() {
+		if line == "" {
+			return
+		}
+		fmt.Fprint(r.out, r.pal.rule(w)+"\n")
+		for _, l := range wrapText(line, w) {
+			fmt.Fprint(r.out, l+"\n")
+		}
+	})
 }
 
 // startSpinner begins repainting the mascot's state line.
@@ -367,28 +435,53 @@ func (r *Renderer) stopSpinner() {
 }
 
 // repaint redraws the state line in place.
+//
+// The repaint ticker is stopped without waiting for an in-flight tick, so a tick
+// can already be running when the turn ends; checking the spinner under the same
+// lock that performs the write is what stops a late frame from being stamped over
+// the footer.
+//
+// It also does not paint while an answer is streaming. The erase is
+// clear-to-current-line, so painting mid-answer would delete the answer's own
+// line every 110ms and replace it with the frame.
 func (r *Renderer) repaint(tick int) {
 	r.mu.Lock()
-	state, live := r.state, r.live
-	r.mu.Unlock()
-	label := state.String()
-	if live > 0 {
-		label = fmt.Sprintf("%s %d", state.String(), live)
-	}
-	line := fmt.Sprintf("  %s %s", Spinner(tick), label)
-	// Erase the previous line before writing. Carriage return plus a clear-to-end
-	// is used rather than a cursor-up, so a repaint that follows a scrolled line
-	// cannot walk the cursor up into output that is already committed.
-	r.write("\r\x1b[2K" + r.pal.Dim(line))
-}
-
-// stopSpinnerLine erases the spinner line so a tool result is not printed under
-// it.
-func (r *Renderer) stopSpinnerLine() {
-	if !r.pal.Color() {
+	defer r.mu.Unlock()
+	if r.spinner == nil || r.streaming {
 		return
 	}
-	r.write("\r\x1b[2K")
+	label := r.state.String()
+	if r.live > 0 {
+		label = fmt.Sprintf("%s %d", r.state.String(), r.live)
+	}
+	line := fmt.Sprintf("  %s %s", Spinner(tick), label)
+	// Carriage return plus clear-to-end, never cursor-up: a cursor-up on a line
+	// that has already scrolled walks the cursor into committed output.
+	fmt.Fprint(r.out, "\r\x1b[2K"+r.pal.Dim(line))
+	r.painted = true
+}
+
+// draw runs emit with the renderer lock held, first clearing whatever frame the
+// repaint ticker left on the current line.
+//
+// The erase and the writes that follow it are deliberately in one critical
+// section. Split them and the ticker lands in the gap, repainting the frame onto
+// the line that was just cleared, so the output it was making room for prints
+// underneath it. That is exactly how a spinner and a provider diagnostic came to
+// share one row.
+//
+// Carrying an in-place erase also fixes the plain-mode case: the erase used to
+// be skipped when colour was off, as though clearing were part of the styling,
+// while the repaint itself wrote the frame regardless. The frame was then left
+// on screen with no newline, and the next write ran straight into it.
+func (r *Renderer) draw(emit func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.painted {
+		fmt.Fprint(r.out, "\r\x1b[2K")
+		r.painted = false
+	}
+	emit()
 }
 
 // ToolLabel gives a tool a name a person recognises, leaving unknown tools as

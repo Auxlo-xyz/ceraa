@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -457,7 +456,7 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 
 	note := fmt.Sprintf("anthropic model=%s host=%s messages=%d tools=%d\n",
 		c.cfg.Model, requestHost(c.cfg.BaseURL), len(messages), len(req.Tools))
-	fmt.Fprint(os.Stderr, "ceraa: "+note)
+	diagNote(note)
 	writeDebugNote("anthropic.log", note)
 
 	var lastErr error

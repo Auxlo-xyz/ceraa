@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ceraa/internal/paths"
@@ -805,7 +806,7 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// a missing provider. Name the actual problem instead.
 	if strings.TrimSpace(c.cfg.BaseURL) == "" {
 		note := fmt.Sprintf("gemini-no-endpoint model=%s gemini=%v items=%d\n", c.cfg.Model, c.cfg.GeminiNative, len(req.Messages))
-		fmt.Fprint(os.Stderr, "ceraa: "+note)
+		diagNote(note)
 		writeDebugNote("gemini.log", note)
 		return fmt.Errorf("no provider endpoint configured for model %q: set a base URL via provider onboarding or CERAA_API_URL", c.cfg.Model)
 	}
@@ -899,10 +900,10 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		stats := geminiSignatureStats(req.Messages)
 		note := fmt.Sprintf("gemini-compat model=%s host=%s items=%d signed_calls=%d unsigned_calls=%d turn=%s\n",
 			c.cfg.Model, requestHost(c.cfg.BaseURL), len(req.Messages), stats.signed, stats.unsigned, describeEncodedTurn(msgs))
-		// Written to the data log as well as stderr: a CLI run's stderr belongs to
-		// whatever terminal launched it, so a file is the only place a diagnostic
-		// can be read from afterwards.
-		fmt.Fprint(os.Stderr, "ceraa: "+note)
+		// Written to the log file, and to whatever diagNote currently points at.
+		// The file is the durable copy: a run's stderr belongs to whatever
+		// terminal launched it and cannot be read from afterwards.
+		diagNote(note)
 		writeDebugNote("gemini.log", note)
 	}
 
@@ -1242,6 +1243,42 @@ func requestHost(baseURL string) string {
 		return "unparseable"
 	}
 	return parsed.Host
+}
+
+// diagMu guards diagOut. Diagnostics are written from whichever goroutine the
+// request runs on, and the destination is swapped once at startup, so the read
+// and the write are paired under one lock rather than trusted to a plain var.
+var (
+	diagMu  sync.Mutex
+	diagOut io.Writer = os.Stderr
+)
+
+// SetDiagOutput changes where the live copy of a per-request diagnostic goes. A
+// nil writer silences it.
+//
+// The log file always gets the note; this is only the copy printed for whoever
+// is watching. The default of stderr is right when the answer is on stdout and
+// wrong for the interactive session, which renders to stderr itself: a note
+// written straight to the same stream lands wherever the cursor happens to be,
+// inside a spinner frame or across an answer line. The session turns this off
+// and leaves the note in the file, where it can be read afterwards.
+func SetDiagOutput(w io.Writer) {
+	if w == nil {
+		w = io.Discard
+	}
+	diagMu.Lock()
+	diagOut = w
+	diagMu.Unlock()
+}
+
+// diagNote prints the live copy of a note that writeDebugNote has already put in
+// the file. Best effort by construction: a destination that has gone away must
+// never fail a request.
+func diagNote(note string) {
+	diagMu.Lock()
+	w := diagOut
+	diagMu.Unlock()
+	fmt.Fprint(w, "ceraa: "+note)
 }
 
 // writeDebugNote appends a diagnostic line to the data directory's log folder.

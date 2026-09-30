@@ -114,16 +114,75 @@ func Spinner(tick int) string {
 //
 // The details go through the same aligned block as /status rather than a
 // hand-counted pad, so the two cannot disagree about where the value column is.
-func (p Palette) Banner(version, model, provider string) string {
+//
+// The art is shown only when it fits. The face is 42 cells across, and a
+// terminal narrower than that hard-wraps each row, which turns the block into a
+// smear of orphaned cells - the same failure as every other line here, and the
+// one that is hardest to read because nothing in it is text. fitArt gives up the
+// indent that centres the face before it gives up any of the face, and reports
+// false when even that is not enough; a mascot missing a slice of its cheek is
+// worse than no mascot.
+func (p Palette) Banner(version, model, provider string, width int) string {
 	var b []byte
-	b = append(b, p.Bold(mascot)...)
-	b = append(b, '\n')
+	if art, ok := fitArt(mascot, width); ok {
+		b = append(b, p.Bold(art)...)
+		b = append(b, '\n')
+	}
 	b = append(b, p.Bold("  Ceraa")+p.Dim("  "+version+"\n")...)
 	blk := &block{}
 	blk.addIf("model", model)
 	blk.addIf("provider", provider)
 	if len(blk.rows) > 0 {
-		b = append(b, []byte(strings.Join(blk.render(p, "  ", 0), "\n")+"\n")...)
+		b = append(b, []byte(strings.Join(blk.render(p, "  ", width), "\n")+"\n")...)
 	}
 	return string(b)
+}
+
+// fitArt narrows a block of art to width by spending its indent, never its art.
+//
+// Every row is shifted left by the same amount, so the shape is untouched: only
+// the padding that centres it is spent. It answers false when the full indent is
+// still not enough, and the caller then drops the art entirely.
+func fitArt(art string, width int) (string, bool) {
+	if width <= 0 {
+		return "", false
+	}
+	lines := strings.Split(art, "\n")
+	maxW, indent := 0, -1
+	for _, l := range lines {
+		// A row of pure padding is not part of the shape, and must not be the
+		// thing every other row is measured against.
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		// Counted in runes, not bytes: the block characters are three bytes each
+		// and one cell, so len() here would call a 42-cell face 120 wide and drop
+		// it on every terminal that fits it.
+		if w := runeLen(l); w > maxW {
+			maxW = w
+		}
+		n := 0
+		for _, r := range l {
+			if r != ' ' {
+				break
+			}
+			n++
+		}
+		if indent < 0 || n < indent {
+			indent = n
+		}
+	}
+	if maxW <= width {
+		return art, true
+	}
+	strip := maxW - width
+	if indent < 0 || strip > indent {
+		return "", false
+	}
+	for i, l := range lines {
+		if len(l) >= strip {
+			lines[i] = l[strip:]
+		}
+	}
+	return strings.Join(lines, "\n"), true
 }

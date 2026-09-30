@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"unicode/utf8"
 )
@@ -655,7 +654,7 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 	stats := geminiSignatureStats(req.Messages)
 	note := fmt.Sprintf("gemini-native model=%s host=%s contents=%d signed_calls=%d unsigned_calls=%d turn=%s\n",
 		c.cfg.Model, requestHost(c.cfg.BaseURL), len(body.Contents), stats.signed, stats.unsigned, describeGeminiTurn(body.Contents))
-	fmt.Fprint(os.Stderr, "ceraa: "+note)
+	diagNote(note)
 	writeDebugNote("gemini.log", note)
 
 	// A missing thought display has two very different causes: we never asked

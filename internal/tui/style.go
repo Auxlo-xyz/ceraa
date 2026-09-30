@@ -153,13 +153,23 @@ func width() int {
 	return w
 }
 
-// wrapText hard-wraps to n columns on word boundaries.
+// wrapText hard-wraps to n display cells on word boundaries.
 //
 // Model output is unwrapped prose and a 200 column terminal turns every
 // paragraph into a unreadable ribbon. A word longer than the limit, such as a
 // path or a base64 blob, is broken rather than allowed to overflow, because an
 // overflowing line wraps on its own and corrupts the layout of everything after
 // it.
+//
+// Two rules the first version got wrong and the screen showed:
+//
+//   - A line that already fits is emitted untouched. Our own rows are
+//     pre-formatted - an indent, a label, a padded description - and splitting
+//     those on spaces destroys the alignment they exist for. `/help` printed as
+//     `hel` / `o` precisely because the padding was fed through a splitter that
+//     was built for prose.
+//   - Width is measured in cells, not bytes, and an escape sequence is carried
+//     with the text it styles instead of becoming a word of its own.
 func wrapText(s string, n int) []string {
 	if n < 8 {
 		n = 8
@@ -170,29 +180,119 @@ func wrapText(s string, n int) []string {
 			out = append(out, "")
 			continue
 		}
-		line := ""
-		for _, word := range strings.Fields(para) {
-			for len(word) > n {
-				if line != "" {
-					out = append(out, line)
-					line = ""
+		if visibleWidth(para) <= n {
+			out = append(out, para)
+			continue
+		}
+		out = append(out, wrapParagraph(para, n)...)
+	}
+	return out
+}
+
+// wrapParagraph word-wraps one paragraph that is wider than n cells.
+//
+// The leading indent stays on the first line and continuation lines start at the
+// margin: hanging every wrapped line under the original indent reads as a new
+// paragraph rather than as a continuation.
+func wrapParagraph(para string, n int) []string {
+	rs := []rune(para)
+	k := 0
+	for k < len(rs) && (rs[k] == ' ' || rs[k] == '\t') {
+		k++
+	}
+	indent := rs[:k]
+
+	var (
+		out    []string
+		line   []rune
+		cells  int
+		lastSp int // index in line of the last space a line may break at
+	)
+	flush := func() {
+		if len(line) == 0 {
+			return
+		}
+		out = append(out, strings.TrimRight(string(line), " "))
+		line = nil
+		cells = 0
+		lastSp = -1
+	}
+	line = append(line, indent...)
+	cells = visibleWidth(string(indent))
+	lastSp = -1
+
+	i := k
+	for i < len(rs) {
+		switch {
+		case rs[i] == '\x1b':
+			// A style sequence costs no cell and belongs to whatever it wraps, so
+			// it travels with the line it is on. SGR state survives a newline, so
+			// an attribute opened before the break still applies after it and its
+			// reset, which is still to come, still lands.
+			j := escapeEnd(rs, i)
+			line = append(line, rs[i:j]...)
+			i = j
+
+		case rs[i] == ' ':
+			if cells+1 > n {
+				flush()
+				for i < len(rs) && rs[i] == ' ' {
+					i++
 				}
-				out = append(out, word[:n])
-				word = word[n:]
+				continue
 			}
-			switch {
-			case line == "":
-				line = word
-			case len(line)+1+len(word) <= n:
-				line += " " + word
-			default:
-				out = append(out, line)
-				line = word
+			line = append(line, ' ')
+			cells++
+			lastSp = len(line) - 1
+			i++
+
+		default:
+			j := i
+			for j < len(rs) && rs[j] != ' ' && rs[j] != '\x1b' {
+				j++
 			}
+			word := rs[i:j]
+			if cells+len(word) <= n {
+				line = append(line, word...)
+				cells += len(word)
+				i = j
+				continue
+			}
+			if lastSp > 0 {
+				// Move the word and everything after the last space down as one,
+				// then re-test the word against the new, shorter line rather than
+				// assuming it fits: a word longer than the limit would otherwise
+				// be appended past the boundary it was just moved to avoid.
+				tail := append([]rune{}, line[lastSp+1:]...)
+				out = append(out, strings.TrimRight(string(line[:lastSp]), " "))
+				line = tail
+				cells = visibleWidth(string(line))
+				lastSp = -1
+				continue
+			}
+			// No space to break at: hard-fill, splitting the word at the edge.
+			for len(word) > 0 {
+				if cells >= n {
+					flush()
+				}
+				room := n - cells
+				take := len(word)
+				if take > room {
+					take = room
+				}
+				if take <= 0 {
+					flush()
+					continue
+				}
+				line = append(line, word[:take]...)
+				cells += take
+				word = word[take:]
+			}
+			i = j
 		}
-		if line != "" {
-			out = append(out, line)
-		}
+	}
+	if len(line) > 0 {
+		out = append(out, strings.TrimRight(string(line), " "))
 	}
 	return out
 }

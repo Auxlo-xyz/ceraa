@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"ceraa/harness/llm"
 	"ceraa/internal/build"
 	"ceraa/internal/config"
 	"ceraa/internal/tui"
@@ -57,12 +59,22 @@ func init() {
 	chatCmd.Flags().BoolVar(&chatNoColorFlag, "no-color", false, "disable colour output")
 }
 
+// quietDiagnostics keeps per-request notes off the terminal.
+//
+// The note still reaches the data directory's log file, which is where it is
+// meant to be read from. Both commands here render to the terminal - chat on
+// stderr, ask on stdout - so a note printed to stderr lands wherever the cursor
+// happens to be, inside a spinner frame or across an answer line, and is gone
+// the moment the scrollback does.
+func quietDiagnostics() { llm.SetDiagOutput(io.Discard) }
+
 // runChat opens an interactive session.
 //
 // The config is loaded here rather than in the tui package so a configuration
 // error is reported by the command that owns configuration, and so `ceraa chat`
 // and `ceraa doctor` fail identically.
 func runChat(sessionID string) error {
+	quietDiagnostics()
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -130,6 +142,7 @@ func readAllStdin() (string, error) {
 }
 
 func runAsk(prompt string) error {
+	quietDiagnostics()
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
