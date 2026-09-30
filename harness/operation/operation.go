@@ -1,15 +1,17 @@
 package operation
 
 import (
-	"ceraa/internal/envs"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"ceraa/internal/envs"
 
 	"ceraa/harness/event"
 	"ceraa/harness/llm"
@@ -369,29 +371,26 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 				break
 			}
 			original, readErr := os.ReadFile(p)
-			content := string(original)
-			// Validate every edit against the untouched content before applying
-			// any, so the error names the change that did not match rather than a
-			// cascade from the one before it.
-			for i, pair := range edits {
-				oldText, _ := pair["old_text"].(string)
-				if count := strings.Count(content, oldText); count != 1 {
-					result.Error = fmt.Sprintf("edit %d: old_text must occur exactly once in %s; found %d occurrences", i, filepath.Base(p), count)
-					result.Status = StatusFailed
-					break
-				}
-			}
-			if result.Status == StatusFailed {
-				break
-			}
-			updated := content
-			for _, pair := range edits {
-				oldText, _ := pair["old_text"].(string)
-				newText, _ := pair["new_text"].(string)
-				updated = strings.Replace(updated, oldText, newText, 1)
-			}
+			// The read is checked before the edits are resolved. A missing or
+			// unreadable file leaves content empty, and validating against empty
+			// content reports every edit as "not found" - a confident wrong answer
+			// about why the change failed, which is the one thing these messages
+			// must not do.
 			if readErr != nil {
 				result.Error = readErr.Error()
+				result.Status = StatusFailed
+				break
+			}
+			content := string(original)
+			// Every edit is resolved against the untouched content, and every
+			// failure is reported in one message.
+			//
+			// Reporting them together is the point. The previous version stopped at
+			// the first, so a batch of five with two problems cost two round trips to
+			// discover - which is what a batch exists to avoid.
+			updated, failures, ok := applyEdits(content, editFileLabel(p), edits)
+			if !ok {
+				result.Error = batchFailureText(editFileLabel(p), len(edits), failures)
 				result.Status = StatusFailed
 				break
 			}
@@ -455,13 +454,19 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 					return err
 				}
 				content := string(data)
-				if count := strings.Count(content, oldText); count != 1 {
-					return fmt.Errorf("old_text must occur exactly once; found %d occurrences", count)
+				match := locate(content, oldText)
+				offset, reason := match.resolve(content, editFileLabel(p), oldText, occurrenceArg(op.Spec.Args))
+				if reason != "" {
+					return errors.New(reason)
 				}
 				if snapStore, snapshotErr := newSnapshotStore(); snapshotErr == nil {
 					_, _ = snapStore.Capture(p)
 				}
-				return os.WriteFile(p, []byte(strings.Replace(content, oldText, newText, 1)), 0o644)
+				// Cut at the resolved offset rather than Replace, so an explicit
+				// occurrence replaces the one that was asked for instead of
+				// whichever happens to be first.
+				updated := content[:offset] + newText + content[offset+len(oldText):]
+				return os.WriteFile(p, []byte(updated), 0o644)
 			})
 			if err != nil {
 				result.Error = err.Error()

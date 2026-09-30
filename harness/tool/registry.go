@@ -208,16 +208,19 @@ func (e *EditTool) Name() string { return "edit_line" }
 // the prompt's job. TestDescriptionsCarryNoUsageGuidance enforces that split.
 func (e *EditTool) Description() string {
 	return "Replace one exact occurrence of old_text with new_text in a file. " +
-		"Fails without writing if old_text is absent or matches more than once, " +
-		"naming how many were found."
+		"Fails without writing if old_text is absent, naming the line where it " +
+		"differs only in whitespace, or if it matches more than once, naming every " +
+		"line. On a repeat match, pass occurrence to choose which one; otherwise " +
+		"old_text must be unique."
 }
 func (e *EditTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":     map[string]any{"type": "string", "description": "File path"},
-			"old_text": map[string]any{"type": "string", "description": "Existing text to replace"},
-			"new_text": map[string]any{"type": "string", "description": "Replacement text"},
+			"path":       map[string]any{"type": "string", "description": "File path"},
+			"old_text":   map[string]any{"type": "string", "description": "Existing text to replace"},
+			"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
+			"occurrence": map[string]any{"type": "integer", "description": "Which match to replace when old_text is not unique, counting from 1. Omit when it is unique."},
 		},
 		"required": []string{"path", "old_text", "new_text"},
 	}
@@ -229,7 +232,13 @@ func (e *EditTool) Translate(args map[string]any) (operation.Spec, error) {
 	if p == "" || oldText == "" {
 		return operation.Spec{}, fmt.Errorf("path and non-empty old_text are required")
 	}
-	return operation.Spec{Type: "edit_line", Args: map[string]any{"path": p, "old_text": oldText, "new_text": newText}}, nil
+	spec := map[string]any{"path": p, "old_text": oldText, "new_text": newText}
+	// Carried only when given, so a spec written before this field keeps its
+	// original shape and an older session replays unchanged.
+	if n := occurrenceFromAny(args["occurrence"]); n > 0 {
+		spec["occurrence"] = n
+	}
+	return operation.Spec{Type: "edit_line", Args: spec}, nil
 }
 func (e *EditTool) TranslateResult(op operation.Operation) string { return "edited" }
 func (e *EditTool) Sequential() bool                              { return true }
@@ -250,8 +259,9 @@ func (b *BatchEditFileTool) Name() string { return "batch_edit_file" }
 func (b *BatchEditFileTool) Description() string {
 	return "Apply several replacements to one file together, as a single write. " +
 		"Give each change as an old_text and a new_text pair; every one must match " +
-		"exactly once. Fails without writing anything if any change does not match, " +
-		"nailing which one."
+		"exactly once unless it names an occurrence. Fails without writing anything " +
+		"if any change does not match, reporting all of them at once with the lines " +
+		"involved."
 }
 func (b *BatchEditFileTool) Schema() map[string]any {
 	return map[string]any{
@@ -264,8 +274,9 @@ func (b *BatchEditFileTool) Schema() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"old_text": map[string]any{"type": "string", "description": "Existing text to replace"},
-						"new_text": map[string]any{"type": "string", "description": "Replacement text"},
+						"old_text":   map[string]any{"type": "string", "description": "Existing text to replace"},
+						"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
+						"occurrence": map[string]any{"type": "integer", "description": "Which match to replace when old_text is not unique, counting from 1. Omit when it is unique."},
 					},
 					"required": []string{"old_text", "new_text"},
 				},
@@ -295,7 +306,11 @@ func (b *BatchEditFileTool) Translate(args map[string]any) (operation.Spec, erro
 		if oldText == "" {
 			return operation.Spec{}, fmt.Errorf("edit %d has no old_text", i)
 		}
-		edits = append(edits, map[string]any{"old_text": oldText, "new_text": newText})
+		normalized := map[string]any{"old_text": oldText, "new_text": newText}
+		if n := occurrenceFromAny(pair["occurrence"]); n > 0 {
+			normalized["occurrence"] = n
+		}
+		edits = append(edits, normalized)
 	}
 	return operation.Spec{Type: "batch_edit_file", Args: map[string]any{"path": path, "edits": edits}}, nil
 }
@@ -304,6 +319,26 @@ func (b *BatchEditFileTool) Sequential() bool                              { ret
 func (b *BatchEditFileTool) MutationKey(args map[string]any) string {
 	path, _ := args["path"].(string)
 	return path
+}
+
+// occurrenceFromAny narrows a JSON-decoded occurrence to a positive int, treating
+// anything else as absent.
+//
+// A zero, a negative or a non-number is not a request for a particular match, and
+// forwarding one would quietly turn "old_text must be unique" into a replacement
+// of whichever match happened to sit at that position.
+func occurrenceFromAny(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		if n := int(typed); n > 0 {
+			return n
+		}
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	}
+	return 0
 }
 
 // DefaultRegistry returns a registry with all built-in tools.

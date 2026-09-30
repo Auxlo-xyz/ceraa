@@ -332,8 +332,14 @@ func TestBatchEditIsAllOrNothing(t *testing.T) {
 		if !strings.Contains(r.Error, "edit 2") {
 			t.Errorf("error = %q, want it to name which edit did not match", r.Error)
 		}
-		if !strings.Contains(r.Error, "found 0") {
-			t.Errorf("error = %q, want the occurrence count", r.Error)
+		// The count is reported as a batch position rather than an occurrence
+		// count, because the model needs to know how many edits are still good,
+		// not that this one matched zero times - which "not found" already says.
+		if !strings.Contains(r.Error, "1 of the 3 edits") {
+			t.Errorf("error = %q, want it to say how many of the batch failed", r.Error)
+		}
+		if !strings.Contains(r.Error, "not found") {
+			t.Errorf("error = %q, want it to say the text was absent", r.Error)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout")
