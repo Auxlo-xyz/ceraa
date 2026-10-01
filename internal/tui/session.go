@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,10 @@ func (s *Session) build() error {
 	// The CLI has a provider too, so a media call works the same way it does in
 	// Telegram.
 	attachVision(registry, resolveModel)
+	// Kept so the banner can count what a turn would actually be offered. The
+	// field existed and was never assigned, so the count came back empty and the
+	// row was left out.
+	s.registry = func() (*tool.Registry, error) { return registry, nil }
 
 	s.runner = coordinator.New(coordinator.RunnerConfig{
 		SessionID:           s.session,
@@ -363,20 +368,82 @@ func (s *Session) WorkDir() string {
 	return s.workDir
 }
 
+// Effort reports the configured reasoning level, which is the one setting that
+// changes what a turn costs and how long it takes without changing the model.
+//
+// It is reported from config rather than from what the provider was finally
+// sent, because a provider clamps it to what its model accepts and the banner
+// that says "high" while the request carried "medium" is the kind of lie that
+// costs an afternoon.
+func (s *Session) Effort() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.cfg.Reasoning)
+}
+
+// Agent reports the selected agent, if one was chosen.
+func (s *Session) Agent() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.cfg.Agent)
+}
+
+// ToolCount reports how many tools the model may call.
+//
+// Counted from the registry rather than kept as a number, so it cannot drift
+// from what a turn would actually be offered. Zero means the registry could not
+// be built, which is not the same as having no tools, so the banner leaves the
+// row out rather than claiming an empty set.
+func (s *Session) ToolCount() int {
+	if s == nil || s.registry == nil {
+		return 0
+	}
+	reg, err := s.registry()
+	if err != nil || reg == nil {
+		return 0
+	}
+	return len(reg.All())
+}
+
+// providerHost reduces a base URL to its host, so the banner names a provider
+// rather than printing a URL at it.
+//
+// The URL is what the config holds, but a provider row reading
+// "https://api.example.com/v1" is the longest string in the block and pushes the
+// value column off a phone. The host is the part that identifies it.
+func providerHost(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return rawURL
+	}
+	return parsed.Host
+}
+
 // Model reports the active provider and model for the banner and the footer.
 func (s *Session) Model() (providerName, modelName string) {
 	if s == nil || s.cfg == nil {
 		return "", ""
 	}
 	p := s.cfg.ActiveLLM()
-	name := s.cfg.EffectiveProviderID()
-	if name == "" {
-		name = p.Subscription
+	// EffectiveProviderID answers "where did this come from" and returns default
+	// or config when no profile is named. Neither is a provider name, and
+	// printing one read like a provider called default, so an install with
+	// nothing configured looked configured. Those two also meant the fallbacks
+	// below them were unreachable, so nothing named the provider at all.
+	switch name := s.cfg.EffectiveProviderID(); name {
+	case "default", "config":
+		switch {
+		case p.Subscription != "":
+			providerName = p.Subscription
+		case p.URL != "":
+			providerName = providerHost(p.URL)
+		}
+	default:
+		providerName = name
 	}
-	if name == "" {
-		name = p.URL
-	}
-	return name, p.Model
+	return providerName, p.Model
 }
 
 // resolveProviderModel picks the transport for a subscription profile.

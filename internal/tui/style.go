@@ -29,6 +29,10 @@ const (
 	ansiDim       = "\x1b[2m"
 	ansiReverse   = "\x1b[7m"
 	ansiUnderline = "\x1b[4m"
+	// ansiBrightWhite is SGR 97, the one step above the default foreground. It is
+	// the accent the product name uses, chosen because it is the only step every
+	// terminal agrees on: no 256 colour, no true colour, no theme.
+	ansiBrightWhite = "\x1b[97m"
 )
 
 // Palette emits the theme, or plain text when colour is off.
@@ -80,6 +84,18 @@ func (p Palette) Reverse(s string) string { return p.wrap(ansiReverse, s) }
 
 // Underline renders a heading rule.
 func (p Palette) Underline(s string) string { return p.wrap(ansiUnderline, s) }
+
+// Name renders the product's own name, and it is the one thing on screen that is
+// allowed to be the brightest thing there.
+//
+// Everything else here is dim or bold, and bold alone reads as emphasis rather
+// than as identity, so the name used to look like a heading among other
+// headings. Bright white is one level above the default foreground, which every
+// terminal honours, so the emphasis survives on a phone emulator and on a
+// terminal with an eight colour palette without asking either of them for a
+// colour scheme. Under NO_COLOR this is the default foreground, which is the
+// correct fallback rather than a degraded one.
+func (p Palette) Name(s string) string { return p.wrap(ansiBrightWhite, s) }
 
 // Invert is the bare escape, for the spinner frames that repaint in place.
 func (p Palette) Invert() string {

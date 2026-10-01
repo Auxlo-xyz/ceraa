@@ -258,25 +258,27 @@ func joinDots(segments ...string) string {
 	return strings.Join(kept, "  "+dotRule+"  ")
 }
 
-// statusLine is the persistent context line: what the next turn will run with.
+// statusLine is the persistent context line above the composer: what the next
+// turn will run with.
 //
-// Aster keeps a footer showing mode, model and effort permanently. Ours printed
-// nothing between turns, so the model in use was only visible in the banner that
-// scrolled away. This is a single dim line, redrawn at every prompt, and it is
-// the one line that answers "what am I about to talk to".
+// Aster keeps a footer showing mode, model and effort permanently. Ours used to
+// carry the turn state and the session id, and the id is now in the startup
+// block, so repeating it on every prompt was saying the same thing twice. What
+// belongs on this line is what changes between turns: the state, the model it
+// is about to call, and how hard that model will be asked to think.
 //
 // On a narrow screen it degrades by dropping whole fields rather than by being
-// cut through the middle: the session id is traceability and the provider prefix
-// repeats what the model already says, so those go first, and the mode - what the
-// run is actually doing - is what survives. Truncating the assembled line instead
-// left `session cli-1790795697` with the rest of the id gone, which is worse than
-// showing no id at all, because it looks like an id.
-func (p Palette) statusLine(width int, model, provider, mode, session string) string {
-	withSession := joinDots(kv(provider, model), mode, kv("session", session))
-	noSession := joinDots(kv(provider, model), mode)
-	noProvider := joinDots(model, mode)
+// cut through the middle. The state survives to the end: a line that names a
+// model but not whether anything is running is worse than one that names only
+// that something is running.
+func (p Palette) statusLine(width int, mode, model, effort string) string {
+	// The effort goes first because it is the least load-bearing of the three, and
+	// the model goes before the state because a line that says what is running
+	// but not against what is answering is the half that answers "am I stuck".
+	full := joinDots(mode, model, effort)
+	noEffort := joinDots(mode, model)
 	modeOnly := mode
-	for _, line := range []string{withSession, noSession, noProvider, modeOnly} {
+	for _, line := range []string{full, noEffort, modeOnly} {
 		if line == "" {
 			continue
 		}
@@ -287,7 +289,7 @@ func (p Palette) statusLine(width int, model, provider, mode, session string) st
 	if mode == "" {
 		return ""
 	}
-	// Even the mode is wider than the screen; cut it, but at a word boundary.
+	// Even the state is wider than the screen; cut it, but at a word boundary.
 	return p.fit(p.Dim("  "+mode), width)
 }
 
@@ -346,6 +348,10 @@ func glyph(kind string) string {
 		return "×"
 	case "info":
 		return "·"
+	case "tip":
+		// A four-point star, which is a distinct shape from every other mark here
+		// rather than another dot.
+		return "\u2726"
 	default:
 		return "·"
 	}
@@ -398,3 +404,10 @@ func plural(n int) string {
 func describeCount(n int, noun string) string {
 	return fmt.Sprintf("%d %s%s", n, noun, plural(n))
 }
+
+// composerHint is the placeholder in front of the caret.
+//
+// It names what the line is for and what a slash does, because the chevron alone
+// says neither and a first run should not have to guess. Dim, so it recedes the
+// moment anything is typed in front of it.
+const composerHint = "Message Ceraa\u2026  (/ for commands)"

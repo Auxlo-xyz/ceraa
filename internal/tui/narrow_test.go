@@ -261,19 +261,25 @@ func TestRepaintDoesNotPaintWhileStreaming(t *testing.T) {
 }
 
 // The status line degrades by dropping fields, never by cutting through one. An
-// elided `session cli-1790795697…` looks like an id and is not one.
+// elided `gpt-5.6-lun…` names no model at all, which is worse than showing none.
 func TestStatusLineDropsFieldsInsteadOfBeingCut(t *testing.T) {
 	pal := Palette{color: true}
-	got := pal.statusLine(40, "gemini-3.5-flash-lite", "gemini", "thinking", "cli-17907956971m")
-	if w := visibleWidth(got); w > 40 {
-		t.Errorf("status line is %d cells: %q", w, noColor(got))
+	for _, width := range []int{20, 24, 40, 80} {
+		got := pal.statusLine(width, "thinking", "gemini-3.5-flash-lite", "low")
+		if w := visibleWidth(got); w > width {
+			t.Errorf("width %d: status line is %d cells: %q", width, w, noColor(got))
+		}
+		if strings.Contains(noColor(got), "…") {
+			t.Errorf("width %d: status line was cut through a field: %q", width, noColor(got))
+		}
+		// The state is what the run is doing; it is the last thing to go.
+		if !strings.Contains(noColor(got), "thinking") {
+			t.Errorf("width %d: status line lost the state: %q", width, noColor(got))
+		}
 	}
-	if strings.Contains(noColor(got), "…") {
-		t.Errorf("status line was cut through a field: %q", noColor(got))
-	}
-	// The mode is what the run is doing; it is the last thing that may go.
-	if !strings.Contains(noColor(got), "thinking") {
-		t.Errorf("status line lost the mode: %q", noColor(got))
+	// Effort is the first to be dropped, and the model before the state.
+	if got := noColor(pal.statusLine(80, "thinking", "gpt-5.6-luna", "low")); !strings.Contains(got, "low") {
+		t.Errorf("a wide status line dropped the effort: %q", got)
 	}
 }
 

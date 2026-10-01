@@ -443,6 +443,13 @@ func applyEnv(cfg *Config) {
 	if v := env("API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
+	// Reasoning sits beside the model rather than inside the LLM block, so it is
+	// overridden here rather than in the block above. Every other model-facing
+	// setting had an env override and this one did not, which meant the effort the
+	// banner reports could only be changed by editing the file.
+	if v := env("REASONING"); v != "" {
+		cfg.Reasoning = v
+	}
 	if v := env("CONTEXT_LIMIT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.LLM.ContextLimit = n

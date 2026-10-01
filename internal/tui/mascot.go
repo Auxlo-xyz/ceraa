@@ -1,6 +1,9 @@
 package tui
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // State is what the mascot is currently doing.
 //
@@ -57,24 +60,51 @@ func Spinner(tick int) string {
 	return spinnerFrames[((tick%n)+n)%n]
 }
 
-// Banner is the startup block: the name and version, and the resolved provider,
-// so the first thing on screen says which model is answering before a prompt is
-// typed.
+// Startup is what the session knows about itself before anyone types.
 //
-// There is no drawing. The session opened with a face at three sizes and every
-// one of them was wrong for a terminal: full size filled the phone screen,
-// small still spent eleven rows on brand before saying anything. Nothing here
-// earns those rows, so the face is gone from this surface entirely rather than
-// tuned again. The PNG stays in the repository for a surface with pixels.
+// A struct rather than a parameter list, because the list grew to eight fields
+// and a caller passing them positionally had to count. Order is irrelevant here
+// and only the label order in the rendered block matters.
+type Startup struct {
+	Version  string
+	Model    string
+	Provider string
+	WorkDir  string
+	Effort   string
+	Agent    string
+	Tools    int
+	Session  string
+}
+
+// Banner is the startup block: the name, and every piece of state that decides
+// what the first turn will do.
 //
-// The details go through the same aligned block as /status rather than a
+// It answers the question the operator actually has at that moment, which is
+// "am I about to talk to the thing I think I am". Model, provider, cwd, effort
+// and tool count are all on the wire for the next request, and a mismatch in any
+// of them is the difference between a working session and a confusing one. It
+// used to print the provider and nothing else, which left five of those
+// questions open and made the block look empty next to a competitor's.
+//
+// The rows go through the same aligned block as /status rather than a
 // hand-counted pad, so the two cannot disagree about where the value column is.
-func (p Palette) Banner(version, model, provider string, width int) string {
+func (p Palette) Banner(start Startup, width int) string {
 	var b []byte
-	b = append(b, p.Bold("  Ceraa")+p.Dim("  "+version+"\n")...)
+	b = append(b, "  "+p.Name("Ceraa")+p.Dim("  "+start.Version+"\n")...)
 	blk := &block{}
-	blk.addIf("model", model)
-	blk.addIf("provider", provider)
+	// Added rather than skipped when empty, so an unconfigured install shows
+	// unset. Omitting the row would leave the operator wondering whether the
+	// session forgot to report a model or simply has none, which are different
+	// problems with different fixes.
+	blk.add("model", start.Model)
+	blk.add("provider", start.Provider)
+	blk.add("cwd", start.WorkDir)
+	blk.add("effort", start.Effort)
+	blk.addIf("agent", start.Agent)
+	if start.Tools > 0 {
+		blk.add("tools", strconv.Itoa(start.Tools))
+	}
+	blk.add("session", start.Session)
 	if len(blk.rows) > 0 {
 		b = append(b, []byte(strings.Join(blk.render(p, "  ", width), "\n")+"\n")...)
 	}

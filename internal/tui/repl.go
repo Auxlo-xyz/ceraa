@@ -40,9 +40,9 @@ func NewLoop(session *Session, in io.Reader, out io.Writer, pal Palette, version
 
 // Run drives the loop until EOF, /exit or an interrupt.
 func (l *Loop) Run(ctx context.Context) error {
-	provider, model := l.session.Model()
-	fmt.Fprint(l.out, l.pal.Banner(l.version, model, provider, l.render.width()))
+	fmt.Fprint(l.out, l.pal.Banner(l.startup(), l.render.width()))
 	l.hint()
+	l.tip()
 	sc := bufio.NewScanner(l.in)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	// Ctrl-C cancels the run rather than the loop, so a long turn can be stopped
@@ -98,6 +98,63 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 }
 
+// startup collects what the session knows about itself for the banner.
+func (l *Loop) startup() Startup {
+	provider, model := l.session.Model()
+	return Startup{
+		Version:  l.version,
+		Model:    model,
+		Provider: provider,
+		WorkDir:  l.session.WorkDir(),
+		Effort:   l.session.Effort(),
+		Agent:    l.session.Agent(),
+		Tools:    l.session.ToolCount(),
+		Session:  l.session.SessionID(),
+	}
+}
+
+// tips are the hints that rotate above the composer.
+//
+// Each one names a command that exists and says what it does, because a tip
+// that describes a feature this build does not have is worse than no tip: it
+// teaches a key that does nothing. Ordered so the ones a newcomer needs come
+// first, since the rotation is not random.
+var tips = []string{
+	"/help lists every command",
+	"/status shows the provider, model and session",
+	"/sessions lists saved conversations",
+	"/new starts a fresh conversation",
+	"/model shows the active model",
+	"ctrl-c interrupts a turn without losing the conversation",
+	"ctrl-d leaves",
+	"ceraa doctor checks the configuration end to end",
+}
+
+// tip prints one rotating hint, chosen from the session id.
+//
+// The id is a nanosecond timestamp, so consecutive launches land on different
+// entries and the same launch always shows the same one. That keeps the
+// rotation honest: there is no hidden counter to write, lose across an upgrade,
+// or desynchronise from what was actually shown.
+func (l *Loop) tip() {
+	if text := l.tipText(); text != "" {
+		l.render.line(l.pal.Dim(text))
+	}
+}
+
+// tipText is the chosen tip, or empty when there are none. Split from tip() so a
+// test can assert the rotation without standing up a renderer.
+func (l *Loop) tipText() string {
+	if len(tips) == 0 {
+		return ""
+	}
+	sum := 0
+	for _, r := range l.session.SessionID() {
+		sum += int(r)
+	}
+	return "  " + glyph("tip") + " " + tips[sum%len(tips)]
+}
+
 // prompt writes the context line and the input chevron.
 //
 // The prompt itself is one bare chevron. It used to repeat "ceraa
@@ -107,18 +164,17 @@ func (l *Loop) Run(ctx context.Context) error {
 // line above it. The session id moves there too, so a transcript is still
 // traceable without the prompt carrying it.
 func (l *Loop) prompt() {
-	provider, model := l.session.Model()
-	mode := l.render.State().String()
+	_, model := l.session.Model()
 	width := l.pal.width()
 	if l.lastSession != l.session.SessionID() {
-		// The context line is redrawn every prompt, so a new session shows its own
-		// id without the prompt line carrying it.
 		l.lastSession = l.session.SessionID()
 	}
-	fmt.Fprint(l.out, l.pal.statusLine(width, model, provider, mode, l.session.SessionID())+"\n")
+	fmt.Fprint(l.out, l.pal.statusLine(width, l.render.State().String(), model, l.session.Effort())+"\n")
 	// The chevron sits at the left margin, where a shell prompt does, so the caret
-	// is where the eye expects it.
-	fmt.Fprint(l.out, l.pal.Bold(glyph("prompt")+" "))
+	// is where the eye expects it. The placeholder says what the line is for and
+	// that a slash is a command, because a bare chevron says neither and a first
+	// run should not have to guess.
+	fmt.Fprint(l.out, l.pal.Bold(glyph("prompt")+" ")+l.pal.Dim(composerHint)+" ")
 }
 
 // hint prints the key hints, once.
