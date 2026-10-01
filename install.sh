@@ -7,7 +7,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | sh -s -- --version v0.1.0
+#   curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | sh -s -- --version v0.2.0
 #
 # Options, passed after `--`:
 #   --version VERSION   release tag to install (default: the latest release)

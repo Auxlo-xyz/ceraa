@@ -31,4 +31,4 @@ const (
 // reports, which is a development build rather than pretending to be a release.
 //
 // The value is a var, not a const, because -X can only set a string variable.
-var Version = "0.1.0-dev"
+var Version = "0.2.0-dev"
