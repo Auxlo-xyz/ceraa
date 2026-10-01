@@ -104,15 +104,24 @@ func TestWideTerminalKeepsTheColumns(t *testing.T) {
 	}
 }
 
-// Prose must still arrive on the first token. Holding it is what a table needs
-// and the opposite of what an answer needs.
-func TestProseIsNotHeldBack(t *testing.T) {
+// Prose is held to the end of its line, and rendered the moment it completes.
+// The bound is a line and not the answer: a paragraph arrives as it is finished,
+// not at the end of the turn.
+func TestProseIsRenderedAsEachLineCompletes(t *testing.T) {
 	var b strings.Builder
 	r := NewRenderer(&b, Plain())
 	r.cols = 100
-	r.Content("the answer ")
-	if got := b.String(); !strings.Contains(got, "the answer ") {
-		t.Errorf("prose was held instead of written through: %q", got)
+	r.Content("the **first** line\n")
+	if got := b.String(); !strings.Contains(got, "the first line") {
+		t.Errorf("a completed line was not written: %q", got)
+	}
+	if got := b.String(); strings.Contains(got, "**") {
+		t.Errorf("emphasis markers survived a completed line: %q", got)
+	}
+	before := b.Len()
+	r.Content("the second line\n")
+	if b.Len() <= before {
+		t.Error("the next line did not follow the first")
 	}
 }
 

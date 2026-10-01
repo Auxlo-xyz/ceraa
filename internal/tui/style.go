@@ -82,6 +82,14 @@ func (p Palette) Dim(s string) string { return p.wrap(ansiDim, s) }
 // marked without spending a colour.
 func (p Palette) Reverse(s string) string { return p.wrap(ansiReverse, s) }
 
+// Code renders a code span in reverse video.
+//
+// A terminal has one dependable way to say "this is a literal", and it is the one
+// every pager, diff tool and tty already uses. It is also the only treatment that
+// needs no colour scheme, which is the constraint this whole palette is built
+// under.
+func (p Palette) Code(s string) string { return p.wrap(ansiReverse, s) }
+
 // Underline renders a heading rule.
 func (p Palette) Underline(s string) string { return p.wrap(ansiUnderline, s) }
 

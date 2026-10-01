@@ -59,6 +59,10 @@ type Renderer struct {
 	aLine  string
 	aCells []string
 	aTable *tableBlock
+	// aFence is true between a pair of ``` lines. Everything inside is literal,
+	// so it is written through without wrapping and without looking for markers.
+	// Code is full of asterisks and underscores and scanning it would mangle it.
+	aFence bool
 
 	// painted records that the repaint ticker has left a status line on screen
 	// with no newline after it. Erasing is then conditional on having painted,
@@ -173,6 +177,7 @@ func (r *Renderer) line(s string) {
 func (r *Renderer) TurnStart() {
 	r.setState(StateThinking)
 	r.aTail, r.aLine, r.aCells, r.aTable = "", "", nil, nil
+	r.aFence = false
 	r.mu.Lock()
 	r.streaming = false
 	r.live = 0
@@ -225,7 +230,13 @@ func (r *Renderer) Content(s string) {
 		// The frame the ticker left on the current line has to be cleared before
 		// the newline, or it stays behind as a dangling line of its own. Erasing
 		// first is what keeps the answer from starting under a status frame.
-		r.draw(func() { fmt.Fprint(r.out, "\n"+r.pal.BoldOn()) })
+		//
+		// Normal weight, deliberately. This used to open the whole answer in bold,
+		// which was a way of making the answer stand out from the chrome before
+		// there was any inline emphasis to render. Now that `**bold**` and headings
+		// are real, a body that is entirely bold leaves nothing for them to be
+		// bolder than, and a wall of bold is harder to read than plain text.
+		r.draw(func() { fmt.Fprint(r.out, "\n") })
 	}
 	for _, piece := range r.answer(s) {
 		r.write(piece)
@@ -240,29 +251,28 @@ func (r *Renderer) Content(s string) {
 // not is written through the moment it arrives, and the answer still starts
 // moving on the first token.
 //
-// The unit is a line for two reasons. A complete line can be wrapped properly
-// instead of being handed to the terminal to cut at a cell, and an incomplete
-// line that starts with a pipe can be parked until its newline says what it is.
+// The unit is a line, and it has to be. Everything the renderer knows how to do
+// to answer text needs a whole line: emphasis markers close somewhere after they
+// open, a bullet only reads as a bullet with its continuation indented under it,
+// and a row is only known to be a row once its rule has arrived. Writing each
+// delta straight through meant none of that ever ran, because a delta usually
+// has no newline in it at all.
+//
+// So the tail of the answer is held until its line is complete. What that costs
+// is that a partial line waits, bounded by however long the model takes to reach
+// its next newline, which for prose is a sentence rather than an answer. What it
+// buys is that the answer arrives as something a person can read.
 func (r *Renderer) answer(s string) []string {
 	width := r.width()
+	r.aTail += s
 	var out []string
-	for rest := s; ; {
-		i := strings.IndexByte(rest, '\n')
+	for {
+		i := strings.IndexByte(r.aTail, '\n')
 		if i < 0 {
-			// While a row candidate is held, everything keeps going into it. The
-			// chunk that continues `| **bash` does not itself start with a pipe,
-			// and judging that chunk on its own wrote it straight out ahead of the
-			// prefix already held, which put the two halves in the wrong order.
-			if r.aTail != "" || looksLikeRowStart(rest) {
-				r.aTail += rest
-			} else {
-				out = append(out, rest)
-			}
-			return out
+			break
 		}
-		line := r.aTail + rest[:i]
-		r.aTail = ""
-		rest = rest[i+1:]
+		line := r.aTail[:i]
+		r.aTail = r.aTail[i+1:]
 		if looksLikeRowStart(line) {
 			out = append(out, r.answerLine(line, width)...)
 			continue
@@ -277,11 +287,35 @@ func (r *Renderer) answer(s string) []string {
 			r.aTable = nil
 			out = append(out, terminate(renderTable(r.pal, finished, width))...)
 		}
-		// Prose. A held header that never got its rule is released first, so it
-		// keeps its place in the answer rather than jumping to the next line.
+		// Prose. A held table header that never got its rule is released first, so
+		// it keeps its place in the answer rather than jumping to the next line.
 		out = append(out, r.releaseHeld(width)...)
-		out = append(out, wrapLines(line, width)...)
+		out = append(out, r.answerProse(line, width)...)
 	}
+	return out
+}
+
+// answerProse renders one line that is not part of a table, honouring a code
+// fence if one is open.
+func (r *Renderer) answerProse(line string, width int) []string {
+	trimmed := strings.TrimSpace(line)
+	if r.aFence {
+		// Only a fence line closes a fence. Toggling on every line inside one meant
+		// the second line of the block turned it off, so its indentation was
+		// reflowed and everything after it was treated as literal.
+		if strings.HasPrefix(trimmed, "```") {
+			r.aFence = false
+			return []string{line + "\n"}
+		}
+		return wrapFenceLine(line, width)
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		r.aFence = true
+		// Verbatim, and unwrapped: a fence is a promise about what is on the line,
+		// and reflowing the inside of one breaks the indentation it exists to keep.
+		return []string{line + "\n"}
+	}
+	return r.pal.answerBlock(line, width)
 }
 
 // looksLikeRowStart reports whether a line could still turn into a table row.
@@ -334,7 +368,7 @@ func (r *Renderer) releaseHeld(width int) []string {
 	}
 	line := r.aLine
 	r.aLine, r.aCells = "", nil
-	return wrapLines(line, width)
+	return r.answerProse(line, width)
 }
 
 // flushAnswer empties the detector, so a table that ran to the end of the answer
@@ -351,7 +385,7 @@ func (r *Renderer) flushAnswer() {
 	}
 	out = append(out, r.releaseHeld(width)...)
 	if r.aTail != "" {
-		out = append(out, wrapLines(r.aTail, width)...)
+		out = append(out, r.answerProse(r.aTail, width)...)
 		r.aTail = ""
 	}
 	for _, piece := range out {

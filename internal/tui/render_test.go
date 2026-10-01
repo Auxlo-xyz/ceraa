@@ -19,17 +19,30 @@ func renderInto() (*Renderer, *strings.Builder) {
 	return NewRenderer(&b, Plain()), &b
 }
 
-func TestContentIsWrittenThroughUnbuffered(t *testing.T) {
+// The answer is held until its line is complete. That is a change of contract
+// and it was a forced one: emphasis markers close after they open, a bullet only
+// reads as a bullet with its continuation indented under it, and a row is only
+// known to be a row once its rule arrives, so none of that can be done to a
+// fragment. A delta usually has no newline in it, which is why writing each one
+// straight through meant none of it ever ran.
+//
+// What is still guaranteed is that nothing is lost and nothing is reordered.
+func TestContentArrivesInOrderOnceItsLineIsComplete(t *testing.T) {
 	r, out := renderInto()
 	r.Content("hello ")
 	r.Content("world")
+	// No newline yet, so nothing is written: the line is not finished.
+	if got := out.String(); strings.TrimSpace(got) != "" {
+		t.Fatalf("a partial line was written out: %q", got)
+	}
+	r.Content("\n")
 	got := out.String()
 	// The answer is preceded by a blank line so it is separated from the prompt,
 	// which is the only thing allowed before the text.
 	if !strings.HasPrefix(got, "\n") {
 		t.Fatalf("answer does not start on a fresh line: %q", got)
 	}
-	if !strings.HasSuffix(got, "hello world") {
+	if !strings.HasSuffix(got, "hello world\n") {
 		t.Fatalf("content = %q, want the deltas in order", got)
 	}
 }
