@@ -606,6 +606,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		runRequests = append(runRequests, llm.RequestTokenBreakdown{Step: step, Breakdown: breakdown})
 		var content strings.Builder
 		var reasoning strings.Builder
+		// How much of the reasoning has already been handed to the callback, so
+		// the next slice can be taken rather than the whole thing resent.
+		reasoningSent := 0
 		var reasoningDetails []json.RawMessage
 		var calls []llm.StreamedToolCall
 		var usage llm.UsageInfo
@@ -618,8 +621,14 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			}
 			if delta.Reasoning != "" {
 				reasoning.WriteString(delta.Reasoning)
-				if r.cb.OnReasoning != nil {
-					r.cb.OnReasoning(reasoning.String())
+				// Only the newly arrived part, matching OnContent above. This passed
+				// the whole accumulated string, and every consumer appends what it
+				// is handed, so each delta reprinted everything seen so far: one
+				// greeting became a screenful of the same sentence, each repetition
+				// one delta longer than the last.
+				if r.cb.OnReasoning != nil && reasoning.Len() > reasoningSent {
+					r.cb.OnReasoning(reasoning.String()[reasoningSent:])
+					reasoningSent = reasoning.Len()
 				}
 			}
 			if len(delta.ReasoningDetails) > 0 {
