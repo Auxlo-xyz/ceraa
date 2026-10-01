@@ -23,11 +23,156 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription:
 		return true
 	default:
 		return false
 	}
+}
+
+// OpenCodeSubscription identifies an OpenCode Zen profile.
+//
+// Counted as a subscription by IsSubscription even though its credential is an
+// API key rather than an OAuth token, which is the difference the predicate
+// exists to describe: a Zen profile carries no api_key field to find, so a check
+// that requires one would report a working install as unconfigured. The key is
+// held in the encrypted store beside the OAuth tokens for exactly that reason.
+const OpenCodeSubscription = "opencode"
+
+// OpenCodeBaseURL is the Zen chat-completions root.
+//
+// Read from opencode's own docs, where it appears as
+// https://opencode.ai/zen/v1/<method>, rather than guessed. Verified against the
+// live endpoint before it was written here: GET /zen/v1/models answers 200 with
+// a catalog and POST /zen/v1/chat/completions answers 401 with an empty body,
+// which is the pair that confirms the path is right and the credential is what is
+// missing. A near-miss on this path would be an authenticated request answered by
+// a 404 instead.
+const OpenCodeBaseURL = "https://opencode.ai/zen/v1"
+
+// DefaultOpenCodeModel is the model selected when Zen is chosen without one.
+//
+// A free-tier model, because the free tier is what a fresh key can use without
+// spending anything and the picker should not open on something that bills. Mimo
+// rather than the DeepSeek free route for the reason Cline's default gives: the
+// DeepSeek flash free model answered successful but contentless completions in
+// live use there, and the same family behind a different gateway is not a bet
+// worth taking as a default.
+const DefaultOpenCodeModel = "mimo-v2.6-flash-free"
+
+// OpenCodeModels lists the model ids Zen serves, in the order they should be
+// offered.
+//
+// Read from a live GET /zen/v1/models rather than copied from another provider's
+// catalog: the remote model catalog this codebase already has is keyed on
+// OpenAI-compatible hosts and would contain none of these. Eighty-four entries,
+// sorted so the free tier comes first - every id ending in -free is a route that
+// costs nothing - followed by the paid ones. The endpoint serves more of the same
+// shapes as they are added, and the list is refreshed by re-running the probe
+// rather than by curating it by hand.
+//
+// The ids are lowercase and the endpoint serves them case-insensitively, but
+// IsOpenCodeModel compares case-insensitively anyway so a user typing Claude-Sonnet-5
+// is not told the model does not exist.
+var OpenCodeModels = []string{
+	// Free tier.
+	"jev-1.13-free",
+	"deepseek-v4-flash-free",
+	"muse-spark-1.3-contributor-free",
+	"muse-spark-1.2-contributor-free",
+	"mimo-v2.6-flash-free",
+	"space-bunny-free",
+	"longcat-2.5-preview-free",
+	"mimo-v2.5-free",
+	"ling-3.0-flash-fin-free",
+	"nemotron-3-ultra-free",
+	"nemotron-3.5-lightning-free",
+
+	// Paid, grouped by vendor.
+	"claude-fable-5",
+	"claude-fable-5-1",
+	"claude-opus-5-5",
+	"claude-opus-5",
+	"claude-opus-4-8",
+	"claude-opus-4-7",
+	"claude-opus-4-6",
+	"claude-opus-4-5",
+	"claude-sonnet-5-5",
+	"claude-sonnet-5",
+	"claude-sonnet-4-6",
+	"claude-sonnet-4-5",
+	"claude-sonnet-4",
+	"claude-haiku-4-5",
+	"gemini-3.6-flash",
+	"gemini-3.8-flash",
+	"gemini-3.7-flash",
+	"gemini-3.5-flash-lite",
+	"gemini-3.5-flash",
+	"gemini-3.1-pro",
+	"gemini-3-flash",
+	"gpt-6-astra",
+	"gpt-6.1-sol",
+	"gpt-6-sol",
+	"gpt-6-luna",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5",
+	"gpt-5.5-pro",
+	"gpt-5.4",
+	"gpt-5.4-pro",
+	"gpt-5.4-mini",
+	"gpt-5.4-nano",
+	"gpt-5.3-codex-spark",
+	"gpt-5.3-codex",
+	"gpt-5.2",
+	"gpt-5.2-codex",
+	"gpt-5.1",
+	"gpt-5.1-codex-max",
+	"gpt-5.1-codex",
+	"gpt-5.1-codex-mini",
+	"gpt-5",
+	"gpt-5-codex",
+	"gpt-5-nano",
+	"grok-build-0.1",
+	"grok-4.7",
+	"grok-4.6",
+	"grok-4.5",
+	"muse-spark-1.3",
+	"muse-spark-1.2",
+	"deepseek-v4.1-flash",
+	"deepseek-v4-pro",
+	"deepseek-v4-flash",
+	"deepseek-v4-flash-vision-exp",
+	"glm-5.3-flash",
+	"glm-5.3",
+	"glm-5.2",
+	"glm-5.1",
+	"glm-5",
+	"minimax-m3",
+	"minimax-m2.7",
+	"minimax-m2.5",
+	"kimi-k3",
+	"kimi-k2.7-code",
+	"kimi-k2.6",
+	"kimi-k2.5",
+	"qwen3.8-flash",
+	"qwen3.6-plus",
+	"qwen3.5-plus",
+	"qwen3.8-max",
+	"jev-1.13",
+	"big-pickle",
+}
+
+// IsOpenCodeModel reports whether a model id is one the gateway is known to serve.
+func IsOpenCodeModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range OpenCodeModels {
+		if trimmed == known {
+			return true
+		}
+	}
+	return false
 }
 
 // HermesBaseURL is the Nous Portal inference endpoint.
@@ -327,6 +472,8 @@ func SubscriptionModels(subscription string) []string {
 		return out
 	case QoderSubscription:
 		return append([]string(nil), QoderModels...)
+	case OpenCodeSubscription:
+		return append([]string(nil), OpenCodeModels...)
 	default:
 		return nil
 	}
@@ -361,6 +508,8 @@ func DefaultModelFor(subscription string) string {
 		return DefaultMiniMaxModel
 	case ClineSubscription:
 		return DefaultClineModel
+	case OpenCodeSubscription:
+		return DefaultOpenCodeModel
 	default:
 		return ""
 	}

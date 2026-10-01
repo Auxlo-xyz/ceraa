@@ -93,6 +93,16 @@ type ProviderConfig struct {
 	// ExtraHeaders are added to every request. Used for provider-required
 	// client identification.
 	ExtraHeaders map[string]string
+	// ExtraHeadersFunc is evaluated per request, for header metadata that must
+	// carry a fresh correlation id on every call. It receives the session id the
+	// transport resolved for this request, which is the value a static map cannot
+	// know: the map is computed once when the config is built, so a per-request id
+	// placed there would be identical for the life of the provider.
+	//
+	// Its result is merged over ExtraHeaders, so a value it sets wins, and it is
+	// never allowed to shadow the Content-Type, Accept or Authorization the
+	// transport owns.
+	ExtraHeadersFunc func(sessionID string) map[string]string
 	// MessagesAuthStyle chooses the header the Messages transport authenticates
 	// with. Empty means x-api-key, which is what Anthropic and MiniMax's platform
 	// API both want.
@@ -930,6 +940,28 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		}
 		for key, value := range c.cfg.ExtraHeaders {
 			hreq.Header.Set(key, value)
+		}
+		if c.cfg.ExtraHeadersFunc != nil {
+			// Evaluated per request so correlation ids are never reused.
+			//
+			// The session handed over is req.SessionID rather than the sessionID
+			// local above: that one is the prompt-cache session, which is empty
+			// for every provider that is not OpenRouter and whenever caching is
+			// off. Passing it through would hand a header builder an empty string
+			// for most installs.
+			headerSession := req.SessionID
+			if headerSession == "" {
+				headerSession = sessionID
+			}
+			for key, value := range c.cfg.ExtraHeadersFunc(headerSession) {
+				switch http.CanonicalHeaderKey(key) {
+				case "Content-Type", "Accept", "Authorization":
+					// The transport owns these. A provider extra naming one of
+					// them would replace the credential the config set above.
+					continue
+				}
+				hreq.Header.Set(key, value)
+			}
 		}
 		if c.cfg.APIKey != "" {
 			hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)

@@ -25,6 +25,7 @@ import (
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
@@ -483,6 +484,15 @@ func resolveProviderModel(ctx context.Context, provider config.LLMProvider) (llm
 			modelConfig.ExtraHeaders = clineauth.RequestHeaders("cli")
 		}
 		return modelConfig, nil
+	case "opencode":
+		credential, err := opencodeauth.CredentialFor(ctx, provider.APIKey)
+		if err != nil {
+			return llm.ProviderConfig{}, err
+		}
+		// Zen is OpenAI-compatible, so it needs no transport of its own. The
+		// header contract is the only thing a plain config would be missing,
+		// which is what answers 401 without it.
+		return opencodeauth.ApplyCredential(modelConfig, credential, ""), nil
 	case "minimax":
 		credential, err := minimaxauth.Resolve(ctx, minimaxauth.NewStore(regionFor(provider)))
 		if err != nil {

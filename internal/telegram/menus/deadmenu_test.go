@@ -39,12 +39,16 @@ func TestEveryHubEntryResolvesToARealMenu(t *testing.T) {
 // just a Back row, or the hub row is decorative.
 func TestSubscriptionProvidersOfferTheirEntryPoint(t *testing.T) {
 	cases := map[string]string{
-		"hermes":  "provider:hermes",
-		"xai":     "provider:xai",
-		"minimax": "provider:minimax",
-		"cline":   "provider:cline",
+		"hermes":   "provider:hermes",
+		"xai":      "provider:xai",
+		"minimax":  "provider:minimax",
+		"cline":    "provider:cline",
+		"opencode": "provider:opencode",
 	}
-	labels := map[string]string{"hermes": "Hermes", "xai": "xAI", "minimax": "MiniMax", "cline": "Cline"}
+	labels := map[string]string{
+		"hermes": "Hermes", "xai": "xAI", "minimax": "MiniMax",
+		"cline": "Cline", "opencode": "OpenCode Zen",
+	}
 	for name, entry := range cases {
 		raw, _ := json.Marshal(InlineForChat(name, 0, 1, ""))
 		// The label names the provider, so a menu reached by tapping Cline says

@@ -21,6 +21,7 @@ import (
 
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
+	"ceraa/internal/opencodeauth"
 )
 
 type doctorCheck struct {
@@ -190,6 +191,20 @@ func checkSubscriptionCredential(ctx context.Context, provider config.LLMProvide
 			return doctorCheck{"provider", "FAIL", "Hermes credential: " + err.Error()}
 		}
 		return doctorCheck{"provider", "OK", "Hermes credential resolves for " + provider.HermesProvider}
+	case llm.OpenCodeSubscription:
+		// A static bearer token, so unlike the OAuth providers there is nothing
+		// to refresh and a resolve is a presence check rather than proof the
+		// grant still works. Proving the key works would mean a completions
+		// call, which bills the account, and doctor is not the place for that.
+		credential, err := opencodeauth.CredentialFor(deadline, provider.APIKey)
+		if err != nil {
+			return doctorCheck{"provider", "FAIL", "OpenCode credential: " + err.Error()}
+		}
+		detail := "OpenCode Zen credential resolves"
+		if credential.ProjectID != "" {
+			detail += " (project " + credential.ProjectID + ")"
+		}
+		return doctorCheck{"provider", "OK", detail}
 	}
 	return doctorCheck{"provider", "WARN", "unknown subscription provider: " + provider.Subscription}
 }

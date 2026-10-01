@@ -106,7 +106,7 @@ func TestProviderModelCallbackRoutes(t *testing.T) {
 	for providerID, marker := range map[string]string{
 		"codex": llm.CodexSubscription, "hermes": llm.HermesSubscription,
 		"xai": llm.XAISubscription, "minimax": llm.MiniMaxSubscription,
-		"cline": llm.ClineSubscription,
+		"cline": llm.ClineSubscription, "opencode": llm.OpenCodeSubscription,
 	} {
 		t.Run(providerID, func(t *testing.T) {
 			restore := stubState(t)
@@ -137,7 +137,7 @@ func TestSubscriptionMarkersMapToEveryProfile(t *testing.T) {
 	for providerID, want := range map[string]string{
 		"codex": llm.CodexSubscription, "hermes": llm.HermesSubscription,
 		"xai": llm.XAISubscription, "minimax": llm.MiniMaxSubscription,
-		"cline": llm.ClineSubscription,
+		"cline": llm.ClineSubscription, "opencode": llm.OpenCodeSubscription,
 	} {
 		if got := subscriptionMarkerFor(providerID); got != want {
 			t.Errorf("%s maps to %q, want %q", providerID, got, want)

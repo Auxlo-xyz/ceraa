@@ -504,6 +504,8 @@ func handleCallback(token string, q *callbackQuery) {
 				selectMinimaxProvider(token, chatID)
 			case "cline":
 				selectClineProvider(token, chatID)
+			case "opencode":
+				selectOpenCodeProvider(token, chatID)
 			}
 		case providerRouteModels:
 			label := menus.SubscriptionLabel(providerID)
@@ -532,6 +534,10 @@ func handleCallback(token string, q *callbackQuery) {
 				startXaiLogin(token, chatID)
 			case "cline":
 				startClineLogin(token, chatID)
+			case "opencode":
+				// Re-entering the key. There is no token to refresh, so this is
+				// the same onboarding flow the first key went through.
+				startOpenCodeOnboarding(token, chatID)
 			}
 		}
 		return

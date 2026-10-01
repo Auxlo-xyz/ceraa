@@ -21,6 +21,7 @@ import (
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
@@ -134,6 +135,13 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 				modelConfig.ExtraHeaders = clineauth.RequestHeaders(agentRunID)
 			}
 			return modelConfig, nil
+		case "opencode":
+			credential, err := opencodeauth.CredentialFor(ctx, provider.APIKey)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			// Zen is OpenAI-compatible, so it needs no transport of its own.
+			return opencodeauth.ApplyCredential(modelConfig, credential, agentRunID), nil
 		case "minimax":
 			credential, err := minimaxauth.Resolve(ctx, minimaxauth.NewStore(regionForProvider(provider)))
 			if err != nil {

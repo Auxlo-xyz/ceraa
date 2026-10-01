@@ -24,6 +24,7 @@ import (
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
 	"ceraa/internal/logger"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/menus"
 )
@@ -950,17 +951,37 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			// Prove the base URL, model, and key work together before storing
 			// them, so a bad combination is reported here rather than on the
 			// user's first real task.
-			if verifyErr := verifyProvider(context.Background(), draft.URL, text, draft.Model); verifyErr != nil {
+			verifyErr := verifyProvider(context.Background(), draft.URL, text, draft.Model)
+			if draft.ID == llm.OpenCodeSubscription {
+				// Zen expects a header contract on every request, so the check
+				// sends it too. Verifying with a bare Authorization header would
+				// be a different request from the one the transport makes.
+				verifyErr = verifyProviderWithHeaders(context.Background(), draft.URL, text, draft.Model,
+					opencodeauth.RequestHeaders("verify", ""))
+			}
+			if verifyErr != nil {
 				logger.Warn("provider onboarding verification failed for " + draft.ID + ": " + verifyErr.Error())
 				send(token, chatID, "❌ That provider did not answer: "+verifyErr.Error()+"\n\nNothing was saved. Check the base URL, model ID, and API key, then start over.")
 				return true
 			}
 			logger.Info("provider onboarding: verified " + draft.ID)
-			if err := secret.Set("provider_api_key_"+draft.ID, text); err != nil {
-				send(token, chatID, "Provider key save failed: "+err.Error())
-				return true
-			}
 			profile := config.ProviderProfile{URL: draft.URL, Model: draft.Model}
+			if draft.ID == llm.OpenCodeSubscription {
+				// The key goes into the encrypted store beside the OAuth tokens
+				// rather than into provider_api_key_, because that is where
+				// opencodeauth reads it and because the store is encrypted while
+				// the profile field is not.
+				if err := opencodeauth.Save(opencodeauth.Credential{APIKey: text}); err != nil {
+					send(token, chatID, "OpenCode credential save failed: "+err.Error())
+					return true
+				}
+				profile.Subscription = llm.OpenCodeSubscription
+			} else {
+				if err := secret.Set("provider_api_key_"+draft.ID, text); err != nil {
+					send(token, chatID, "Provider key save failed: "+err.Error())
+					return true
+				}
+			}
 			if err := defaultState.setProviderProfile(draft.ID, profile); err != nil {
 				send(token, chatID, "Provider profile save failed: "+err.Error())
 				return true

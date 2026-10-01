@@ -11,6 +11,7 @@ import (
 	"ceraa/internal/config"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
 )
@@ -132,5 +133,84 @@ func TestTelegramClineModelCarriesTheGatewayHeaders(t *testing.T) {
 		if model.ExtraHeaders[key] == "" {
 			t.Errorf("%s is empty", key)
 		}
+	}
+}
+
+// Zen answers a request with no gateway headers, and the contract is the whole
+// reason this provider exists as a first-class one rather than as a plain URL
+// plus key. The resolver has to carry it, and it has to name Ceraa rather than
+// the OpenCode CLI.
+func TestTelegramResolverGivesOpenCodeItsHeaderContract(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatalf("secret store: %v", err)
+	}
+	if err := opencodeauth.Save(opencodeauth.Credential{APIKey: "zk-opencode", ProjectID: "ws-7"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	profile := config.LLMProvider{
+		URL: llm.OpenCodeBaseURL, Model: llm.DefaultOpenCodeModel,
+		Subscription: llm.OpenCodeSubscription,
+	}
+	model, err := providerModelResolver(profile, "tg-opencode")(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if model.APIKey != "zk-opencode" {
+		t.Errorf("API key = %q, want zk-opencode; the request would be unauthenticated", model.APIKey)
+	}
+	if model.BaseURL != llm.OpenCodeBaseURL {
+		t.Errorf("BaseURL = %q, want %q", model.BaseURL, llm.OpenCodeBaseURL)
+	}
+	if !opencodeauth.HasOpenCodeHeaders(model.ExtraHeaders) {
+		t.Errorf("ExtraHeaders = %v, missing the gateway contract", model.ExtraHeaders)
+	}
+	headers := model.ExtraHeaders
+	if headers[opencodeauth.HeaderClient] != "ceraa" {
+		t.Errorf("%s = %q, want ceraa; this program is Ceraa, not the OpenCode CLI",
+			opencodeauth.HeaderClient, headers[opencodeauth.HeaderClient])
+	}
+	if headers[opencodeauth.HeaderProject] != "ws-7" {
+		t.Errorf("%s = %q, want ws-7 from the stored credential", opencodeauth.HeaderProject, headers[opencodeauth.HeaderProject])
+	}
+	if model.ExtraHeadersFunc == nil {
+		t.Fatal("ExtraHeadersFunc is nil; x-opencode-request would never be issued per request")
+	}
+	// The per-request id has to actually differ between calls, or it correlates
+	// nothing and the static map would have been enough.
+	first := model.ExtraHeadersFunc("ses-a")[opencodeauth.HeaderRequest]
+	second := model.ExtraHeadersFunc("ses-a")[opencodeauth.HeaderRequest]
+	if first == "" || first == second {
+		t.Errorf("request id = %q then %q, want two distinct values", first, second)
+	}
+	if model.ExtraHeadersFunc("ses-a")[opencodeauth.HeaderSession] != "ses-a" {
+		t.Errorf("the per-request builder did not take the session it was given: %v", model.ExtraHeadersFunc("ses-a"))
+	}
+}
+
+// A profile that already carries an api_key resolves without anything in the
+// encrypted store, so a hand-written config works and onboarding is not the only
+// way in.
+func TestTelegramResolverAcceptsOpenCodeFromTheProfileKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatalf("secret store: %v", err)
+	}
+	profile := config.LLMProvider{
+		URL: llm.OpenCodeBaseURL, Model: llm.DefaultOpenCodeModel,
+		Subscription: llm.OpenCodeSubscription, APIKey: "zk-profile",
+	}
+	model, err := providerModelResolver(profile, "tg-opencode-profile")(context.Background())
+	if err != nil {
+		t.Fatalf("resolve with an empty store and a profile key: %v", err)
+	}
+	if model.APIKey != "zk-profile" {
+		t.Errorf("API key = %q, want zk-profile", model.APIKey)
+	}
+	if !opencodeauth.HasOpenCodeHeaders(model.ExtraHeaders) {
+		t.Errorf("ExtraHeaders = %v, the contract was not applied on the profile path", model.ExtraHeaders)
 	}
 }

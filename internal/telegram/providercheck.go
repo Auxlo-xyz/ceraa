@@ -20,6 +20,20 @@ import (
 // endpoint does not serve surfaced as a bare HTTP error mid-run with no
 // indication of which of the three values was wrong.
 func verifyProvider(ctx context.Context, baseURL, apiKey, model string) error {
+	return verifyProviderWithHeaders(ctx, baseURL, apiKey, model, nil)
+}
+
+// verifyProviderWithHeaders is verifyProvider for a gateway that expects a
+// header contract on every request.
+//
+// The check has to send what real traffic will send. Verifying Zen with a bare
+// Authorization header would be a different request from the one the transport
+// makes, so the check could pass or fail for reasons that have nothing to do with
+// whether the provider works once configured.
+//
+// Headers are applied before Content-Type and Authorization, so neither of the
+// ones the check owns can be replaced by a header the caller passed.
+func verifyProviderWithHeaders(ctx context.Context, baseURL, apiKey, model string, headers map[string]string) error {
 	endpoint, err := providerCompletionsURL(baseURL)
 	if err != nil {
 		return err
@@ -41,6 +55,9 @@ func verifyProvider(ctx context.Context, baseURL, apiKey, model string) error {
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {

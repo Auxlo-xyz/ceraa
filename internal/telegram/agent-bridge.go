@@ -29,6 +29,7 @@ import (
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
@@ -474,6 +475,13 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 				model.ExtraHeaders = clineauth.RequestHeaders(sessionID)
 			}
 			return model, nil
+		case "opencode":
+			credential, err := opencodeauth.CredentialFor(ctx, provider.APIKey)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			// Zen is OpenAI-compatible, so it needs no transport of its own.
+			return opencodeauth.ApplyCredential(model, credential, sessionID), nil
 		case "hermes":
 			store := hermesauth.NewStore()
 			credential, err := store.Resolve(ctx, provider.HermesProvider)

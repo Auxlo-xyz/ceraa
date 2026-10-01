@@ -14,6 +14,7 @@ import (
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
@@ -202,9 +203,12 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("MiniMax", "🎬", minimaxauth.SignedIn(minimaxauth.RegionGlobal), selection().ActiveProvider == llm.MiniMaxSubscription, "provider:minimax")
 	case "cline":
 		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), selection().ActiveProvider == llm.ClineSubscription, "provider:cline")
+	case "opencode":
+		return subscriptionMenu("OpenCode Zen", "🌌", opencodeauth.SignedIn(), selection().ActiveProvider == llm.OpenCodeSubscription, "provider:opencode")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
+		"opencode:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
-		"provider:cline:models", "provider:codex:models":
+		"provider:cline:models", "provider:codex:models", "provider:opencode:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -388,6 +392,18 @@ func ProviderMenu() map[string]any {
 		clineLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": clineLabel, "callback_data": "provider:cline"}})
+	// OpenCode Zen is a row for the same reason as the others: it is an API key
+	// rather than an account login, but it is still a first-class provider.
+	openCodeLabel := "🌌 OpenCode Zen"
+	switch {
+	case active == llm.OpenCodeSubscription:
+		openCodeLabel = "✅ " + openCodeLabel
+	case opencodeauth.SignedIn():
+		openCodeLabel += " · switch to it"
+	default:
+		openCodeLabel += " · add key"
+	}
+	rows = append(rows, []map[string]string{{"text": openCodeLabel, "callback_data": "provider:opencode"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -1238,6 +1254,8 @@ func subscriptionForProvider(providerID string) string {
 		return llm.MiniMaxSubscription
 	case "cline":
 		return llm.ClineSubscription
+	case "opencode":
+		return llm.OpenCodeSubscription
 	default:
 		return ""
 	}
@@ -1255,6 +1273,8 @@ func subscriptionLabel(providerID string) string {
 		return "MiniMax"
 	case "cline":
 		return "Cline"
+	case "opencode":
+		return "OpenCode Zen"
 	default:
 		return providerID
 	}

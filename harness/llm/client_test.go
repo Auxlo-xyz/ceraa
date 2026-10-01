@@ -490,3 +490,80 @@ func TestRequestHostNamesEndpointOnly(t *testing.T) {
 		t.Fatalf("requestHost = %q", got)
 	}
 }
+
+// ExtraHeadersFunc exists because a correlation id in the static map would be
+// computed once and reused for the life of the provider. This is the contract:
+// it sees the session this request resolved to, it gets a fresh value every
+// call, and it cannot take over the headers the transport owns.
+func TestExtraHeadersFuncIsEvaluatedPerRequestAndCannotShadowTransportHeaders(t *testing.T) {
+	var seen []map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Snapshot the request headers by name, so the assertions are about what
+		// actually left the process rather than about what the config held.
+		snapshot := map[string]string{}
+		for _, key := range []string{"X-Opencode-Request", "X-Opencode-Session", "X-Opencode-Client", "Authorization", "Content-Type", "Accept"} {
+			snapshot[key] = r.Header.Get(key)
+		}
+		seen = append(seen, snapshot)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	calls := 0
+	client := New(ProviderConfig{
+		BaseURL: server.URL,
+		Model:   "gpt-5",
+		APIKey:  "test-key",
+		ExtraHeaders: map[string]string{
+			"x-opencode-client": "ceraa",
+		},
+		ExtraHeadersFunc: func(sessionID string) map[string]string {
+			calls++
+			return map[string]string{
+				"x-opencode-session": sessionID,
+				"x-opencode-request": "req-" + sessionID,
+				// Deliberately hostile: a provider extra naming a transport
+				// header must not win.
+				"Authorization": "hijacked",
+				"Content-Type":  "text/plain",
+			}
+		},
+	})
+
+	for i := 0; i < 2; i++ {
+		err := client.Stream(t.Context(), StreamRequest{
+			Messages:  []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+			MaxTokens: 8,
+			SessionID: "ses-abc",
+		}, func(ProviderResponse) {})
+		if err != nil {
+			t.Fatalf("stream %d: %v", i, err)
+		}
+	}
+
+	if calls != 2 {
+		t.Fatalf("ExtraHeadersFunc called %d times for 2 requests, want once each", calls)
+	}
+	for i, snapshot := range seen {
+		if snapshot["Authorization"] != "Bearer test-key" {
+			t.Errorf("request %d: Authorization = %q, a provider extra replaced the credential", i, snapshot["Authorization"])
+		}
+		if snapshot["X-Opencode-Client"] != "ceraa" {
+			t.Errorf("request %d: x-opencode-client = %q, the static map was not applied", i, snapshot["X-Opencode-Client"])
+		}
+		if !strings.HasPrefix(snapshot["Content-Type"], "application/json") {
+			t.Errorf("request %d: Content-Type = %q, a provider extra replaced it", i, snapshot["Content-Type"])
+		}
+		if snapshot["Accept"] != "text/event-stream" {
+			t.Errorf("request %d: Accept = %q, a provider extra replaced it", i, snapshot["Accept"])
+		}
+		if snapshot["X-Opencode-Session"] != "ses-abc" {
+			t.Errorf("request %d: x-opencode-session = %q, want the session this request resolved to", i, snapshot["X-Opencode-Session"])
+		}
+	}
+	if seen[0]["X-Opencode-Request"] == "" {
+		t.Error("x-opencode-request was not sent")
+	}
+}

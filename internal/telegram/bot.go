@@ -16,6 +16,7 @@ import (
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/oauthdevice"
+	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
 	"ceraa/internal/provision"
@@ -2057,6 +2058,75 @@ func selectClineProvider(token string, chatID int64) {
 	clineEntryPoint(token, chatID)
 }
 
+// selectOpenCodeProvider either activates a Zen profile that already has a key
+// or starts the two-step onboarding that asks for one.
+func selectOpenCodeProvider(token string, chatID int64) {
+	openCodeEntryPoint(token, chatID)
+}
+
+// openCodeEntryPoint is indirected the same way clineEntryPoint is, so a test
+// can assert the provider menu routes provider:opencode here without reaching for
+// a live endpoint.
+var openCodeEntryPoint = func(token string, chatID int64) {
+	if opencodeauth.SignedIn() {
+		activateOpenCodeProvider(token, chatID, "")
+		return
+	}
+	startOpenCodeOnboarding(token, chatID)
+}
+
+// startOpenCodeOnboarding asks for a model and then a key, reusing the shared
+// provider onboarding state machine rather than a flow of its own.
+//
+// The base URL is filled in rather than prompted for: Zen has one documented
+// root and asking the user for it invites a near-miss on the path, which fails as
+// a 404 instead of as a wrong key.
+func startOpenCodeOnboarding(token string, chatID int64) {
+	pendingProvider.Store(chatID, providerDraft{
+		ID:    llm.OpenCodeSubscription,
+		URL:   llm.OpenCodeBaseURL,
+		Stage: "model",
+	})
+	send(token, chatID, "Send the model ID for OpenCode Zen, or type cancel.\nOne that appears in Zen catalog, such as "+llm.DefaultOpenCodeModel+".")
+}
+
+// activateOpenCodeProvider saves the Zen profile and makes it active.
+//
+// Reached when a key is already stored, so the only thing left to settle is the
+// model. A model carried over from another provider is not assumed to exist on
+// Zen: the endpoint serves a fixed list and a wrong id is a hard 400, so an
+// unknown one is replaced by the default rather than sent.
+func activateOpenCodeProvider(token string, chatID int64, model string) {
+	if model == "" {
+		if profile, ok := currentProfile(llm.OpenCodeSubscription); ok {
+			model = profile.Model
+		}
+	}
+	if !llm.IsOpenCodeModel(model) {
+		model = llm.DefaultOpenCodeModel
+	}
+	model, err := guardModel(llm.OpenCodeSubscription, model)
+	if err != nil {
+		logger.Warn("OpenCode activate: " + err.Error())
+		send(token, chatID, "OpenCode activation failed: "+err.Error())
+		return
+	}
+	profile := config.ProviderProfile{
+		URL:          llm.OpenCodeBaseURL,
+		Model:        model,
+		Subscription: llm.OpenCodeSubscription,
+	}
+	if err := defaultState.setProviderProfile(llm.OpenCodeSubscription, profile); err != nil {
+		send(token, chatID, "OpenCode profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider(llm.OpenCodeSubscription); err != nil {
+		send(token, chatID, "OpenCode provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "🌌 OpenCode Zen activated with model "+model+". Send a task to use it.")
+}
+
 // clineEntryPoint is the real entry point, indirected so a test can assert the
 // provider menu routes provider:cline here without starting a device login
 // against the live service.
@@ -2194,6 +2264,8 @@ func subscriptionMarkerFor(providerID string) string {
 		return llm.MiniMaxSubscription
 	case "cline":
 		return llm.ClineSubscription
+	case "opencode":
+		return llm.OpenCodeSubscription
 	default:
 		return ""
 	}
