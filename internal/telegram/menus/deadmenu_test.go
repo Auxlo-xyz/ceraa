@@ -148,3 +148,58 @@ func isBareClose(keyboard map[string]any) bool {
 	}
 	return true
 }
+
+// The hub has to actually render every entry it is supposed to show, with a
+// label a person can read.
+//
+// Dispatch and rendering are separate defects and only the first was covered.
+// OpenCode Zen resolved to a real menu the whole time and still never appeared.
+// Walking All alone cannot see that, because the entry was missing from All
+// itself: an absent provider is checked by nothing, so the loop below has to
+// start from a list written by hand rather than from the thing that was wrong.
+// A row that exists in the router but not on screen is invisible to any test
+// derived from the router, which is what the screenshot showed.
+func TestEveryHubEntryIsRenderedWithALabel(t *testing.T) {
+	keyboard := Hub()
+	rows, ok := keyboard["inline_keyboard"].([][]map[string]string)
+	if !ok {
+		t.Fatalf("Hub() returned %T for inline_keyboard", keyboard["inline_keyboard"])
+	}
+	rendered := map[string]string{}
+	for _, row := range rows {
+		for _, button := range row {
+			data := button["callback_data"]
+			if !strings.HasPrefix(data, "menu:") {
+				continue
+			}
+			rendered[strings.TrimPrefix(data, "menu:")] = button["text"]
+		}
+	}
+	// Written independently of All, which is the list that was missing an entry.
+	mustRender := []string{
+		"codex", "hermes", "xai", "minimax", "cline", "opencode",
+		"status", "provider", "model", "context",
+	}
+	for _, name := range mustRender {
+		label, ok := rendered[name]
+		if !ok {
+			t.Errorf("the hub renders no row for %q; it is listed but invisible", name)
+			continue
+		}
+		if strings.TrimSpace(label) == "" {
+			t.Errorf("the hub renders %q with an empty label", name)
+		}
+	}
+	// Everything All does list has to carry a label too, so a newly added entry
+	// cannot arrive as a blank button.
+	for _, name := range All {
+		if hubHidden[name] {
+			continue
+		}
+		if label, ok := rendered[name]; !ok {
+			t.Errorf("%q is in All but the hub renders no row for it", name)
+		} else if strings.TrimSpace(label) == "" {
+			t.Errorf("the hub renders %q with an empty label", name)
+		}
+	}
+}

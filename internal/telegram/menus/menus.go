@@ -44,7 +44,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.
@@ -1026,6 +1026,7 @@ func Hub() map[string]any {
 		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
+		"opencode": openCodeHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1100,6 +1101,22 @@ func clineHubLabel() string {
 		return "🦞 Cline · signed in"
 	default:
 		return "🦞 Cline · sign in"
+	}
+}
+
+// openCodeHubLabel names the OpenCode Zen entry by state.
+//
+// The third state says "add key" rather than "sign in", because there is no
+// login flow: the credential is an API key the user pastes. Calling it a
+// sign-in would promise a flow that does not exist.
+func openCodeHubLabel() string {
+	switch {
+	case opencodeauth.SignedIn() && selection().ActiveProvider == llm.OpenCodeSubscription:
+		return "🌌 OpenCode Zen · active"
+	case opencodeauth.SignedIn():
+		return "🌌 OpenCode Zen · key added"
+	default:
+		return "🌌 OpenCode Zen · add key"
 	}
 }
 
