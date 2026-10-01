@@ -68,3 +68,27 @@ func TestBannerNeverOverflowsTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// The three lines of the startup block, measured. The provider row used to come
+// out indented by one, because a right-aligned gutter pads a single-row block by
+// a space and there is nothing on the left to line up with, so the block started
+// half a cell off its own margin.
+func TestBannerRowsShareOneLeftEdge(t *testing.T) {
+	got := Plain().Banner("0.1.0", "", "default", 80)
+	rows := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(rows) != 2 {
+		t.Fatalf("expected the name and the provider, got %d rows: %q", len(rows), rows)
+	}
+	edge := len(rows[0]) - len(strings.TrimLeft(rows[0], " "))
+	for i, r := range rows {
+		if got := len(r) - len(strings.TrimLeft(r, " ")); got != edge {
+			t.Errorf("row %d starts at column %d, want the shared %d: %q", i, got, edge, r)
+		}
+	}
+	if rows[0] != "  Ceraa  0.1.0" {
+		t.Errorf("name row is %q", rows[0])
+	}
+	if rows[1] != "  provider  default" {
+		t.Errorf("provider row is %q", rows[1])
+	}
+}

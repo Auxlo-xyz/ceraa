@@ -134,15 +134,22 @@ func cutCells(s string, limit int) string {
 func (b *block) render(p Palette, indent string, width int) []string {
 	var out []string
 	if b.title != "" {
-		out = append(out, p.Bold(indent+b.title))
+		// Trimmed, because the indent is applied here and a title that carried its
+		// own landed a column right of the rows beneath it. That is invisible to a
+		// test that only looks for the title's text, which is why it survived.
+		out = append(out, p.Bold(indent+strings.TrimSpace(b.title)))
 	}
 	gut := b.gutter()
 	for _, r := range b.rows {
 		label := r[0]
-		// Right-align the label into the gutter, so the values form a column.
-		pad := gut - runeLen(label) - 1
-		if pad < 0 {
-			pad = 0
+		// Left-aligned into the gutter, so the labels share an edge and the
+		// values share a column. They used to be right-aligned, which reads worse
+		// the moment there is more than one row: the left edge came out ragged,
+		// and a single-row block came out indented by one for no reason at all,
+		// which is the whole startup block shifted off its own margin.
+		pad := gut - runeLen(label)
+		if pad < 1 {
+			pad = 1
 		}
 		value := r[1]
 		if strings.TrimSpace(value) == "" {
@@ -151,7 +158,7 @@ func (b *block) render(p Palette, indent string, width int) []string {
 		}
 		// The value is appended only when it is non-empty, which is also what
 		// keeps a blank cell from shipping trailing whitespace to the terminal.
-		line := indent + strings.Repeat(" ", pad) + p.Dim(label) + "  " + value
+		line := indent + p.Dim(label) + strings.Repeat(" ", pad) + value
 		out = append(out, strings.TrimRight(p.fit(line, width), " "))
 	}
 	if b.note != "" {

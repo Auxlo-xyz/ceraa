@@ -264,7 +264,7 @@ func (l *Loop) help() {
 // unrelated lines. Right-aligning every label into one gutter makes it a table.
 func (l *Loop) status() {
 	provider, model := l.session.Model()
-	b := &block{title: "  status"}
+	b := &block{title: "status"}
 	b.add("model", model)
 	b.add("provider", provider)
 	b.add("session", l.session.SessionID())
@@ -278,7 +278,7 @@ func (l *Loop) status() {
 // model shows the active model and, when the config has more than one, the list.
 func (l *Loop) model() {
 	provider, model := l.session.Model()
-	b := &block{title: "  model"}
+	b := &block{title: "model"}
 	b.add("active", model)
 	b.add("provider", provider)
 	if l.render != nil {
