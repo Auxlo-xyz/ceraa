@@ -50,6 +50,16 @@ type Renderer struct {
 	// say "3 running" rather than only that something is.
 	live int
 
+	// Answer text is parked until it can be told apart from a Markdown table.
+	// The answer arrives a delta at a time and a table can only be laid out once
+	// its header and rule have been seen, so pipe-led lines are held. Everything
+	// else is written straight through, so prose still streams at line speed and
+	// these are empty almost all the time.
+	aTail  string
+	aLine  string
+	aCells []string
+	aTable *tableBlock
+
 	// painted records that the repaint ticker has left a status line on screen
 	// with no newline after it. Erasing is then conditional on having painted,
 	// so a plain log does not fill up with carriage returns.
@@ -162,6 +172,7 @@ func (r *Renderer) line(s string) {
 // TurnStart marks the beginning of a turn and starts the spinner.
 func (r *Renderer) TurnStart() {
 	r.setState(StateThinking)
+	r.aTail, r.aLine, r.aCells, r.aTable = "", "", nil, nil
 	r.mu.Lock()
 	r.streaming = false
 	r.live = 0
@@ -216,7 +227,160 @@ func (r *Renderer) Content(s string) {
 		// first is what keeps the answer from starting under a status frame.
 		r.draw(func() { fmt.Fprint(r.out, "\n"+r.pal.BoldOn()) })
 	}
-	r.write(s)
+	for _, piece := range r.answer(s) {
+		r.write(piece)
+	}
+}
+
+// answer pushes streamed answer text through the table detector.
+//
+// The answer arrives a delta at a time and a table can only be laid out once its
+// header and rule have been seen, so something has to be held. Only a line that
+// could become a table row is: a row has to begin with a pipe, so a line that does
+// not is written through the moment it arrives, and the answer still starts
+// moving on the first token.
+//
+// The unit is a line for two reasons. A complete line can be wrapped properly
+// instead of being handed to the terminal to cut at a cell, and an incomplete
+// line that starts with a pipe can be parked until its newline says what it is.
+func (r *Renderer) answer(s string) []string {
+	width := r.width()
+	var out []string
+	for rest := s; ; {
+		i := strings.IndexByte(rest, '\n')
+		if i < 0 {
+			// While a row candidate is held, everything keeps going into it. The
+			// chunk that continues `| **bash` does not itself start with a pipe,
+			// and judging that chunk on its own wrote it straight out ahead of the
+			// prefix already held, which put the two halves in the wrong order.
+			if r.aTail != "" || looksLikeRowStart(rest) {
+				r.aTail += rest
+			} else {
+				out = append(out, rest)
+			}
+			return out
+		}
+		line := r.aTail + rest[:i]
+		r.aTail = ""
+		rest = rest[i+1:]
+		if looksLikeRowStart(line) {
+			out = append(out, r.answerLine(line, width)...)
+			continue
+		}
+		// A line that is not a row ends any table in progress. This has to be
+		// settled here rather than inside answerLine, because answerLine is only
+		// reached by pipe-led lines: a blank line after the last row is what closes
+		// a table, and it never gets that far, so the table was held until the
+		// answer ended and printed after the prose that followed it.
+		if r.aTable != nil {
+			finished := r.aTable
+			r.aTable = nil
+			out = append(out, terminate(renderTable(r.pal, finished, width))...)
+		}
+		// Prose. A held header that never got its rule is released first, so it
+		// keeps its place in the answer rather than jumping to the next line.
+		out = append(out, r.releaseHeld(width)...)
+		out = append(out, wrapLines(line, width)...)
+	}
+}
+
+// looksLikeRowStart reports whether a line could still turn into a table row.
+//
+// Only the leading pipe is checked, and only the first character that is not
+// whitespace. A partial line is judged on what it has so far, which is enough:
+// a row cannot begin with anything else.
+func looksLikeRowStart(s string) bool {
+	return strings.HasPrefix(strings.TrimLeft(s, " "), "|")
+}
+
+// answerLine decides what one complete pipe-led line of answer text is: a table
+// row to hold, or the end of a table.
+func (r *Renderer) answerLine(line string, width int) []string {
+	if r.aTable != nil {
+		if cells, ok := parseTableRow(line); ok {
+			r.aTable.rows = append(r.aTable.rows, cells)
+			return nil
+		}
+		// Not a row, so the table ended here. Render it, then judge this line.
+		finished := r.aTable
+		r.aTable = nil
+		return append(terminate(renderTable(r.pal, finished, width)), r.answerLine(line, width)...)
+	}
+
+	cells, isRow := parseTableRow(line)
+	if !isRow {
+		// A pipe-led line that is not a row after all: prose that mentions a pipe.
+		return append(r.releaseHeld(width), wrapLines(line, width)...)
+	}
+	// A rule straight after a held header is what makes this a table rather than
+	// a sentence that happens to contain a pipe.
+	if r.aCells != nil && isTableRule(cells) && len(cells) == len(r.aCells) {
+		r.aTable = &tableBlock{header: r.aCells}
+		r.aCells = nil
+		r.aLine = ""
+		return nil
+	}
+	// Hold it. One more line decides, and guessing wrong costs a line of delay
+	// rather than a mangled table.
+	out := r.releaseHeld(width)
+	r.aLine, r.aCells = line, cells
+	return out
+}
+
+// releaseHeld writes out a held header that turned out not to be one.
+func (r *Renderer) releaseHeld(width int) []string {
+	if r.aLine == "" {
+		return nil
+	}
+	line := r.aLine
+	r.aLine, r.aCells = "", nil
+	return wrapLines(line, width)
+}
+
+// flushAnswer empties the detector, so a table that ran to the end of the answer
+// is still laid out rather than lost.
+func (r *Renderer) flushAnswer() {
+	if r.aTail == "" && r.aLine == "" && r.aTable == nil {
+		return
+	}
+	width := r.width()
+	var out []string
+	if r.aTable != nil {
+		out = append(out, terminate(renderTable(r.pal, r.aTable, width))...)
+		r.aTable = nil
+	}
+	out = append(out, r.releaseHeld(width)...)
+	if r.aTail != "" {
+		out = append(out, wrapLines(r.aTail, width)...)
+		r.aTail = ""
+	}
+	for _, piece := range out {
+		r.write(piece)
+	}
+}
+
+// terminate ends every row a table rendered.
+//
+// The table builders return rows without a newline, because they are also used
+// by tests that read them as a list. A piece the renderer writes has to carry its
+// own newline, and the one that forgot did not: the whole table went out on a
+// single line, which the terminal then cut wherever it liked.
+func terminate(rows []string) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r+"\n")
+	}
+	return out
+}
+
+// wrapLines wraps one line and terminates every row it produced.
+func wrapLines(line string, width int) []string {
+	rows := wrapText(line, width)
+	out := make([]string, 0, len(rows))
+	for _, l := range rows {
+		out = append(out, l+"\n")
+	}
+	return out
 }
 
 // Reasoning streams model thinking.
@@ -245,6 +409,9 @@ func (r *Renderer) Reasoning(s string) {
 // Without this a tool line would be printed on the same row as the tail of an
 // answer, and the next answer would continue in bold from the wrong place.
 func (r *Renderer) closeStream() {
+	// Before the reset, so a table that ran to the end of the answer is laid out
+	// as part of the answer rather than after the style that framed it.
+	r.flushAnswer()
 	r.mu.Lock()
 	wasStreaming := r.streaming
 	r.streaming = false

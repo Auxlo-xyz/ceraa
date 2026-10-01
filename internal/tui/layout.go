@@ -405,9 +405,31 @@ func describeCount(n int, noun string) string {
 	return fmt.Sprintf("%d %s%s", n, noun, plural(n))
 }
 
-// composerHint is the placeholder in front of the caret.
+// The composer placeholder, longest first.
 //
 // It names what the line is for and what a slash does, because the chevron alone
 // says neither and a first run should not have to guess. Dim, so it recedes the
 // moment anything is typed in front of it.
-const composerHint = "Message Ceraa\u2026  (/ for commands)"
+const (
+	composerHintFull  = "Message Ceraa\u2026  (/ for commands)"
+	composerHintShort = "Message Ceraa\u2026"
+)
+
+// composerHintFor picks a placeholder that leaves the input room to type in.
+//
+// The full one is forty one cells. A phone is forty four, so the chevron and the
+// placeholder together filled the line and left two cells of input, which is a
+// prompt you cannot write a word into. The placeholder is the first thing to go
+// as the terminal narrows, because it is decoration and the caret is not.
+func composerHintFor(width int) string {
+	const chevron = 2
+	room := width - chevron
+	switch {
+	case room >= visibleWidth(composerHintFull)+12:
+		return composerHintFull
+	case room >= visibleWidth(composerHintShort)+8:
+		return composerHintShort
+	default:
+		return ""
+	}
+}

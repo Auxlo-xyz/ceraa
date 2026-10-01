@@ -174,7 +174,7 @@ func (l *Loop) prompt() {
 	// is where the eye expects it. The placeholder says what the line is for and
 	// that a slash is a command, because a bare chevron says neither and a first
 	// run should not have to guess.
-	fmt.Fprint(l.out, l.pal.Bold(glyph("prompt")+" ")+l.pal.Dim(composerHint)+" ")
+	fmt.Fprint(l.out, l.pal.Bold(glyph("prompt")+" ")+l.pal.Dim(composerHintFor(width))+" ")
 }
 
 // hint prints the key hints, once.
