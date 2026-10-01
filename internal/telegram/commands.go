@@ -948,6 +948,13 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				return true
 			}
 			pendingProvider.Delete(chatID)
+			// A provider onboarded straight to the key stage never collected a
+			// model, so it has none to verify or to save. Zen serves a fixed
+			// catalog and the default is the one the picker shows first, which
+			// is the same choice the user would have made from the list.
+			if draft.Model == "" {
+				draft.Model = llm.DefaultOpenCodeModel
+			}
 			// Prove the base URL, model, and key work together before storing
 			// them, so a bad combination is reported here rather than on the
 			// user's first real task.

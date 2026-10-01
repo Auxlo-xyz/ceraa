@@ -2075,19 +2075,32 @@ var openCodeEntryPoint = func(token string, chatID int64) {
 	startOpenCodeOnboarding(token, chatID)
 }
 
-// startOpenCodeOnboarding asks for a model and then a key, reusing the shared
+// startOpenCodeOnboarding asks for a key and nothing else, reusing the shared
 // provider onboarding state machine rather than a flow of its own.
 //
-// The base URL is filled in rather than prompted for: Zen has one documented
-// root and asking the user for it invites a near-miss on the path, which fails as
-// a 404 instead of as a wrong key.
+// It starts at "key" rather than at "model". The base URL is filled in rather
+// than prompted for: Zen has one documented root and asking the user for it
+// invites a near-miss on the path, which fails as a 404 instead of as a wrong
+// key. The model is the same argument one stage further along. Zen serves 84 of
+// them, an id is not something a person invents, and a free-form prompt here
+// puts the catalog question in the one place that cannot show the catalog. The
+// picker under Model lists all of them and marks the active one, so this screen
+// only has to establish that a credential exists.
 func startOpenCodeOnboarding(token string, chatID int64) {
-	pendingProvider.Store(chatID, providerDraft{
+	pendingProvider.Store(chatID, openCodeDraft())
+	send(token, chatID, "Send your OpenCode Zen API key, or type cancel.\n\nPick the model afterwards from the Model menu.")
+}
+
+// openCodeDraft is the onboarding state, split out so the stage it starts at can
+// be asserted without a send. The stage is the whole behaviour: starting at
+// "model" is what put a free-form model prompt in front of someone who was only
+// here to paste a key.
+func openCodeDraft() providerDraft {
+	return providerDraft{
 		ID:    llm.OpenCodeSubscription,
 		URL:   llm.OpenCodeBaseURL,
-		Stage: "model",
-	})
-	send(token, chatID, "Send the model ID for OpenCode Zen, or type cancel.\nOne that appears in Zen catalog, such as "+llm.DefaultOpenCodeModel+".")
+		Stage: "key",
+	}
 }
 
 // activateOpenCodeProvider saves the Zen profile and makes it active.

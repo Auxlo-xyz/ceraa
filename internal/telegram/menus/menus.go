@@ -204,7 +204,7 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 	case "cline":
 		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), selection().ActiveProvider == llm.ClineSubscription, "provider:cline")
 	case "opencode":
-		return subscriptionMenu("OpenCode Zen", "🌌", opencodeauth.SignedIn(), selection().ActiveProvider == llm.OpenCodeSubscription, "provider:opencode")
+		return subscriptionAuthMenu("OpenCode Zen", opencodeauth.SignedIn(), selection().ActiveProvider == llm.OpenCodeSubscription, "provider:opencode", true)
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
 		"opencode:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
@@ -1147,8 +1147,24 @@ func codexHubLabel() string {
 // the only one that ever worked, and the same shape is what makes the others
 // consistent with it.
 func subscriptionMenu(label, icon string, signedIn, active bool, entry string) map[string]any {
+	return subscriptionAuthMenu(label, signedIn, active, entry, false)
+}
+
+// subscriptionAuthMenu builds the subscription screen, wording the credential
+// buttons for how that credential is actually obtained.
+//
+// keyBased separates a pasted API key from an OAuth login. Both are "you are not
+// signed in yet", but only one of them can be told to go sign in: offering
+// "Sign in" for a provider whose whole flow is paste a key promises a login
+// screen that does not exist, and offering "Add key" for a device login would
+// hide the browser step behind the phrase it needs.
+func subscriptionAuthMenu(label string, signedIn, active bool, entry string, keyBased bool) map[string]any {
 	row := func(text, data string) map[string]string {
 		return map[string]string{"text": text, "callback_data": data}
+	}
+	addKey, rekey := "🔑 Sign in to "+label, "🔁 Sign in again"
+	if keyBased {
+		addKey, rekey = "🔑 Add "+label+" key", "🔁 Replace key"
 	}
 	// Re-authentication gets its own callback. It used to be the same entry as
 	// "Switch to", and the entry point activates when a credential exists, so the
@@ -1162,16 +1178,16 @@ func subscriptionMenu(label, icon string, signedIn, active bool, entry string) m
 		rows = append(rows, []map[string]string{
 			row("✅ "+label+" is active", "noop"),
 			row("🧠 Model", entry+":models"),
-			row("🔁 Sign in again", relogin),
+			row(rekey, relogin),
 		})
 	case signedIn:
 		rows = append(rows, []map[string]string{
 			row("✅ Switch to "+label, entry),
 			row("🧠 Model", entry+":models"),
-			row("🔁 Sign in again", relogin),
+			row(rekey, relogin),
 		})
 	default:
-		rows = append(rows, []map[string]string{row("🔑 Sign in to "+label, entry)})
+		rows = append(rows, []map[string]string{row(addKey, entry)})
 	}
 	rows = append(rows, []map[string]string{row("◀️ Back", "menu:hub")})
 	return map[string]any{"inline_keyboard": rows}
