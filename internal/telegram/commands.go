@@ -968,7 +968,7 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			}
 			if verifyErr != nil {
 				logger.Warn("provider onboarding verification failed for " + draft.ID + ": " + verifyErr.Error())
-				send(token, chatID, "❌ That provider did not answer: "+verifyErr.Error()+"\n\nNothing was saved. Check the base URL, model ID, and API key, then start over.")
+				send(token, chatID, "❌ That provider did not answer: "+verifyErr.Error()+"\n\nNothing was saved. Fix what is described above and start over.")
 				return true
 			}
 			logger.Info("provider onboarding: verified " + draft.ID)

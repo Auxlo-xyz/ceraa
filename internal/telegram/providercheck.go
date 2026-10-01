@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"bytes"
+	"ceraa/harness/llm"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,7 +73,15 @@ func verifyProviderWithHeaders(ctx context.Context, baseURL, apiKey, model strin
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	return fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, providerErrorText(body))
+	message := providerErrorText(body)
+	// The status and the server's words are not an instruction. Zen refuses
+	// three different ways and each has its own fix, none of which is the key
+	// that was just typed, so the caller is told what to do rather than what
+	// came back.
+	if hint := providerFailureHint(body); hint != "" {
+		message += "\n\n" + hint
+	}
+	return fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, message)
 }
 
 // providerCompletionsURL normalizes a configured base URL into a completions
@@ -139,4 +148,32 @@ func providerErrorText(body []byte) string {
 		return "(empty response body)"
 	}
 	return text
+}
+
+// providerFailureHint says what to do about a refusal, or returns "" when the
+// error is not one this code recognises.
+//
+// Sweeping Zen's catalog with a live key on 2026-10-01 found exactly three ways
+// it says no, and the default model was on the wrong side of one of them: the
+// free tier is refused per model rather than per client, so a request that is
+// accepted for one free id is refused for the next, and neither the id nor the
+// refusal says so.
+func providerFailureHint(body []byte) string {
+	text := string(body)
+	switch {
+	case strings.Contains(text, "FreeTierError"), strings.Contains(text, "free tier can only be used"):
+		return "That model is only served from inside the OpenCode app, so no key works for it from here. " +
+			"Pick another model under Model: " + llm.DefaultOpenCodeModel + " is the free one that answers outside the app."
+	case strings.Contains(text, "Insufficient account funds"):
+		return "The key is good, the model is good, and the account has no balance. " +
+			"Add funds at opencode.ai, or pick " + llm.DefaultOpenCodeModel + " which costs nothing."
+	case strings.Contains(text, "OpenCode Go subscription"):
+		return "That model belongs to OpenCode Go, which needs a $10/month subscription. " +
+			"Zen models under Model do not."
+	case strings.Contains(text, "Model is unavailable"):
+		return "Zen does not serve that model id. Pick one from Model rather than typing one."
+	case strings.Contains(text, "Invalid API key"):
+		return "Zen did not accept that key. Copy it again from opencode.ai."
+	}
+	return ""
 }
