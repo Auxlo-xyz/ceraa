@@ -107,3 +107,51 @@ func TestTheDefaultCodexModelIsOnTheList(t *testing.T) {
 		t.Errorf("DefaultCodexModel = %q, which is not in CodexModels", DefaultCodexModel)
 	}
 }
+
+// The hint and the picker have to agree. The hint names a model as the one that
+// answers, so that id must be in the catalog and must be first, and the set the
+// hint could be read as endorsing must all be in the catalog too - otherwise the
+// user is sent to a model the picker will not offer.
+func TestTheFreeModelsAreInTheCatalogAndFirst(t *testing.T) {
+	if len(OpenCodeFreeModels) == 0 {
+		t.Fatal("OpenCodeFreeModels is empty; the hint has nothing to point at")
+	}
+	if OpenCodeFreeModels[0] != DefaultOpenCodeModel {
+		t.Errorf("OpenCodeFreeModels[0] = %q, want the default %q", OpenCodeFreeModels[0], DefaultOpenCodeModel)
+	}
+	seen := map[string]int{}
+	for i, id := range OpenCodeFreeModels {
+		if !IsOpenCodeModel(id) {
+			t.Errorf("OpenCodeFreeModels[%d] = %q is not in OpenCodeModels", i, id)
+		}
+		seen[id]++
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Errorf("%q appears %d times in OpenCodeFreeModels", id, count)
+		}
+	}
+	// The free answers are the head of the catalog, in the same order, so the
+	// top of the picker is exactly what the hint can recommend.
+	for i, id := range OpenCodeFreeModels {
+		if OpenCodeModels[i] != id {
+			t.Fatalf("OpenCodeModels[%d] = %q, want %q; the free answers are meant to lead the catalog",
+				i, OpenCodeModels[i], id)
+		}
+	}
+}
+
+// A model that cannot answer from here must not be presented as one that can.
+// jev-1.13 and ling-3.0-flash-fin answer ModelProtocolUnsupported and 404
+// respectively; either of them sitting in the free answer set would make the
+// hint send a user into a refusal.
+func TestTheFreeAnswerSetDropsTheOnesThatRefuse(t *testing.T) {
+	refused := []string{"jev-1.13-free", "ling-3.0-flash-fin-free", "deepseek-v4-flash-free"}
+	for _, id := range refused {
+		for _, free := range OpenCodeFreeModels {
+			if id == free {
+				t.Errorf("%q does not answer from here but is listed as a free answer", id)
+			}
+		}
+	}
+}

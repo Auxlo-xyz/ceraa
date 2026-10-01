@@ -185,8 +185,12 @@ func TestTelegramResolverGivesOpenCodeItsHeaderContract(t *testing.T) {
 	if first == "" || first == second {
 		t.Errorf("request id = %q then %q, want two distinct values", first, second)
 	}
-	if model.ExtraHeadersFunc("ses-a")[opencodeauth.HeaderSession] != "ses-a" {
-		t.Errorf("the per-request builder did not take the session it was given: %v", model.ExtraHeadersFunc("ses-a"))
+	perRequest := model.ExtraHeadersFunc("ses-a")
+	if perRequest[opencodeauth.HeaderSession] != opencodeauth.GatewaySessionID("ses-a") {
+		t.Errorf("the per-request builder did not render the session it was given into opencode's shape: %v", perRequest)
+	}
+	if perRequest[opencodeauth.HeaderAffinity] != "ses-a" {
+		t.Errorf("%s = %q, want the real conversation ses-a", opencodeauth.HeaderAffinity, perRequest[opencodeauth.HeaderAffinity])
 	}
 }
 

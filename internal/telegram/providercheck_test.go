@@ -1,6 +1,8 @@
 package telegram
 
 import (
+	"ceraa/harness/llm"
+	"ceraa/internal/opencodeauth"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -125,5 +127,64 @@ func TestVerifyProviderFailsLoudlyOnUnreachableHost(t *testing.T) {
 	server.Close()
 	if err := verifyProvider(context.Background(), endpoint, "k", "m"); err == nil {
 		t.Fatal("expected an error for a closed host")
+	}
+}
+
+// Zen's gateway reads the header contract and the body shape as one thing, so
+// the verification request has to carry both or it fails for a reason that has
+// nothing to do with the key that was just typed. Measured 2026-10-01: a
+// correct header set on a non-streaming ping with no tools comes back
+// FreeTierError, and the caller is then told to re-check a good key.
+func TestVerifyProviderShapesTheBodyForTheOpenCodeContract(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte("data: {\"choices\":[]}\n\ndata: [DONE]\n"))
+	}))
+	defer server.Close()
+
+	headers := opencodeauth.RequestHeaders("verify", "")
+	if err := verifyProviderWithHeaders(context.Background(), server.URL, "zk-1", "m1", headers); err != nil {
+		t.Fatalf("verifyProviderWithHeaders: %v", err)
+	}
+	if body["stream"] != true {
+		t.Errorf("stream = %v, want true; the free tier refuses a request that does not stream", body["stream"])
+	}
+	got := map[string]bool{}
+	for _, entry := range body["tools"].([]any) {
+		tool := entry.(map[string]any)
+		function := tool["function"].(map[string]any)
+		got[function["name"].(string)] = true
+	}
+	for _, want := range llm.OpenCodeTrafficTools {
+		if !got[want] {
+			t.Errorf("tools = %v, missing %q, which the free tier looks for", got, want)
+		}
+	}
+	// The verification sends no tools of its own, so the ones added to satisfy
+	// the gateway must not be advertised as callable.
+	if body["tool_choice"] != "none" {
+		t.Errorf("tool_choice = %v, want none; the ping carries no real tools to call", body["tool_choice"])
+	}
+}
+
+// Every other provider still gets the plain non-streaming ping it had. A check
+// that streamed for everyone would turn a working provider into a failure
+// wherever the endpoint has no streaming to offer.
+func TestVerifyProviderLeavesOtherProvidersAlone(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+	if err := verifyProvider(context.Background(), server.URL, "k", "m1"); err != nil {
+		t.Fatalf("verifyProvider: %v", err)
+	}
+	if body["stream"] != false {
+		t.Errorf("stream = %v, want false for a provider with no header contract", body["stream"])
+	}
+	if _, ok := body["tools"]; ok {
+		t.Error("tools were added to a provider that asked for none")
 	}
 }

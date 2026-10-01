@@ -54,3 +54,47 @@ func TestAnUnknownRefusalGetsNoInventedFix(t *testing.T) {
 		t.Errorf("invented a fix for an unrecognised error: %s", hint)
 	}
 }
+
+// Two more refusals Zen issues, both measured live on 2026-10-01 once the header
+// and body contract were satisfied: a model that does not speak this protocol
+// answers 400 ModelProtocolUnsupported, and one with no path on this endpoint
+// answers 404 with a route echo. Neither is a key problem, and an unknown-error
+// empty hint would have told the user nothing at all.
+func TestZenProtocolAndRouteRefusalsSayWhatToDo(t *testing.T) {
+	cases := map[string]struct {
+		body   string
+		wanted []string
+	}{
+		"protocol unsupported": {
+			body:   `{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}`,
+			wanted: []string{"chat/completions", "space-bunny-free"},
+		},
+		"no route": {
+			body:   `{"status":404,"message":"Cannot find any route matching [POST] https://opencode.ai/zen/v1/chat/completions"}`,
+			wanted: []string{"chat/completions", "space-bunny-free"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			hint := providerFailureHint([]byte(tc.body))
+			if hint == "" {
+				t.Fatalf("no hint for %s", name)
+			}
+			for _, want := range tc.wanted {
+				if !strings.Contains(hint, want) {
+					t.Errorf("hint missing %q: %s", want, hint)
+				}
+			}
+		})
+	}
+}
+
+// A 404 from some other endpoint must not be read as "this model has no route
+// here". The real message names chat/completions because that is the path Zen
+// could not match, and requiring it keeps a generic not-found out of the hint.
+func TestARoute404OnAnotherEndpointGetsNoHint(t *testing.T) {
+	body := `{"status":404,"message":"Cannot find any route matching [GET] https://opencode.ai/zen/v1/models"}`
+	if hint := providerFailureHint([]byte(body)); hint != "" {
+		t.Errorf("invented a model hint for a different endpoint: %s", hint)
+	}
+}

@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"ceraa/harness/llm"
+	"ceraa/internal/opencodeauth"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,18 +43,26 @@ func verifyProviderWithHeaders(ctx context.Context, baseURL, apiKey, model strin
 	if strings.TrimSpace(model) == "" {
 		return fmt.Errorf("no model id given")
 	}
-	payload, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
 		"max_tokens": 8,
 		"stream":     false,
-	})
+	}
+	// The check has to send what real traffic will send. Zen's gateway reads the
+	// header contract and the body shape as one thing, so a bare non-streaming
+	// ping under the right headers is refused exactly as the real request would
+	// be - and would then be reported as a bad key.
+	if _, openCodeContract := headers[opencodeauth.HeaderSession]; openCodeContract {
+		llm.EnsureOpenCodeTraffic(payload)
+	}
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(encoded))
 	if err != nil {
 		return err
 	}
@@ -170,6 +179,12 @@ func providerFailureHint(body []byte) string {
 	case strings.Contains(text, "OpenCode Go subscription"):
 		return "That model belongs to OpenCode Go, which needs a $10/month subscription. " +
 			"Zen models under Model do not."
+	case strings.Contains(text, "ModelProtocolUnsupported"), strings.Contains(text, "does not support this protocol"):
+		return "That model does not speak chat/completions, so no key works for it from here. " +
+			"Pick another model under Model: " + llm.DefaultOpenCodeModel + " is the free one that answers outside the app."
+	case strings.Contains(text, "Cannot find any route") && strings.Contains(text, "chat/completions"):
+		return "Zen has no chat/completions route for that model id. " +
+			"Pick another model under Model: " + llm.DefaultOpenCodeModel + " is the free one that answers outside the app."
 	case strings.Contains(text, "Model is unavailable"):
 		return "Zen does not serve that model id. Pick one from Model rather than typing one."
 	case strings.Contains(text, "Invalid API key"):

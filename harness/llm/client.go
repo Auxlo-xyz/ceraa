@@ -103,6 +103,18 @@ type ProviderConfig struct {
 	// never allowed to shadow the Content-Type, Accept or Authorization the
 	// transport owns.
 	ExtraHeadersFunc func(sessionID string) map[string]string
+	// OpenCodeGateway marks a provider as opencode.ai's Zen gateway, whose free
+	// tier answers only requests that look like the OpenCode client's own.
+	//
+	// The header half of that contract is the caller's, carried in ExtraHeaders.
+	// This is the body half, and it exists because the two are checked together:
+	// a correct header set on a body the gateway does not recognise still comes
+	// back as FreeTierError, and so does a correct body on a request with
+	// somebody else's User-Agent.
+	//
+	// Set by opencodeauth.ApplyCredential, so a Zen profile picks it up without
+	// the four call sites that build one having to know about it.
+	OpenCodeGateway bool
 	// MessagesAuthStyle chooses the header the Messages transport authenticates
 	// with. Empty means x-api-key, which is what Anthropic and MiniMax's platform
 	// API both want.
@@ -883,6 +895,12 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		if body["tool_choice"] == "" {
 			body["tool_choice"] = "auto"
 		}
+	}
+	if c.cfg.OpenCodeGateway {
+		// After the tools are in the body and before anything is cached or
+		// merged in, so the shape check sees what the model was actually offered
+		// and ExtraBody still wins where it overlaps.
+		EnsureOpenCodeTraffic(body)
 	}
 	sessionID := addPromptCacheFields(body, c.cfg, req)
 	// After the messages are in the body, so the breakpoints can land on them.

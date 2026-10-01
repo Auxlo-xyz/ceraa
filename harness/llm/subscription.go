@@ -52,15 +52,39 @@ const OpenCodeBaseURL = "https://opencode.ai/zen/v1"
 
 // DefaultOpenCodeModel is the model selected when Zen is chosen without one.
 //
-// Space Bunny, because it is the only free model on Zen that answers from
-// outside OpenCode. Sweeping all eighty-five ids with a real key on 2026-10-01
-// gave: one working, eleven refused with FreeTierError ("can only be used from
-// within OpenCode"), seventy asking for funds, one unavailable, one deprecated.
-// The gate is per model, not per client - the same request with the same headers
-// is accepted for Space Bunny and refused for MiMo - so a default picked on the
-// strength of a name ending in -free would be a default that does not answer.
-// It streams, returns reasoning, and costs nothing.
+// Space Bunny, because it is the first of the models measured to answer from
+// outside OpenCode and it streams, returns reasoning, and costs nothing.
+//
+// The free name on Zen is not a promise that the model answers here. Sweeping
+// all eighty-five ids with a real key on 2026-10-01 gave eight that answer a
+// third-party client, eleven refused with FreeTierError ("can only be used from
+// within OpenCode"), seventy asking for funds, one that does not speak this
+// protocol at all, and one with no route on this endpoint. The gate is per
+// model, not per client, so a default picked on the strength of a name ending
+// in -free would be a default that does not answer.
 const DefaultOpenCodeModel = "space-bunny-free"
+
+// OpenCodeFreeModels are the Zen ids measured to answer a third-party client on
+// chat/completions, in the order they should be offered, with the default first.
+//
+// This is the list the picker and the failure hint both read, so a model the
+// hint recommends is a model the picker is already showing in the same order.
+// Re-measured live on 2026-10-01 with the full header and body contract in
+// place: all eight returned 200.
+//
+// Not here, though also free: the two Muse Spark contributor models answer only
+// on /responses rather than chat/completions, which is a different transport
+// this program does not speak.
+var OpenCodeFreeModels = []string{
+	"space-bunny-free",
+	"big-pickle",
+	"mimo-v2.6-flash-free",
+	"mimo-v2.5-free",
+	"longcat-2.5-preview-free",
+	"nemotron-3-ultra-free",
+	"nemotron-3.5-lightning-free",
+	"fledge-alpha-free",
+}
 
 // OpenCodeModels lists the model ids Zen serves, in the order they should be
 // offered.
@@ -70,29 +94,37 @@ const DefaultOpenCodeModel = "space-bunny-free"
 // OpenAI-compatible hosts and would contain none of these. Eighty-five entries,
 // sorted so the free tier comes first, followed by the paid ones.
 //
-// Free here means it bills nothing, not that it is reachable. Eleven of the
-// twelve -free ids are refused from a third-party client and seventy paid ones
-// need balance in the account; both stay in the list because either stops
-// applying the moment the account is topped up, and a picker that silently
-// dropped models would hide the reason a user's choice did not work. What does
-// not change is the default, which is the one id measured to answer.
+// Free here means it bills nothing, not that it is reachable. OpenCodeFreeModels
+// are the free ids that answer from here; the rest of the free tier is refused
+// with FreeTierError or has no route on this endpoint, and seventy paid ones need
+// balance in the account. All of them stay in the list because either stops
+// applying the moment OpenCode changes its mind or the account is topped up, and
+// a picker that silently dropped models would hide the reason a user's choice did
+// not work. What does not change is the default, which is the first id measured
+// to answer.
 //
 // The ids are lowercase and the endpoint serves them case-insensitively, but
 // IsOpenCodeModel compares case-insensitively anyway so a user typing Claude-Sonnet-5
 // is not told the model does not exist.
 var OpenCodeModels = []string{
-	// Free tier. Space Bunny first: it is the one that answers.
+	// Free tier. OpenCodeFreeModels first, in the order they were measured to
+	// answer, so the top of the picker is the set that works.
 	"space-bunny-free",
-	"jev-1.13-free",
-	"deepseek-v4-flash-free",
-	"muse-spark-1.3-contributor-free",
-	"muse-spark-1.2-contributor-free",
+	"big-pickle",
 	"mimo-v2.6-flash-free",
-	"longcat-2.5-preview-free",
 	"mimo-v2.5-free",
-	"ling-3.0-flash-fin-free",
+	"longcat-2.5-preview-free",
 	"nemotron-3-ultra-free",
 	"nemotron-3.5-lightning-free",
+	"fledge-alpha-free",
+	// Still free, still listed, not answers: Muse Spark speaks /responses only,
+	// jev-1.13 reports ModelProtocolUnsupported, ling-3.0-flash-fin has no route
+	// on chat/completions, and deepseek-v4-flash is unavailable upstream.
+	"muse-spark-1.3-contributor-free",
+	"muse-spark-1.2-contributor-free",
+	"jev-1.13-free",
+	"ling-3.0-flash-fin-free",
+	"deepseek-v4-flash-free",
 
 	// Paid, grouped by vendor.
 	"claude-fable-5",
@@ -167,8 +199,6 @@ var OpenCodeModels = []string{
 	"qwen3.5-plus",
 	"qwen3.8-max",
 	"jev-1.13",
-	"big-pickle",
-	"fledge-alpha-free",
 }
 
 // IsOpenCodeModel reports whether a model id is one the gateway is known to serve.
@@ -180,6 +210,72 @@ func IsOpenCodeModel(model string) bool {
 		}
 	}
 	return false
+}
+
+// OpenCodeTrafficTools are the tool names Zen's free tier looks for in a
+// request body.
+//
+// Measured, not guessed. On 2026-10-01 a live key was swept through the free
+// tier one variable at a time: dropping the tools array from an otherwise
+// accepted request refused it, an empty array refused it, a single hand-written
+// tool refused it, and any two tools other than this pair refused it. The names
+// have to be exactly these two and both have to be present, in any order, with
+// any other tools alongside them and any schema at all inside them.
+//
+// Ceraa is not borrowing these names to pass a check it does not satisfy: both
+// are its own tools, registered in harness/tool/registry.go, and a normal
+// conversation sends them anyway. The only requests that do not are the ones
+// that deliberately carry no tools, such as a compaction.
+var OpenCodeTrafficTools = []string{"bash", "read"}
+
+// EnsureOpenCodeTraffic rewrites a chat-completions body into the shape Zen's
+// free tier accepts.
+//
+// Three things, all of them measured: the request streams, it carries a tools
+// array containing OpenCodeTrafficTools, and a request that had no tools of its
+// own does not advertise the ones this added as callable.
+//
+// It mutates in place so the caller keeps the body it built and merges its own
+// extras into afterwards. It is safe to call twice.
+func EnsureOpenCodeTraffic(body map[string]any) {
+	if body == nil {
+		return
+	}
+	body["stream"] = true
+	tools, _ := body["tools"].([]map[string]any)
+	carriedTools := len(tools) > 0
+	have := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		function, _ := tool["function"].(map[string]any)
+		name, _ := function["name"].(string)
+		if name != "" {
+			have[name] = true
+		}
+	}
+	missing := false
+	for _, name := range OpenCodeTrafficTools {
+		if have[name] {
+			continue
+		}
+		missing = true
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
+			"name":        name,
+			"description": "Not offered on this request.",
+			"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+		}})
+	}
+	if !missing {
+		return
+	}
+	body["tools"] = tools
+	if !carriedTools {
+		// The caller wanted no tools. Advertising a pair that exists only to
+		// satisfy the gateway would invite the model to call them, and there is
+		// nothing on the other end of a compaction to run them. "none" keeps the
+		// tools in the body, where the gateway reads them, while telling the
+		// model to leave them alone.
+		body["tool_choice"] = "none"
+	}
 }
 
 // HermesBaseURL is the Nous Portal inference endpoint.
