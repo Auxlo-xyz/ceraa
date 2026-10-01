@@ -163,7 +163,7 @@ func TestTurnEndMarksError(t *testing.T) {
 }
 
 func TestTurnEndWithNothingProducedIsNotDone(t *testing.T) {
-	// A silent turn reported as done is the one case where the mascot would be
+	// A silent turn reported as done is the one case where the status line would be
 	// lying about what happened.
 	r, _ := renderInto()
 	r.TurnEnd(nil)

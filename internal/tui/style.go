@@ -1,5 +1,5 @@
 // Package tui renders Ceraa runs in a terminal: a black and white theme, the
-// mascot, and the interactive loop that drives the coordinator.
+// status line, and the interactive loop that drives the coordinator.
 //
 // The palette is deliberately monochrome. A coding agent spends hours looking at
 // this, and colour here would only encode state the glyphs already carry, so a
@@ -66,7 +66,7 @@ func (p Palette) wrap(code, s string) string {
 	return code + s + ansiReset
 }
 
-// Bold renders emphasised text: the mascot, headings, and the final answer's
+// Bold renders emphasised text: headings, and the final answer's
 // leading marker.
 func (p Palette) Bold(s string) string { return p.wrap(ansiBold, s) }
 

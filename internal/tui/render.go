@@ -101,7 +101,7 @@ func (r *Renderer) width() int {
 // Out exposes the destination so the loop can read and write the same stream.
 func (r *Renderer) Out() io.Writer { return r.out }
 
-// State reports the current mascot state.
+// State reports what the current turn is doing.
 func (r *Renderer) State() State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -172,7 +172,7 @@ func (r *Renderer) TurnStart() {
 	r.startSpinner()
 }
 
-// TurnEnd stops the spinner, prints the footer, and settles the mascot.
+// TurnEnd stops the spinner, prints the footer, and settles the state line.
 //
 // A nil error sets the done state and any error sets the error state, and a turn
 // that produced nothing is not reported as done, because a silent turn is the
@@ -183,7 +183,7 @@ func (r *Renderer) TurnEnd(err error) {
 	r.mu.Lock()
 	state := StateDone
 	// A turn that said nothing is not a turn that worked. Without this a provider
-	// that returns an empty body with a 200 leaves the mascot claiming success.
+	// that returns an empty body with a 200 leaves the status line claiming success.
 	said := r.usage.TotalTokens > 0 || r.saidSomething
 	if err != nil {
 		state = StateError
@@ -403,7 +403,7 @@ func (r *Renderer) footer(usage llm.UsageInfo, cost llm.CostInfo, costModel stri
 	})
 }
 
-// startSpinner begins repainting the mascot's state line.
+// startSpinner begins repainting the status line.
 func (r *Renderer) startSpinner() {
 	r.mu.Lock()
 	if r.spinner != nil {
