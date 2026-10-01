@@ -792,12 +792,19 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			assistant.ToolCalls = append(assistant.ToolCalls, sessionstore.ToolCallRef{ID: call.ID, Name: call.Name, Args: call.Arguments, ThoughtSignature: call.ThoughtSignature})
 		}
 		sess.Messages = append(sess.Messages, assistant)
+		// From here the assistant has declared its tool calls, so every exit has to
+		// leave an answer for each one. Both failures below used to return with the
+		// calls unanswered, and a request carrying a tool_call with no matching tool
+		// result is rejected outright, so one lost turn made the session unusable
+		// from the next one onward.
 		if err := r.store.Save(sess); err != nil {
+			r.recoverUnanswered(sess, runID, calls)
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 
 		prepared, results, corrective, err := r.prepareTools(ctx, sess, runID, calls)
 		if err != nil {
+			r.recoverUnanswered(sess, runID, calls)
 			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 		}
 		if corrective {
@@ -1648,11 +1655,15 @@ func (r *Runner) appendResults(sess *sessionstore.Session, calls []llm.StreamedT
 	for _, call := range calls {
 		result, recorded := results[call.ID]
 		if !recorded {
-			// Every function call must be answered by exactly one tool message.
-			// prepareTools can decline a call, and appending an empty result for it
-			// produced a second message for the same call id, which providers
-			// reject and which left the call permanently unanswered.
-			continue
+			// Every function call must be answered by exactly one tool message, so this
+			// cannot be skipped. It used to be, on the reasoning that a skipped call is
+			// an absent one, which is exactly wrong: the assistant message above still
+			// declares it.
+			//
+			// An entry prepareTools made itself is a decline and is already recorded as
+			// an empty string, so reaching here means the call was dispatched and never
+			// reported. The outcome is genuinely unknown and the text says so.
+			result = recoveryResult(call.Name, callStarted(sess, call.ID))
 		}
 		sess.Messages = append(sess.Messages, sessionstore.Message{
 			Role:              llm.RoleTool,
