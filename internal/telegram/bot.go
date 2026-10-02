@@ -593,70 +593,67 @@ func Run() error {
 		logger.Info(fmt.Sprintf("Recorded daemon pid %d (pgid %d)", rec.PID, rec.PGID))
 	}
 
-	// The Mini App surface is opt-in, loopbound and read-only. It is started
-	// here rather than earlier so this defer lands after the browser teardown
-	// defer above: defers run last in, first out, and a port that still accepts
-	// while the tools are being closed is a port reporting a half-dead process.
-	// The gate is the same user id the bot answers to, so the two surfaces can
-	// never disagree about who is admitted.
+	// The Mini App surface is opt-in at boot: this is what opens the port
+	// without anyone typing /web, and what puts it on the internet. It is
+	// started here rather than earlier so the close defer below lands after the
+	// browser teardown defer above: defers run last in, first out, and a port
+	// that still accepts while the tools are being closed is a port reporting a
+	// half-dead process.
 	//
-	// The variable is declared here rather than inside the block because /web
-	// in the loop below has to reach the same surface this built, and it stays
-	// nil when the surface is off: that nil is the answer the command needs,
-	// rather than a second lookup that could disagree with this one.
+	// Construction lives behind one closure rather than at the call site, for
+	// two reasons. There must be exactly one surface, so two paths opening it
+	// would race. And /web reaches the same closure, so the command starts the
+	// surface on demand instead of answering with a flag the operator has to
+	// set and restart for. The gate is the same user id the bot answers to, so
+	// the two surfaces can never disagree about who is admitted.
+	var miniappMu sync.Mutex
 	var miniappServer *miniapp.Server
+	startMiniApp := func() (*miniapp.Server, error) {
+		miniappMu.Lock()
+		defer miniappMu.Unlock()
+		if miniappServer != nil {
+			return miniappServer, nil
+		}
+		srv, err := buildMiniAppSurface(token, allowID)
+		if err != nil {
+			return nil, err
+		}
+		miniappServer = srv
+		logger.Info("Mini App listening on " + srv.Address())
+		return srv, nil
+	}
+	// Registered unconditionally, and before any of them can run: a surface
+	// opened on demand by /web is still a surface, and one that is never closed
+	// leaves a port holding a listener for a process that has already gone.
+	defer func() {
+		miniappMu.Lock()
+		srv := miniappServer
+		miniappMu.Unlock()
+		if srv == nil {
+			return
+		}
+		if err := srv.Close(); err != nil {
+			logger.Warn("Mini App shutdown: " + err.Error())
+		}
+	}()
 	if miniapp.Enabled() {
-		store, storeErr := configuredStore()
-		if storeErr != nil {
-			logger.Warn("Mini App disabled: session store unavailable: " + storeErr.Error())
-		} else {
-			srv := miniapp.New(miniapp.Config{
-				Token:     token,
-				AllowID:   allowID,
-				Store:     store,
-				Bus:       event.Default,
-				SessionID: miniapp.WebSessionID,
-				// Its own session, and callbacks that say nothing: the reply
-				// reaches the page on the event bus as structured deltas, not as
-				// a line a renderer was asked to print. Reusing the chat session
-				// here would put two frontends in one transcript.
-				Prompt: func(ctx context.Context, text string) error {
-					return runAgentContext(ctx, miniapp.WebSessionID, text, nil, nil, nil, nil)
-				},
-				AnswerPermission: func(requestID, decision string) bool {
-					return permission.Default.Answer(miniapp.WebSessionID, requestID, decision)
-				},
-				AnswerQuestion: func(requestID, answer string) bool {
-					return question.Default.Answer(miniapp.WebSessionID, requestID, answer)
-				},
-				Settings:    webSettings,
-				SetSettings: applyWebSettings,
-			})
-			if err := srv.Start(); err != nil {
-				logger.Warn("Mini App disabled: " + err.Error())
-			} else {
-				miniappServer = srv
-				logger.Info("Mini App listening on " + srv.Address())
-				defer func() {
-					if err := srv.Close(); err != nil {
-						logger.Warn("Mini App shutdown: " + err.Error())
-					}
-				}()
-				// The public front is a separate decision from opening the
-				// port, because this one puts the port on the internet. It is
-				// opened in the background: a cold handshake is seconds of wall
-				// clock and the poll loop below still has not started.
-				if miniapp.TunnelEnabled() {
-					go func() {
-						address, err := srv.StartTunnel()
-						if err != nil {
-							logger.Warn("Mini App tunnel unavailable: " + err.Error())
-							return
-						}
-						logger.Info("Mini App shared at " + address)
-					}()
+		srv, err := startMiniApp()
+		switch {
+		case err != nil:
+			logger.Warn("Mini App disabled: " + err.Error())
+		case miniapp.TunnelEnabled():
+			// The public front is a separate decision from opening the port,
+			// because this one puts the port on the internet. It is opened in
+			// the background: a cold handshake is seconds of wall clock and the
+			// poll loop below still has not started.
+			go func() {
+				address, err := srv.StartTunnel()
+				if err != nil {
+					logger.Warn("Mini App tunnel unavailable: " + err.Error())
+					return
 				}
-			}
+				logger.Info("Mini App shared at " + address)
+			}()
 		}
 	}
 
@@ -939,7 +936,7 @@ func Run() error {
 				sendHub(token, u.Message.Chat.ID)
 			case "/web":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				handleWebShare(token, u.Message.Chat.ID, miniappServer)
+				handleWebShare(token, u.Message.Chat.ID, startMiniApp)
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				startNewSession(token, u.Message.Chat.ID)
@@ -2364,4 +2361,44 @@ func subscriptionMarkerFor(providerID string) string {
 // run path reads.
 func currentProfile(providerID string) (config.ProviderProfile, bool) {
 	return providers.profiles()[providerID], providers.hasProfile(providerID)
+}
+
+// buildMiniAppSurface constructs and opens the Mini App surface.
+//
+// Separate from the decision to open it, because two paths now open it: boot,
+// when the flag is set, and /web, when someone asks for the link. Built in one
+// place they share the same session, allow list and settings; built twice one
+// of them would eventually drift and the two would disagree about who is
+// admitted or which transcript the page writes to.
+func buildMiniAppSurface(token string, allowID int64) (*miniapp.Server, error) {
+	store, err := configuredStore()
+	if err != nil {
+		return nil, fmt.Errorf("session store unavailable: %w", err)
+	}
+	srv := miniapp.New(miniapp.Config{
+		Token:     token,
+		AllowID:   allowID,
+		Store:     store,
+		Bus:       event.Default,
+		SessionID: miniapp.WebSessionID,
+		// Its own session, and callbacks that say nothing: the reply reaches
+		// the page on the event bus as structured deltas, not as a line a
+		// renderer was asked to print. Reusing the chat session here would put
+		// two frontends in one transcript.
+		Prompt: func(ctx context.Context, text string) error {
+			return runAgentContext(ctx, miniapp.WebSessionID, text, nil, nil, nil, nil)
+		},
+		AnswerPermission: func(requestID, decision string) bool {
+			return permission.Default.Answer(miniapp.WebSessionID, requestID, decision)
+		},
+		AnswerQuestion: func(requestID, answer string) bool {
+			return question.Default.Answer(miniapp.WebSessionID, requestID, answer)
+		},
+		Settings:    webSettings,
+		SetSettings: applyWebSettings,
+	})
+	if err := srv.Start(); err != nil {
+		return nil, err
+	}
+	return srv, nil
 }

@@ -1296,15 +1296,21 @@ func handleFullHelp(token string, chatID int64) {
 }
 
 // handleWebShare gives the admitted user the public address of the Mini App
-// surface.
+// surface, opening the surface first if it is not open yet.
+//
+// The command starts it rather than reporting that it is off. A refusal here
+// was a message telling the operator to set a flag and restart, which asks them
+// to do work the program can do itself, and the answer is a sentence about
+// configuration when what they asked for is a link.
 //
 // The handshake with the edge takes seconds of wall clock, and the update loop
-// is sequential, so only the already-open case is answered inline. Anything
+// is sequential, so only the already-shared case is answered inline. Anything
 // slower answers twice: one line now so the message is not left hanging, and
 // the address when the client has announced one.
-func handleWebShare(token string, chatID int64, server *miniapp.Server) {
-	if server == nil {
-		send(token, chatID, "The Mini App surface is off. Set CERAA_MINIAPP=1 and restart to turn it on.")
+func handleWebShare(token string, chatID int64, start func() (*miniapp.Server, error)) {
+	server, err := start()
+	if err != nil {
+		send(token, chatID, "Mini App unavailable: "+err.Error())
 		return
 	}
 	if address := server.TunnelAddress(); address != "" {
