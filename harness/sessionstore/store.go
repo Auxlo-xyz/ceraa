@@ -239,6 +239,17 @@ func (s *Store) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
 }
 
+// Exists reports whether a session has ever been written.
+//
+// Load answers an unknown id with an empty session rather than an error, which
+// is right for the caller about to start one and wrong for a handler routing on
+// the id: there a mistyped conversation and a brand new one are the same
+// response. This is the distinction Load deliberately does not make.
+func (s *Store) Exists(id string) bool {
+	info, err := os.Stat(s.path(id))
+	return err == nil && !info.IsDir()
+}
+
 func (s *Store) Load(id string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -51,6 +51,12 @@ done
 echo "release: staging prompt/system.txt"
 cp -f prompt/system.txt dist/system.txt
 
+# The Mini App page, staged the same way and for the same reason: served from
+# disk, never embedded, so the UI can be edited without shipping a binary.
+echo "release: staging miniapp/index.html"
+mkdir -p dist/miniapp
+cp -f miniapp/index.html dist/miniapp/index.html
+
 cp -f LICENSE NOTICE dist/
 
 ( cd dist && sha256sum ceraa-* system.txt > SHA256SUMS )

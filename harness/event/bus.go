@@ -45,13 +45,23 @@ func New() *Bus {
 
 var Default = New()
 
+// Wildcard is the reserved session key that receives every event.
+//
+// A surface watching the process rather than one conversation subscribes here,
+// because it has not been told which session matters yet: a dashboard opened
+// before anything has been picked has no id to ask for. It is a key like any
+// other, so nothing about Publish changes shape to accommodate it.
+const Wildcard = "*"
+
 // Publish sends event to all subscribers of sessionID, non-blocking
 func (b *Bus) Publish(e Event) {
 	b.mu.RLock()
-	chans := b.subs[e.SessionID]
+	cp := make([]chan Event, 0, len(b.subs[e.SessionID])+len(b.subs[Wildcard]))
+	cp = append(cp, b.subs[e.SessionID]...)
+	if e.SessionID != Wildcard {
+		cp = append(cp, b.subs[Wildcard]...)
+	}
 	// copy to avoid holding lock while sending
-	cp := make([]chan Event, len(chans))
-	copy(cp, chans)
 	b.mu.RUnlock()
 	e.Time = time.Now()
 	for _, ch := range cp {

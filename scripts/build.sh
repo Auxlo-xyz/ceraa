@@ -60,3 +60,9 @@ go build \
 for doc in LICENSE NOTICE; do
   cp -f "$doc" bin/"$doc"
 done
+
+# The Mini App page is read from disk at runtime for the same reason the prompt
+# is: it must be editable without a rebuild, and there must be no go:embed.
+# It ships beside the binary so a single-binary install still has one.
+mkdir -p bin/miniapp
+cp -f miniapp/index.html bin/miniapp/index.html

@@ -14,6 +14,7 @@ import (
 	"ceraa/internal/envs"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
+	"ceraa/internal/miniapp"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/oauthdevice"
 	"ceraa/internal/opencodeauth"
@@ -590,6 +591,36 @@ func Run() error {
 			}
 		}()
 		logger.Info(fmt.Sprintf("Recorded daemon pid %d (pgid %d)", rec.PID, rec.PGID))
+	}
+
+	// The Mini App surface is opt-in, loopbound and read-only. It is started
+	// here rather than earlier so this defer lands after the browser teardown
+	// defer above: defers run last in, first out, and a port that still accepts
+	// while the tools are being closed is a port reporting a half-dead process.
+	// The gate is the same user id the bot answers to, so the two surfaces can
+	// never disagree about who is admitted.
+	if miniapp.Enabled() {
+		store, storeErr := configuredStore()
+		if storeErr != nil {
+			logger.Warn("Mini App disabled: session store unavailable: " + storeErr.Error())
+		} else {
+			miniappServer := miniapp.New(miniapp.Config{
+				Token:   token,
+				AllowID: allowID,
+				Store:   store,
+				Bus:     event.Default,
+			})
+			if err := miniappServer.Start(); err != nil {
+				logger.Warn("Mini App disabled: " + err.Error())
+			} else {
+				logger.Info("Mini App listening on " + miniappServer.Address())
+				defer func() {
+					if err := miniappServer.Close(); err != nil {
+						logger.Warn("Mini App shutdown: " + err.Error())
+					}
+				}()
+			}
+		}
 	}
 
 	fmt.Printf("telegram polling start offset=%d\n", offset)

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ceraa</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #111; color: #e8e8e8;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 14px 18px; border-bottom: 1px solid #2a2a2a;
+    position: sticky; top: 0; background: #111;
+  }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .08em; }
+  header .live { font-size: 12px; color: #6b6b6b; }
+  header .live.on { color: #6ece9d; }
+  main { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 51px); }
+  #list { border-right: 1px solid #2a2a2a; overflow-y: auto; }
+  #list button {
+    display: block; width: 100%; text-align: left; padding: 11px 14px;
+    background: none; border: 0; border-bottom: 1px solid #1c1c1c;
+    color: inherit; font: inherit; cursor: pointer;
+  }
+  #list button:hover { background: #1a1a1a; }
+  #list button[aria-current="true"] { background: #1f1f1f; }
+  #list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #list .meta { font-size: 12px; color: #6b6b6b; }
+  #open { padding: 18px; overflow-y: auto; }
+  #stats { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 18px;
+           padding-bottom: 14px; border-bottom: 1px solid #2a2a2a; }
+  #stats div { min-width: 96px; }
+  #stats .k { font-size: 12px; color: #6b6b6b; }
+  #stats .v { font-size: 16px; }
+  .msg { margin-bottom: 14px; white-space: pre-wrap; word-break: break-word; }
+  .msg .who { font-size: 12px; color: #6b6b6b; margin-bottom: 3px; }
+  .msg.tool { color: #b9b9b9; }
+  .msg.tool .body { color: #8f8f8f; max-height: 16em; overflow: auto; }
+  .empty { color: #6b6b6b; }
+  @media (max-width: 720px) {
+    main { grid-template-columns: 1fr; }
+    #list { max-height: 40vh; border-right: 0; border-bottom: 1px solid #2a2a2a; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>CERAA</h1>
+  <span class="live" id="live">connecting</span>
+</header>
+<main>
+  <nav id="list"><p class="empty" style="padding:14px">Loading sessions…</p></nav>
+  <section id="open"><p class="empty">Pick a session.</p></section>
+</main>
+<script>
+(function () {
+  // Every request carries the payload the page was opened with. It arrives in
+  // the query string because a navigation cannot carry a header, and it goes in
+  // an Authorization header from then on so it stays out of any log that
+  // records URLs.
+  var params = new URLSearchParams(location.search);
+  var initData = params.get("initData") || "";
+  var listEl = document.getElementById("list");
+  var openEl = document.getElementById("open");
+  var liveEl = document.getElementById("live");
+
+  function headers() {
+    return initData ? { "Authorization": "tma " + initData } : {};
+  }
+
+  function fail(message) {
+    listEl.textContent = "";
+    var p = document.createElement("p");
+    p.className = "empty";
+    p.style.padding = "14px";
+    p.textContent = message;
+    listEl.appendChild(p);
+  }
+
+  if (!initData) {
+    fail("This page has to be opened from Telegram, which is what supplies the " +
+         "payload every request is checked against.");
+    return;
+  }
+
+  function api(path) {
+    return fetch(path, { headers: headers() }).then(function (res) {
+      if (!res.ok) { throw new Error(path + " returned " + res.status); }
+      return res.json();
+    });
+  }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined) { node.textContent = text; }
+    return node;
+  }
+
+  function stat(label, value) {
+    var box = el("div");
+    box.appendChild(el("div", "k", label));
+    box.appendChild(el("div", "v", value));
+    return box;
+  }
+
+  function money(usd, known) {
+    return known ? "$" + usd.toFixed(4) : "unknown";
+  }
+
+  function renderSummary(sessions) {
+    listEl.textContent = "";
+    if (!sessions.length) {
+      fail("No sessions yet.");
+      return;
+    }
+    sessions.forEach(function (session) {
+      var button = el("button");
+      button.appendChild(el("div", "title", session.title));
+      button.appendChild(el("div", "meta", session.messages + " messages · " + session.runs + " runs"));
+      button.addEventListener("click", function () {
+        listEl.querySelectorAll("button").forEach(function (other) {
+          other.setAttribute("aria-current", other === button ? "true" : "false");
+        });
+        open(session.id);
+      });
+      listEl.appendChild(button);
+    });
+  }
+
+  function renderSession(session) {
+    openEl.textContent = "";
+    openEl.appendChild(el("h2", null, session.title));
+    var stats = el("div");
+    stats.id = "stats";
+    stats.appendChild(stat("Context", "~" + session.context.estimated_tokens + " tok"));
+    stats.appendChild(stat("Limit", session.context.limit ? session.context.limit.toLocaleString() : "unknown"));
+    stats.appendChild(stat("Used", session.context.percent + "%"));
+    stats.appendChild(stat("Cost", money(session.cost.total_usd, session.cost.known)));
+    stats.appendChild(stat("Messages", String(session.context.messages)));
+    openEl.appendChild(stats);
+
+    if (!session.messages.length) {
+      openEl.appendChild(el("p", "empty", "Nothing has been said yet."));
+      return;
+    }
+    session.messages.forEach(function (message) {
+      var body = message.tool_result || message.content || "";
+      if (!body && !message.tool_name) { return; }
+      var row = el("div", "msg" + (message.tool_name ? " tool" : ""));
+      var who = message.tool_name ? ("tool · " + message.tool_name) : message.role;
+      row.appendChild(el("div", "who", who + (message.status ? " · " + message.status : "")));
+      row.appendChild(el("div", "body", body));
+      openEl.appendChild(row);
+    });
+  }
+
+  function open(id) {
+    api("/api/sessions/" + encodeURIComponent(id)).then(renderSession).catch(function (err) {
+      openEl.textContent = "";
+      openEl.appendChild(el("p", "empty", String(err)));
+    });
+  }
+
+  api("/api/sessions").then(function (data) { renderSummary(data.sessions); })
+    .catch(function (err) { fail(String(err)); });
+
+  // EventSource cannot set a header, so the payload goes in the query string
+  // for this one request. Everything else uses Authorization.
+  var source = new EventSource("/events?initData=" + encodeURIComponent(initData));
+  source.onopen = function () { liveEl.textContent = "live"; liveEl.className = "live on"; };
+  source.onerror = function () { liveEl.textContent = "reconnecting"; liveEl.className = "live"; };
+  source.addEventListener("permission", function () {
+    liveEl.textContent = "permission pending";
+    liveEl.className = "live on";
+  });
+  source.addEventListener("question", function () {
+    liveEl.textContent = "question pending";
+    liveEl.className = "live on";
+  });
+})();
+</script>
+</body>
+</html>
