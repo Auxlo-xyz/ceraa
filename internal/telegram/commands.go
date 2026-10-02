@@ -1307,6 +1307,13 @@ func handleFullHelp(token string, chatID int64) {
 // is sequential, so only the already-shared case is answered inline. Anything
 // slower answers twice: one line now so the message is not left hanging, and
 // the address when the client has announced one.
+// handleWebShare starts the surface on demand and reports where it can be
+// reached.
+//
+// The address goes to the chat and to the menu button together, because a quick
+// tunnel hands out a different hostname each time it starts. Publishing it only
+// as text leaves a URL that works until the next restart and then fails with
+// Cloudflare's 1033, which names the symptom and nothing that caused it.
 func handleWebShare(token string, chatID int64, start func() (*miniapp.Server, error)) {
 	server, err := start()
 	if err != nil {
@@ -1314,7 +1321,7 @@ func handleWebShare(token string, chatID int64, start func() (*miniapp.Server, e
 		return
 	}
 	if address := server.TunnelAddress(); address != "" {
-		send(token, chatID, "Mini App:\n"+address)
+		publishMiniAppAddress(token, chatID, address)
 		return
 	}
 	send(token, chatID, "Opening a tunnel...")
@@ -1324,7 +1331,7 @@ func handleWebShare(token string, chatID int64, start func() (*miniapp.Server, e
 			send(token, chatID, "No public address: "+err.Error())
 			return
 		}
-		send(token, chatID, "Mini App:\n"+address)
+		publishMiniAppAddress(token, chatID, address)
 	}()
 }
 

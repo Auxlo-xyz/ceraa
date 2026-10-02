@@ -116,15 +116,85 @@ func TestEnabledFailsClosedOnATypo(t *testing.T) {
 	}
 }
 
-// TestEveryRouteRefusesARequestWithoutInitData covers the claim the plan rests
-// on: there is no unauthenticated surface, not even a path nobody registered.
-func TestEveryRouteRefusesARequestWithoutInitData(t *testing.T) {
+// TestEveryDataRouteRefusesARequestWithoutInitData covers the claim the plan
+// rests on: nothing that carries data answers a caller with no credential, not
+// even a path nobody registered.
+//
+// The shell is deliberately not in this list. Telegram delivers initData in the
+// URL fragment, which the browser does not send, so the navigation that loads
+// index.html cannot present one; refusing it would make every launch a bare 401.
+// TestTheShellLoadsWithoutACredential covers that exception instead.
+func TestEveryDataRouteRefusesARequestWithoutInitData(t *testing.T) {
 	server, _, _ := newFixture(t, testUser)
-	paths := []string{"/", "/events", "/api/sessions", "/api/sessions/ses-fixture", "/api/unknown", "/index.html"}
+	paths := []string{"/events", "/api/sessions", "/api/sessions/ses-fixture", "/api/unknown"}
 	for _, path := range paths {
 		if got := do(t, server.Handler(), http.MethodGet, path, ""); got.Code != http.StatusUnauthorized {
 			t.Errorf("%s without init data = %d, want 401", path, got.Code)
 		}
+	}
+}
+
+// TestTheShellLoadsWithoutACredential pins the exception to the shell and
+// nothing else.
+//
+// A regression here is silent in the way that matters most: the page 401s, the
+// user sees the word "unauthorized" with no app around it, and the log has
+// nothing to say because a missing fragment is deliberately not logged.
+func TestTheShellLoadsWithoutACredential(t *testing.T) {
+	serveAStubShell(t)
+	server, _, _ := newFixture(t, testUser)
+	// The shell itself must be served, because it cannot present a credential
+	// until it has loaded and read the fragment it was opened with.
+	if got := do(t, server.Handler(), http.MethodGet, "/", ""); got.Code != http.StatusOK {
+		t.Errorf("/ without init data = %d, want 200: the page cannot read the credential it "+
+			"was opened with unless it is served first", got.Code)
+	}
+	// Asking for it by name redirects to the directory, which is ServeFile
+	// canonicalising rather than a refusal, so the bar here is only that it is
+	// not turned away.
+	if got := do(t, server.Handler(), http.MethodGet, "/index.html", ""); got.Code == http.StatusUnauthorized {
+		t.Error("/index.html was refused without a credential, so the shell cannot be reached by name")
+	}
+}
+
+// serveAStubShell puts an index.html where resolveAsset looks for it, so a test
+// can assert on the response without depending on where the package is built.
+func serveAStubShell(t *testing.T) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "miniapp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("stub shell dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>stub</title>"), 0o644); err != nil {
+		t.Fatalf("stub shell: %v", err)
+	}
+	t.Setenv("CERAA_HOME", filepath.Dir(dir))
+}
+
+// TestTheShellReachesTheCredentialFromTheFragment is the client half of the
+// same bug, asserted here so the two halves cannot drift apart.
+//
+// Telegram puts initData in the URL fragment. If index.html reads only
+// location.search it finds nothing, never sets the Authorization header, and
+// every call behind it is refused for the same reason the shell was exempted.
+func TestTheShellReachesTheCredentialFromTheFragment(t *testing.T) {
+	// Read the file that actually ships, not a stub: the bug this guards is in
+	// the page that runs in Telegram, and a fixture cannot reproduce it.
+	shell := filepath.Join("..", "..", "miniapp", "index.html")
+	raw, err := os.ReadFile(shell)
+	if err != nil {
+		t.Fatalf("read shipped shell %s: %v", shell, err)
+	}
+	page := string(raw)
+	for _, want := range []string{"tgWebAppData", "location.hash"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the shell never mentions %q, so it cannot read the fragment Telegram "+
+				"puts the payload in; every launch would be refused", want)
+		}
+	}
+	if strings.Contains(page, `var initData = params.get("initData") || "";`) {
+		t.Error("the shell reads the payload from the query string alone, which is the bug this " +
+			"test exists to keep fixed")
 	}
 }
 

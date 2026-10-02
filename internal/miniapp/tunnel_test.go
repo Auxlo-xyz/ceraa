@@ -280,3 +280,47 @@ func TestTunnelEnabledFailsClosedOnATypo(t *testing.T) {
 		}
 	}
 }
+
+// A client that has exited keeps its origin readable, and that hostname resolves
+// nowhere. Trusting it is how a menu button ends up advertising something that
+// answers Cloudflare 1033, so the dead state has to be distinguishable.
+func TestAGoneTunnelReportsItselfGone(t *testing.T) {
+	tunnel := &Tunnel{origin: "https://dead.trycloudflare.com", cancel: func() {}, done: make(chan struct{})}
+	if tunnel.Gone() {
+		t.Fatal("a tunnel whose client is running reports itself gone")
+	}
+	close(tunnel.done)
+	if !tunnel.Gone() {
+		t.Error("a tunnel whose client exited still reports itself alive")
+	}
+}
+
+// StartTunnel hands back a recorded origin without checking whether anything is
+// still serving it. EnsureTunnel is the variant that replaces a dead one, which
+// is the whole reason it exists.
+func TestEnsureTunnelReplacesAClientThatExited(t *testing.T) {
+	srv, _, _ := newFixture(t, testUser)
+	const dead = "https://dead.trycloudflare.com"
+	stopped := &Tunnel{origin: dead, cancel: func() {}, done: make(chan struct{})}
+	close(stopped.done)
+	srv.tunnelMu.Lock()
+	srv.tunnel = stopped
+	srv.tunnelMu.Unlock()
+
+	if !srv.TunnelGone() {
+		t.Fatal("the surface does not report a tunnel that has exited")
+	}
+	// The trap, stated as a fact rather than a hope: the old entry point answers
+	// with an origin nothing is serving. If this ever starts failing, the trap
+	// has changed and EnsureTunnel may no longer be needed.
+	if got, err := srv.StartTunnel(); err != nil || got != dead {
+		t.Skipf("StartTunnel no longer answers with the recorded origin (got %q, %v), so the "+
+			"reason EnsureTunnel exists has changed", got, err)
+	}
+	// The fix: EnsureTunnel must not hand that origin back. Opening a replacement
+	// is expected to fail here, because there is no tunnel client in a test, and
+	// failing is the correct answer. Returning the dead origin would not be.
+	if got, err := srv.EnsureTunnel(); err == nil && got == dead {
+		t.Fatalf("EnsureTunnel answered with the origin of a client that exited: %q", got)
+	}
+}

@@ -77,6 +77,148 @@ func setMyCommandsBody() ([]byte, error) {
 	return json.Marshal(map[string]any{"commands": commandNames()})
 }
 
+// watchMiniAppButton keeps the menu button pointing at an address something is
+// actually serving.
+//
+// The button is written once, when a tunnel announces itself, and a quick tunnel
+// is a child process that can be reaped by a reboot, a signal or nothing more
+// sinister. When that happens the hostname keeps resolving on paper and stops
+// answering in fact, and the button is left advertising it — which is what a
+// person sees as Cloudflare 1033 and cannot connect back to anything here.
+//
+// So it is checked rather than trusted. A dead client is replaced, and a changed
+// origin is published. The chat is not told, because a repair that sent a message
+// every few minutes would be worse than the fault it fixes; the log records it.
+func watchMiniAppButton(srv *miniapp.Server, token string) {
+	ticker := time.NewTicker(miniAppWatchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-shutdown.Done():
+			return
+		case <-ticker.C:
+		}
+		if srv.TunnelAddress() == "" {
+			// Nothing published and nothing to repair. Starting one unasked is
+			// /web's decision, not this loop's.
+			continue
+		}
+		origin, err := srv.EnsureTunnel()
+		if err != nil {
+			logger.Warn("Mini App watchdog: " + err.Error())
+			continue
+		}
+		if origin == "" || origin == miniAppPublishedOrigin() {
+			continue
+		}
+		if err := setChatMenuButton(token, "🌐 Web", origin); err != nil {
+			logger.Warn("Mini App watchdog: menu button not updated: " + err.Error())
+			continue
+		}
+		logger.Info("Mini App watchdog: tunnel moved, menu button now " + origin)
+		noteMiniAppPublished(origin)
+	}
+}
+
+// miniAppState is the one surface this process runs, and the address its menu
+// button was last given.
+//
+// Package level rather than local to Run because the watchdog reads the published
+// address on its own schedule. It is also what makes "exactly one surface" true
+// across the two paths that can open one: /web and the boot path both come
+// through the same closure, and that closure is the only writer.
+var (
+	miniappMu        sync.Mutex
+	miniappServer    *miniapp.Server
+	miniappPublished string
+)
+
+// miniAppPublishedOrigin is the address the menu button was last given.
+//
+// Guarded by miniappMu because the watchdog reads it on its own schedule and the
+// command that publishes writes it. The two run on different goroutines, so
+// reading it unguarded would be a race rather than a stale value.
+func miniAppPublishedOrigin() string {
+	miniappMu.Lock()
+	defer miniappMu.Unlock()
+	return miniappPublished
+}
+
+func noteMiniAppPublished(origin string) {
+	miniappMu.Lock()
+	defer miniappMu.Unlock()
+	miniappPublished = origin
+}
+
+// miniAppWatchInterval is how often the tunnel is checked for having died.
+//
+// Long enough that a healthy surface costs nothing worth noticing, short enough
+// that a dead one is repaired before someone taps the button and is told
+// Cloudflare cannot find it. Two minutes is well inside the gap between opening
+// the app and deciding it is broken.
+const miniAppWatchInterval = 2 * time.Minute
+
+// setChatMenuButton points the button beside the input field at url.
+//
+// A quick tunnel mints a new hostname every time it starts, so a URL configured
+// once in BotFather is stale the moment the process restarts, and the symptom is
+// Cloudflare's 1033 rather than anything that points at the cause. The button is
+// the one surface Telegram lets the bot rewrite, so the address goes there and
+// BotFather is never involved.
+//
+// Failing is not fatal: the address has already been sent to the chat, and a
+// button that did not move is better than a command that reports no address at
+// all. The reason is logged because a button that silently stopped following is
+// exactly the bug this replaces.
+func setChatMenuButton(token string, text string, url string) error {
+	body, err := json.Marshal(map[string]any{
+		"menu_button": map[string]any{
+			"type":    "web_app",
+			"text":    text,
+			"web_app": map[string]any{"url": url},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	resp, err := doTelegramPost(api("setChatMenuButton", token), body)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("setChatMenuButton returned no response")
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Ok          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.Ok {
+		return fmt.Errorf("setChatMenuButton: %s", result.Description)
+	}
+	return nil
+}
+
+// publishMiniAppAddress tells the chat where the surface is, and moves the menu
+// button to match so the next launch does not depend on remembering a hostname.
+//
+// One place, because the address arrives twice — immediately when a tunnel is
+// already up, and later when one had to be opened — and the button has to follow
+// whichever happened. Sending the address and setting the button from the same
+// function is what keeps them from disagreeing.
+func publishMiniAppAddress(token string, chatID int64, address string) {
+	send(token, chatID, "Mini App:\n"+address)
+	if err := setChatMenuButton(token, "🌐 Web", address); err != nil {
+		logger.Warn("Mini App menu button not updated: " + err.Error())
+		return
+	}
+	noteMiniAppPublished(address)
+	logger.Info("Mini App menu button set to " + address)
+}
+
 func registerCommands(token string) error {
 	body, err := setMyCommandsBody()
 	if err != nil {
@@ -606,8 +748,6 @@ func Run() error {
 	// surface on demand instead of answering with a flag the operator has to
 	// set and restart for. The gate is the same user id the bot answers to, so
 	// the two surfaces can never disagree about who is admitted.
-	var miniappMu sync.Mutex
-	var miniappServer *miniapp.Server
 	startMiniApp := func() (*miniapp.Server, error) {
 		miniappMu.Lock()
 		defer miniappMu.Unlock()
@@ -619,6 +759,9 @@ func Run() error {
 			return nil, err
 		}
 		miniappServer = srv
+		// One watchdog per surface, started here rather than at either caller so
+		// that /web and the boot path cannot both end up with one.
+		go watchMiniAppButton(srv, token)
 		logger.Info("Mini App listening on " + srv.Address())
 		return srv, nil
 	}
@@ -646,6 +789,10 @@ func Run() error {
 			// because this one puts the port on the internet. It is opened in
 			// the background: a cold handshake is seconds of wall clock and the
 			// poll loop below still has not started.
+			//
+			// The button is moved here as well as in /web. A tunnel opened at
+			// boot has a hostname nobody has been told yet, and a stale one from
+			// a previous boot is the failure this whole arrangement removes.
 			go func() {
 				address, err := srv.StartTunnel()
 				if err != nil {
@@ -653,6 +800,12 @@ func Run() error {
 					return
 				}
 				logger.Info("Mini App shared at " + address)
+				if err := setChatMenuButton(token, "🌐 Web", address); err != nil {
+					logger.Warn("Mini App menu button not updated: " + err.Error())
+					return
+				}
+				noteMiniAppPublished(address)
+				logger.Info("Mini App menu button set to " + address)
 			}()
 		}
 	}

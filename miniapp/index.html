@@ -139,12 +139,16 @@
 </footer>
 <script>
 (function () {
-  // Every request carries the payload the page was opened with. It arrives in
-  // the query string because a navigation cannot carry a header, and it goes in
-  // an Authorization header from then on so it stays out of any log that
-  // records URLs.
+  // Every request carries the payload the page was opened with. Telegram puts
+  // that payload in the URL fragment rather than the query string, and a browser
+  // never sends a fragment to the server, so this is the first place the
+  // credential exists at all. The query string is still read because /events
+  // needs it: an EventSource cannot carry an Authorization header, so that one
+  // request is built by hand. Everywhere else it goes in a header, which keeps
+  // it out of any log that records URLs.
   var params = new URLSearchParams(location.search);
-  var initData = params.get("initData") || "";
+  var fragment = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  var initData = params.get("initData") || fragment.get("tgWebAppData") || "";
   var listEl = document.getElementById("list");
   var openEl = document.getElementById("open");
   var liveEl = document.getElementById("live");

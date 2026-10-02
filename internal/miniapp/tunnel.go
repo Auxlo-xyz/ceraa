@@ -171,6 +171,22 @@ type Tunnel struct {
 // Origin is where the surface is reachable from outside this machine.
 func (t *Tunnel) Origin() string { return t.origin }
 
+// Gone reports whether the client has exited.
+//
+// The origin is a hostname the other end chose, and nothing on this side makes it
+// stop resolving: the address keeps reading back perfectly well after the process
+// that was serving it is gone. A caller that trusts Origin alone therefore
+// advertises a dead address forever, which is how a menu button ends up pointing
+// at something that answers Cloudflare's 1033.
+func (t *Tunnel) Gone() bool {
+	select {
+	case <-t.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // Close ends the client and waits for the child to be gone, so a shutdown
 // never leaves a process holding an origin nobody is watching any more.
 func (t *Tunnel) Close() {

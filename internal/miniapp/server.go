@@ -37,6 +37,16 @@ const initDataMaxAge = 24 * time.Hour
 // from this machine and from nothing else.
 const listenAddress = "127.0.0.1:8787"
 
+// assetPattern is the mux pattern for the shell. It is named because Handler
+// compares the matched pattern against it to decide which requests may arrive
+// without a credential, and a bare "/" in that comparison would be a coincidence
+// rather than a decision.
+const assetPattern = "/"
+
+// apiPrefix is the namespace holding everything that carries data. It is refused
+// without a credential even on paths that match no route.
+const apiPrefix = "/api/"
+
 // maxSessions bounds the list endpoint. The store has no index, so listing
 // means opening every file, and a personal history grows longer than anyone
 // scrolls.
@@ -172,19 +182,42 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("DELETE /api/secrets/{name}", s.handleSecretDelete)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("POST /api/sessions/{id}/cancel", s.handleCancel)
-	mux.HandleFunc("/", s.handleAsset)
+	mux.HandleFunc(assetPattern, s.handleAsset)
 	s.mux = mux
 	return s
 }
 
 // Handler returns the whole surface with authentication in front of it.
 //
-// Authentication sits outside the mux rather than inside each route, because
-// the failure mode of the other arrangement is a route somebody adds later
+// Authentication sits outside the mux rather than inside each route, because the
+// failure mode of the other arrangement is a route somebody adds later
 // serving data to whoever asked first. Here an unknown path still has to pass
 // the same check before it can be a 404.
+//
+// One route is exempt, and it has to be: the catch-all that serves the shell.
+// Telegram delivers initData in the URL fragment, and a browser never sends a
+// fragment to the server, so the navigation that loads index.html cannot present
+// a credential. The page has to arrive before it can read the one it was opened
+// with, or every launch is a bare 401 with nothing on screen to explain it.
+//
+// The exemption is decided by asking the mux which pattern matched rather than
+// by listing paths here. Every route carrying data registers its own pattern, so
+// a route added later is behind this check without anyone editing this file, and
+// only the shell is open. It serves static files that hold no data, and
+// resolveAsset refuses any name that escapes the directory, so opening it costs
+// nothing but the shell itself.
+//
+// The /api/ namespace is excluded even where it matches the catch-all. A path
+// under it that matches no route falls through to the asset handler, and letting
+// that answer with a 404 is how a probe learns which prefixes exist. It has to
+// pass the check first and be refused as unauthorised, which is what it did
+// before any of this.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.servesShell(r) {
+			s.mux.ServeHTTP(w, r)
+			return
+		}
 		user, err := s.identify(r)
 		if err != nil {
 			if !errors.Is(err, ErrMissingInitData) {
@@ -199,6 +232,26 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.mux.ServeHTTP(w, r)
 	})
+}
+
+// servesShell reports whether a request may be answered without a credential.
+//
+// The comparison goes through the mux rather than a list of paths so that a route
+// added later inherits the authentication automatically. Two details of the
+// pattern matter: Go writes the root as "GET /{$}" rather than "/", and a path
+// under /api/ that matches nothing falls through to the catch-all, where it must
+// still be refused.
+func (s *Server) servesShell(r *http.Request) bool {
+	_, pattern := s.mux.Handler(r)
+	// The pattern may carry a method and a {$} anchor, neither of which is part
+	// of the path it was registered under.
+	if _, after, found := strings.Cut(pattern, " "); found {
+		pattern = after
+	}
+	if strings.TrimSuffix(pattern, "{$}") != assetPattern {
+		return false
+	}
+	return !strings.HasPrefix(r.URL.Path, apiPrefix)
 }
 
 // identify verifies the payload on this request, from a header or from the
@@ -308,6 +361,38 @@ func (s *Server) StartTunnel() (string, error) {
 	}
 	s.tunnel = tunnel
 	return tunnel.Origin(), nil
+}
+
+// EnsureTunnel returns the public origin, opening a new one when the client that
+// was serving it has exited.
+//
+// StartTunnel alone cannot do this, because it hands back the existing origin
+// whenever a tunnel is recorded — including one whose process died minutes ago,
+// whose hostname resolves nowhere. That is the difference between a caller that
+// recovers and one that republishes a corpse on every tick.
+func (s *Server) EnsureTunnel() (string, error) {
+	s.tunnelMu.Lock()
+	if s.tunnel != nil {
+		if !s.tunnel.Gone() {
+			origin := s.tunnel.Origin()
+			s.tunnelMu.Unlock()
+			return origin, nil
+		}
+		// The client is gone. Closing reclaims its context; done is already
+		// closed, so the wait cannot block.
+		logger.Info("Mini App tunnel client exited; opening another")
+		s.tunnel.Close()
+		s.tunnel = nil
+	}
+	s.tunnelMu.Unlock()
+	return s.StartTunnel()
+}
+
+// TunnelGone reports whether a tunnel was opened and has since exited.
+func (s *Server) TunnelGone() bool {
+	s.tunnelMu.Lock()
+	defer s.tunnelMu.Unlock()
+	return s.tunnel != nil && s.tunnel.Gone()
 }
 
 // TunnelAddress is the public origin, or "" when the surface has none. It
