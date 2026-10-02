@@ -41,6 +41,23 @@
   .msg.tool { color: #b9b9b9; }
   .msg.tool .body { color: #8f8f8f; max-height: 16em; overflow: auto; }
   .empty { color: #6b6b6b; }
+  .tool-line { font-size: 12px; color: #8f8f8f; margin: 4px 0; }
+  #composer {
+    position: sticky; bottom: 0; display: flex; gap: 8px; align-items: flex-end;
+    padding: 10px 18px; background: #111; border-top: 1px solid #2a2a2a;
+  }
+  #prompt {
+    flex: 1; resize: none; padding: 9px 11px; border: 1px solid #333;
+    border-radius: 6px; background: #191919; color: inherit;
+    font: inherit; min-height: 38px; max-height: 30vh;
+  }
+  #prompt:focus { outline: 1px solid #6ece9d; }
+  #send {
+    padding: 0 16px; height: 38px; border: 0; border-radius: 6px;
+    background: #6ece9d; color: #06301c; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  #send:disabled { opacity: .45; cursor: default; }
+  #state { font-size: 12px; color: #6b6b6b; min-width: 82px; text-align: right; }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; }
     #list { max-height: 40vh; border-right: 0; border-bottom: 1px solid #2a2a2a; }
@@ -56,6 +73,11 @@
   <nav id="list"><p class="empty" style="padding:14px">Loading sessions…</p></nav>
   <section id="open"><p class="empty">Pick a session.</p></section>
 </main>
+<footer id="composer">
+  <textarea id="prompt" rows="1" placeholder="Send a task… (Enter to send, Shift+Enter for a new line)"></textarea>
+  <button id="send">Send</button>
+  <span id="state"></span>
+</footer>
 <script>
 (function () {
   // Every request carries the payload the page was opened with. It arrives in
@@ -169,6 +191,69 @@
   api("/api/sessions").then(function (data) { renderSummary(data.sessions); })
     .catch(function (err) { fail(String(err)); });
 
+  // A turn in progress, rendered where it happens rather than filed as a
+  // message first: the transcript on disk is written by the runner and is read
+  // back the next time the session is opened, not on this page's clock.
+  var turnNode = null;
+  var textBox = null;
+  var stateEl = document.getElementById("state");
+  var promptEl = document.getElementById("prompt");
+  var sendEl = document.getElementById("send");
+
+  function state(text) { stateEl.textContent = text; }
+
+  function turn() {
+    if (!turnNode) {
+      turnNode = el("div", "msg");
+      textBox = el("div", "body");
+      turnNode.appendChild(el("div", "who", "assistant"));
+      turnNode.appendChild(textBox);
+      var open = document.getElementById("open");
+      var first = open.querySelector(".msg");
+      open.insertBefore(turnNode, first || null);
+    }
+    return turnNode;
+  }
+
+  function resetTurn() {
+    turnNode = null;
+    textBox = null;
+  }
+
+  function submit() {
+    var text = promptEl.value.trim();
+    if (!text) { return; }
+    resetTurn();
+    turn();
+    state("sending");
+    fetch("/prompt", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, headers()),
+      body: JSON.stringify({ text: text })
+    }).then(function (res) {
+      if (res.status === 409) { state("busy"); return null; }
+      if (!res.ok) { return res.text().then(function (body) { throw new Error(body || res.status); }); }
+      promptEl.value = "";
+      state("streaming");
+      return res;
+    }).catch(function (err) {
+      state("failed");
+      textBox && textBox.parentElement.appendChild(el("div", "tool-line", String(err)));
+    });
+  }
+
+  sendEl.addEventListener("click", submit);
+  promptEl.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  });
+
+  function payload(event) {
+    try { return JSON.parse(event.data).data || {}; } catch (_) { return {}; }
+  }
+
   // EventSource cannot set a header, so the payload goes in the query string
   // for this one request. Everything else uses Authorization.
   var source = new EventSource("/events?initData=" + encodeURIComponent(initData));
@@ -181,6 +266,33 @@
   source.addEventListener("question", function () {
     liveEl.textContent = "question pending";
     liveEl.className = "live on";
+  });
+  // The stream the prompt was answered on. Delta rather than whole text, so a
+  // reader that joins midway still accumulates correctly from what it saw.
+  source.addEventListener("content", function (event) {
+    turn();
+    textBox.textContent += payload(event).delta || "";
+  });
+  source.addEventListener("thinking", function (event) {
+    turn().querySelector(".who").textContent = "assistant · thinking";
+  });
+  source.addEventListener("tool_start", function (event) {
+    var d = payload(event);
+    turn().appendChild(el("div", "tool-line", "→ " + (d.tool || "tool")));
+  });
+  source.addEventListener("tool_end", function (event) {
+    var d = payload(event);
+    turn().appendChild(el("div", "tool-line", "← " + (d.tool || "tool") + " · " + (d.status || "")));
+  });
+  source.addEventListener("complete", function () {
+    state("");
+    var who = turnNode && turnNode.querySelector(".who");
+    if (who) { who.textContent = "assistant"; }
+  });
+  source.addEventListener("error", function (event) {
+    if (!event.data) { return; }
+    state("failed");
+    turn().appendChild(el("div", "tool-line", payload(event).message || "run failed"));
   });
 })();
 </script>

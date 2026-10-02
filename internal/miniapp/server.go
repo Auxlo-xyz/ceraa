@@ -1,15 +1,18 @@
 package miniapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ceraa/harness/event"
@@ -73,6 +76,14 @@ type Config struct {
 	// Address overrides the loopback default, for a caller that needs a
 	// different port rather than a different posture.
 	Address string
+	// SessionID is the conversation this surface writes to. It is never one of
+	// the Telegram sessions: two frontends fighting over one transcript is the
+	// race that motivated a separate surface in the first place.
+	SessionID string
+	// Prompt runs one turn. Injected by the process that owns the runner, so
+	// this package never imports one and a reader that has been admitted still
+	// cannot reach a tool through here.
+	Prompt func(context.Context, string) error
 }
 
 // Server is the loopbound HTTP surface. One per process, started once and shut
@@ -82,16 +93,29 @@ type Server struct {
 	mux      *http.ServeMux
 	http     *http.Server
 	listener net.Listener
+	// running is the web surface's one-run-at-a-time gate. It guards this
+	// session only; a Telegram run holds a different key and does not contend.
+	running atomic.Bool
 }
 
 // New builds the routes without binding anything, so a test can drive the
 // handlers through httptest without a socket.
+// WebSessionID is the conversation this surface writes to, and the reason it
+// is a constant rather than a lookup: there is one web transcript per process,
+// it belongs to the one admitted user, and nothing else in the bot has a claim
+// on it.
+const WebSessionID = "web"
+
 func New(cfg Config) *Server {
+	if strings.TrimSpace(cfg.SessionID) == "" {
+		cfg.SessionID = WebSessionID
+	}
 	s := &Server{cfg: cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
+	mux.HandleFunc("POST /prompt", s.handlePrompt)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("/", s.handleAsset)
 	s.mux = mux
@@ -414,7 +438,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if named := r.URL.Query().Get("session"); named != "" {
 		key = named
 	}
-	events := s.cfg.Bus.Subscribe(key, 64)
+	// A wide channel rather than the tight one a chat subscriber can afford.
+	// The renderer on the other side throttles, this one cannot: assistant text
+	// arrives as a delta per token and a full channel drops the excess, which
+	// for a reader is missing sentences rather than a stale indicator.
+	events := s.cfg.Bus.Subscribe(key, 1024)
 	defer s.cfg.Bus.Unsubscribe(key, events)
 
 	header := w.Header()
@@ -458,12 +486,82 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// maxPromptChars bounds one message. The model context window is the real
+// limit, but a request that is wrong by a factor of a thousand should be
+// refused before it reaches a tokenizer rather than after.
+const maxPromptChars = 200_000
+
+// handlePrompt starts one turn in this surface's session and answers
+// immediately, because the reply is on the event stream and not here.
+//
+// A long request would tie the run to the connection: closing the tab would
+// cancel work that had already been paid for. 202 says the turn was taken, and
+// every subsequent line, tool call and failure is on GET /events.
+func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Prompt == nil {
+		http.Error(w, "prompting is not enabled on this surface", http.StatusServiceUnavailable)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxPromptChars+1024))
+	if err != nil {
+		http.Error(w, "unreadable request", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "expected a JSON object", http.StatusBadRequest)
+		return
+	}
+	text := strings.TrimSpace(req.Text)
+	switch {
+	case text == "":
+		http.Error(w, "text is empty", http.StatusBadRequest)
+		return
+	case len(text) > maxPromptChars:
+		http.Error(w, fmt.Sprintf("text is longer than %d bytes", maxPromptChars), http.StatusRequestEntityTooLarge)
+		return
+	case !s.running.CompareAndSwap(false, true):
+		// The equivalent of Telegram's queue, minus the queue: a second message
+		// here would interleave with the first in one transcript, so the honest
+		// answer is that this surface is busy.
+		http.Error(w, "a run is already in progress", http.StatusConflict)
+		return
+	}
+
+	sessionID := s.cfg.SessionID
+	// Detached from the request on purpose, for the reason above. Background
+	// rather than the request context, which the caller is free to abandon.
+	go func() {
+		defer s.running.Store(false)
+		ctx := context.Background()
+		if err := s.cfg.Prompt(ctx, text); err != nil {
+			warn("Mini App run failed: " + err.Error())
+			// The bus here rather than the package default, so a caller that
+			// supplied its own bus does not leak into a stranger's stream.
+			if s.cfg.Bus != nil {
+				s.cfg.Bus.Publish(event.Event{Type: event.TypeError, SessionID: sessionID, Data: map[string]any{
+					"message": err.Error(), "stage": "dispatch",
+				}})
+			}
+		}
+	}()
+
+	writeJSONAt(w, http.StatusAccepted, map[string]any{"accepted": true, "session": sessionID})
+}
+
 func writeJSON(w http.ResponseWriter, body any) {
+	writeJSONAt(w, http.StatusOK, body)
+}
+
+func writeJSONAt(w http.ResponseWriter, status int, body any) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		http.Error(w, "encode failed", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_, _ = w.Write(payload)
 }

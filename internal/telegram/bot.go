@@ -605,10 +605,18 @@ func Run() error {
 			logger.Warn("Mini App disabled: session store unavailable: " + storeErr.Error())
 		} else {
 			miniappServer := miniapp.New(miniapp.Config{
-				Token:   token,
-				AllowID: allowID,
-				Store:   store,
-				Bus:     event.Default,
+				Token:     token,
+				AllowID:   allowID,
+				Store:     store,
+				Bus:       event.Default,
+				SessionID: miniapp.WebSessionID,
+				// Its own session, and callbacks that say nothing: the reply
+				// reaches the page on the event bus as structured deltas, not as
+				// a line a renderer was asked to print. Reusing the chat session
+				// here would put two frontends in one transcript.
+				Prompt: func(ctx context.Context, text string) error {
+					return runAgentContext(ctx, miniapp.WebSessionID, text, nil, nil, nil, nil)
+				},
 			})
 			if err := miniappServer.Start(); err != nil {
 				logger.Warn("Mini App disabled: " + err.Error())

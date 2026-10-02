@@ -2,6 +2,7 @@ package miniapp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -393,5 +394,163 @@ func TestServesOverItsOwnSocket(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("over the socket = %d, want 200: %s", resp.StatusCode, body)
+	}
+}
+
+func postJSON(t *testing.T, handler http.Handler, target, initData, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	if initData != "" {
+		req.Header.Set("Authorization", "tma "+initData)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestPromptIsRefusedWithoutARunner keeps a surface that only ever read
+// sessions from claiming it can start work.
+func TestPromptIsRefusedWithoutARunner(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"hello"}`)
+	if got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("prompt without a runner = %d, want 503", got.Code)
+	}
+}
+
+// TestPromptNeedsTheSameAdmissionAsEveryOtherPath is here because a route that
+// starts work is the one somebody would try to reach without the check.
+func TestPromptNeedsTheSameAdmissionAsEveryOtherPath(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	server.cfg.Prompt = func(context.Context, string) error { return nil }
+	if got := postJSON(t, server.Handler(), "/prompt", "", `{"text":"hello"}`); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous prompt = %d, want 401", got.Code)
+	}
+	initData := initDataFor(t, testToken, 400000000, 0)
+	if got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"hello"}`); got.Code != http.StatusForbidden {
+		t.Fatalf("prompt as another user = %d, want 403", got.Code)
+	}
+}
+
+// TestPromptRefusesInputsTheModelShouldNotHaveToSurvive pins the three ways a
+// body can be wrong before any of them reaches a tokenizer.
+func TestPromptRefusesInputsTheModelShouldNotHaveToSurvive(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	server.cfg.Prompt = func(context.Context, string) error { return nil }
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"not json", "{{{", http.StatusBadRequest},
+		{"no text", `{}`, http.StatusBadRequest},
+		{"blank", `{"text":"   "}`, http.StatusBadRequest},
+		{"too long", `{"text":"` + strings.Repeat("a", maxPromptChars+1) + `"}`, http.StatusRequestEntityTooLarge},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := postJSON(t, server.Handler(), "/prompt", initData, tc.body)
+			if got.Code != tc.want {
+				t.Fatalf("%s = %d, want %d: %s", tc.name, got.Code, tc.want, got.Body.String())
+			}
+		})
+	}
+}
+
+// TestPromptStreamsIntoItsOwnSession is the seam the plan cares about: the turn
+// is taken, the answer leaves on the bus under the web session's id, and the
+// reply says which conversation it landed in.
+func TestPromptStreamsIntoItsOwnSession(t *testing.T) {
+	server, _, bus := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	stream := bus.Subscribe(WebSessionID, 16)
+	defer bus.Unsubscribe(WebSessionID, stream)
+	// A stranger's session must not see this turn. Subscribing to it proves the
+	// events are filed under the web id and nowhere else.
+	other := bus.Subscribe("ses-fixture", 16)
+	defer bus.Unsubscribe("ses-fixture", other)
+
+	done := make(chan struct{})
+	server.cfg.Prompt = func(_ context.Context, text string) error {
+		defer close(done)
+		if text != "write a test" {
+			t.Errorf("runner received %q, want the message as sent", text)
+		}
+		bus.Publish(event.Event{Type: event.TypeContent, SessionID: WebSessionID, Data: map[string]any{"delta": "thinking "}})
+		bus.Publish(event.Event{Type: event.TypeComplete, SessionID: WebSessionID, Data: map[string]any{"text": "thinking "}})
+		return nil
+	}
+
+	got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"write a test"}`)
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("prompt = %d, want 202: %s", got.Code, got.Body.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the runner was never started")
+	}
+
+	var types []string
+	timeout := time.After(2 * time.Second)
+	for len(types) < 2 {
+		select {
+		case e, ok := <-stream:
+			if !ok {
+				t.Fatalf("stream closed early, saw %v", types)
+			}
+			types = append(types, string(e.Type))
+		case <-timeout:
+			t.Fatalf("saw %v after 2s, want a content delta and a completion", types)
+		}
+	}
+	if types[0] != string(event.TypeContent) || types[1] != string(event.TypeComplete) {
+		t.Fatalf("stream order = %v, want content then complete", types)
+	}
+	select {
+	case e := <-other:
+		t.Fatalf("the chat session received %s, but this turn is not its own", e.Type)
+	default:
+	}
+}
+
+// TestPromptRefusesASecondTurnWhileOneIsLive is the answer a queue would give,
+// minus the queue: one transcript, one writer.
+func TestPromptRefusesASecondTurnWhileOneIsLive(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	server.cfg.Prompt = func(context.Context, string) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	if got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"one"}`); got.Code != http.StatusAccepted {
+		t.Fatalf("first prompt = %d, want 202", got.Code)
+	}
+	<-started
+	if got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"two"}`); got.Code != http.StatusConflict {
+		t.Fatalf("second prompt = %d, want 409", got.Code)
+	}
+
+	close(release)
+	// The gate is released after the runner returns, so there is a real window
+	// here rather than a theoretical one.
+	var again int
+	for i := 0; i < 100; i++ {
+		if again = postJSON(t, server.Handler(), "/prompt", initData, `{"text":"three"}`).Code; again == http.StatusAccepted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if again != http.StatusAccepted {
+		t.Fatalf("prompt after the first run finished = %d, want 202", again)
 	}
 }

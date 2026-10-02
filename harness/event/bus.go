@@ -10,6 +10,7 @@ type Type string
 
 const (
 	TypeThinking        Type = "thinking"
+	TypeContent         Type = "content"
 	TypePermission      Type = "permission"
 	TypeQuestion        Type = "question"
 	TypeCost            Type = "cost"

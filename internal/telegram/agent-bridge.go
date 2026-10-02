@@ -216,17 +216,25 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 			return decision == "allowOnce" || decision == "allowAlways", nil
 		},
 		Callbacks: coordinator.Callbacks{
+			// Structured events go on the bus for every surface, not just the
+			// one that asked for this run. A subscriber that has no renderer of
+			// its own still has to be able to watch, which is what the Mini App
+			// does; it gets a delta and a call id rather than a line that was
+			// already flattened into a sentence.
 			OnContent: func(content string) {
+				event.Default.Publish(event.Event{Type: event.TypeContent, SessionID: sessionID, Data: map[string]any{"delta": content}})
 				if onContent != nil {
 					onContent(content)
 				}
 			},
 			OnReasoning: func(reasoning string) {
+				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"delta": reasoning}})
 				if onReasoning != nil {
 					onReasoning(reasoning)
 				}
 			},
 			OnToolStart: func(callID, name string, args map[string]any) {
+				event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"call_id": callID, "tool": name, "args": args}})
 				if onTool != nil {
 					onTool(callID, "🔄 "+toolDisplayName(name)+toolArgsSummary(name, args))
 				}
@@ -237,6 +245,10 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 				if result.Status != operation.StatusCompleted {
 					status = "⚠️"
 				}
+				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{
+					"call_id": callID, "tool": name, "label": label,
+					"status": string(result.Status), "outcome": toolResultLabel(result),
+				}})
 				if onTool != nil {
 					onTool(callID, fmt.Sprintf("%s %s %s", status, label, toolResultLabel(result)))
 				}
@@ -264,15 +276,17 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 					}
 				}
 			},
-			// Deliberately not forwarding usage and cost onto the event bus. The
-			// only production subscriber handles permission and question requests,
-			// so TypeTokens and TypeCost were published on every usage delta of
-			// every run and consumed by nobody. They existed for the pinned-message
-			// manager, which is gone; see the removal of internal/telegram/pinned.go.
-			//
-			// The coordinator still computes and stores both. They drive cost and the
-			// cache-read ratio in the session record and /status, which are live.
+			// Usage and cost still stay off the bus. That was written when the
+			// only production subscriber answered permission and question
+			// requests, so TypeTokens and TypeCost fired on every usage delta of
+			// every run into nobody; the subscriber changed, the noise did not.
+			// Both are per-run totals in the session record now, which is where
+			// the Mini App reads them from, so a live surface pays nothing to
+			// know what a run cost.
 			OnDone: func(answer string) {
+				if answer != "" {
+					event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"text": answer}})
+				}
 				if onAnswer != nil && answer != "" {
 					onAnswer(answer)
 				}
@@ -280,6 +294,9 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		},
 	}, store, registry)
 	_, err = runner.Run(parent, userText)
+	if err != nil {
+		event.Default.Publish(event.Event{Type: event.TypeError, SessionID: sessionID, Data: map[string]any{"message": err.Error()}})
+	}
 	return err
 }
 
