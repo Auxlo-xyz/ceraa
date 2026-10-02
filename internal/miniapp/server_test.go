@@ -285,6 +285,59 @@ func TestSessionListAndDetail(t *testing.T) {
 	}
 }
 
+// TestSystemMessagesAreNotTranscribed pins the line between what the model is
+// told and what the chat shows.
+//
+// The system prompt is the first stored message of every session. Printing it
+// hands the whole instruction set to whoever has the session open, and the
+// surface only ever needed the conversation. It is withheld from the message
+// list but still counted in the token estimate, because it sits in the context
+// window and the estimate has to agree with what /status prints.
+func TestSystemMessagesAreNotTranscribed(t *testing.T) {
+	server, store, _ := newFixture(t, testUser)
+	sess := &sessionstore.Session{
+		ID:      "ses-system",
+		Title:   "Has a system prompt",
+		Version: 1,
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleSystem, Content: "<core>secret instructions</core>"},
+			{Role: llm.RoleUser, Content: "hello"},
+			{Role: llm.RoleAssistant, Content: "hi"},
+		},
+	}
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	detail := do(t, server.Handler(), http.MethodGet, "/api/sessions/ses-system",
+		initDataFor(t, testToken, testUser, 0))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail = %d: %s", detail.Code, detail.Body.String())
+	}
+	var opened sessionDetail
+	if err := json.Unmarshal(detail.Body.Bytes(), &opened); err != nil {
+		t.Fatal(err)
+	}
+	if len(opened.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2 (system withheld)", len(opened.Messages))
+	}
+	for _, message := range opened.Messages {
+		if message.Role == string(llm.RoleSystem) {
+			t.Fatalf("system message reached the transcript: %+v", message)
+		}
+	}
+	if strings.Contains(detail.Body.String(), "secret instructions") {
+		t.Error("system prompt content is present in the response body")
+	}
+	// The estimate counts everything in the window, system included: the
+	// secret prompt is 30+ characters, so dropping it would push the number
+	// visibly below the 4-token floor the two-message conversation alone sets.
+	if opened.Context.EstimatedTokens < len("<core>secret instructions</core>")/4 {
+		t.Errorf("estimated tokens = %d, want the system message still counted",
+			opened.Context.EstimatedTokens)
+	}
+}
+
 // TestUnknownSessionIsNotFound separates a missing id from a refused caller.
 func TestUnknownSessionIsNotFound(t *testing.T) {
 	server, _, _ := newFixture(t, testUser)

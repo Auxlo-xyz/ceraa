@@ -658,6 +658,10 @@
       return;
     }
     session.messages.forEach(function (message) {
+      // The system prompt is instructions to the model, not part of the
+      // conversation. The server already withholds it; this covers a surface
+      // opened against an older build that still sends it.
+      if (message.role === "system") { return; }
       var body = message.tool_result || message.content || "";
       if (!body && !message.tool_name) { return; }
       var row = el("div", "msg" + (message.tool_name ? " tool" : ""));

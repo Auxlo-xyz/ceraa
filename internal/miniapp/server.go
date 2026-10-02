@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ceraa/harness/event"
+	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
 	"ceraa/internal/envs"
 	"ceraa/internal/logger"
@@ -621,6 +622,11 @@ func summarise(sess *sessionstore.Session) sessionSummary {
 // The token estimate is the same character-count heuristic /status prints, kept
 // identical on purpose: two surfaces dividing the same text differently is how
 // a number stops being believed.
+//
+// System messages are not part of the transcript. They carry the operator's own
+// instructions to the model, they are re-sent on every turn, and a chat surface
+// that prints them hands the whole prompt to whoever has the session open. They
+// still count toward the estimate, because they are in the context window.
 func detailOf(sess *sessionstore.Session) sessionDetail {
 	detail := sessionDetail{
 		ID:       sess.ID,
@@ -631,6 +637,9 @@ func detailOf(sess *sessionstore.Session) sessionDetail {
 	estimated := 0
 	for _, message := range sess.Messages {
 		estimated += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
+		if message.Role == llm.RoleSystem {
+			continue
+		}
 		detail.Messages = append(detail.Messages, sessionMsg{
 			Role:       string(message.Role),
 			Content:    message.Content,
