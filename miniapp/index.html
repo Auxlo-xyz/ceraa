@@ -71,12 +71,12 @@
   .icon {
     width: var(--tap); height: var(--tap);
     display: grid; place-items: center;
-    border: 1px solid var(--line); border-radius: var(--r-pill);
-    background: var(--raised); color: var(--text);
+    border: 0; border-radius: var(--r-pill);
+    background: none; color: var(--muted);
     cursor: pointer;
-    transition: transform 120ms var(--ease), background 120ms var(--ease);
+    transition: transform 120ms var(--ease), color 120ms var(--ease);
   }
-  .icon:active { transform: scale(0.94); background: var(--surface); }
+  .icon:active { transform: scale(0.94); background: none; color: var(--text); }
   .icon svg { width: 20px; height: 20px; display: block; }
   .icon .badge {
     position: absolute; transform: translate(15px, -15px);
@@ -140,8 +140,14 @@
   #open .empty {
     min-height: 100%;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: calc(var(--s) * 4); color: var(--muted); text-align: center; padding: 0 var(--s) * 6;
+    gap: calc(var(--s) * 4); color: var(--muted); text-align: center; padding: 0 calc(var(--s) * 6);
   }
+  .empty-center {
+    min-height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: calc(var(--s) * 4); color: var(--muted); text-align: center;
+  }
+  .empty-center p { margin: 0; font-size: 19px; letter-spacing: -0.01em; }
   .idle-mark { display: flex; align-items: center; gap: calc(var(--s) * 3); }
   .idle-mark i { width: 22px; height: 2px; border-radius: 2px; background: var(--line); }
   .idle-mark i:nth-child(2) { background: var(--accent); }
@@ -158,23 +164,27 @@
   .msg { margin-bottom: calc(var(--s) * 5); }
   .msg .who { font-size: 12px; color: var(--faint); margin-bottom: calc(var(--s) * 1.5); }
   .msg .body { white-space: pre-wrap; word-break: break-word; }
+  /* Tool output is text, not a card: no fill, no box, just muted mono type
+     set apart by size. A filled box around every result is what made the
+     transcript read as grey panels stacked on grey. */
   .msg.tool .body {
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--muted); background: var(--surface);
-    border: 1px solid var(--line); border-radius: var(--r-card);
-    padding: calc(var(--s) * 3); max-height: 22em; overflow: auto;
+    color: var(--muted); background: none;
+    border: 0; border-radius: 0;
+    padding: 0; max-height: 22em; overflow: auto;
   }
   .tool-line { font-size: 13px; color: var(--muted); margin: calc(var(--s) * 2) 0; }
   .empty { color: var(--muted); }
 
-  /* The composer floats clear of the edge, so the last line of a reply is not
-     hidden behind it while the page scrolls. */
+  /* The composer is one hairline pill on the page background, not a filled
+     grey bar. A filled pill plus filled tool cards plus a filled sheet is
+     where the stacked-greys look came from. */
   #composer {
     flex: none; display: flex; gap: calc(var(--s) * 2); align-items: flex-end;
     margin: 0 calc(var(--s) * 3);
     margin-bottom: max(calc(var(--s) * 3), env(safe-area-inset-bottom));
     padding: calc(var(--s) * 1.5);
-    background: var(--raised);
+    background: var(--bg);
     border: 1px solid var(--line); border-radius: var(--r-pill);
   }
   #prompt {
@@ -232,17 +242,19 @@
   }
   #secret-list li span { flex: 1; word-break: break-all; }
 
+  /* Permission and question cards keep one thin warning edge and no fill:
+     a tinted panel over the transcript was another grey layer. */
   .ask {
-    border: 1px solid var(--line); border-left: 3px solid var(--warn);
-    border-radius: var(--r-card); background: var(--warn-bg);
-    padding: calc(var(--s) * 3) calc(var(--s) * 4);
+    border: 0; border-left: 3px solid var(--warn);
+    border-radius: 0; background: none;
+    padding: calc(var(--s) * 3) 0 calc(var(--s) * 3) calc(var(--s) * 4);
     margin: calc(var(--s) * 3) 0;
   }
   .ask-row { display: flex; gap: calc(var(--s) * 2); flex-wrap: wrap; margin-top: calc(var(--s) * 3); }
   .ask-btn {
     min-height: 36px; padding: 0 calc(var(--s) * 4);
     border: 1px solid var(--line); border-radius: var(--r-pill);
-    background: var(--raised); color: inherit; font: inherit; font-size: 14px;
+    background: none; color: inherit; font: inherit; font-size: 14px;
     cursor: pointer; transition: transform 120ms var(--ease);
   }
   .ask-btn:active { transform: scale(0.97); }
@@ -253,14 +265,9 @@
   }
 
 
-  /* The resting screen. It lives outside #open because that pane is emptied on
-     every open, so anything inside it would be destroyed by opening a session. */
-  #idle {
-    position: fixed; inset: 0 0 96px 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: calc(var(--s) * 4); pointer-events: none; z-index: 5;
-  }
-  #idle p { margin: 0; font-size: 19px; letter-spacing: -0.01em; color: var(--muted); }
+  /* No fixed overlays for the resting screen. The empty state lives inside
+     #open as normal flow content, so there is never a translucent layer
+     floating over the conversation. */
 
 
   /* --- Motion ---
@@ -294,9 +301,9 @@
   #panel { animation: fadeIn .22s ease both; }
   #panel > div { animation: rise .28s var(--ease) both; }
 
-  /* One entrance, sequenced so the screen composes rather than arriving whole. */
-  .bar { animation: fadeIn .4s ease both; }
-  #composer { animation: rise .5s var(--ease) both .12s; }
+  /* No entrance choreography on the chrome itself: the bar and composer
+     sliding in on load is what made the frame feel like layers arriving
+     on top of each other. Messages still rise once on insertion. */
 
   /* Motion is a confirmation, not a performance. Under this budget the platform
      default is the right answer and the cheapest one. */
@@ -336,7 +343,7 @@
   </button>
 </div>
 
-<section id="open"><p class="empty">Pick a session.</p></section>
+<section id="open"><div class="empty-center"><p>What are we working on?</p><span class="idle-mark"><i></i><i></i><i></i></span></div></section>
 
 <div id="panel" hidden>
   <div>
@@ -370,10 +377,6 @@
   </button>
 </footer>
 
-<div id="idle">
-  <p>What are we working on?</p>
-  <span class="idle-mark"><i></i><i></i><i></i></span>
-</div>
 <script>
 (function () {
   // Every request carries the payload the page was opened with. Telegram puts
@@ -910,8 +913,6 @@
   var list = document.getElementById("list");
   var scrim = document.getElementById("scrim");
   var trigger = document.getElementById("sessions");
-  var idle = document.getElementById("idle");
-  var open = document.getElementById("open");
 
   function sheet(on) {
     list.setAttribute("data-open", on ? "true" : "false");
@@ -931,19 +932,6 @@
     list.addEventListener("click", function (event) {
       if (event.target.closest("button")) { sheet(false); }
     });
-  }
-
-  // Whether the resting screen is showing is decided by what is in the
-  // conversation pane, which the script above empties and refills. Observing it
-  // keeps that decision out of the code that fills the pane.
-  if (idle && open) {
-    var sync = function () {
-      var bare = !open.querySelector("h2, #stats, .msg");
-      idle.style.display = bare ? "" : "none";
-      open.style.visibility = bare ? "hidden" : "";
-    };
-    new MutationObserver(sync).observe(open, { childList: true, subtree: true });
-    sync();
   }
 })();
 </script>
