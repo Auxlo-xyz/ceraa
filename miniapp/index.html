@@ -47,7 +47,13 @@
     }
   }
 
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* A tap is signalled by :active, so a keyboard or switch user needs the same
+     signal. The accent ring is offset so it clears the hairline it marks. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* One disabled opacity for every control, so a control that cannot be used
+     never looks like one that simply has not been pressed yet. */
+  button:disabled { opacity: .5; cursor: default; }
   html, body { height: 100%; }
   /* The canvas itself is painted page background. If the webview ever shows
      area outside the body box (viewport resize, keyboard, overscroll), it
@@ -91,8 +97,49 @@
 
   /* Run state sits beside the connection dot rather than in the composer: it is
      a label about the conversation, and the pill is for writing. Kept in the DOM
-     at all times because the script writes to it unconditionally. */
-  #state { font-size: 12px; color: var(--muted); }
+     at all times because the script writes to it unconditionally.
+
+     It is a pill rather than bare text because the phase has two channels: the
+     dot carries it in colour, the words carry it in text. A reader who cannot
+     separate the two still gets one of them, and neither needs a fill. */
+  #state {
+    font-size: 11px; line-height: 1; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 9px 5px 8px;
+    border: 1px solid var(--line); border-radius: var(--r-pill);
+    max-width: 44vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #state:empty { display: none; }
+  #state::before {
+    content: ""; flex: none; width: 6px; height: 6px;
+    border-radius: 50%; background: currentColor;
+  }
+  #state[data-state="thinking"]::before { animation: breathe 1.3s ease-in-out infinite; }
+  #state[data-state="working"] { color: var(--accent); }
+  #state[data-state="working"]::before { animation: breathe .8s ease-in-out infinite; }
+  #state[data-state="asking"] { color: var(--warn); }
+  #state[data-state="error"] { color: var(--warn); border-color: var(--warn); }
+
+  /* The mascot is the run state, not an ornament. It is a pure function of the
+     same phase the pill reports, driven from one assignment, so the two can
+     never disagree about what the run is doing — the same rule the terminal
+     surface keeps (internal/tui/mascot.go: a run is a state machine and the
+     mascot is a function of it).
+
+     Its own black square is page-background in the dark theme and a badge in
+     the light one, so one file serves both without a second copy. */
+  #face {
+    width: 26px; height: 26px; flex: none;
+    display: block; border-radius: 7px; overflow: hidden;
+    transform-origin: 50% 85%;
+    transition: transform 300ms var(--ease), opacity 300ms var(--ease);
+  }
+  #face img { width: 100%; height: 100%; display: block; }
+  #face[data-state="thinking"] { animation: bob 2.4s ease-in-out infinite; }
+  #face[data-state="working"] { animation: bob 1.3s ease-in-out infinite; }
+  #face[data-state="asking"] { transform: rotate(7deg); }
+  #face[data-state="done"] { transform: rotate(-5deg); }
+  #face[data-state="error"] { transform: rotate(5deg); opacity: .5; }
 
   .live { margin-left: auto; font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: calc(var(--s) * 1.5); }
   .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -175,18 +222,90 @@
   #stats .v { font-size: 16px; font-variant-numeric: tabular-nums; }
 
   .msg { margin-bottom: calc(var(--s) * 5); }
-  .msg .who { font-size: 12px; color: var(--faint); margin-bottom: calc(var(--s) * 1.5); }
   .msg .body { white-space: pre-wrap; word-break: break-word; }
-  /* Tool output is text, not a card: no fill, no box, just muted mono type
-     set apart by size. A filled box around every result is what made the
-     transcript read as grey panels stacked on grey. */
-  .msg.tool .body {
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--muted); background: none;
-    border: 0; border-radius: 0;
-    padding: 0; max-height: 22em; overflow: auto;
+
+  /* The only message allowed a frame is your own. Right alignment, a small
+     tail on the bottom-right and a hairline in the accent are what say "you
+     said this"; the reply needs none of it because it is already the thing the
+     whole screen is pointed at. No fill: position and the tail do the work. */
+  .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg.user .body {
+    max-width: 84%;
+    padding: calc(var(--s) * 2.5) calc(var(--s) * 3.5);
+    border: 1px solid var(--accent);
+    border-radius: 17px 17px 4px 17px;
   }
+
+  /* A tool call is a step in a run, so it is drawn as a step: one hairline
+     node, one hairline rail to the next, and the output behind a single top
+     hairline. No box and no fill anywhere — a filled box around every result
+     is what made the transcript read as grey panels stacked on grey. */
+  .tool {
+    position: relative;
+    padding-left: calc(var(--s) * 7);
+    margin: calc(var(--s) * 4) 0 0;
+  }
+  .tool-node {
+    position: absolute; left: 0; top: 3px;
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--bg);
+  }
+  .tool-node::after {
+    content: ""; position: absolute; inset: 3px; border-radius: 50%;
+    background: var(--faint);
+  }
+  .tool[data-s="running"] .tool-node { border-color: var(--accent); }
+  .tool[data-s="running"] .tool-node::after {
+    background: var(--accent); animation: breathe .9s ease-in-out infinite;
+  }
+  .tool[data-s="error"] .tool-node { border-color: var(--warn); }
+  .tool[data-s="error"] .tool-node::after { background: var(--warn); }
+  /* The rail is drawn by the step that is followed by another, so the line
+     stops where the sequence does instead of trailing into the reply. */
+  .tool:has(+ .tool)::after {
+    content: ""; position: absolute; left: 7px; top: 22px; bottom: -20px;
+    width: 1px; background: var(--line);
+  }
+  .tool-head { display: flex; align-items: center; gap: calc(var(--s) * 2); }
+  .tool-name {
+    font: 600 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text);
+  }
+  .tool-state {
+    margin-left: auto; flex: none;
+    font-size: 11px; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .tool-state::before {
+    content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+  }
+  .tool[data-s="running"] .tool-state { color: var(--accent); }
+  .tool[data-s="error"] .tool-state { color: var(--warn); }
+  .tool-out {
+    margin: calc(var(--s) * 2) 0 0; padding-top: calc(var(--s) * 2);
+    border-top: 1px solid var(--line);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 22em; overflow: auto;
+  }
+  .tool-out[hidden] { display: none; }
   .tool-line { font-size: 13px; color: var(--muted); margin: calc(var(--s) * 2) 0; }
+
+  /* The waiting indicator replaces a label: three dots that take turns, so the
+     surface is visibly alive while nothing has been written yet. The stagger is
+     the whole effect — without it the three pulse as one and read as a blink. */
+  .thinking {
+    display: flex; align-items: center; gap: calc(var(--s) * 2.5);
+    color: var(--faint); font-size: 13px;
+    margin: calc(var(--s) * 2) 0;
+  }
+  .thinking i {
+    width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+    animation: bob 1.1s ease-in-out infinite;
+  }
+  .thinking i:nth-child(2) { animation-delay: .16s; }
+  .thinking i:nth-child(3) { animation-delay: .32s; }
   .empty { color: var(--muted); }
 
   /* Markdown in assistant messages is type and hairlines, never panels: the
@@ -244,14 +363,15 @@
     transition: transform 120ms var(--ease), opacity 120ms var(--ease);
   }
   #send:active { transform: scale(0.94); }
-  #send:disabled { opacity: .35; cursor: default; }
   #send svg { width: 20px; height: 20px; }
   #stop {
     width: var(--tap); height: var(--tap); flex: none;
     border: 0; border-radius: var(--r-pill); cursor: pointer;
     background: var(--warn-bg); color: var(--warn);
     display: grid; place-items: center;
+    transition: transform 120ms var(--ease);
   }
+  #stop:active { transform: scale(0.94); }
   #stop[hidden] { display: none; }
   #stop svg { width: 18px; height: 18px; }
 
@@ -324,6 +444,10 @@
   }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+  /* One lift, shared by the waiting dots and by the mascot. Both are the run
+     state and neither moves for any other reason, so a reader learns to read
+     this shape as "working" rather than as decoration. */
+  @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 
   /* Messages and tool results rise in as they are appended, which is what
      streaming wants rather than one block that swaps. A fresh node runs this once
@@ -379,7 +503,8 @@
   <button class="icon" id="sessions" type="button" aria-label="Sessions">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
   </button>
-  <span id="state"></span>
+  <span id="face" data-state="idle"><img src="/mascot.svg" alt=""></span>
+  <span id="state" role="status" aria-live="polite"></span>
   <span class="live" id="live">connecting</span>
   <button class="icon" id="gear" type="button" aria-label="Settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5" stroke-linecap="round"/></svg>
@@ -621,6 +746,48 @@
     return known ? "$" + usd.toFixed(4) : "unknown";
   }
 
+  // Human words for the run statuses the store uses, so the pill reads as
+  // English rather than as an enum. Anything unmapped is shown as it arrived,
+  // because inventing a word for an unknown state is how a state gets missed.
+  var TOOL_WORD = {
+    pending: "waiting", running: "running", completed: "done",
+    canceled: "cancelled", cancel_requested: "stopping"
+  };
+
+  // One card per tool call, built the same way whether it is replayed from the
+  // transcript or announced by a live event. Two shapes for one thing is how
+  // the two surfaces drift into disagreeing about what a step looks like.
+  function toolCard(name, status) {
+    var card = el("div", "tool");
+    card.appendChild(el("span", "tool-node"));
+    var head = el("div", "tool-head");
+    head.appendChild(el("span", "tool-name", name || "tool"));
+    head.appendChild(el("span", "tool-state"));
+    card.appendChild(head);
+    var out = el("pre", "tool-out");
+    out.hidden = true;
+    card.appendChild(out);
+    setToolState(card, status || "completed");
+    return card;
+  }
+
+  function setToolState(card, status) {
+    var s = String(status || "").toLowerCase();
+    var phase = !s || /pend|run/.test(s) ? "running"
+              : /fail|error|cancel/.test(s) ? "error"
+              : "done";
+    card.dataset.s = phase;
+    card.querySelector(".tool-state").textContent = TOOL_WORD[s] || s || "running";
+  }
+
+  // Tool output is program text: run paths, logs, exit output. It is set as
+  // text and never parsed, so a log line containing markup stays a log line.
+  function setToolOut(card, text) {
+    var out = card.querySelector(".tool-out");
+    out.textContent = text;
+    out.hidden = !text;
+  }
+
   function renderSummary(sessions) {
     listEl.textContent = "";
     if (!sessions.length) {
@@ -663,15 +830,19 @@
       // opened against an older build that still sends it.
       if (message.role === "system") { return; }
       var body = message.tool_result || message.content || "";
-      if (!body && !message.tool_name) { return; }
-      var row = el("div", "msg" + (message.tool_name ? " tool" : ""));
-      var who = message.tool_name ? ("tool · " + message.tool_name) : message.role;
-      row.appendChild(el("div", "who", who + (message.status ? " · " + message.status : "")));
+      if (message.tool_name) {
+        var step = toolCard(message.tool_name, message.status);
+        if (body) { setToolOut(step, body); }
+        openEl.appendChild(step);
+        return;
+      }
+      if (!body) { return; }
+      // No label on either side. Who is holding the floor is already carried
+      // by which side of the screen the text is on, and a row of repeated
+      // "assistant" captions was grey noise between the two.
+      var row = el("div", "msg" + (message.role === "user" ? " user" : ""));
       var box = el("div", "body");
-      // Tool output is raw program output: run paths, logs, exit text. It is
-      // escaped as-is. Human messages are written as markdown and rendered.
-      if (message.tool_result) { box.textContent = body; }
-      else { box.innerHTML = md(body); }
+      box.innerHTML = md(body);
       row.appendChild(box);
       openEl.appendChild(row);
     });
@@ -701,18 +872,57 @@
   // closer arrives, so a partially streamed message never shows broken HTML.
   var turnRaw = "";
   var stateEl = document.getElementById("state");
+  var faceEl = document.getElementById("face");
   var promptEl = document.getElementById("prompt");
   var sendEl = document.getElementById("send");
   var stopEl = document.getElementById("stop");
   // Learned from the reply to the first turn rather than assumed, so this page
   // still works if the surface is configured with a different session.
   var webSession = "";
+  var running = false;
 
-  function state(text) { stateEl.textContent = text; }
+  // The phase is derived, never stored twice. `state` writes the words, and
+  // the same input decides which of the six phases the pill's dot and the
+  // mascot are showing — so the two cannot drift, and there is no second
+  // assignment to forget when a new label is added.
+  //
+  // Anything unmapped that is not empty is a failure message, because the only
+  // other strings this writes are caught errors.
+  var PHASE = {
+    "": "idle",
+    sending: "thinking",
+    streaming: "working",
+    busy: "working",
+    stopping: "working",
+    awaiting: "asking",
+    failed: "error"
+  };
+
+  function state(text) {
+    stateEl.textContent = text;
+    var phase = PHASE[text] || (text ? "error" : "idle");
+    stateEl.dataset.state = phase;
+    faceEl.dataset.state = phase;
+  }
+
+  // Send is a commitment, so it is available exactly when there is something
+  // to send and nothing already running. An empty composer with a live button
+  // was a control that did nothing when pressed, which reads as a broken one.
+  function syncSend() {
+    sendEl.disabled = running || !promptEl.value.trim();
+  }
 
   function streaming(on) {
+    running = on;
     stopEl.hidden = !on;
     if (!on) { state(""); }
+    syncSend();
+  }
+
+  // An answered question is not the end of the run. Going straight to idle
+  // after an approval left the pill reporting a run that was still going.
+  function answered() {
+    state(running ? "streaming" : "");
   }
 
   // Deltas arrive faster than a phone can re-parse the whole message, so the
@@ -749,7 +959,6 @@
       turnNode = el("div", "msg");
       textBox = el("div", "body");
       turnRaw = "";
-      turnNode.appendChild(el("div", "who", "assistant"));
       turnNode.appendChild(textBox);
       var open = document.getElementById("open");
       // The resting screen is full-height flow content: leaving it in place
@@ -761,8 +970,30 @@
       // inserting before the first message put answers above their questions.
       open.appendChild(turnNode);
       stick();
+      // The turn exists before the model has said anything, so the surface has
+      // to say that much. The indicator is what fills that gap.
+      thinkingShow();
     }
     return turnNode;
+  }
+
+  // Between the send and the first delta the transcript is empty and the run is
+  // invisible. Three dots taking turns is the whole of what a reader needs to
+  // know that something is happening, and the stagger is what makes them read
+  // as three rather than as one blinking.
+  function thinkingShow() {
+    if (!turnNode || turnNode.querySelector(".thinking")) { return; }
+    var dots = el("div", "thinking");
+    dots.appendChild(el("i"));
+    dots.appendChild(el("i"));
+    dots.appendChild(el("i"));
+    dots.appendChild(el("span", null, "Ceraa is thinking"));
+    turnNode.appendChild(dots);
+  }
+
+  function thinkingHide() {
+    var dots = document.querySelector("#open .thinking");
+    if (dots) { dots.remove(); }
   }
 
   var pending = null;
@@ -770,6 +1001,21 @@
   function resetTurn() {
     if (pending) { pending.textContent = ""; pending = null; }
     if (paintTimer) { clearTimeout(paintTimer); paintTimer = null; }
+    paintStick = false;
+    turnNode = null;
+    textBox = null;
+    turnRaw = "";
+  }
+
+  // The turn node exists before the server has accepted the request, because
+  // there is nowhere else to put what comes back. If the request is refused,
+  // that node has no content and no run behind it, and keeping it shows a
+  // permanent empty gap where an answer should be. It is dropped only while it
+  // is still empty: a turn that has streamed anything is transcript.
+  function dropEmptyTurn() {
+    if (!turnNode || turnRaw || pending) { return; }
+    if (paintTimer) { clearTimeout(paintTimer); paintTimer = null; }
+    turnNode.remove();
     paintStick = false;
     turnNode = null;
     textBox = null;
@@ -812,7 +1058,7 @@
       button.addEventListener("click", function () {
         button.disabled = true;
         post("/api/permission", { request_id: d.request_id, decision: choice[0] })
-          .then(function (ok) { if (ok) { card.remove(); state(""); } });
+          .then(function (ok) { if (ok) { card.remove(); answered(); } });
       });
       row.appendChild(button);
     });
@@ -830,7 +1076,7 @@
       button.addEventListener("click", function () {
         button.disabled = true;
         post("/api/answer", { request_id: d.request_id, answer: option })
-          .then(function (ok) { if (ok) { card.remove(); state(""); } });
+          .then(function (ok) { if (ok) { card.remove(); answered(); } });
       });
       row.appendChild(button);
     });
@@ -846,7 +1092,7 @@
         if (!text) { return; }
         send.disabled = true;
         post("/api/answer", { request_id: d.request_id, answer: text })
-          .then(function (ok) { if (ok) { card.remove(); state(""); } });
+          .then(function (ok) { if (ok) { card.remove(); answered(); } });
       }
       send.addEventListener("click", reply);
       input.addEventListener("keydown", function (event) {
@@ -868,34 +1114,48 @@
     var open = document.getElementById("open");
     var bare = open.querySelector(".empty-center");
     if (bare) { bare.remove(); }
-    var you = el("div", "msg");
-    you.appendChild(el("div", "who", "you"));
-    var youBody = el("div", "body");
-    youBody.innerHTML = md(text);
-    you.appendChild(youBody);
-    open.appendChild(you);
-    resetTurn();
-    turn();
-    stick();
-    state("sending");
-    fetch("/prompt", {
-      method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, headers()),
-      body: JSON.stringify({ text: text })
-    }).then(function (res) {
-      if (res.status === 409) { state("busy"); return null; }
-      if (!res.ok) { return res.text().then(function (body) { throw new Error(body || res.status); }); }
-      promptEl.value = "";
-      state("streaming");
-      streaming(true);
-      return res.json();
-    }).then(function (data) {
-      if (data && data.session) { webSession = data.session; }
-    }).catch(function (err) {
-      state("failed");
-      textBox && textBox.parentElement.appendChild(el("div", "tool-line", String(err)));
-    });
-  }
+      var you = el("div", "msg user");
+      var youBody = el("div", "body");
+      youBody.innerHTML = md(text);
+      you.appendChild(youBody);
+      open.appendChild(you);
+      resetTurn();
+      turn();
+      // Claim the composer before the request leaves. Two taps while the
+      // first is still in flight is a second run the server can only refuse.
+      running = true;
+      syncSend();
+      state("sending");
+      fetch("/prompt", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, headers()),
+        body: JSON.stringify({ text: text })
+      }).then(function (res) {
+        if (res.status === 409) {
+          // Nothing was started by this tap, so the optimistic turn has
+          // nothing to become. Drop it rather than leave a permanent gap
+          // where an answer should be; the run already going will stream.
+          dropEmptyTurn();
+          running = false;
+          state("busy");
+          syncSend();
+          return null;
+        }
+        if (!res.ok) { return res.text().then(function (body) { throw new Error(body || res.status); }); }
+        promptEl.value = "";
+        state("streaming");
+        streaming(true);
+        return res.json();
+      }).then(function (data) {
+        if (data && data.session) { webSession = data.session; }
+      }).catch(function (err) {
+        state("failed");
+        thinkingHide();
+        running = false;
+        syncSend();
+        textBox && textBox.parentElement.appendChild(el("div", "tool-line", String(err)));
+      });
+    }
 
   stopEl.addEventListener("click", function () {
     if (!webSession) { return; }
@@ -913,6 +1173,8 @@
   });
 
   sendEl.addEventListener("click", submit);
+  promptEl.addEventListener("input", syncSend);
+  syncSend();
   promptEl.addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -1046,6 +1308,10 @@
   var cursor = -1;
   var streamLive = false;
   var source = null;
+  // The step in flight, keyed by call id rather than by tool name: two
+  // consecutive calls of the same tool would otherwise both land on the first
+  // card, and the second would overwrite a step that had already finished.
+  var lastTool = null;
 
   // One place decides what an event does, so the two transports cannot drift
   // into disagreeing about what a permission or a finished turn looks like.
@@ -1058,39 +1324,57 @@
       case "permission":
         liveEl.textContent = "permission pending";
         liveEl.className = "live on";
+        state("awaiting");
         askPermission(d);
         break;
       case "question":
         liveEl.textContent = "question pending";
         liveEl.className = "live on";
+        state("awaiting");
         askQuestion(d);
         break;
       // A delta rather than the whole text, so a reader that joins midway
       // still accumulates correctly from what it saw.
       case "content":
         turn();
+        thinkingHide();
         turnRaw += d.delta || "";
         paintStick = keep;
         paint();
         break;
       case "thinking":
-        turn().querySelector(".who").textContent = "assistant · thinking";
+        turn();
+        thinkingShow();
         break;
+      // A step: announced when it starts, settled when it ends. While a tool
+      // runs the surface is working, not waiting, so the waiting dots go.
       case "tool_start":
-        turn().appendChild(el("div", "tool-line", "→ " + (d.tool || "tool")));
+        turn();
+        thinkingHide();
+        lastTool = { id: d.call_id, card: toolCard(d.tool || "tool", "running") };
+        turnNode.appendChild(lastTool.card);
         break;
       case "tool_end":
-        turn().appendChild(el("div", "tool-line", "← " + (d.tool || "tool") + " · " + (d.status || "")));
+        turn();
+        var step = lastTool && lastTool.id === d.call_id ? lastTool.card : null;
+        if (!step) {
+          step = toolCard(d.tool || "tool");
+          turnNode.appendChild(step);
+        }
+        setToolState(step, d.status || d.outcome);
+        lastTool = null;
         break;
       case "complete":
         flushPaint();
+        thinkingHide();
         streaming(false);
-        var finished = turnNode && turnNode.querySelector(".who");
-        if (finished) { finished.textContent = "assistant"; }
+        lastTool = null;
         break;
       case "error":
         streaming(false);
         state("failed");
+        thinkingHide();
+        lastTool = null;
         turn().appendChild(el("div", "tool-line", d.message || "run failed"));
         break;
       // The buffer aged out from under this page, so the transcript on disk is
