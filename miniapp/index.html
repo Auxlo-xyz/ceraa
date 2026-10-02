@@ -189,6 +189,36 @@
   .tool-line { font-size: 13px; color: var(--muted); margin: calc(var(--s) * 2) 0; }
   .empty { color: var(--muted); }
 
+  /* Markdown in assistant messages is type and hairlines, never panels: the
+     flat-transcript rule still holds, so code and quotes get an edge each and
+     no fills anywhere. */
+  .body a { color: var(--accent); }
+  .body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .92em;
+  }
+  .body pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; line-height: 1.5;
+    border-left: 2px solid var(--line);
+    padding-left: calc(var(--s) * 3); margin: calc(var(--s) * 2) 0;
+    overflow-x: auto;
+  }
+  .body ul, .body ol { margin: calc(var(--s) * 2) 0; padding-left: calc(var(--s) * 5); }
+  .body li { margin: 2px 0; }
+  .body .mh1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; margin: calc(var(--s) * 3) 0 calc(var(--s) * 1); }
+  .body .mh2 { font-size: 17px; font-weight: 700; margin: calc(var(--s) * 3) 0 calc(var(--s) * 1); }
+  .body .mh3, .body .mh4 { font-size: 15px; font-weight: 700; margin: calc(var(--s) * 3) 0 calc(var(--s) * 1); }
+  .body .mq {
+    border-left: 2px solid var(--line);
+    padding-left: calc(var(--s) * 3); margin: calc(var(--s) * 2) 0;
+    color: var(--muted);
+  }
+  .body table { border-collapse: collapse; margin: calc(var(--s) * 2) 0; font-size: 14px; display: block; overflow-x: auto; }
+  .body th, .body td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+  .body th { color: var(--muted); font-weight: 600; }
+  .body .mhr { border-top: 1px solid var(--line); margin: calc(var(--s) * 3) 0; }
+
   /* The composer is one hairline pill on the page background, not a filled
      grey bar. A filled pill plus filled tool cards plus a filled sheet is
      where the stacked-greys look came from. */
@@ -439,6 +469,147 @@
     return node;
   }
 
+  // Minimal markdown for assistant messages. The source is escaped first, so
+  // nothing in a reply can become an element except what is built below, and
+  // links are restricted to http(s). Unclosed constructs (a fence or bold
+  // still open mid-stream) render as plain text until the closer arrives.
+  function esc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function md(src) {
+    var codes = [];
+    function inline(s) {
+      s = s.replace(/`([^`\n]+)`/g, function (m, g) {
+        codes.push(g); return "\ue000" + (codes.length - 1) + "\ue000";
+      });
+      s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+      s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+      s = s.replace(/(^|[^~\w])~~([^~\n]+)~~/g, "$1<del>$2</del>");
+      s = s.replace(/\ue000(\d+)\ue000/g, function (m, g) {
+        return "<code>" + codes[+g] + "</code>";
+      });
+      return s;
+    }
+    function cells(row) {
+      return row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|")
+        .map(function (c) { return "<td>" + inline(c.trim()) + "</td>"; })
+        .join("");
+    }
+    function headCells(row) {
+      return row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|")
+        .map(function (c) { return "<th>" + inline(c.trim()) + "</th>"; })
+        .join("");
+    }
+    function isSep(row) {
+      return row.indexOf("|") >= 0 && /-/.test(row) &&
+        /^[\s|:.-]+$/.test(row.replace(/^\s*\|/, "").replace(/\|\s*$/, ""));
+    }
+    function countCells(row) {
+      return row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").length;
+    }
+    var lines = esc(src).split("\n");
+    var out = [];
+    var i = 0;
+    var inCode = false;
+    var codeBuf = [];
+    function flushCode() {
+      // A fence still open at the end (mid-stream) is code up to here.
+      out.push("<pre>" + codeBuf.join("\n") + "</pre>");
+      codeBuf = [];
+    }
+    function textBlock(chunk) {
+      var j = 0;
+      // Plain lines run together with their newlines (pre-wrap keeps them);
+      // block elements are flushed as their own nodes and joined with no
+      // separator. A newline between </div> and <div> is a line box under
+      // pre-wrap, which double-spaced every heading and list against its
+      // margins.
+      var plain = [];
+      function flushPlain() {
+        if (plain.length) { out.push(plain.join("\n")); plain = []; }
+      }
+      while (j < chunk.length) {
+        var line = chunk[j];
+        var head = line.match(/^(#{1,4})\s+(.*)$/);
+        if (head) {
+          flushPlain();
+          out.push('<div class="mh' + head[1].length + '">' +
+            inline(head[2]) + "</div>");
+          j++;
+        } else if (/^\s*---+\s*$/.test(line)) {
+          flushPlain();
+          out.push('<div class="mhr"></div>');
+          j++;
+        } else if (/^\s*[-*+]\s+/.test(line)) {
+          flushPlain();
+          var items = [];
+          while (j < chunk.length && /^\s*[-*+]\s+/.test(chunk[j])) {
+            items.push("<li>" +
+              inline(chunk[j].replace(/^\s*[-*+]\s+/, "")) + "</li>");
+            j++;
+          }
+          out.push("<ul>" + items.join("") + "</ul>");
+        } else if (/^\s*\d+[.)]\s+/.test(line)) {
+          flushPlain();
+          var nums = [];
+          while (j < chunk.length && /^\s*\d+[.)]\s+/.test(chunk[j])) {
+            nums.push("<li>" +
+              inline(chunk[j].replace(/^\s*\d+[.)]\s+/, "")) + "</li>");
+            j++;
+          }
+          out.push("<ol>" + nums.join("") + "</ol>");
+        } else if (/^&gt;/.test(line)) {
+          flushPlain();
+          var quote = [];
+          while (j < chunk.length && /^&gt;/.test(chunk[j])) {
+            quote.push(inline(chunk[j].replace(/^&gt;\s?/, "")));
+            j++;
+          }
+          out.push('<div class="mq">' + quote.join("\n") + "</div>");
+        } else if (line.indexOf("|") >= 0 && j + 1 < chunk.length &&
+            isSep(chunk[j + 1]) &&
+            countCells(chunk[j + 1]) === countCells(line)) {
+          flushPlain();
+          var rows = ["<tr>" + headCells(line) + "</tr>"];
+          j += 2;
+          while (j < chunk.length && chunk[j].indexOf("|") >= 0 &&
+              countCells(chunk[j]) === countCells(line) &&
+              chunk[j].trim() !== "") {
+            rows.push("<tr>" + cells(chunk[j]) + "</tr>");
+            j++;
+          }
+          out.push("<table>" + rows.join("") + "</table>");
+        } else {
+          plain.push(inline(line));
+          j++;
+        }
+      }
+      flushPlain();
+    }
+    var chunk = [];
+    function flushText() {
+      if (chunk.length) { textBlock(chunk); chunk = []; }
+    }
+    lines.forEach(function (line) {
+      if (/^\s*```/.test(line)) {
+        if (inCode) { inCode = false; flushCode(); }
+        else { inCode = true; flushText(); }
+        return;
+      }
+      if (inCode) { codeBuf.push(line); return; }
+      chunk.push(line);
+    });
+    flushText();
+    if (inCode) { flushCode(); }
+    // Blocks carry their own margins; joining with a newline would add a
+    // line box between every pair under .body's pre-wrap.
+    return out.join("");
+  }
+
   function stat(label, value) {
     var box = el("div");
     box.appendChild(el("div", "k", label));
@@ -492,7 +663,12 @@
       var row = el("div", "msg" + (message.tool_name ? " tool" : ""));
       var who = message.tool_name ? ("tool · " + message.tool_name) : message.role;
       row.appendChild(el("div", "who", who + (message.status ? " · " + message.status : "")));
-      row.appendChild(el("div", "body", body));
+      var box = el("div", "body");
+      // Tool output is raw program output: run paths, logs, exit text. It is
+      // escaped as-is. Human messages are written as markdown and rendered.
+      if (message.tool_result) { box.textContent = body; }
+      else { box.innerHTML = md(body); }
+      row.appendChild(box);
       openEl.appendChild(row);
     });
     // A freshly opened transcript starts at the top. Without this the pane
@@ -515,6 +691,11 @@
   // back the next time the session is opened, not on this page's clock.
   var turnNode = null;
   var textBox = null;
+  // The raw markdown of the turn in progress. Deltas arrive as plain text;
+  // what is on screen is md(turnRaw), re-rendered as the source closes its
+  // constructs — an unclosed fence or bold runs as literal text until the
+  // closer arrives, so a partially streamed message never shows broken HTML.
+  var turnRaw = "";
   var stateEl = document.getElementById("state");
   var promptEl = document.getElementById("prompt");
   var sendEl = document.getElementById("send");
@@ -528,6 +709,24 @@
   function streaming(on) {
     stopEl.hidden = !on;
     if (!on) { state(""); }
+  }
+
+  // Deltas arrive faster than a phone can re-parse the whole message, so the
+  // repaint is coalesced into one frame and the final state is flushed when
+  // the turn completes — otherwise the stream stutters and the last paint
+  // could be a tick behind the "done" label.
+  var paintTimer = null;
+  var paintStick = false;
+  function paint() {
+    if (paintTimer) { return; }
+    paintTimer = setTimeout(flushPaint, 50);
+  }
+  function flushPaint() {
+    if (paintTimer) { clearTimeout(paintTimer); paintTimer = null; }
+    if (textBox) { textBox.innerHTML = md(turnRaw); }
+    // Stick after the repaint, not before: the repaint is what changes the
+    // height, and a scroll issued earlier lands above the new content.
+    if (paintStick) { paintStick = false; stick(); }
   }
 
   // The pane sticks to the bottom while a turn streams, but only if the
@@ -545,6 +744,7 @@
     if (!turnNode) {
       turnNode = el("div", "msg");
       textBox = el("div", "body");
+      turnRaw = "";
       turnNode.appendChild(el("div", "who", "assistant"));
       turnNode.appendChild(textBox);
       var open = document.getElementById("open");
@@ -565,8 +765,11 @@
 
   function resetTurn() {
     if (pending) { pending.textContent = ""; pending = null; }
+    if (paintTimer) { clearTimeout(paintTimer); paintTimer = null; }
+    paintStick = false;
     turnNode = null;
     textBox = null;
+    turnRaw = "";
   }
 
   // A request a run is stopped on gets rendered where it happens. The buttons
@@ -663,7 +866,9 @@
     if (bare) { bare.remove(); }
     var you = el("div", "msg");
     you.appendChild(el("div", "who", "you"));
-    you.appendChild(el("div", "body", text));
+    var youBody = el("div", "body");
+    youBody.innerHTML = md(text);
+    you.appendChild(youBody);
     open.appendChild(you);
     resetTurn();
     turn();
@@ -860,7 +1065,9 @@
       // still accumulates correctly from what it saw.
       case "content":
         turn();
-        textBox.textContent += d.delta || "";
+        turnRaw += d.delta || "";
+        paintStick = keep;
+        paint();
         break;
       case "thinking":
         turn().querySelector(".who").textContent = "assistant · thinking";
@@ -872,6 +1079,7 @@
         turn().appendChild(el("div", "tool-line", "← " + (d.tool || "tool") + " · " + (d.status || "")));
         break;
       case "complete":
+        flushPaint();
         streaming(false);
         var finished = turnNode && turnNode.querySelector(".who");
         if (finished) { finished.textContent = "assistant"; }
