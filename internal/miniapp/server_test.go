@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1025,5 +1026,50 @@ func TestTheClosedSheetCannotCoverTheConversation(t *testing.T) {
 	}
 	if !strings.Contains(page, "visibility: visible") {
 		t.Error("the open state never restores visibility, so the sheet could not be opened at all")
+	}
+}
+
+// The script the Mini App runs has to be syntactically whole and has to keep the
+// functions the surface depends on.
+//
+// A redesign that copies the script out of the page can quietly lose its last
+// line. An unterminated IIFE is a syntax error, so the whole block never runs:
+// no credential is read, no listener is attached, and the page is inert while
+// still looking correct in a screenshot. The evidence is structural rather than
+// visual, so it is asserted structurally.
+func TestTheShippedScriptIsWhole(t *testing.T) {
+	shell := filepath.Join("..", "..", "miniapp", "index.html")
+	raw, err := os.ReadFile(shell)
+	if err != nil {
+		t.Fatalf("read shipped shell %s: %v", shell, err)
+	}
+	page := string(raw)
+
+	for _, want := range []string{
+		"attach();",         // wiring happens
+		"})();",             // and the block it lives in is closed
+		"/prompt",           // sending a task
+		"/events?initData=", // streaming
+		"/api/permission",   // answering a permission
+		"/api/sessions",     // the session list
+		"/api/secrets",      // and the settings surface
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the shipped shell no longer contains %q; the script is not whole and the "+
+				"surface will be inert", want)
+		}
+	}
+
+	// Balanced braces catch the same class of truncation anywhere in the block.
+	blocks := regexp.MustCompile(`(?s)<script>(.*?)</script>`).FindAllStringSubmatch(page, -1)
+	if len(blocks) == 0 {
+		t.Fatal("the shell has no script")
+	}
+	for i, b := range blocks {
+		body := b[1]
+		if strings.Count(body, "{") != strings.Count(body, "}") {
+			t.Errorf("script block %d has %d { and %d }, so it is truncated",
+				i, strings.Count(body, "{"), strings.Count(body, "}"))
+		}
 	}
 }
