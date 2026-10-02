@@ -257,7 +257,9 @@
      default is the right answer and the cheapest one. */
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
-    #list { transform: none; }
+    /* The sheet keeps its transform. Reducing motion means it arrives without a
+       slide, not that it is always there — pinning it open covers the
+       conversation for anyone who has the setting on. */
   }
   @media (min-width: 860px) {
     /* A wide window has room for both, so the sheet becomes a real column. */
