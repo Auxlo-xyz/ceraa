@@ -231,15 +231,16 @@
 
   /* The only message allowed a frame is your own. Right alignment and a fill
      are what say "you said this"; the reply needs neither because it is already
-     the thing the whole screen is pointed at. The radius is 50% with a 32px
+     the thing the whole screen is pointed at. The radius is 50% with a 48px
      ceiling, so one line closes into a pill and a paragraph opens into a
-     rounded slab — one rule, both shapes, no second declaration. */
+     slab with corners soft enough that no edge reads as a point — one rule,
+     both shapes, no second declaration. */
   .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
   .msg.user .body {
     max-width: 84%;
     padding: calc(var(--s) * 3) calc(var(--s) * 5);
     background: var(--fill);
-    border-radius: min(50%, calc(var(--s) * 8));
+    border-radius: min(50%, calc(var(--s) * 12));
   }
 
   /* A tool call is a step in a run, so it is drawn as a step: one hairline
