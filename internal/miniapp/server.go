@@ -68,15 +68,22 @@ var ErrMissingInitData = errors.New("no init data")
 
 // Enabled reports whether the Mini App surface was asked for.
 //
-// Only explicit truthy values turn it on. A typo in a variable that opens a
-// port must land on "closed", not on "open with a misspelled setting nobody
-// meant", which is what a fallback to true would give.
+// On unless it is explicitly turned off, which is the opposite of how this read
+// while the surface was new: it opened only for an operator who asked. A working
+// surface that has to be configured before it exists is one nobody sets up, so
+// the question changed from "who is exposed" to "who is left with a feature that
+// silently does nothing" — and for a single-operator bot the second is the worse
+// answer.
+//
+// So the explicit values are a list of ways to say no, and everything else is
+// yes. That does mean a misspelled setting lands on open rather than closed,
+// which is the trade and is stated here rather than discovered later.
 func Enabled() bool {
 	switch strings.ToLower(strings.TrimSpace(envs.Get("MINIAPP"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
+	case "0", "false", "no", "off", "none", "disabled":
 		return false
+	default:
+		return true
 	}
 }
 

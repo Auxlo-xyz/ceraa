@@ -92,19 +92,29 @@ func do(t *testing.T, handler http.Handler, method, target, initData string) *ht
 	return rec
 }
 
-// TestEnabledFailsClosedOnATypo is the whole reason Enabled is written the way
-// it is. This variable opens a port, so anything not explicitly asked for must
-// leave it shut.
-func TestEnabledFailsClosedOnATypo(t *testing.T) {
+// TestEnabledIsOnUnlessExplicitlyOff records the decision, and the shape of it.
+//
+// The surface used to require an explicit yes. It now requires an explicit no,
+// which means these cases have to change together rather than one at a time: a
+// value nobody wrote is a yes, and a misspelling is a yes, because there is no
+// list of truthy spellings left to miss.
+func TestEnabledIsOnUnlessExplicitlyOff(t *testing.T) {
 	cases := map[string]bool{
-		"1":    true,
-		"true": true,
-		"ON":   true,
-		"":     false,
-		"0":    false,
-		"off":  false,
-		"tru":  false,
-		"onx":  false,
+		"":         true,
+		"1":        true,
+		"true":     true,
+		"ON":       true,
+		"yes":      true,
+		"0":        false,
+		"off":      false,
+		"no":       false,
+		"false":    false,
+		"none":     false,
+		"disabled": false,
+		// The trade the inversion makes, stated as a case so it cannot be
+		// rediscovered by surprise: an unrecognised setting now opens the port.
+		"tru": true,
+		"onx": true,
 	}
 	for value, want := range cases {
 		t.Run(value, func(t *testing.T) {

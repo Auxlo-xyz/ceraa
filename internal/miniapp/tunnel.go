@@ -31,15 +31,17 @@ const tunnelTail = 4
 
 // TunnelEnabled reports whether the public front was asked for at startup.
 //
-// It is a separate switch from Enabled because opening a loopback port and
+// It stays a separate switch from Enabled because opening a loopback port and
 // putting that port on the internet are different decisions, and only one of
-// them publishes the surface. Fails closed for the same reason Enabled does.
+// them publishes the surface. It is on by default for the same reason Enabled is:
+// the common case is a single operator who wants the interface, and a silent
+// failure that looks like a broken feature costs more than an unexpected tunnel.
 func TunnelEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(envs.Get("MINIAPP_TUNNEL"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
+	case "0", "false", "no", "off", "none", "disabled":
 		return false
+	default:
+		return true
 	}
 }
 

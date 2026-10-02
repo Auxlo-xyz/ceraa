@@ -264,15 +264,19 @@ func TestTunnelOriginFrom(t *testing.T) {
 	}
 }
 
-func TestTunnelEnabledFailsClosedOnATypo(t *testing.T) {
+func TestTunnelEnabledIsOnUnlessExplicitlyOff(t *testing.T) {
 	for value, want := range map[string]bool{
-		"":     false,
-		"no":   false,
-		"on":   true,
-		"YES":  true,
-		"True": true,
-		"1":    true,
-		"oui":  false,
+		"":         true,
+		"on":       true,
+		"YES":      true,
+		"True":     true,
+		"1":        true,
+		"no":       false,
+		"off":      false,
+		"0":        false,
+		"disabled": false,
+		// Unrecognised is a yes now, for the reason given in Enabled.
+		"oui": true,
 	} {
 		t.Setenv("CERAA_MINIAPP_TUNNEL", value)
 		if got := TunnelEnabled(); got != want {
