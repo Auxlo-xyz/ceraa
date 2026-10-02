@@ -14,6 +14,10 @@
     --surface: #0c0c0c;
     --raised: #161616;
     --line: #1f1f1f;
+    /* The one filled surface in the transcript: your own message. Distinct from
+       --raised, which is a row lifted off a grey panel and resolves to the page
+       colour in light, where it would erase the bubble entirely. */
+    --fill: #1f1f1f;
     --text: #ededed;
     --muted: #8a8a8a;
     --faint: #5a5a5a;
@@ -36,6 +40,7 @@
       --bg: #fff;
       --surface: #f7f7f7;
       --raised: #fff;
+      --fill: #ebebeb;
       --line: #e6e6e6;
       --text: #111;
       --muted: #6b6b6b;
@@ -224,16 +229,17 @@
   .msg { margin-bottom: calc(var(--s) * 5); }
   .msg .body { white-space: pre-wrap; word-break: break-word; }
 
-  /* The only message allowed a frame is your own. Right alignment, a small
-     tail on the bottom-right and a hairline in the accent are what say "you
-     said this"; the reply needs none of it because it is already the thing the
-     whole screen is pointed at. No fill: position and the tail do the work. */
+  /* The only message allowed a frame is your own. Right alignment and a fill
+     are what say "you said this"; the reply needs neither because it is already
+     the thing the whole screen is pointed at. The radius is 50% with a 32px
+     ceiling, so one line closes into a pill and a paragraph opens into a
+     rounded slab — one rule, both shapes, no second declaration. */
   .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
   .msg.user .body {
     max-width: 84%;
-    padding: calc(var(--s) * 2.5) calc(var(--s) * 3.5);
-    border: 1px solid var(--accent);
-    border-radius: 17px 17px 4px 17px;
+    padding: calc(var(--s) * 3) calc(var(--s) * 5);
+    background: var(--fill);
+    border-radius: min(50%, calc(var(--s) * 8));
   }
 
   /* A tool call is a step in a run, so it is drawn as a step: one hairline

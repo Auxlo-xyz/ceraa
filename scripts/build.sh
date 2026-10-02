@@ -63,6 +63,9 @@ done
 
 # The Mini App page is read from disk at runtime for the same reason the prompt
 # is: it must be editable without a rebuild, and there must be no go:embed.
-# It ships beside the binary so a single-binary install still has one.
+# It ships beside the binary so a single-binary install still has one. The
+# mascot is fetched by that page as /mascot.svg, so it ships with it or the
+# header renders an empty state box on a single-binary install.
 mkdir -p bin/miniapp
 cp -f miniapp/index.html bin/miniapp/index.html
+cp -f miniapp/mascot.svg bin/miniapp/mascot.svg
