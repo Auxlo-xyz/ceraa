@@ -566,7 +566,14 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 					}
 				}
 			}
-			if len(opts) == 0 {
+			// The tool already decided this question was open-ended when it
+			// offered no options, and that decision was being thrown away here:
+			// the event carried neither flag, so a renderer could not tell an
+			// open question from a choice, and every free-form question showed
+			// only Yes and No with no way to type anything.
+			freeForm, _ := op.Spec.Args["free_form"].(bool)
+			header, _ := op.Spec.Args["header"].(string)
+			if len(opts) == 0 && !freeForm {
 				opts = []string{"Yes", "No"}
 			}
 			sessionID, _ := op.Spec.Args["session_id"].(string)
@@ -575,7 +582,10 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			}
 			requestID := op.ID
 			answer, err := question.Default.CreateWithContext(ctx, sessionID, requestID, ques, opts, 2*time.Minute, func() {
-				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{"question": ques, "options": opts, "request_id": requestID}})
+				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{
+					"question": ques, "options": opts, "request_id": requestID,
+					"free_form": freeForm, "header": header,
+				}})
 			})
 			if err != nil {
 				// Check if context cancelled

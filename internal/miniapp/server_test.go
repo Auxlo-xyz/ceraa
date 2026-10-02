@@ -554,3 +554,116 @@ func TestPromptRefusesASecondTurnWhileOneIsLive(t *testing.T) {
 		t.Fatalf("prompt after the first run finished = %d, want 202", again)
 	}
 }
+
+// TestDecisionsAreRefusedWithoutAWiring keeps an admitted reader from being
+// told a decision was recorded when the process never gave the server anywhere
+// to record it.
+func TestDecisionsAreRefusedWithoutAWiring(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	got := postJSON(t, server.Handler(), "/api/permission", initData, `{"request_id":"r1","decision":"deny"}`)
+	if got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("permission with no wiring = %d, want 503", got.Code)
+	}
+	got = postJSON(t, server.Handler(), "/api/answer", initData, `{"request_id":"q1","answer":"yes"}`)
+	if got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("answer with no wiring = %d, want 503", got.Code)
+	}
+}
+
+func TestDecisionsNeedTheSameAdmissionAsEveryOtherPath(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	server.cfg.AnswerPermission = func(string, string) bool { return true }
+	server.cfg.AnswerQuestion = func(string, string) bool { return true }
+	for _, target := range []string{"/api/permission", "/api/answer"} {
+		if got := postJSON(t, server.Handler(), target, "", `{"request_id":"r1"}`); got.Code != http.StatusUnauthorized {
+			t.Fatalf("anonymous %s = %d, want 401", target, got.Code)
+		}
+	}
+}
+
+// TestPermissionForwardsOnlyAVocabularyDecision pins that a request body cannot
+// talk the manager into accepting a string it was never asked to understand.
+func TestPermissionForwardsOnlyAVocabularyDecision(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	var gotID, gotDecision string
+	server.cfg.AnswerPermission = func(requestID, decision string) bool {
+		gotID, gotDecision = requestID, decision
+		return true
+	}
+
+	bad := []struct {
+		name string
+		body string
+	}{
+		{"unknown decision", `{"request_id":"req-1","decision":"maybe"}`},
+		{"empty decision", `{"request_id":"req-1","decision":""}`},
+		{"empty request id", `{"request_id":"","decision":"deny"}`},
+		{"not json", `nope`},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := postJSON(t, server.Handler(), "/api/permission", initData, tc.body); got.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d, want 400: %s", tc.name, got.Code, got.Body.String())
+			}
+		})
+	}
+	if gotID != "" || gotDecision != "" {
+		t.Fatalf("a refused request reached the manager as %q/%q", gotID, gotDecision)
+	}
+
+	ok := postJSON(t, server.Handler(), "/api/permission", initData, `{"request_id":"req-1","decision":"allowOnce"}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("valid permission = %d, want 200: %s", ok.Code, ok.Body.String())
+	}
+	if gotID != "req-1" || gotDecision != "allowOnce" {
+		t.Fatalf("forwarded %q/%q, want req-1/allowOnce", gotID, gotDecision)
+	}
+}
+
+// TestDecisionsRefuseARequestThatIsGone is the answer a manager gives when the
+// request has already been answered from the chat or timed out. Fabricating a
+// 200 there would tell a user their click landed when nothing was waiting.
+func TestDecisionsRefuseARequestThatIsGone(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	server.cfg.AnswerPermission = func(string, string) bool { return false }
+	server.cfg.AnswerQuestion = func(string, string) bool { return false }
+
+	got := postJSON(t, server.Handler(), "/api/permission", initData, `{"request_id":"req-1","decision":"deny"}`)
+	if got.Code != http.StatusConflict {
+		t.Fatalf("stale permission = %d, want 409", got.Code)
+	}
+	got = postJSON(t, server.Handler(), "/api/answer", initData, `{"request_id":"q1","answer":"ship"}`)
+	if got.Code != http.StatusConflict {
+		t.Fatalf("stale answer = %d, want 409", got.Code)
+	}
+}
+
+// TestAnswerForwardsTheTextUntouched covers the one thing this surface is
+// trusted with: passing on what was typed, not deciding what it means.
+func TestAnswerForwardsTheTextUntouched(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	var gotID, gotAnswer string
+	server.cfg.AnswerQuestion = func(requestID, answer string) bool {
+		gotID, gotAnswer = requestID, answer
+		return true
+	}
+
+	if got := postJSON(t, server.Handler(), "/api/answer", initData, `{"request_id":"","answer":"ship"}`); got.Code != http.StatusBadRequest {
+		t.Fatalf("empty request id = %d, want 400", got.Code)
+	}
+	if got := postJSON(t, server.Handler(), "/api/answer", initData, `{"request_id":"q1","answer":"   "}`); got.Code != http.StatusBadRequest {
+		t.Fatalf("blank answer = %d, want 400", got.Code)
+	}
+	ok := postJSON(t, server.Handler(), "/api/answer", initData, `{"request_id":"q1","answer":"/tmp/thing.go"}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("answer = %d, want 200: %s", ok.Code, ok.Body.String())
+	}
+	if gotID != "q1" || gotAnswer != "/tmp/thing.go" {
+		t.Fatalf("forwarded %q/%q, want q1//tmp/thing.go", gotID, gotAnswer)
+	}
+}

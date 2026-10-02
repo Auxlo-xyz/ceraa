@@ -606,3 +606,94 @@ func openTestSecretStore(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestFreeFormQuestionStaysOpen covers the flag the tool sets and the runner
+// used to drop: a question with no options must arrive as an open one, or every
+// renderer is left offering Yes and No to "which colour?".
+func TestFreeFormQuestionStaysOpen(t *testing.T) {
+	const sessionID = "test-freeform-session"
+	const requestID = "question-freeform"
+	events := event.Default.Subscribe(sessionID, 4)
+	defer event.Default.Unsubscribe(sessionID, events)
+
+	mgr := New(nil)
+	mgr.Add(Operation{
+		ID: requestID,
+		Spec: Spec{Type: "question", Args: map[string]any{
+			"question":   "Which colour?",
+			"free_form":  true,
+			"session_id": sessionID,
+		}},
+		Status: StatusPending,
+	})
+
+	select {
+	case e := <-events:
+		if e.Type != event.TypeQuestion {
+			t.Fatalf("expected question event, got %s", e.Type)
+		}
+		freeForm, _ := e.Data["free_form"].(bool)
+		if !freeForm {
+			t.Fatal("free_form = false, want true")
+		}
+		options, _ := e.Data["options"].([]string)
+		if len(options) != 0 {
+			t.Fatalf("options = %v, want none: Yes and No is not an answer to an open question", options)
+		}
+		if !question.Default.Answer(sessionID, requestID, "Blue") {
+			t.Fatal("expected the open answer to be accepted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("question event timeout")
+	}
+	select {
+	case r := <-mgr.Results():
+		if r.Status != StatusCompleted || r.Output != "Blue" {
+			t.Fatalf("result = %s %q, want completed with the typed answer", r.Status, r.Output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no result")
+	}
+}
+
+// TestChoiceQuestionKeepsItsOptions is the other half: a question that did
+// name its options must not be flattened into an open one.
+func TestChoiceQuestionKeepsItsOptions(t *testing.T) {
+	const sessionID = "test-choice-session"
+	const requestID = "question-choice"
+	events := event.Default.Subscribe(sessionID, 4)
+	defer event.Default.Unsubscribe(sessionID, events)
+
+	mgr := New(nil)
+	mgr.Add(Operation{
+		ID: requestID,
+		Spec: Spec{Type: "question", Args: map[string]any{
+			"question":   "Which path?",
+			"options":    []string{"a", "b"},
+			"session_id": sessionID,
+		}},
+		Status: StatusPending,
+	})
+
+	select {
+	case e := <-events:
+		freeForm, _ := e.Data["free_form"].(bool)
+		if freeForm {
+			t.Fatal("free_form = true, want false for a question that named its options")
+		}
+		options, _ := e.Data["options"].([]string)
+		if len(options) != 2 {
+			t.Fatalf("options = %v, want both", options)
+		}
+		if !question.Default.Answer(sessionID, requestID, "b") {
+			t.Fatal("expected the choice to be accepted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("question event timeout")
+	}
+	select {
+	case <-mgr.Results():
+	case <-time.After(time.Second):
+		t.Fatal("no result")
+	}
+}

@@ -617,6 +617,12 @@ func Run() error {
 				Prompt: func(ctx context.Context, text string) error {
 					return runAgentContext(ctx, miniapp.WebSessionID, text, nil, nil, nil, nil)
 				},
+				AnswerPermission: func(requestID, decision string) bool {
+					return permission.Default.Answer(miniapp.WebSessionID, requestID, decision)
+				},
+				AnswerQuestion: func(requestID, answer string) bool {
+					return question.Default.Answer(miniapp.WebSessionID, requestID, answer)
+				},
 			})
 			if err := miniappServer.Start(); err != nil {
 				logger.Warn("Mini App disabled: " + err.Error())

@@ -58,6 +58,20 @@
   }
   #send:disabled { opacity: .45; cursor: default; }
   #state { font-size: 12px; color: #6b6b6b; min-width: 82px; text-align: right; }
+  .ask {
+    border: 1px solid #333; border-left: 3px solid #ffda6e; border-radius: 6px;
+    padding: 10px 12px; margin: 8px 0; background: #171717;
+  }
+  .ask-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .ask-btn {
+    padding: 6px 12px; border: 1px solid #3a3a3a; border-radius: 6px;
+    background: #222; color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .ask-btn:hover { background: #2c2c2c; }
+  .ask input {
+    width: 100%; margin-top: 8px; padding: 7px 9px; border: 1px solid #333;
+    border-radius: 6px; background: #191919; color: inherit; font: inherit;
+  }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; }
     #list { max-height: 40vh; border-right: 0; border-bottom: 1px solid #2a2a2a; }
@@ -215,9 +229,95 @@
     return turnNode;
   }
 
+  var pending = null;
+
   function resetTurn() {
+    if (pending) { pending.textContent = ""; pending = null; }
     turnNode = null;
     textBox = null;
+  }
+
+  // A request a run is stopped on gets rendered where it happens. The buttons
+  // are the answer: the same POST the chat's buttons make, under the same id.
+  function pendingBox() {
+    turn();
+    if (!pending) {
+      pending = el("div");
+      turnNode.appendChild(pending);
+    }
+    return pending;
+  }
+
+  function post(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, headers()),
+      body: JSON.stringify(body)
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (text) { throw new Error(text || String(res.status)); });
+      }
+      return true;
+    }).catch(function (err) {
+      state(String(err).trim());
+      return false;
+    });
+  }
+
+  function askPermission(d) {
+    var card = el("div", "ask");
+    card.appendChild(el("div", "tool-line", "Permission needed · " + (d.tool || "tool")));
+    var row = el("div", "ask-row");
+    [["allowOnce", "Allow once"], ["allowAlways", "Always"], ["deny", "Deny"]].forEach(function (choice) {
+      var button = el("button", "ask-btn", choice[1]);
+      button.addEventListener("click", function () {
+        button.disabled = true;
+        post("/api/permission", { request_id: d.request_id, decision: choice[0] })
+          .then(function (ok) { if (ok) { card.remove(); state(""); } });
+      });
+      row.appendChild(button);
+    });
+    card.appendChild(row);
+    pendingBox().appendChild(card);
+  }
+
+  function askQuestion(d) {
+    var card = el("div", "ask");
+    card.appendChild(el("div", "tool-line", (d.header ? d.header + " · " : "") + (d.question || "The model asked something")));
+    var options = d.options || [];
+    var row = el("div", "ask-row");
+    options.forEach(function (option) {
+      var button = el("button", "ask-btn", option);
+      button.addEventListener("click", function () {
+        button.disabled = true;
+        post("/api/answer", { request_id: d.request_id, answer: option })
+          .then(function (ok) { if (ok) { card.remove(); state(""); } });
+      });
+      row.appendChild(button);
+    });
+    // Free-form, or an option list the model never wrote: a value, a path and a
+    // name are not things a row of buttons can hold, so there has to be a way
+    // to type one.
+    if (d.free_form || options.length === 0) {
+      var input = document.createElement("input");
+      input.placeholder = "Type an answer";
+      var send = el("button", "ask-btn", "Answer");
+      function reply() {
+        var text = input.value.trim();
+        if (!text) { return; }
+        send.disabled = true;
+        post("/api/answer", { request_id: d.request_id, answer: text })
+          .then(function (ok) { if (ok) { card.remove(); state(""); } });
+      }
+      send.addEventListener("click", reply);
+      input.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") { event.preventDefault(); reply(); }
+      });
+      row.appendChild(input);
+      row.appendChild(send);
+    }
+    if (options.length || d.free_form) { card.appendChild(row); }
+    pendingBox().appendChild(card);
   }
 
   function submit() {
@@ -259,13 +359,15 @@
   var source = new EventSource("/events?initData=" + encodeURIComponent(initData));
   source.onopen = function () { liveEl.textContent = "live"; liveEl.className = "live on"; };
   source.onerror = function () { liveEl.textContent = "reconnecting"; liveEl.className = "live"; };
-  source.addEventListener("permission", function () {
+  source.addEventListener("permission", function (event) {
     liveEl.textContent = "permission pending";
     liveEl.className = "live on";
+    askPermission(payload(event));
   });
-  source.addEventListener("question", function () {
+  source.addEventListener("question", function (event) {
     liveEl.textContent = "question pending";
     liveEl.className = "live on";
+    askQuestion(payload(event));
   });
   // The stream the prompt was answered on. Delta rather than whole text, so a
   // reader that joins midway still accumulates correctly from what it saw.

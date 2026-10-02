@@ -84,6 +84,11 @@ type Config struct {
 	// this package never imports one and a reader that has been admitted still
 	// cannot reach a tool through here.
 	Prompt func(context.Context, string) error
+	// AnswerPermission and AnswerQuestion are the two decisions a run can stop
+	// and wait for. Injected for the same reason: the manager that owns a
+	// pending request stays where it is, and this surface only relays a choice.
+	AnswerPermission func(requestID, decision string) bool
+	AnswerQuestion   func(requestID, answer string) bool
 }
 
 // Server is the loopbound HTTP surface. One per process, started once and shut
@@ -116,6 +121,8 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("POST /prompt", s.handlePrompt)
+	mux.HandleFunc("POST /api/permission", s.handlePermission)
+	mux.HandleFunc("POST /api/answer", s.handleAnswer)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("/", s.handleAsset)
 	s.mux = mux
@@ -553,6 +560,83 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, body any) {
 	writeJSONAt(w, http.StatusOK, body)
+}
+
+// decisions are the words a manager will accept. Stated here rather than
+// imported so the vocabulary the user of this API can pick from is visible in
+// one place, and a typo in a request body is a 400 rather than a request id that
+// matches nothing and times out five minutes later.
+var decisions = map[string]bool{"allowOnce": true, "allowAlways": true, "deny": true}
+
+// decisionRequest is the shared body of the two POSTs a run can be waiting on.
+type decisionRequest struct {
+	RequestID string `json:"request_id"`
+	// Decision is a permission choice, Answer a question reply. They share a
+	// struct because they share a shape and a set of failure modes, not because
+	// a decision and an answer mean the same thing.
+	Decision string `json:"decision"`
+	Answer   string `json:"answer"`
+}
+
+func readDecision(w http.ResponseWriter, r *http.Request) (decisionRequest, bool) {
+	var req decisionRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		http.Error(w, "expected a JSON object", http.StatusBadRequest)
+		return decisionRequest{}, false
+	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		http.Error(w, "request_id is empty", http.StatusBadRequest)
+		return decisionRequest{}, false
+	}
+	return req, true
+}
+
+// handlePermission relays a tool decision. The run is already waiting; this is
+// only the answer to a question it asked some seconds ago.
+func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AnswerPermission == nil {
+		http.Error(w, "permissions are not answerable on this surface", http.StatusServiceUnavailable)
+		return
+	}
+	req, ok := readDecision(w, r)
+	if !ok {
+		return
+	}
+	if !decisions[req.Decision] {
+		http.Error(w, "decision must be allowOnce, allowAlways or deny", http.StatusBadRequest)
+		return
+	}
+	// The manager owns the pending table and answers false for a request that
+	// is already gone: expired, answered from the chat, or never existed. A 409
+	// says so without inventing a second answer.
+	if !s.cfg.AnswerPermission(req.RequestID, req.Decision) {
+		http.Error(w, "no pending request with that id", http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"accepted": true})
+}
+
+// handleAnswer relays a question reply. The text is passed through untouched:
+// this surface does not decide what a good answer is, it decides who may give
+// one.
+func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AnswerQuestion == nil {
+		http.Error(w, "questions are not answerable on this surface", http.StatusServiceUnavailable)
+		return
+	}
+	req, ok := readDecision(w, r)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(req.Answer) == "" {
+		http.Error(w, "answer is empty", http.StatusBadRequest)
+		return
+	}
+	if !s.cfg.AnswerQuestion(req.RequestID, req.Answer) {
+		http.Error(w, "no pending question with that id", http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"accepted": true})
 }
 
 func writeJSONAt(w http.ResponseWriter, status int, body any) {
