@@ -262,6 +262,42 @@
   }
   #idle p { margin: 0; font-size: 19px; letter-spacing: -0.01em; color: var(--muted); }
 
+
+  /* --- Motion ---
+     Everything here is under a second and either carries information or marks a
+     state change. The frequency gate is applied first: nothing that happens a
+     hundred times a day moves, and the parts that carry no information were
+     deleted rather than given an effect. */
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+
+  /* Messages and tool results rise in as they are appended, which is what
+     streaming wants rather than one block that swaps. A fresh node runs this once
+     on insertion, so nothing here re-fires while the same one is in place. */
+  #open > * { animation: rise .34s var(--ease) both; }
+  #stats, #open h2 { animation: fadeIn .3s ease both; }
+
+  /* The resting mark is the whole point of that screen, and still it reads as
+     dead. Giving the centre dash a slow pulse is the difference between "a place
+     to write" and "a page that will not answer". */
+  .idle-mark i:nth-child(2) { animation: breathe 1.9s ease-in-out infinite; }
+
+  /* The live dot is state: a steady colour for an assumption, a breath for a
+     measured one. That it changes when the state does is the feedback. */
+  .live.on::before { animation: breathe 2.4s ease-in-out infinite; }
+
+  /* Settings settle in from a small rise instead of snapping into the layout. */
+  #panel { animation: fadeIn .22s ease both; }
+  #panel > div { animation: rise .28s var(--ease) both; }
+
+  /* One entrance, sequenced so the screen composes rather than arriving whole. */
+  .bar { animation: fadeIn .4s ease both; }
+  #composer { animation: rise .5s var(--ease) both .12s; }
+
   /* Motion is a confirmation, not a performance. Under this budget the platform
      default is the right answer and the cheapest one. */
   @media (prefers-reduced-motion: reduce) {
