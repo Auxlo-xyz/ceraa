@@ -134,6 +134,7 @@
 <footer id="composer">
   <textarea id="prompt" rows="1" placeholder="Send a task… (Enter to send, Shift+Enter for a new line)"></textarea>
   <button id="send">Send</button>
+  <button id="stop" class="ask-btn" hidden>Stop</button>
   <span id="state"></span>
 </footer>
 <script>
@@ -257,8 +258,17 @@
   var stateEl = document.getElementById("state");
   var promptEl = document.getElementById("prompt");
   var sendEl = document.getElementById("send");
+  var stopEl = document.getElementById("stop");
+  // Learned from the reply to the first turn rather than assumed, so this page
+  // still works if the surface is configured with a different session.
+  var webSession = "";
 
   function state(text) { stateEl.textContent = text; }
+
+  function streaming(on) {
+    stopEl.hidden = !on;
+    if (!on) { state(""); }
+  }
 
   function turn() {
     if (!turnNode) {
@@ -379,12 +389,30 @@
       if (!res.ok) { return res.text().then(function (body) { throw new Error(body || res.status); }); }
       promptEl.value = "";
       state("streaming");
-      return res;
+      streaming(true);
+      return res.json();
+    }).then(function (data) {
+      if (data && data.session) { webSession = data.session; }
     }).catch(function (err) {
       state("failed");
       textBox && textBox.parentElement.appendChild(el("div", "tool-line", String(err)));
     });
   }
+
+  stopEl.addEventListener("click", function () {
+    if (!webSession) { return; }
+    stopEl.disabled = true;
+    fetch("/api/sessions/" + encodeURIComponent(webSession) + "/cancel", {
+      method: "POST",
+      headers: headers()
+    }).then(function (res) {
+      stopEl.disabled = false;
+      // 409 means the run had already finished, which is the same outcome the
+      // button wanted.
+      if (!res.ok && res.status !== 409) { return res.text().then(function (t) { throw new Error(t || res.status); }); }
+      state("stopping");
+    }).catch(function (err) { stopEl.disabled = false; state(String(err).trim()); });
+  });
 
   sendEl.addEventListener("click", submit);
   promptEl.addEventListener("keydown", function (event) {
@@ -543,12 +571,13 @@
     turn().appendChild(el("div", "tool-line", "← " + (d.tool || "tool") + " · " + (d.status || "")));
   });
   source.addEventListener("complete", function () {
-    state("");
+    streaming(false);
     var who = turnNode && turnNode.querySelector(".who");
     if (who) { who.textContent = "assistant"; }
   });
   source.addEventListener("error", function (event) {
     if (!event.data) { return; }
+    streaming(false);
     state("failed");
     turn().appendChild(el("div", "tool-line", payload(event).message || "run failed"));
   });

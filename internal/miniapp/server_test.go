@@ -822,3 +822,75 @@ func TestSecretWritesNeedAdmission(t *testing.T) {
 		t.Fatalf("anonymous put = %d, want 401", got.Code)
 	}
 }
+
+// TestCancelRefusesAnotherSessionsRun keeps this surface from appearing to
+// reach a conversation it has no handle on.
+func TestCancelRefusesAnotherSessionsRun(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	for _, id := range []string{"ses-fixture", "ses-something-else", WebSessionID + "-typo"} {
+		got := postJSON(t, server.Handler(), "/api/sessions/"+id+"/cancel", initData, `{}`)
+		if got.Code != http.StatusNotFound {
+			t.Fatalf("cancel %q = %d, want 404", id, got.Code)
+		}
+	}
+}
+
+func TestCancelWithNothingRunningIsAConflict(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	if got := postJSON(t, server.Handler(), "/api/sessions/"+WebSessionID+"/cancel", initData, `{}`); got.Code != http.StatusConflict {
+		t.Fatalf("cancel with nothing running = %d, want 409", got.Code)
+	}
+}
+
+// TestCancelStopsTheRunAndReportsNoFailure is the whole of the last phase: the
+// run actually stops, the gate opens again, and a cancellation is not filed as
+// a failure to whoever is watching.
+func TestCancelStopsTheRunAndReportsNoFailure(t *testing.T) {
+	server, _, bus := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	stream := bus.Subscribe(WebSessionID, 16)
+	defer bus.Unsubscribe(WebSessionID, stream)
+
+	stopped := make(chan struct{})
+	server.cfg.Prompt = func(ctx context.Context, text string) error {
+		<-ctx.Done()
+		close(stopped)
+		return ctx.Err()
+	}
+
+	if got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"long job"}`); got.Code != http.StatusAccepted {
+		t.Fatalf("prompt = %d, want 202", got.Code)
+	}
+	if got := postJSON(t, server.Handler(), "/api/sessions/"+WebSessionID+"/cancel", initData, `{}`); got.Code != http.StatusOK {
+		t.Fatalf("cancel = %d, want 200: %s", got.Code, got.Body.String())
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the run did not stop")
+	}
+
+	// Nothing may be filed as a failure, and the gate must open again. Both
+	// happen after the runner returns, so this waits rather than assumes.
+	deadline := time.After(2 * time.Second)
+	for {
+		if got := postJSON(t, server.Handler(), "/prompt", initData, `{"text":"after"}`); got.Code == http.StatusAccepted {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the run never finished, or the gate never reopened")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	select {
+	case e := <-stream:
+		if e.Type == event.TypeError {
+			t.Fatalf("a cancelled run was reported as a failure: %v", e.Data)
+		}
+	default:
+	}
+}

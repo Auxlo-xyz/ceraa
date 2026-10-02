@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -108,6 +109,11 @@ type Server struct {
 	// running is the web surface's one-run-at-a-time gate. It guards this
 	// session only; a Telegram run holds a different key and does not contend.
 	running atomic.Bool
+	// stop cancels the run in flight, if there is one. It is set before the
+	// goroutine starts and cleared when it ends, so a nil here and a false in
+	// running always mean the same thing rather than two answers about one run.
+	stopMu sync.Mutex
+	stop   context.CancelFunc
 }
 
 // New builds the routes without binding anything, so a test can drive the
@@ -136,6 +142,7 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("PUT /api/secrets/{name}", s.handleSecretPut)
 	mux.HandleFunc("DELETE /api/secrets/{name}", s.handleSecretDelete)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
+	mux.HandleFunc("POST /api/sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("/", s.handleAsset)
 	s.mux = mux
 	return s
@@ -229,7 +236,21 @@ func (s *Server) Address() string {
 // Close shuts the listener down. It runs before whatever owns the process tears
 // down the tools, so nothing observes a port that still accepts while the
 // process is half gone.
+// Close stops a run in flight before the listener goes. The deferred chain
+// shuts this down before the tools it started are torn down, and a run left
+// going through that would be working on a process nobody is listening to.
 func (s *Server) Close() error {
+	s.stopMu.Lock()
+	cancel := s.stop
+	s.stopMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return s.close()
+}
+
+// close is the part of Close that touches the listener.
+func (s *Server) close() error {
 	if s.http == nil {
 		return nil
 	}
@@ -550,12 +571,30 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := s.cfg.SessionID
-	// Detached from the request on purpose, for the reason above. Background
+	// Detached from the request on purpose, for the reason above: background
 	// rather than the request context, which the caller is free to abandon.
+	// It is this server's context and not the caller's so that the run can be
+	// stopped afterwards by somebody who did not start the request.
+	ctx, cancel := context.WithCancel(context.Background())
+	s.stopMu.Lock()
+	s.stop = cancel
+	s.stopMu.Unlock()
+
 	go func() {
-		defer s.running.Store(false)
-		ctx := context.Background()
+		defer func() {
+			cancel()
+			s.stopMu.Lock()
+			s.stop = nil
+			s.stopMu.Unlock()
+			s.running.Store(false)
+		}()
 		if err := s.cfg.Prompt(ctx, text); err != nil {
+			// A cancelled run is somebody pressing stop, not a failure, and
+			// saying so in the stream would turn an intended action into an
+			// error the reader has to interpret.
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return
+			}
 			warn("Mini App run failed: " + err.Error())
 			// The bus here rather than the package default, so a caller that
 			// supplied its own bus does not leak into a stranger's stream.
@@ -782,6 +821,28 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"name": name, "deleted": true})
+}
+
+// handleCancel stops the run this surface started.
+//
+// Any other session id is a 404 rather than a 403: this surface has no handle
+// on a chat's run and should not appear to. Telling a caller the route exists
+// for a conversation it cannot reach would be a small lie that costs somebody
+// an afternoon.
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if id := r.PathValue("id"); id != s.cfg.SessionID {
+		http.Error(w, "only this surface's own session can be cancelled from here", http.StatusNotFound)
+		return
+	}
+	s.stopMu.Lock()
+	cancel := s.stop
+	s.stopMu.Unlock()
+	if cancel == nil {
+		http.Error(w, "no run in progress", http.StatusConflict)
+		return
+	}
+	cancel()
+	writeJSON(w, map[string]any{"cancelled": true})
 }
 
 func writeJSONAt(w http.ResponseWriter, status int, body any) {
