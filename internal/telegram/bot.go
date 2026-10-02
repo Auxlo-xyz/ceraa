@@ -599,12 +599,18 @@ func Run() error {
 	// while the tools are being closed is a port reporting a half-dead process.
 	// The gate is the same user id the bot answers to, so the two surfaces can
 	// never disagree about who is admitted.
+	//
+	// The variable is declared here rather than inside the block because /web
+	// in the loop below has to reach the same surface this built, and it stays
+	// nil when the surface is off: that nil is the answer the command needs,
+	// rather than a second lookup that could disagree with this one.
+	var miniappServer *miniapp.Server
 	if miniapp.Enabled() {
 		store, storeErr := configuredStore()
 		if storeErr != nil {
 			logger.Warn("Mini App disabled: session store unavailable: " + storeErr.Error())
 		} else {
-			miniappServer := miniapp.New(miniapp.Config{
+			srv := miniapp.New(miniapp.Config{
 				Token:     token,
 				AllowID:   allowID,
 				Store:     store,
@@ -626,15 +632,30 @@ func Run() error {
 				Settings:    webSettings,
 				SetSettings: applyWebSettings,
 			})
-			if err := miniappServer.Start(); err != nil {
+			if err := srv.Start(); err != nil {
 				logger.Warn("Mini App disabled: " + err.Error())
 			} else {
-				logger.Info("Mini App listening on " + miniappServer.Address())
+				miniappServer = srv
+				logger.Info("Mini App listening on " + srv.Address())
 				defer func() {
-					if err := miniappServer.Close(); err != nil {
+					if err := srv.Close(); err != nil {
 						logger.Warn("Mini App shutdown: " + err.Error())
 					}
 				}()
+				// The public front is a separate decision from opening the
+				// port, because this one puts the port on the internet. It is
+				// opened in the background: a cold handshake is seconds of wall
+				// clock and the poll loop below still has not started.
+				if miniapp.TunnelEnabled() {
+					go func() {
+						address, err := srv.StartTunnel()
+						if err != nil {
+							logger.Warn("Mini App tunnel unavailable: " + err.Error())
+							return
+						}
+						logger.Info("Mini App shared at " + address)
+					}()
+				}
 			}
 		}
 	}
@@ -916,6 +937,9 @@ func Run() error {
 			case "/hub", "/menu":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				sendHub(token, u.Message.Chat.ID)
+			case "/web":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleWebShare(token, u.Message.Chat.ID, miniappServer)
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				startNewSession(token, u.Message.Chat.ID)

@@ -124,6 +124,17 @@ type Server struct {
 	logOnce sync.Once
 	logMu   sync.Mutex
 	logStop context.CancelFunc
+	// base is what a tunnel handshake hangs off. Closing the surface cancels
+	// it, which is how a start still waiting for an announcement gives up at
+	// once instead of holding shutdown open for the whole of its allowance.
+	base       context.Context
+	baseCancel context.CancelFunc
+	// tunnel is the public front, when one has been asked for. tunnelMu is
+	// held across the whole start rather than only around the field: two chat
+	// messages arriving together must produce one child and one origin, not
+	// two children and an origin that went stale between them.
+	tunnelMu sync.Mutex
+	tunnel   *Tunnel
 }
 
 // New builds the routes without binding anything, so a test can drive the
@@ -139,10 +150,12 @@ func New(cfg Config) *Server {
 		cfg.SessionID = WebSessionID
 	}
 	s := &Server{cfg: cfg, log: newEventLog()}
+	s.base, s.baseCancel = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("GET /api/events", s.handlePoll)
+	mux.HandleFunc("GET /api/tunnel", s.handleTunnel)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("POST /prompt", s.handlePrompt)
 	mux.HandleFunc("POST /api/permission", s.handlePermission)
@@ -248,6 +261,59 @@ func (s *Server) Address() string {
 	return s.listener.Addr().String()
 }
 
+// StartTunnel puts this surface on the internet and returns where it landed.
+//
+// Idempotent on purpose. The origin is assigned by the other end and lives only
+// as long as the child does, so starting twice would hand out two addresses for
+// one page and leave the first one dead without saying so.
+//
+// The whole start runs under tunnelMu, so a second caller waits for the first
+// rather than racing it. That is also why the handshake does not run inside
+// close: the caller above holds nothing while it waits, and closing cancels the
+// context the wait is on.
+func (s *Server) StartTunnel() (string, error) {
+	s.tunnelMu.Lock()
+	defer s.tunnelMu.Unlock()
+	if s.tunnel != nil {
+		return s.tunnel.Origin(), nil
+	}
+	// Checked before anything else, because a surface that has been closed
+	// keeps the fields that made it work: the listener address still reads
+	// back and would happily be advertised for a port nobody is accepting on.
+	if s.base.Err() != nil {
+		return "", errors.New("the Mini App surface has been shut down")
+	}
+	if s.listener == nil {
+		return "", errors.New("the Mini App surface is not listening")
+	}
+	tunnel, err := startTunnel(s.base, tunnelCommand(), "http://"+s.Address())
+	if err != nil {
+		return "", err
+	}
+	s.tunnel = tunnel
+	return tunnel.Origin(), nil
+}
+
+// TunnelAddress is the public origin, or "" when the surface has none. It
+// never starts one: reading a value and creating a process are different
+// requests, and a handler that does both has a side effect its method name
+// does not admit to.
+func (s *Server) TunnelAddress() string {
+	s.tunnelMu.Lock()
+	defer s.tunnelMu.Unlock()
+	if s.tunnel == nil {
+		return ""
+	}
+	return s.tunnel.Origin()
+}
+
+// handleTunnel reports where this surface is reachable from outside the
+// machine, so the page can show the address it is being read through without
+// the answer having to come back through chat.
+func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"url": s.TunnelAddress()})
+}
+
 // Close shuts the listener down. It runs before whatever owns the process tears
 // down the tools, so nothing observes a port that still accepts while the
 // process is half gone.
@@ -266,6 +332,17 @@ func (s *Server) Close() error {
 
 // close is the part of Close that touches the listener.
 func (s *Server) close() error {
+	// Before the mutex below, not after: a handshake still holding it has to
+	// give up first, and cancelling its context is what makes it. Taking the
+	// lock first would wait out the whole startup allowance on the way down.
+	s.baseCancel()
+	s.tunnelMu.Lock()
+	tunnel := s.tunnel
+	s.tunnel = nil
+	s.tunnelMu.Unlock()
+	if tunnel != nil {
+		tunnel.Close()
+	}
 	s.stopLog()
 	if s.http == nil {
 		return nil

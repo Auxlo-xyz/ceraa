@@ -24,6 +24,7 @@ import (
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
 	"ceraa/internal/logger"
+	"ceraa/internal/miniapp"
 	"ceraa/internal/opencodeauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/menus"
@@ -1292,6 +1293,33 @@ func handleFullHelp(token string, chatID int64) {
 	}
 	lines = append(lines, "", "Send any other text to run the agent.")
 	send(token, chatID, strings.Join(lines, "\n"))
+}
+
+// handleWebShare gives the admitted user the public address of the Mini App
+// surface.
+//
+// The handshake with the edge takes seconds of wall clock, and the update loop
+// is sequential, so only the already-open case is answered inline. Anything
+// slower answers twice: one line now so the message is not left hanging, and
+// the address when the client has announced one.
+func handleWebShare(token string, chatID int64, server *miniapp.Server) {
+	if server == nil {
+		send(token, chatID, "The Mini App surface is off. Set CERAA_MINIAPP=1 and restart to turn it on.")
+		return
+	}
+	if address := server.TunnelAddress(); address != "" {
+		send(token, chatID, "Mini App:\n"+address)
+		return
+	}
+	send(token, chatID, "Opening a tunnel...")
+	go func() {
+		address, err := server.StartTunnel()
+		if err != nil {
+			send(token, chatID, "No public address: "+err.Error())
+			return
+		}
+		send(token, chatID, "Mini App:\n"+address)
+	}()
 }
 
 // displayContextLimit reports the budget in force for a model whose profile does

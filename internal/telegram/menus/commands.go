@@ -12,6 +12,7 @@ func Commands() []CommandSpec {
 		{"keyboard", "Force the reply keyboard to reappear"},
 		{"apilog", "Toggle Telegram API call tracing"},
 		{"hub", "Open the control hub"},
+		{"web", "Share the Mini App link"},
 		{"new", "Start a fresh session"},
 		{"sessions", "List stored sessions"},
 		{"session", "Open session controls"},
