@@ -46,6 +46,11 @@ const maxSessions = 50
 // can see what was said without installing a logger first.
 var warn = func(message string) { logger.Warn(message) }
 
+// note reports a step that succeeded and was worth knowing about. warn is for
+// refusals; fetching a client the operator asked for is neither, and routing
+// ordinary work through warn would train an operator to skip the warnings.
+var note = func(message string) { logger.Info(message) }
+
 // ErrMissingInitData is the refusal for a request that carries no payload to
 // verify. It is separate from a bad signature so the log can tell a browser
 // opened directly from a token that has been tampered with.
@@ -286,7 +291,18 @@ func (s *Server) StartTunnel() (string, error) {
 	if s.listener == nil {
 		return "", errors.New("the Mini App surface is not listening")
 	}
-	tunnel, err := startTunnel(s.base, tunnelCommand(), "http://"+s.Address())
+	// Resolved here rather than inside startTunnel, so that the reason a client
+	// is missing reaches the caller that has somewhere to put it, and so that a
+	// copy fetched for this request is logged by something that knows it was
+	// this request that fetched it.
+	command, provisioning := resolveTunnelClient()
+	if command == "" {
+		return "", errors.New(provisioning)
+	}
+	if provisioning != "" {
+		note("Mini App tunnel client: " + provisioning)
+	}
+	tunnel, err := startTunnel(s.base, command, "http://"+s.Address())
 	if err != nil {
 		return "", err
 	}

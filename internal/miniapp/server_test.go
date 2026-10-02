@@ -66,10 +66,17 @@ func newFixture(t *testing.T, allowID int64) (*Server, *sessionstore.Store, *eve
 	}
 	bus := event.New()
 	// The logger is not installed in a test, and a refused request should not
-	// be the reason one starts to be.
+	// be the reason one starts to be. note is neutralised for the same reason:
+	// it is where an ordinary step reports itself, and a test that trips one
+	// should not need a logger to survive it.
 	previousWarn := warn
+	previousNote := note
 	warn = func(string) {}
-	t.Cleanup(func() { warn = previousWarn })
+	note = func(string) {}
+	t.Cleanup(func() {
+		warn = previousWarn
+		note = previousNote
+	})
 	return New(Config{Token: testToken, AllowID: allowID, Store: store, Bus: bus}), store, bus
 }
 

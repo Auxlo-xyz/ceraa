@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ceraa/internal/envs"
+	"ceraa/internal/provision"
 )
 
 // tunnelStartup is how long the client is given to announce an origin.
@@ -42,20 +43,27 @@ func TunnelEnabled() bool {
 	}
 }
 
-// tunnelCommand resolves the client that will carry the address.
+// tunnelCommand resolves the client that will carry the address, provisioning
+// one when this machine has none.
 //
-// Looked up rather than bundled: the binary is a 50 MB download whose home is
-// the operator's to decide, and a command an environment variable can point
-// somewhere else is a command a test can point at a script.
-func tunnelCommand() string {
+// The override wins over provisioning, because an operator who named a binary
+// has made a decision and a download that ignores it contradicts them. It is
+// also how a test points the seam at a script instead of the real client.
+//
+// The second result is what provisioning did, empty when it did nothing worth
+// saying. It is a path and a log line rather than an error, because the absence
+// of a client is carried by the empty path and explained by that same line.
+func tunnelCommand() (string, string) {
 	if name := strings.TrimSpace(envs.Get("CLOUDFLARED")); name != "" {
-		return name
+		return name, ""
 	}
-	if path, err := exec.LookPath("cloudflared"); err == nil {
-		return path
-	}
-	return ""
+	return provision.EnsureCloudflared()
 }
+
+// resolveTunnelClient is the seam between StartTunnel and provisioning: the
+// real one fetches a client, and a test supplies an answer without downloading
+// tens of megabytes to learn that a path is empty.
+var resolveTunnelClient = tunnelCommand
 
 // quickTunnelSuffix is the domain a quick tunnel is published under. It is
 // part of the contract rather than a shortcut: a quick tunnel is the only mode
@@ -178,8 +186,10 @@ func (t *Tunnel) Close() {
 // would mean handing out a guess. base cancels a handshake that is still in
 // flight, which is how shutdown avoids waiting out tunnelStartup.
 func startTunnel(base context.Context, command, address string) (*Tunnel, error) {
+	// Defensive: the reason a client is missing is carried by the caller that
+	// resolved it, and reaching here without one means that contract broke.
 	if command == "" {
-		return nil, errors.New("no tunnel client: install cloudflared or set CERAA_CLOUDFLARED")
+		return nil, errors.New("no tunnel client to run")
 	}
 	if base == nil {
 		base = context.Background()

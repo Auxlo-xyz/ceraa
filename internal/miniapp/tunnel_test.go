@@ -106,15 +106,42 @@ exit 3
 	}
 }
 
-// Nothing to run is a different mistake from a run that went wrong, and the
-// setting that fixes it is the one worth naming.
-func TestTunnelReportsAMissingClient(t *testing.T) {
-	_, err := startTunnel(context.Background(), "", "http://127.0.0.1:0")
+// The override has to win, or a test pointing the seam at a script would
+// download the real client instead, and an operator who named a binary would
+// have their decision overruled by a fetch they did not ask for.
+func TestTheTunnelOverrideBeatsProvisioning(t *testing.T) {
+	t.Setenv("CERAA_CLOUDFLARED", "/definitely/not/a/client")
+	command, provisioning := tunnelCommand()
+	if command != "/definitely/not/a/client" {
+		t.Errorf("command = %q, want the override", command)
+	}
+	if provisioning != "" {
+		t.Errorf("provisioning = %q, want nothing reported when an override was given", provisioning)
+	}
+}
+
+// A client that could not be provisioned is the common case on a machine that
+// has never shared a tunnel and has no network, and the reply costs a round
+// trip if it does not say what to do about it.
+func TestStartTunnelReportsWhyThereIsNoClient(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Close()
+
+	previous := resolveTunnelClient
+	resolveTunnelClient = func() (string, string) {
+		return "", "could not provision cloudflared (404); install it yourself or set CERAA_CLOUDFLARED"
+	}
+	t.Cleanup(func() { resolveTunnelClient = previous })
+
+	_, err := server.StartTunnel()
 	if err == nil {
-		t.Fatal("startTunnel succeeded with no client to run")
+		t.Fatal("StartTunnel succeeded with no client to run")
 	}
 	if !strings.Contains(err.Error(), "CERAA_CLOUDFLARED") {
-		t.Fatalf("err = %q, want it to name the setting that fills the gap", err)
+		t.Errorf("err = %q, want it to name the setting that fills the gap", err)
 	}
 }
 
