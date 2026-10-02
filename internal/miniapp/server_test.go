@@ -987,3 +987,43 @@ func TestCancelStopsTheRunAndReportsNoFailure(t *testing.T) {
 	default:
 	}
 }
+
+// The shell is edited on disk and must appear on the next open. ServeFile
+// otherwise sends Last-Modified and answers 304 from If-Modified-Since, and a
+// WebView holding that chain can keep rendering an older revision indefinitely.
+// That presents as a fix that did not work: the file is right on disk and the
+// phone disagrees, with nothing in either log to explain it.
+func TestTheShellIsNotCached(t *testing.T) {
+	serveAStubShell(t)
+	server, _, _ := newFixture(t, testUser)
+	got := do(t, server.Handler(), http.MethodGet, "/", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("/ = %d, want 200", got.Code)
+	}
+	if cache := got.Header().Get("Cache-Control"); !strings.Contains(cache, "no-store") {
+		t.Errorf("Cache-Control = %q, want it to forbid storing: an edited shell has to reach the "+
+			"phone on the next open", cache)
+	}
+}
+
+// The session sheet must not be able to cover the conversation. Hiding it with a
+// transform alone means any client that drops that one property — or a
+// stylesheet that fails to parse it — leaves a full-height panel over the screen
+// with the control that opens it hidden behind. Visibility is the guarantee;
+// the transform is only how it arrives.
+func TestTheClosedSheetCannotCoverTheConversation(t *testing.T) {
+	// The shipped file, not a stub: the defect is in the page that runs.
+	shell := filepath.Join("..", "..", "miniapp", "index.html")
+	raw, err := os.ReadFile(shell)
+	if err != nil {
+		t.Fatalf("read shipped shell %s: %v", shell, err)
+	}
+	page := string(raw)
+	if !strings.Contains(page, "visibility: hidden") {
+		t.Error("the closed sheet is not hidden by visibility, so it depends on one property to stay " +
+			"off screen")
+	}
+	if !strings.Contains(page, "visibility: visible") {
+		t.Error("the open state never restores visibility, so the sheet could not be opened at all")
+	}
+}

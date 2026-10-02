@@ -479,12 +479,19 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 // Nothing is embedded. The invariant build.sh states is that there is no
 // go:embed in the tree, and a UI meant to be edited without rebuilding is the
 // worst possible place to break it.
+//
+// Editable without a rebuild and cacheable are opposites, so this says not to
+// cache. ServeFile otherwise sends Last-Modified and answers 304 from
+// If-Modified-Since, and a WebView holding that chain can go on rendering an
+// older revision indefinitely — which looks exactly like a fix that did not
+// work, because the file on disk is correct and the phone disagrees.
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 	full, ok := resolveAsset(name)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store, must-revalidate")
 	http.ServeFile(w, r, full)
 }
 
