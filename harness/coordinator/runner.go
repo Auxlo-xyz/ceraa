@@ -107,10 +107,13 @@ type Callbacks struct {
 	// wait that long is indistinguishable from a hang.
 	OnRetry          func(error, int, time.Duration)
 	OnCompactionDone func(bool, error)
-	OnUsage          func(llm.UsageInfo)
-	OnCost           func(llm.CostInfo, string)
-	OnDone           func(string)
-	OnError          func(error)
+	// OnUsage carries the run's trust verdict beside the counts. The provider's
+	// input figure can be a running total rather than this request, and a renderer
+	// that is told only the number has no way to leave it out.
+	OnUsage func(llm.UsageInfo, llm.UsageTrust)
+	OnCost  func(llm.CostInfo, string)
+	OnDone  func(string)
+	OnError func(error)
 }
 
 type Result struct {
@@ -404,7 +407,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			accounting.Add(delta, runBreakdown)
 			runUsage, runCost, runTrust = accounting.Usage(), accounting.Cost(), accounting.Trust()
 			if r.cb.OnUsage != nil {
-				r.cb.OnUsage(runUsage)
+				r.cb.OnUsage(runUsage, runTrust)
 			}
 			if r.cb.OnCost != nil {
 				r.cb.OnCost(runCost, pricingStatus)
@@ -642,7 +645,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				accounting.Add(*delta.Usage, runBreakdown)
 				runUsage, runCost, runTrust = accounting.Usage(), accounting.Cost(), accounting.Trust()
 				if r.cb.OnUsage != nil {
-					r.cb.OnUsage(runUsage)
+					r.cb.OnUsage(runUsage, runTrust)
 				}
 			}
 		})

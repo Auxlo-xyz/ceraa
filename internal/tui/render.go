@@ -40,8 +40,9 @@ type Renderer struct {
 	ticks int
 
 	// totals accumulate across a run for the footer.
-	usage llm.UsageInfo
-	cost  llm.CostInfo
+	usage      llm.UsageInfo
+	usageTrust llm.UsageTrust
+	cost       llm.CostInfo
 	// costModel is the model the cost figure belongs to, which is not always the
 	// active one after a mid-run switch.
 	costModel string
@@ -183,6 +184,7 @@ func (r *Renderer) TurnStart() {
 	r.live = 0
 	r.saidSomething = false
 	r.usage = llm.UsageInfo{}
+	r.usageTrust = llm.UsageTrust{Trusted: true}
 	r.cost = llm.CostInfo{}
 	r.mu.Unlock()
 	r.startSpinner()
@@ -207,9 +209,9 @@ func (r *Renderer) TurnEnd(err error) {
 		state = StateIdle
 	}
 	r.state = state
-	usage, cost, costModel := r.usage, r.cost, r.costModel
+	usage, trust, cost, costModel := r.usage, r.usageTrust, r.cost, r.costModel
 	r.mu.Unlock()
-	r.footer(usage, cost, costModel, err)
+	r.footer(usage, trust, cost, costModel, err)
 }
 
 // Content streams assistant text.
@@ -530,10 +532,17 @@ func (r *Renderer) Compaction(done bool, err error) {
 	r.line(r.pal.Dim(glyph("info") + " " + verb))
 }
 
-// Usage records provider token counts for the footer.
-func (r *Renderer) Usage(u llm.UsageInfo) {
+// Usage records provider token counts for the footer, and whether they may be
+// believed.
+//
+// The two travel together because they are one fact. A renderer handed only the
+// number has no way to leave it out, and the whole point of reconciling the
+// provider's count against our own is that a figure we have already called a
+// running total must not then be printed as this turn's input.
+func (r *Renderer) Usage(u llm.UsageInfo, trust llm.UsageTrust) {
 	r.mu.Lock()
 	r.usage = u
+	r.usageTrust = trust
 	r.mu.Unlock()
 }
 
@@ -564,9 +573,12 @@ func (r *Renderer) Error(err error) {
 // Cache is only printed when the provider reported it, because a provider that
 // does not support prompt caching reports zero and printing a confident 0% would
 // read as "caching is not working" rather than "this provider cannot".
-func (r *Renderer) footer(usage llm.UsageInfo, cost llm.CostInfo, costModel string, runErr error) {
+func (r *Renderer) footer(usage llm.UsageInfo, trust llm.UsageTrust, cost llm.CostInfo, costModel string, runErr error) {
 	in, out, cache, reason := "", "", "", ""
-	if usage.InputTokens > 0 {
+	// Input is printed only when the count describes this turn. Cost is already
+	// withheld the same way and cache falls back to silence, so a third figure
+	// printed from a count we have rejected would be the odd one out.
+	if usage.InputTokens > 0 && trust.Trusted {
 		in = strconv.Itoa(usage.InputTokens)
 	}
 	if usage.OutputTokens > 0 {

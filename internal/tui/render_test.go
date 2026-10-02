@@ -145,7 +145,7 @@ func TestRetryNamesTheWait(t *testing.T) {
 
 func TestFooterReportsTokensAndCache(t *testing.T) {
 	r, out := renderInto()
-	r.Usage(llm.UsageInfo{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 80, ReasoningTokens: 5})
+	r.Usage(llm.UsageInfo{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 80, ReasoningTokens: 5}, llm.UsageTrust{Trusted: true})
 	r.Cost(llm.CostInfo{TotalUSD: 0.0123, Known: true}, "gpt-5.5")
 	r.TurnEnd(nil)
 	got := out.String()
@@ -156,11 +156,31 @@ func TestFooterReportsTokensAndCache(t *testing.T) {
 	}
 }
 
+// A provider reporting input as a running total is caught by reconciliation
+// before the footer ever sees it. Printing that figure anyway would be worse
+// than printing nothing: the run is already on record as not describing the
+// request, and the footer is the one line an operator reads without opening the
+// session file.
+func TestFooterOmitsInputWhenTheCountsWereRejected(t *testing.T) {
+	r, out := renderInto()
+	r.Usage(llm.UsageInfo{InputTokens: 369026, OutputTokens: 1323},
+		llm.UsageTrust{Trusted: false, LocalInput: 9321, Reported: 369026})
+	r.TurnEnd(nil)
+	got := out.String()
+	if strings.Contains(got, "in 369026") {
+		t.Errorf("footer printed a rejected input count:\n%s", got)
+	}
+	// Output was not the disputed figure, so it still earns its place.
+	if !strings.Contains(got, "out 1323") {
+		t.Errorf("footer dropped the output count along with the rejected input:\n%s", got)
+	}
+}
+
 func TestFooterOmitsCacheWhenProviderReportsNone(t *testing.T) {
 	// A provider without prompt caching reports zero, and printing a confident
 	// zero reads as "caching is broken" rather than "this provider cannot".
 	r, out := renderInto()
-	r.Usage(llm.UsageInfo{InputTokens: 10, OutputTokens: 2})
+	r.Usage(llm.UsageInfo{InputTokens: 10, OutputTokens: 2}, llm.UsageTrust{Trusted: true})
 	r.TurnEnd(nil)
 	if strings.Contains(out.String(), "cache") {
 		t.Errorf("footer printed a cache line for a provider that reported none:\n%s", out.String())
@@ -198,7 +218,7 @@ func TestToolStartMovesToWorkingAndBack(t *testing.T) {
 	r.ToolDone("bash", operation.ResultEvent{Status: operation.StatusCompleted})
 	r.Content("all done")
 	r.closeStream()
-	r.Usage(llm.UsageInfo{InputTokens: 1, OutputTokens: 1})
+	r.Usage(llm.UsageInfo{InputTokens: 1, OutputTokens: 1}, llm.UsageTrust{Trusted: true})
 	r.TurnEnd(nil)
 	if got := r.State(); got != StateDone {
 		t.Fatalf("state after a productive turn = %s, want done", got)

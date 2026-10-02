@@ -206,7 +206,9 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		// parent's chat and nobody is looking at it for a child's question.
 		NeedsAuthorization: func(name string, args map[string]any) bool { return false },
 		Callbacks: coordinator.Callbacks{
-			OnUsage: func(u llm.UsageInfo) {
+			// The child's own verdict is not forwarded: its spend is rolled into the
+			// parent's accumulator here, and the parent reconciles on the way out.
+			OnUsage: func(u llm.UsageInfo, _ llm.UsageTrust) {
 				if f.onChildUsage != nil {
 					f.onChildUsage(u)
 				}

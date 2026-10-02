@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,12 +27,22 @@ func stubProvider(t *testing.T, turns func(call int32) []string) *httptest.Serve
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		// prompt_tokens has to describe the request it answered. A fixed 100 next
+		// to a prompt we measured at 2727 is a provider reporting a running total,
+		// which reconciliation rejects, and a rejected run has no input figure to
+		// put in the footer. Estimating off the request body keeps the stub inside
+		// the band that says "this number is about the thing you sent".
+		prompt := len(body) / 4
+		if prompt == 0 {
+			prompt = 1
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, chunk := range turns(n) {
 			encoded, _ := json.Marshal(map[string]any{
 				"choices": []any{map[string]any{"delta": map[string]any{"content": chunk}}},
 				"usage": map[string]any{
-					"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+					"prompt_tokens": prompt, "completion_tokens": 20, "total_tokens": prompt + 20,
 				},
 			})
 			fmt.Fprintf(w, "data: %s\n\n", encoded)
@@ -138,7 +150,7 @@ func TestSessionFooterReportsUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := sessionOutput(t, s)
-	if !strings.Contains(got, "in 100") {
+	if !regexp.MustCompile(`\bin \d+`).MatchString(got) {
 		t.Errorf("footer did not report input tokens:\n%s", got)
 	}
 }

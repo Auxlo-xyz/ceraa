@@ -268,18 +268,34 @@ func statusReport(chatID int64) (string, error) {
 	// is the truth, so the two must not share a field.
 	cacheRead := "unavailable (provider token counts do not describe this request)"
 	sessionTitle := "Untitled session"
-	// Cumulative usage across the whole session, summed from each message. This is
-	// billing, not a single request: a session of 66 turns reports millions of
-	// input tokens, which is the number that actually costs something.
+	// Cumulative usage across the whole session: billing, not a single request.
+	// Input comes from the runs and output from the messages, because input is the
+	// figure a provider has been observed misreporting and the runs are where we
+	// checked it. sessionInputTokens holds that rule.
 	var usageInput, usageOutput, usageReasoning int
+	// inputNote is empty unless part of the input total had to be measured rather
+	// than taken from the provider, in which case the line says so instead of
+	// quietly presenting our own count as the provider's.
+	inputNote := ""
+	measuredRuns := 0
 	if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 		messages = len(sess.Messages)
 		sessionTitle = sess.DisplayTitle()
 		for _, message := range sess.Messages {
 			tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
-			usageInput += message.Usage.InputTokens
 			usageOutput += message.Usage.OutputTokens
 			usageReasoning += message.Usage.ReasoningTokens
+		}
+		// Input is summed from runs, not messages, because the runs are where the
+		// provider's claim was reconciled against our own count. Output and
+		// reasoning stay on messages: neither has been observed misreporting, and
+		// the run total for them is the same number.
+		var measured int
+		usageInput, measured = sessionInputTokens(sess)
+		measuredRuns = measured
+		if measuredRuns > 0 {
+			inputNote = fmt.Sprintf("\nInput is Ceraa's own measurement: %d of %d runs reported counts that do not describe the request",
+				measuredRuns, len(sess.Runs))
 		}
 		if len(sess.Runs) > 0 {
 			// Only report a cache percentage when the provider's token counts
@@ -332,11 +348,13 @@ func statusReport(chatID int64) (string, error) {
 	// "input" is the uncached count: Run.Usage reports the prompt total, and the
 	// cached part of it is billed at roughly a sixth of the price. Labelling it
 	// saved a misreading, because the same number next to a 92% cache rate looks
-	// like a cache that is not working.
-	report := fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s uncached input / %s output / %s reasoning reported\nCache read: %s\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
+	// like a cache that is not working. The count itself is the run-based one, so
+	// a rejected provider figure is replaced by our own measurement rather than
+	// printed.
+	report := fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s uncached input / %s output / %s reasoning reported\nCache read: %s%s\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
 		groupDigits(tokens), groupDigits(contextLimit), percent,
 		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
-		cacheRead, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
+		cacheRead, inputNote, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
 		endpoint, agent)
 	// The tool-output cap is the one cost control that can be tuned, so it is
 	// reported with the figure that chooses it: what a lower cap would have saved.
@@ -370,6 +388,40 @@ func handleContextCommand(token string, chatID int64) {
 		return
 	}
 	sendMenuMarkup(token, chatID, text, menus.InlineForSession("status", 0, currentSessionID(chatID)))
+}
+
+// sessionInputTokens totals the session's input tokens and reports how many runs
+// had to be measured rather than believed.
+//
+// Summing message usage adds up every figure the session ever stored, including
+// the ones reconciliation already rejected. One live session had a provider
+// reporting a running total, and the naive sum turned 66,107 tokens actually sent
+// into 4,111,306 reported, which is the number this line presents as what the
+// session cost.
+//
+// An untrusted run contributes its own measurement instead, so the total stays a
+// real count rather than falling to zero. A run stored before trust existed has
+// no measurement and keeps whatever it reported, because a missing verdict on old
+// data is not evidence that the data was wrong.
+func sessionInputTokens(sess *sessionstore.Session) (total, measured int) {
+	if sess == nil {
+		return 0, 0
+	}
+	if len(sess.Runs) == 0 {
+		for _, message := range sess.Messages {
+			total += message.Usage.InputTokens
+		}
+		return total, 0
+	}
+	for _, run := range sess.Runs {
+		if !run.UsageTrust.Trusted && run.UsageTrust.LocalInput > 0 {
+			total += run.UsageTrust.LocalInput
+			measured++
+			continue
+		}
+		total += run.Usage.InputTokens
+	}
+	return total, measured
 }
 
 // groupDigits renders an integer with thousands separators, so a seven-figure

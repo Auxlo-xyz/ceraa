@@ -34,7 +34,7 @@ func TestRendererSurvivesConcurrentCallbacks(t *testing.T) {
 				case 2:
 					r.ToolDone("bash", operation.ResultEvent{Status: operation.StatusCompleted, Output: "ok"})
 				case 3:
-					r.Usage(llm.UsageInfo{InputTokens: i, OutputTokens: i})
+					r.Usage(llm.UsageInfo{InputTokens: i, OutputTokens: i}, llm.UsageTrust{Trusted: true})
 				case 4:
 					r.Cost(llm.CostInfo{TotalUSD: float64(i) / 1000, Known: true}, "stub")
 				case 5:
