@@ -413,6 +413,16 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
 	r.Register(NewWebSearchTool(apiKey, provider))
+
+	// Registered with a live reference to its own registry, because the tool's
+	// description lists the siblings it can reach and a description is built on
+	// demand. The dispatcher is attached later by whoever builds the operation
+	// manager; the tool layer cannot reach it.
+	if !strings.EqualFold(envs.Get("SCRIPT"), "off") {
+		script := &ScriptTool{}
+		r.Register(script)
+		script.Reg = r
+	}
 	if memoryStore != nil {
 		r.Register(&MemoryTool{Store: memoryStore})
 	}

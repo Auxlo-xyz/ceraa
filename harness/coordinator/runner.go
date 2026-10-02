@@ -285,6 +285,22 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	opMgr.SetConcurrencyLimit(cfg.MaxConcurrentTools)
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
+	// A script reaches its siblings through the operation manager, which only
+	// this construction knows about. The scope is the per-run half of what the
+	// dispatch loop stamps on a spec; request_id is deliberately left out,
+	// because it is per call and the one tool that needed it is not reachable
+	// from inside a script.
+	if reg != nil {
+		if raw, registered := reg.Get("script"); registered {
+			if script, isScript := raw.(*tool.ScriptTool); isScript {
+				scope := map[string]any{"goal_dir": cfg.GoalDir, "session_id": cfg.SessionID}
+				if cfg.WorkDir != "" {
+					scope["workdir"] = cfg.WorkDir
+				}
+				script.Attach(reg, opMgr.RunSync, scope)
+			}
+		}
+	}
 	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
 	if r.delivery == memory.DeliverySidekick && cfg.MemoryEntries != nil {
 		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.WorkDir)

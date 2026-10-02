@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ceraa/internal/envs"
@@ -107,6 +109,10 @@ func specEdits(raw any) []map[string]any {
 }
 
 // ResultEvent fires when an operation completes.
+// syncSeq numbers synchronous nested operations, so two of them cannot share an
+// id and be reported or canceled as one.
+var syncSeq atomic.Uint64
+
 type ResultEvent struct {
 	OpID       string
 	Output     string
@@ -247,7 +253,13 @@ func (m *LocalManager) add(op Operation, sequential bool) {
 	}()
 }
 
-func (m *LocalManager) execute(ctx context.Context, op Operation) {
+// dispatch runs one operation to completion and returns its finalized result.
+//
+// Split out of execute so the asynchronous queue and a synchronous nested call
+// travel the same path. Two copies of this switch would mean every new operation
+// type had to be added twice, and the second one would drift until a script and
+// a tool call disagreed about what an operation does.
+func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 	result := ResultEvent{OpID: op.ID}
 
 	select {
@@ -640,6 +652,12 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 	result.Output = redact.SecretsInText(result.Output)
 	result.Error = redact.SecretsInText(result.Error)
 
+	return result
+}
+
+func (m *LocalManager) execute(ctx context.Context, op Operation) {
+	result := m.dispatch(ctx, op)
+
 	m.mu.Lock()
 	delete(m.cancels, op.ID)
 	m.mu.Unlock()
@@ -648,6 +666,24 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 	case m.results <- result:
 	case <-time.After(5 * time.Second):
 	}
+}
+
+// RunSync runs one operation inline and returns what it produced.
+//
+// It exists so a script can call the other tools: those calls have to finish
+// before the script can use them. It deliberately does not take a slot from the
+// concurrency limit. The operation that owns the script already holds one, so a
+// nested acquire deadlocks the moment the limit is one, and the fan-out a script
+// is for is collapsed by the script rather than run wide here.
+func (m *LocalManager) RunSync(ctx context.Context, spec Spec) (string, error) {
+	result := m.dispatch(ctx, Operation{ID: "sync-" + strconv.FormatUint(syncSeq.Add(1), 10), Spec: spec})
+	if result.Status == StatusCompleted {
+		return result.Output, nil
+	}
+	if result.Error != "" {
+		return "", errors.New(result.Error)
+	}
+	return "", fmt.Errorf("operation %s did not complete", spec.Type)
 }
 
 func runFTSSearch(ctx context.Context, dbPath, query string, limit int, args map[string]any) (string, error) {

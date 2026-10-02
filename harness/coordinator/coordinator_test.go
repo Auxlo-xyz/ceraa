@@ -692,6 +692,12 @@ func TestInProcessToolIsOfferedAndDispatched(t *testing.T) {
 // A per-tool budget is what catches this. The total-size test above passed while
 // both edit definitions carried a 92-character description for occurrence that
 // nobody read, because the aggregate still had headroom.
+// scriptDefinitionBudget is set just above the script definition's current 778
+// bytes, for the ratchet reason stated below. It is worth watching because the
+// description ends with the list of tools the script can reach, and that list is
+// the part that grows the next time a tool is added.
+const scriptDefinitionBudget = 800
+
 func TestEditToolDefinitionsStaySmall(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "s"}}
 	budgets := map[string]int{
@@ -699,6 +705,7 @@ func TestEditToolDefinitionsStaySmall(t *testing.T) {
 		// next description that grows, and never fires on its own.
 		"batch_edit_file": 780,
 		"edit_line":       650,
+		"script":          scriptDefinitionBudget,
 	}
 	for _, def := range runner.toolDefs() {
 		budget, watched := budgets[def.Name]
@@ -968,7 +975,14 @@ func TestTheSystemPromptStaysSmall(t *testing.T) {
 	// bytes and every turn, and it retires the `sed -n` workaround that a real
 	// session used three times in one task. That is a trade, so the number it was
 	// raised to is written down here rather than just moved.
-	const budget = 7100
+	//
+	// Raised from 7100 on the same terms: a registered tool has to be named here
+	// or TestPromptNamesEveryRegisteredTool fails, and the script rule is 231
+	// bytes of when-to-reach-for-it that the tool's own description cannot carry,
+	// because a description is a contract and guidance belongs in this section.
+	// Cutting an existing rule to pay for it would have been a worse trade than
+	// recording the raise, so the size it was raised to is written down.
+	const budget = 7400
 	if len(raw) > budget {
 		t.Errorf("prompt/system.txt is %d bytes, over the %d budget; cut something before adding",
 			len(raw), budget)
@@ -1055,5 +1069,52 @@ func TestARunWithNoRequestsHasAnEmptySplit(t *testing.T) {
 	}
 	if len(got.Runs[0].RequestBreakdown) != 0 {
 		t.Errorf("a run with no requests recorded %d entries", len(got.Runs[0].RequestBreakdown))
+	}
+}
+
+// A script reaches its siblings through the operation manager, which only this
+// construction knows about. Miss the attach and the tool is offered to the model
+// and then fails on every call with "not wired", which is the same shape of
+// failure as a tool the executor did not know the type of.
+func TestNewWiresTheScriptTool(t *testing.T) {
+	reg := tool.DefaultRegistry()
+	raw, registered := reg.Get("script")
+	if !registered {
+		t.Skip("script is not registered; CERAA_SCRIPT=off")
+	}
+	script, isScript := raw.(*tool.ScriptTool)
+	if !isScript {
+		t.Fatalf("script is registered as %T", raw)
+	}
+	runner := New(RunnerConfig{SessionID: "wired", SystemPrompt: "s"}, nil, reg)
+	_ = runner
+	if script.Dispatch == nil {
+		t.Fatal("script has no dispatcher, so every call would fail with 'not wired'")
+	}
+	if script.Scope["session_id"] != "wired" {
+		t.Errorf("session_id = %v, a nested call would land in the wrong session", script.Scope["session_id"])
+	}
+	if script.Scope["goal_dir"] == "" {
+		t.Error("goal_dir is missing, so a nested goal call would not find its state")
+	}
+}
+
+// The tool has to be in the request, not only in the registry. A tool that is
+// registered but never sent is invisible to the model, which reads as the model
+// refusing to use a feature rather than never having seen it.
+func TestScriptIsOfferedToTheModel(t *testing.T) {
+	reg := tool.DefaultRegistry()
+	if _, registered := reg.Get("script"); !registered {
+		t.Skip("script is not registered; CERAA_SCRIPT=off")
+	}
+	runner := &Runner{reg: reg, cfg: RunnerConfig{SystemPrompt: "s"}}
+	found := false
+	for _, def := range runner.toolDefs() {
+		if def.Name == "script" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("script is registered but not offered in the tool definitions")
 	}
 }
