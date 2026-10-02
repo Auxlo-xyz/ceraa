@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -114,6 +115,15 @@ type Server struct {
 	// running always mean the same thing rather than two answers about one run.
 	stopMu sync.Mutex
 	stop   context.CancelFunc
+	// log is the replay buffer behind both event transports. It is built in
+	// New rather than on first use, so a handler and a test see the same
+	// object whether or not anything has subscribed yet.
+	log *eventLog
+	// logOnce starts the subscriber exactly once, logMu guards the handle it
+	// leaves behind, and logStop ends it on shutdown.
+	logOnce sync.Once
+	logMu   sync.Mutex
+	logStop context.CancelFunc
 }
 
 // New builds the routes without binding anything, so a test can drive the
@@ -128,10 +138,11 @@ func New(cfg Config) *Server {
 	if strings.TrimSpace(cfg.SessionID) == "" {
 		cfg.SessionID = WebSessionID
 	}
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: cfg, log: newEventLog()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("GET /api/events", s.handlePoll)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("POST /prompt", s.handlePrompt)
 	mux.HandleFunc("POST /api/permission", s.handlePermission)
@@ -215,6 +226,10 @@ func (s *Server) Start() error {
 		return fmt.Errorf("listen on %s: %w", address, err)
 	}
 	s.listener = listener
+	// The buffer is filled from the moment the surface is up rather than from
+	// the moment a reader first asks, so a run started from elsewhere in the
+	// process is not missing from a page that opens a second later.
+	s.ensureLog()
 	s.http = &http.Server{Handler: s.Handler()}
 	go func() {
 		if err := s.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -251,6 +266,7 @@ func (s *Server) Close() error {
 
 // close is the part of Close that touches the listener.
 func (s *Server) close() error {
+	s.stopLog()
 	if s.http == nil {
 		return nil
 	}
@@ -458,12 +474,12 @@ func detailOf(sess *sessionstore.Session) sessionDetail {
 	return detail
 }
 
-// handleEvents streams the bus as server-sent events.
+// handleEvents streams the log as server-sent events.
 //
-// The stream carries whatever the process publishes. Content and tool activity
-// do not reach it yet because the coordinator's callbacks are wired by whichever
-// surface started the run, and a read-only observer starts nothing; that is the
-// work of the phase that adds a runner.
+// It reads from the buffer rather than subscribing to the bus itself, which
+// is what lets a reader resume. The bus drops what nobody is listening to, so
+// a reader that reconnects has been listening to nothing for the whole length
+// of the gap and would otherwise rejoin part way through an answer.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -474,16 +490,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "event stream unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	key := event.Wildcard
-	if named := r.URL.Query().Get("session"); named != "" {
-		key = named
+	s.ensureLog()
+	cursor, ok := cursorFrom(r, s.log.head())
+	if !ok {
+		http.Error(w, "bad after", http.StatusBadRequest)
+		return
 	}
-	// A wide channel rather than the tight one a chat subscriber can afford.
-	// The renderer on the other side throttles, this one cannot: assistant text
-	// arrives as a delta per token and a full channel drops the excess, which
-	// for a reader is missing sentences rather than a stale indicator.
-	events := s.cfg.Bus.Subscribe(key, 1024)
-	defer s.cfg.Bus.Unsubscribe(key, events)
 
 	header := w.Header()
 	header.Set("Content-Type", "text/event-stream")
@@ -491,6 +503,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	header.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
+	// The hello is what a reader measures the transport by, so it goes out
+	// before anything has to happen. On a path that forwards a response as it
+	// is produced the hello arrives at once; on one that holds a response
+	// until it ends it never arrives at all, and the reader stops waiting.
+	if _, err := fmt.Fprintf(w, "event: hello\ndata: {\"seq\":%d}\n\n", cursor); err != nil {
 		return
 	}
 	flusher.Flush()
@@ -502,6 +521,34 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer keepalive.Stop()
 
 	for {
+		items, stale, wake := s.log.since(cursor)
+		if stale {
+			// The buffer no longer reaches the number this reader asked from.
+			// Say so, then move the cursor to the head: what follows is still
+			// worth delivering, but the reader has to be told the middle is
+			// gone so it can re-read the transcript rather than keep the hole.
+			cursor = s.log.head()
+			if _, err := fmt.Fprintf(w, "event: stale\ndata: {}\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+			continue
+		}
+		if len(items) > 0 {
+			for _, one := range items {
+				payload, err := json.Marshal(one.Event)
+				if err != nil {
+					continue
+				}
+				if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n",
+					one.Seq, one.Event.Type, payload); err != nil {
+					return
+				}
+				cursor = one.Seq
+			}
+			flusher.Flush()
+			continue
+		}
 		select {
 		case <-r.Context().Done():
 			return
@@ -510,20 +557,90 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
-		case one, open := <-events:
-			if !open {
-				return
-			}
-			payload, err := json.Marshal(one)
-			if err != nil {
-				continue
-			}
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", one.Type, payload); err != nil {
-				return
-			}
-			flusher.Flush()
+		case <-wake:
 		}
 	}
+}
+
+// maxPollWait is the longest one poll holds its connection open. Short enough
+// that a proxy with an idle timeout of its own does not cut it first, and long
+// enough that a quiet session costs one request rather than one a second.
+const maxPollWait = 25 * time.Second
+
+// handlePoll answers with what a reader has not seen, and then ends.
+//
+// It exists because a proxy between the browser and this process can hold a
+// response until it completes, which makes a stream that never completes a
+// response that never arrives. A request that returns is a response that
+// arrives on every path there is, so the reader asks for a batch, waits as
+// long as it is willing to, and asks again.
+func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Bus == nil {
+		http.Error(w, "event stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.ensureLog()
+	cursor, ok := cursorFrom(r, s.log.head())
+	if !ok {
+		http.Error(w, "bad after", http.StatusBadRequest)
+		return
+	}
+	wait := maxPollWait
+	if raw := strings.TrimSpace(r.URL.Query().Get("wait")); raw != "" {
+		ms, err := strconv.Atoi(raw)
+		if err != nil || ms < 0 {
+			http.Error(w, "bad wait", http.StatusBadRequest)
+			return
+		}
+		if asked := time.Duration(ms) * time.Millisecond; asked < wait {
+			wait = asked
+		}
+	}
+
+	items, stale, wake := s.log.since(cursor)
+	for len(items) == 0 && !stale && wait > 0 {
+		timer := time.NewTimer(wait)
+		select {
+		case <-wake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			items, stale, wake = s.log.since(cursor)
+		case <-timer.C:
+			wait = 0
+		case <-r.Context().Done():
+			timer.Stop()
+			return
+		}
+	}
+
+	// The cursor in the answer is where to ask from next: the last event
+	// handed over when there were any, and unchanged when there were not. A
+	// reader that times out on an idle session therefore asks from the same
+	// place again rather than sliding forward over events it never saw.
+	seq := cursor
+	if stale {
+		// Nothing is handed over across a gap. Replaying what still fits in
+		// the buffer would put the tail of the answer on top of a transcript
+		// the reader is about to re-read from disk, and the two would disagree
+		// about how much of it has already been said.
+		seq = s.log.head()
+		items = nil
+	}
+	events := make([]loggedEvent, 0, len(items))
+	for _, one := range items {
+		events = append(events, one)
+		seq = one.Seq
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(struct {
+		Seq    int64         `json:"seq"`
+		Stale  bool          `json:"stale,omitempty"`
+		Events []loggedEvent `json:"events"`
+	}{Seq: seq, Stale: stale, Events: events})
 }
 
 // maxPromptChars bounds one message. The model context window is the real

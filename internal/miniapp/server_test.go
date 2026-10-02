@@ -239,12 +239,18 @@ func TestEventsStreamsPublishedEvents(t *testing.T) {
 	}
 
 	reader := bufio.NewReader(resp.Body)
-	// The subscription happens before the first byte is written, so reaching
-	// the banner means it is safe to publish.
-	for i := 0; i < 2; i++ {
-		if _, err := reader.ReadString('\n'); err != nil {
-			t.Fatalf("reading banner: %v", err)
+	// The subscriber is running before the first byte is written, so reaching
+	// the banner means it is safe to publish. The hello that follows is what
+	// the page measures the transport by rather than the event under test, so
+	// it is consumed here instead of being mistaken for one, blank line and
+	// all: the next frame begins straight after it.
+	var opening string
+	for !(strings.Contains(opening, `"seq"`) && strings.HasSuffix(opening, "\n\n")) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading opening: %v", err)
 		}
+		opening += line
 	}
 	bus.Publish(event.Event{Type: event.TypePermission, SessionID: "ses-fixture", Data: map[string]any{"tool": "bash"}})
 

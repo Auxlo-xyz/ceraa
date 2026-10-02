@@ -538,49 +538,125 @@
   document.getElementById("settings-save").addEventListener("click", saveSettings);
   document.getElementById("secret-add").addEventListener("click", addSecret);
 
-  // EventSource cannot set a header, so the payload goes in the query string
-  // for this one request. Everything else uses Authorization.
-  var source = new EventSource("/events?initData=" + encodeURIComponent(initData));
-  source.onopen = function () { liveEl.textContent = "live"; liveEl.className = "live on"; };
-  source.onerror = function () { liveEl.textContent = "reconnecting"; liveEl.className = "live"; };
-  source.addEventListener("permission", function (event) {
-    liveEl.textContent = "permission pending";
-    liveEl.className = "live on";
-    askPermission(payload(event));
-  });
-  source.addEventListener("question", function (event) {
-    liveEl.textContent = "question pending";
-    liveEl.className = "live on";
-    askQuestion(payload(event));
-  });
-  // The stream the prompt was answered on. Delta rather than whole text, so a
-  // reader that joins midway still accumulates correctly from what it saw.
-  source.addEventListener("content", function (event) {
-    turn();
-    textBox.textContent += payload(event).delta || "";
-  });
-  source.addEventListener("thinking", function (event) {
-    turn().querySelector(".who").textContent = "assistant · thinking";
-  });
-  source.addEventListener("tool_start", function (event) {
-    var d = payload(event);
-    turn().appendChild(el("div", "tool-line", "→ " + (d.tool || "tool")));
-  });
-  source.addEventListener("tool_end", function (event) {
-    var d = payload(event);
-    turn().appendChild(el("div", "tool-line", "← " + (d.tool || "tool") + " · " + (d.status || "")));
-  });
-  source.addEventListener("complete", function () {
-    streaming(false);
-    var who = turnNode && turnNode.querySelector(".who");
-    if (who) { who.textContent = "assistant"; }
-  });
-  source.addEventListener("error", function (event) {
-    if (!event.data) { return; }
-    streaming(false);
-    state("failed");
-    turn().appendChild(el("div", "tool-line", payload(event).message || "run failed"));
-  });
+  // Two transports carry the same events, and the page picks the one the path
+  // in front of it actually supports. A proxy can hold a response until it
+  // completes, which turns a stream that never completes into a response that
+  // never arrives, so the stream says hello the moment it is able to and the
+  // page stops waiting for it if that does not happen. What is asked for
+  // instead is a batch, because a batch is a response that ends, and a
+  // response that ends arrives everywhere.
+  var cursor = -1;
+  var streamLive = false;
+  var source = null;
+
+  // One place decides what an event does, so the two transports cannot drift
+  // into disagreeing about what a permission or a finished turn looks like.
+  function dispatch(type, data) {
+    var d = data || {};
+    switch (type) {
+      case "permission":
+        liveEl.textContent = "permission pending";
+        liveEl.className = "live on";
+        askPermission(d);
+        break;
+      case "question":
+        liveEl.textContent = "question pending";
+        liveEl.className = "live on";
+        askQuestion(d);
+        break;
+      // A delta rather than the whole text, so a reader that joins midway
+      // still accumulates correctly from what it saw.
+      case "content":
+        turn();
+        textBox.textContent += d.delta || "";
+        break;
+      case "thinking":
+        turn().querySelector(".who").textContent = "assistant · thinking";
+        break;
+      case "tool_start":
+        turn().appendChild(el("div", "tool-line", "→ " + (d.tool || "tool")));
+        break;
+      case "tool_end":
+        turn().appendChild(el("div", "tool-line", "← " + (d.tool || "tool") + " · " + (d.status || "")));
+        break;
+      case "complete":
+        streaming(false);
+        var finished = turnNode && turnNode.querySelector(".who");
+        if (finished) { finished.textContent = "assistant"; }
+        break;
+      case "error":
+        streaming(false);
+        state("failed");
+        turn().appendChild(el("div", "tool-line", d.message || "run failed"));
+        break;
+      // The buffer aged out from under this page, so the transcript on disk is
+      // ahead of what has been rendered here. Re-read it rather than keep the
+      // gap where a message should be.
+      case "stale":
+        if (webSession) { open(webSession); }
+        break;
+    }
+  }
+
+  var watched = ["permission", "question", "content", "thinking",
+                 "tool_start", "tool_end", "complete", "error", "stale"];
+
+  function attach() {
+    // EventSource cannot set a header, so the payload goes in the query string
+    // for this one request. Everything else uses Authorization.
+    var url = "/events?initData=" + encodeURIComponent(initData);
+    if (cursor >= 0) { url += "&after=" + cursor; }
+    source = new EventSource(url);
+    source.onopen = function () { liveEl.textContent = "live"; liveEl.className = "live on"; };
+    source.onerror = function () { liveEl.textContent = "reconnecting"; liveEl.className = "live"; };
+    source.addEventListener("hello", function (event) {
+      streamLive = true;
+      var d = {};
+      try { d = JSON.parse(event.data) || {}; } catch (_) {}
+      if (typeof d.seq === "number") { cursor = d.seq; }
+    });
+    watched.forEach(function (type) {
+      source.addEventListener(type, function (event) {
+        // A dropped connection also surfaces as an "error", carrying nothing.
+        // Only the one with a payload belongs to the run.
+        if (type === "error" && !event.data) { return; }
+        var id = parseInt(event.lastEventId, 10);
+        if (!isNaN(id)) { cursor = id; }
+        dispatch(type, payload(event));
+      });
+    });
+    // If the hello has not arrived, the path is holding the response back and
+    // waiting longer will not change that. The batch reader starts instead of
+    // sitting out a timeout that cannot be observed from this side.
+    setTimeout(function () {
+      if (streamLive) { return; }
+      source.close();
+      poll();
+    }, 2500);
+  }
+
+  function poll() {
+    var url = "/api/events?wait=20000";
+    if (cursor >= 0) { url += "&after=" + cursor; }
+    api(url).then(function (data) {
+      if (typeof data.seq === "number") { cursor = data.seq; }
+      if (data.stale) { dispatch("stale", {}); }
+      (data.events || []).forEach(function (one) {
+        if (!one || !one.event) { return; }
+        cursor = one.seq;
+        dispatch(one.event.type, one.event.data);
+      });
+      liveEl.textContent = "live";
+      liveEl.className = "live on";
+      poll();
+    }).catch(function () {
+      liveEl.textContent = "reconnecting";
+      liveEl.className = "live";
+      setTimeout(poll, 1500);
+    });
+  }
+
+  attach();
 })();
 </script>
 </body>
