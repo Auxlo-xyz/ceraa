@@ -72,6 +72,28 @@
     width: 100%; margin-top: 8px; padding: 7px 9px; border: 1px solid #333;
     border-radius: 6px; background: #191919; color: inherit; font: inherit;
   }
+  #gear {
+    margin-left: auto; padding: 5px 12px; border: 1px solid #333; border-radius: 6px;
+    background: #1c1c1c; color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  #panel { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: flex;
+           align-items: center; justify-content: center; z-index: 20; padding: 16px; }
+  #panel[hidden] { display: none; }
+  #panel > div { background: #161616; border: 1px solid #333; border-radius: 10px;
+                 padding: 18px; width: min(560px, 100%); max-height: 86vh; overflow: auto; }
+  #panel h2 { font-size: 14px; margin: 0 0 12px; }
+  #panel h3 { font-size: 13px; margin: 20px 0 8px; color: #9a9a9a; }
+  .field { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+  .field label { width: 132px; font-size: 12px; color: #8f8f8f; flex: none; }
+  .field input[type=text] { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #333;
+                            border-radius: 6px; background: #191919; color: inherit; font: inherit; }
+  .field .ro { flex: 1; font-size: 13px; color: #cfcfcf; word-break: break-all; }
+  .panel-row { display: flex; gap: 8px; margin-top: 14px; }
+  #panel-msg { font-size: 12px; color: #6ece9d; min-height: 16px; margin-top: 8px; }
+  #secret-list { list-style: none; padding: 0; margin: 0; }
+  #secret-list li { display: flex; gap: 8px; align-items: center; padding: 5px 0;
+                    border-bottom: 1px solid #232323; font-size: 13px; }
+  #secret-list li span { flex: 1; word-break: break-all; }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; }
     #list { max-height: 40vh; border-right: 0; border-bottom: 1px solid #2a2a2a; }
@@ -82,11 +104,33 @@
 <header>
   <h1>CERAA</h1>
   <span class="live" id="live">connecting</span>
+  <button id="gear" type="button">Settings</button>
 </header>
 <main>
   <nav id="list"><p class="empty" style="padding:14px">Loading sessions…</p></nav>
   <section id="open"><p class="empty">Pick a session.</p></section>
 </main>
+<div id="panel" hidden>
+  <div>
+    <h2>Settings</h2>
+    <div id="settings-fields"></div>
+    <div class="panel-row">
+      <button class="ask-btn" id="settings-save" type="button">Save changes</button>
+      <button class="ask-btn" id="panel-close" type="button">Close</button>
+    </div>
+    <div id="panel-msg"></div>
+
+    <h3>Secrets</h3>
+    <ul id="secret-list"></ul>
+    <div class="field"><label for="secret-name">Name</label>
+      <input type="text" id="secret-name" placeholder="OPENAI_KEY"></div>
+    <div class="field"><label for="secret-value">Value</label>
+      <input type="text" id="secret-value" placeholder="stored encrypted, never shown back"></div>
+    <div class="panel-row">
+      <button class="ask-btn" id="secret-add" type="button">Store secret</button>
+    </div>
+  </div>
+</div>
 <footer id="composer">
   <textarea id="prompt" rows="1" placeholder="Send a task… (Enter to send, Shift+Enter for a new line)"></textarea>
   <button id="send">Send</button>
@@ -353,6 +397,118 @@
   function payload(event) {
     try { return JSON.parse(event.data).data || {}; } catch (_) { return {}; }
   }
+
+  // Settings and secrets sit behind one panel because they are both "what this
+  // install is", and a second page for the second half would mean two ways of
+  // being admitted to the same surface.
+  var panel = document.getElementById("panel");
+  var panelMsg = document.getElementById("panel-msg");
+  var fieldsEl = document.getElementById("settings-fields");
+  var editable = ["provider", "model", "agent", "reasoning"];
+  var checkboxKey = "auto_compaction";
+
+  function say(text) { panelMsg.textContent = text; }
+
+  function renderSettings(settings) {
+    fieldsEl.textContent = "";
+    editable.forEach(function (key) {
+      var field = el("div", "field");
+      field.appendChild(el("label", null, key.replace("_", " ")));
+      var input = document.createElement("input");
+      input.type = "text";
+      input.dataset.key = key;
+      input.value = settings[key] || "";
+      field.appendChild(input);
+      fieldsEl.appendChild(field);
+    });
+    var field = el("div", "field");
+    field.appendChild(el("label", null, checkboxKey.replace("_", " ")));
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.key = checkboxKey;
+    box.checked = !!settings[checkboxKey];
+    field.appendChild(box);
+    fieldsEl.appendChild(field);
+    ["provider_name", "provider_model", "workspace", "session"].forEach(function (key) {
+      if (settings[key] === undefined) { return; }
+      var row = el("div", "field");
+      row.appendChild(el("label", null, key.replace("_", " ")));
+      row.appendChild(el("span", "ro", String(settings[key])));
+      fieldsEl.appendChild(row);
+    });
+  }
+
+  function loadSettings() {
+    api("/api/settings").then(function (data) { renderSettings(data.settings); })
+      .catch(function (err) { say(String(err)); });
+  }
+
+  function saveSettings() {
+    var update = {};
+    fieldsEl.querySelectorAll("[data-key]").forEach(function (input) {
+      if (input.type === "checkbox") { update[input.dataset.key] = input.checked; return; }
+      if (input.value.trim() !== "") { update[input.dataset.key] = input.value.trim(); }
+    });
+    if (!Object.keys(update).length) { say("nothing to save"); return; }
+    post("/api/settings", { settings: update }).then(function (ok) {
+      if (ok) { say("saved"); loadSettings(); }
+    });
+  }
+
+  function renderSecrets(names) {
+    var list = document.getElementById("secret-list");
+    list.textContent = "";
+    if (!names.length) {
+      list.appendChild(el("li", "empty", "No secrets stored."));
+      return;
+    }
+    names.forEach(function (name) {
+      var row = el("li");
+      row.appendChild(el("span", null, name));
+      var drop = el("button", "ask-btn", "Delete");
+      drop.addEventListener("click", function () {
+        drop.disabled = true;
+        fetch("/api/secrets/" + encodeURIComponent(name), { method: "DELETE", headers: headers() })
+          .then(function (res) { if (!res.ok) { throw new Error(res.status); } return res.json(); })
+          .then(function () { loadSecrets(); })
+          .catch(function (err) { drop.disabled = false; say(String(err)); });
+      });
+      row.appendChild(drop);
+      list.appendChild(row);
+    });
+  }
+
+  function loadSecrets() {
+    api("/api/secrets").then(function (data) { renderSecrets(data.secrets || []); })
+      .catch(function (err) { say(String(err)); });
+  }
+
+  function addSecret() {
+    var name = document.getElementById("secret-name").value.trim();
+    var value = document.getElementById("secret-value").value;
+    if (!name) { say("name is empty"); return; }
+    fetch("/api/secrets/" + encodeURIComponent(name), {
+      method: "PUT",
+      headers: Object.assign({ "Content-Type": "application/json" }, headers()),
+      body: JSON.stringify({ value: value })
+    }).then(function (res) {
+      if (!res.ok) { return res.text().then(function (t) { throw new Error(t || res.status); }); }
+      document.getElementById("secret-name").value = "";
+      document.getElementById("secret-value").value = "";
+      say("stored");
+      loadSecrets();
+    }).catch(function (err) { say(String(err).trim()); });
+  }
+
+  document.getElementById("gear").addEventListener("click", function () {
+    panel.hidden = false;
+    say("");
+    loadSettings();
+    loadSecrets();
+  });
+  document.getElementById("panel-close").addEventListener("click", function () { panel.hidden = true; });
+  document.getElementById("settings-save").addEventListener("click", saveSettings);
+  document.getElementById("secret-add").addEventListener("click", addSecret);
 
   // EventSource cannot set a header, so the payload goes in the query string
   // for this one request. Everything else uses Authorization.

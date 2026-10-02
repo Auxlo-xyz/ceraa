@@ -18,6 +18,7 @@ import (
 	"ceraa/harness/event"
 	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
+	"ceraa/internal/secret"
 )
 
 const (
@@ -398,8 +399,12 @@ func TestServesOverItsOwnSocket(t *testing.T) {
 }
 
 func postJSON(t *testing.T, handler http.Handler, target, initData, body string) *httptest.ResponseRecorder {
+	return sendJSON(t, handler, http.MethodPost, target, initData, body)
+}
+
+func sendJSON(t *testing.T, handler http.Handler, method, target, initData, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	if initData != "" {
 		req.Header.Set("Authorization", "tma "+initData)
 	}
@@ -665,5 +670,155 @@ func TestAnswerForwardsTheTextUntouched(t *testing.T) {
 	}
 	if gotID != "q1" || gotAnswer != "/tmp/thing.go" {
 		t.Fatalf("forwarded %q/%q, want q1//tmp/thing.go", gotID, gotAnswer)
+	}
+}
+
+// TestSettingsRoundTrip covers the pair of verbs as one contract: a write is
+// only meaningful if the read afterwards shows it.
+func TestSettingsRoundTrip(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	current := map[string]any{"model": "a", "agent": "build"}
+	server.cfg.Settings = func() map[string]any { return current }
+	server.cfg.SetSettings = func(update map[string]any) error {
+		for k, v := range update {
+			current[k] = v
+		}
+		return nil
+	}
+
+	got := do(t, server.Handler(), http.MethodGet, "/api/settings", initData)
+	if got.Code != http.StatusOK {
+		t.Fatalf("read = %d, want 200", got.Code)
+	}
+	if !strings.Contains(got.Body.String(), `"model":"a"`) {
+		t.Fatalf("read body = %s, want the current snapshot", got.Body.String())
+	}
+
+	saved := postJSON(t, server.Handler(), "/api/settings", initData, `{"settings":{"model":"b"}}`)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("write = %d, want 200: %s", saved.Code, saved.Body.String())
+	}
+	if current["model"] != "b" {
+		t.Fatalf("model = %v, want b", current["model"])
+	}
+	if !strings.Contains(saved.Body.String(), `"model":"b"`) {
+		t.Fatalf("write body = %s, want the snapshot after the change", saved.Body.String())
+	}
+}
+
+// TestSettingsRefuseToHalfSave keeps a malformed body from applying the keys it
+// happened to understand.
+func TestSettingsRefuseToHalfSave(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	var applied map[string]any
+	server.cfg.Settings = func() map[string]any { return map[string]any{} }
+	server.cfg.SetSettings = func(update map[string]any) error {
+		applied = update
+		return fmt.Errorf(`unknown setting "model"`)
+	}
+
+	for _, body := range []string{`{}`, `{"settings":{}}`, `not json`, `{"settings":[]}`} {
+		if got := postJSON(t, server.Handler(), "/api/settings", initData, body); got.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400", body, got.Code)
+		}
+	}
+	if applied != nil {
+		t.Fatalf("a refused body reached the applier as %v", applied)
+	}
+
+	if got := postJSON(t, server.Handler(), "/api/settings", initData, `{"settings":{"model":"x"}}`); got.Code != http.StatusBadRequest {
+		t.Fatalf("domain rejection = %d, want 400", got.Code)
+	}
+}
+
+func TestSettingsAreRefusedWithoutAWiring(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	if got := do(t, server.Handler(), http.MethodGet, "/api/settings", initData); got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("read without wiring = %d, want 503", got.Code)
+	}
+}
+
+// TestSecretsRoundTripNeverRevealsAValue is the whole reason the store exists:
+// this surface can put a credential in and take one out, and cannot read any of
+// them back at any point.
+func TestSecretsRoundTripNeverRevealsAValue(t *testing.T) {
+	dir := t.TempDir()
+	if err := secret.Init(filepath.Join(dir, "key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatal(err)
+	}
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	stored := sendJSON(t, server.Handler(), http.MethodPut, "/api/secrets/OPENAI_KEY", initData, `{"value":"sk-super-secret-value"}`)
+	if stored.Code != http.StatusOK {
+		t.Fatalf("put = %d, want 200: %s", stored.Code, stored.Body.String())
+	}
+	if strings.Contains(stored.Body.String(), "sk-super-secret-value") {
+		t.Fatalf("the store echoed the value back: %s", stored.Body.String())
+	}
+
+	listed := do(t, server.Handler(), http.MethodGet, "/api/secrets", initData)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list = %d, want 200", listed.Code)
+	}
+	body := listed.Body.String()
+	if strings.Contains(body, "sk-super-secret-value") {
+		t.Fatalf("the list leaked the value: %s", body)
+	}
+	if !strings.Contains(body, "OPENAI_KEY") {
+		t.Fatalf("list body = %s, want the stored name", body)
+	}
+
+	// Written, so it decrypts the way the chat handlers read it.
+	value, err := secret.Get("OPENAI_KEY")
+	if err != nil || value != "sk-super-secret-value" {
+		t.Fatalf("store read back %q/%v, want the value as written", value, err)
+	}
+
+	deleted := do(t, server.Handler(), http.MethodDelete, "/api/secrets/OPENAI_KEY", initData)
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete = %d, want 200", deleted.Code)
+	}
+	if got := do(t, server.Handler(), http.MethodDelete, "/api/secrets/OPENAI_KEY", initData); got.Code != http.StatusNotFound {
+		t.Fatalf("second delete = %d, want 404", got.Code)
+	}
+}
+
+// TestSecretsRefuseTheNamesThisProcessOwns keeps a page from overwriting a
+// credential the bot uses to authenticate itself.
+func TestSecretsRefuseTheNamesThisProcessOwns(t *testing.T) {
+	dir := t.TempDir()
+	if err := secret.Init(filepath.Join(dir, "key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatal(err)
+	}
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+
+	for _, name := range []string{"ceraa_bot_token", "provider_api_key_openai"} {
+		got := sendJSON(t, server.Handler(), http.MethodPut, "/api/secrets/"+name, initData, `{"value":"x"}`)
+		if got.Code != http.StatusForbidden {
+			t.Fatalf("put %s = %d, want 403", name, got.Code)
+		}
+	}
+	if got := sendJSON(t, server.Handler(), http.MethodPut, "/api/secrets/too-long-"+strings.Repeat("a", 80), initData, `{"value":"x"}`); got.Code != http.StatusBadRequest {
+		t.Fatalf("overlong name = %d, want 400", got.Code)
+	}
+}
+
+func TestSecretWritesNeedAdmission(t *testing.T) {
+	dir := t.TempDir()
+	if err := secret.Init(filepath.Join(dir, "key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatal(err)
+	}
+	server, _, _ := newFixture(t, testUser)
+	if got := do(t, server.Handler(), http.MethodGet, "/api/secrets", ""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous list = %d, want 401", got.Code)
+	}
+	if got := sendJSON(t, server.Handler(), http.MethodPut, "/api/secrets/KEY", "", `{"value":"x"}`); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous put = %d, want 401", got.Code)
 	}
 }

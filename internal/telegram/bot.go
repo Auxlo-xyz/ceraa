@@ -623,6 +623,8 @@ func Run() error {
 				AnswerQuestion: func(requestID, answer string) bool {
 					return question.Default.Answer(miniapp.WebSessionID, requestID, answer)
 				},
+				Settings:    webSettings,
+				SetSettings: applyWebSettings,
 			})
 			if err := miniappServer.Start(); err != nil {
 				logger.Warn("Mini App disabled: " + err.Error())

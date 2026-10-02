@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,6 +32,14 @@ type store struct {
 	entries map[string]Entry
 }
 
+// mu guards the store pointer and everything behind it.
+//
+// Two parts of one process reach this map and neither knows about the other:
+// the chat handlers, and the loopback surface. A map written from both is a
+// lost write or a fatal concurrent read, so the lock lives at the boundary
+// rather than being left to whichever caller happened to be running.
+var mu sync.RWMutex
+
 var defaultStore *store
 
 // Init initializes the default secret store.
@@ -42,20 +51,22 @@ func Init(keyFile, secretFile string) error {
 		return fmt.Errorf("secret store key: %w", err)
 	}
 
-	defaultStore = &store{
-		path:    secretFile,
-		key:     key,
-		entries: make(map[string]Entry),
-	}
-
-	// Load existing entries
+	loaded := make(map[string]Entry)
 	data, err := os.ReadFile(secretFile)
 	if err == nil {
 		var persisted map[string]Entry
 		if err := json.Unmarshal(data, &persisted); err == nil {
-			defaultStore.entries = persisted
+			loaded = persisted
 		}
 	}
+
+	mu.Lock()
+	defaultStore = &store{
+		path:    secretFile,
+		key:     key,
+		entries: loaded,
+	}
+	mu.Unlock()
 
 	return nil
 }
@@ -88,16 +99,27 @@ func loadOrCreateKey(path string) ([]byte, error) {
 
 // Set encrypts and stores a secret.
 func Set(name, value string) error {
-	if defaultStore == nil {
-		return fmt.Errorf("secret store not initialized")
-	}
 	if name == "" {
 		return fmt.Errorf("secret name required")
 	}
 
-	encrypted, nonce, err := encrypt(defaultStore.key, value)
+	key, err := storeKey()
+	if err != nil {
+		return err
+	}
+	// The key is read under its own short lock and the write taken after, so a
+	// slow encrypt does not sit on the lock a reader is waiting for. The store
+	// can only have been closed underneath us in that window, and if it was,
+	// the entry belongs nowhere.
+	encrypted, nonce, err := encrypt(key, value)
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if defaultStore == nil {
+		return fmt.Errorf("secret store not initialized")
 	}
 
 	defaultStore.entries[name] = Entry{
@@ -106,11 +128,16 @@ func Set(name, value string) error {
 		CreatedAt: time.Now().Unix(),
 	}
 
+	// save reads the map it is handed, so it runs under the write lock rather
+	// than taking its own: two entries written together must be the same bytes
+	// on disk as the ones in memory when the file is closed.
 	return defaultStore.save()
 }
 
 // Get decrypts and returns a secret.
 func Get(name string) (string, error) {
+	mu.RLock()
+	defer mu.RUnlock()
 	if defaultStore == nil {
 		return "", fmt.Errorf("secret store not initialized")
 	}
@@ -183,6 +210,8 @@ func ListUser() []string {
 
 // List returns all stored secret names.
 func List() []string {
+	mu.RLock()
+	defer mu.RUnlock()
 	if defaultStore == nil {
 		return nil
 	}
@@ -195,11 +224,24 @@ func List() []string {
 
 // Delete removes a secret.
 func Delete(name string) error {
+	mu.Lock()
+	defer mu.Unlock()
 	if defaultStore == nil {
 		return fmt.Errorf("secret store not initialized")
 	}
 	delete(defaultStore.entries, name)
 	return defaultStore.save()
+}
+
+// storeKey returns the encryption key for a caller about to encrypt. It takes
+// the read lock for the length of one map lookup and nothing longer.
+func storeKey() ([]byte, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if defaultStore == nil {
+		return nil, fmt.Errorf("secret store not initialized")
+	}
+	return defaultStore.key, nil
 }
 
 func (s *store) save() error {

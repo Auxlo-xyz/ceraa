@@ -1,8 +1,10 @@
 package secret
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -87,4 +89,47 @@ func containsPlaintext(s, secret string) bool {
 		}
 	}
 	return false
+}
+
+// TestConcurrentWritersDoNotLoseAnEntry is the guard for two surfaces touching
+// the same map. Without a lock this either loses a write or the runtime ends the
+// process on a concurrent map access, and the second is the one a reader notices.
+func TestConcurrentWritersDoNotLoseAnEntry(t *testing.T) {
+	dir := t.TempDir()
+	if err := Init(filepath.Join(dir, "key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 16
+	const perWriter = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*perWriter)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				name := fmt.Sprintf("k-%d-%d", w, i)
+				if err := Set(name, "v"); err != nil {
+					errs <- err
+					return
+				}
+				if _, err := Get(name); err != nil {
+					errs <- err
+					return
+				}
+				List()
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	got := List()
+	if len(got) != writers*perWriter {
+		t.Fatalf("stored %d names, want %d: a concurrent write was lost", len(got), writers*perWriter)
+	}
 }

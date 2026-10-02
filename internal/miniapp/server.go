@@ -20,6 +20,7 @@ import (
 	"ceraa/internal/envs"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
+	"ceraa/internal/secret"
 )
 
 // initDataMaxAge bounds how long a payload stays usable.
@@ -89,6 +90,12 @@ type Config struct {
 	// pending request stays where it is, and this surface only relays a choice.
 	AnswerPermission func(requestID, decision string) bool
 	AnswerQuestion   func(requestID, answer string) bool
+	// Settings reads a snapshot of what a run will use, and SetSettings
+	// applies a partial update. Injected because that state belongs to the
+	// process running the bot; a page-serving package has no business knowing
+	// which of those keys exist.
+	Settings    func() map[string]any
+	SetSettings func(update map[string]any) error
 }
 
 // Server is the loopbound HTTP surface. One per process, started once and shut
@@ -123,6 +130,11 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("POST /prompt", s.handlePrompt)
 	mux.HandleFunc("POST /api/permission", s.handlePermission)
 	mux.HandleFunc("POST /api/answer", s.handleAnswer)
+	mux.HandleFunc("GET /api/settings", s.handleSettings)
+	mux.HandleFunc("POST /api/settings", s.handleSettings)
+	mux.HandleFunc("GET /api/secrets", s.handleSecrets)
+	mux.HandleFunc("PUT /api/secrets/{name}", s.handleSecretPut)
+	mux.HandleFunc("DELETE /api/secrets/{name}", s.handleSecretDelete)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("/", s.handleAsset)
 	s.mux = mux
@@ -637,6 +649,139 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"accepted": true})
+}
+
+// handleSettings reads and writes what a run will use.
+//
+// One handler for both verbs: the read and the write answer the same question
+// from opposite ends, and a write that does not know what a good read looks
+// like drifts. A body that changes nothing is rejected rather than accepted as
+// a no-op, because a save that silently did nothing is worse than an error.
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Settings == nil {
+		http.Error(w, "settings are not exposed on this surface", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method == http.MethodGet {
+		snapshot := s.cfg.Settings()
+		if snapshot == nil {
+			snapshot = map[string]any{}
+		}
+		writeJSON(w, map[string]any{"settings": snapshot})
+		return
+	}
+	if s.cfg.SetSettings == nil {
+		http.Error(w, "settings cannot be changed on this surface", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Settings map[string]any `json:"settings"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
+		http.Error(w, "expected a JSON object", http.StatusBadRequest)
+		return
+	}
+	if len(body.Settings) == 0 {
+		http.Error(w, "no settings to change", http.StatusBadRequest)
+		return
+	}
+	if err := s.cfg.SetSettings(body.Settings); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"settings": s.cfg.Settings()})
+}
+
+// maxSecretName and maxSecretValue bound an entry before it is encrypted. The
+// store has no limits of its own, and a surface that can write should not be
+// able to hand it a megabyte under a name nobody can read in a menu.
+const (
+	maxSecretName  = 64
+	maxSecretValue = 8 << 10
+)
+
+func (s *Server) secretName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	switch {
+	case name == "":
+		http.Error(w, "secret name is empty", http.StatusBadRequest)
+		return "", false
+	case len(name) > maxSecretName:
+		http.Error(w, fmt.Sprintf("secret name is longer than %d bytes", maxSecretName), http.StatusBadRequest)
+		return "", false
+	case strings.ContainsAny(name, "\n\r\t"):
+		http.Error(w, "secret name contains whitespace", http.StatusBadRequest)
+		return "", false
+	case secret.IsInternal(name):
+		// The same reserve the model's tools face. A name this process uses for
+		// itself is not a credential the person at this page owns, and letting
+		// it be overwritten from here would be how a bot token gets replaced by
+		// something an attacker chose.
+		http.Error(w, "that name is reserved by Ceraa", http.StatusForbidden)
+		return "", false
+	}
+	return name, true
+}
+
+// handleSecrets lists names and never values.
+func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
+	// Names only. The values are not in this response because there is no code
+	// path in this server that reads one: a surface which can show a credential
+	// has a leak it has not had yet.
+	writeJSON(w, map[string]any{"secrets": secret.ListUser()})
+}
+
+func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.secretName(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxSecretValue+1024)).Decode(&body); err != nil {
+		http.Error(w, "expected a JSON object", http.StatusBadRequest)
+		return
+	}
+	if body.Value == "" {
+		http.Error(w, "value is empty", http.StatusBadRequest)
+		return
+	}
+	if len(body.Value) > maxSecretValue {
+		http.Error(w, fmt.Sprintf("value is longer than %d bytes", maxSecretValue), http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err := secret.Set(name, body.Value); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// The value is not echoed back, and it is not in the list either. This
+	// surface can write a credential and show that one exists; it cannot read
+	// one, so a leaked response body is not a leaked key.
+	writeJSON(w, map[string]any{"name": name, "stored": true})
+}
+
+func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.secretName(w, r)
+	if !ok {
+		return
+	}
+	found := false
+	for _, existing := range secret.ListUser() {
+		if existing == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "no such secret", http.StatusNotFound)
+		return
+	}
+	if err := secret.Delete(name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"name": name, "deleted": true})
 }
 
 func writeJSONAt(w http.ResponseWriter, status int, body any) {
