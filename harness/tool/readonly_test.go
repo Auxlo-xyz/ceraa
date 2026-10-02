@@ -31,12 +31,15 @@ func TestReadOnlySetIsPinnedAndEveryNameIsARealTool(t *testing.T) {
 
 // browser is the one that looks harmless and is not: it can click and type,
 // which changes state on somebody else's server.
+//
+// script is in the same shape: its body is only JavaScript, but it can reach
+// write and bash, so repeating one after an unknown outcome is not safe.
 func TestBrowserIsNotReadOnly(t *testing.T) {
 	if ReadOnly("browser") {
 		t.Error("browser is classified read-only; it can click and type")
 	}
 	for _, name := range []string{"bash", "write", "edit_line", "batch_edit_file",
-		"run_command_with_secret", "todowrite", "task", "browser"} {
+		"run_command_with_secret", "todowrite", "task", "browser", "script"} {
 		if ReadOnly(name) {
 			t.Errorf("%q is classified read-only but can change things", name)
 		}

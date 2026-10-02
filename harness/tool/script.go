@@ -53,6 +53,11 @@ type ScriptTool struct {
 	// script. Without it a nested read would resolve relative paths against the
 	// process directory and miss a file the model had just written.
 	Scope map[string]any
+	// RequiresApproval mirrors the coordinator's own gate. The coordinator asks
+	// before a tool call reaches dispatch, and a nested call never passes through
+	// it, so without this a script would write a file or run a destructive command
+	// with nobody asked. A script cannot prompt, so it refuses and says so.
+	RequiresApproval func(name string, args map[string]any) bool
 	// Deadline overrides the default. Zero means scriptDeadline.
 	Deadline time.Duration
 }
@@ -75,7 +80,8 @@ func (s *ScriptTool) Description() string {
 		"of an async function, so await and Promise.all work. tools.NAME(args) " +
 		"takes the same arguments as NAME's own schema and resolves to that " +
 		"tool's result text; a call that fails throws, and the thrown message " +
-		"says what to change. Tools exposed: " + s.exposedNames() + "."
+		"says what to change. A tool that needs your approval cannot be called " +
+		"from a script. Tools exposed: " + s.exposedNames() + "."
 }
 
 func (s *ScriptTool) Schema() map[string]any {
@@ -220,6 +226,10 @@ func (s *ScriptTool) hostFunc(rt *goja.Runtime, ctx context.Context, name string
 			// received rather than only what was wanted.
 			panic(rt.ToValue(fmt.Sprintf("tools.%s was given %s; it takes an object of arguments such as {%q: ...}",
 				name, jsonTypeName(call.Arguments[0]), firstRequiredArg(sibling.Schema()))))
+		}
+		if s.RequiresApproval != nil && s.RequiresApproval(name, args) {
+			panic(rt.ToValue("tools." + name + " needs permission, and a script cannot " +
+				"ask for it; call " + name + " on its own so the request can be approved"))
 		}
 		spec, err := sibling.Translate(args)
 		if err != nil {

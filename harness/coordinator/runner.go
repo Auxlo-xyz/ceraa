@@ -297,6 +297,10 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 				if cfg.WorkDir != "" {
 					scope["workdir"] = cfg.WorkDir
 				}
+				script.RequiresApproval = func(name string, args map[string]any) bool {
+					return cfg.AuthorizeTool != nil &&
+						(cfg.NeedsAuthorization == nil || cfg.NeedsAuthorization(name, args))
+				}
 				script.Attach(reg, opMgr.RunSync, scope)
 			}
 		}

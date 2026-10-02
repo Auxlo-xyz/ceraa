@@ -360,3 +360,41 @@ func TestScriptNotWiredIsAClearFailure(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// The coordinator asks before a call that needs permission reaches dispatch, and
+// a nested call never passes through it. Without this check a script would write
+// a file or run a destructive command with nobody asked.
+func TestScriptRefusesAToolThatNeedsApproval(t *testing.T) {
+	h := newScriptHarness(t)
+	h.tool.RequiresApproval = func(name string, _ map[string]any) bool { return name == "probe" }
+	h.output = "should not run"
+	_, err := h.run(t, map[string]any{"code": `return await tools.probe({value: "x"});`})
+	if err == nil {
+		t.Fatal("expected the refusal")
+	}
+	if !strings.Contains(err.Error(), "needs permission") || !strings.Contains(err.Error(), "call probe on its own") {
+		t.Fatalf("message %q does not say what to do instead", err.Error())
+	}
+	if h.asked.Type != "" {
+		t.Fatalf("the nested call ran anyway: %+v", h.asked)
+	}
+}
+
+// The predicate is the coordinator's, matched on the raw arguments the way a
+// direct call is matched, so a rule written for one path is the rule on both.
+func TestScriptApprovalCheckSeesTheRawArguments(t *testing.T) {
+	h := newScriptHarness(t)
+	var seenName string
+	var seenArgs map[string]any
+	h.tool.RequiresApproval = func(name string, args map[string]any) bool {
+		seenName, seenArgs = name, args
+		return false
+	}
+	h.output = "ok"
+	if _, err := h.run(t, map[string]any{"code": `return await tools.probe({value: "x"});`}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if seenName != "probe" || seenArgs["value"] != "x" {
+		t.Fatalf("saw %q %v", seenName, seenArgs)
+	}
+}
