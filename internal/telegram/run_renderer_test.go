@@ -257,7 +257,7 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 
 	renderer := newRunRenderer("token", 42)
 	renderer.reasoning("first step")
-	renderer.reasoning("first step\nsecond step")
+	renderer.reasoning("\nsecond step")
 	renderer.finish("done")
 	renderer.close()
 
@@ -272,7 +272,7 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], "<b>Thought</b>") || !strings.Contains(thoughtEdits[0], "first step") {
 		t.Fatalf("thought edits = %#v", thoughtEdits)
 	}
-	if !strings.Contains(thoughtEdits[len(thoughtEdits)-1], "second step") || strings.Contains(thoughtEdits[len(thoughtEdits)-1], "▌") {
+	if !strings.Contains(thoughtEdits[len(thoughtEdits)-1], "first step\nsecond step") || strings.Contains(thoughtEdits[len(thoughtEdits)-1], "▌") {
 		t.Fatalf("final thought edit = %#v", thoughtEdits)
 	}
 	if len(assistantEdits) == 0 || assistantEdits[len(assistantEdits)-1] != "done" {

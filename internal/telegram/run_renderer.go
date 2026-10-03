@@ -244,7 +244,7 @@ func (r *runRenderer) reasoning(value string) {
 		r.mu.Unlock()
 		return
 	}
-	r.thought = value
+	r.thought += value
 	thoughtID := r.thoughtID
 	oldMessageID := r.messageID
 	assistantPreview := r.streamTextLocked()
