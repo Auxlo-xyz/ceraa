@@ -294,7 +294,9 @@
     border-radius: 0; background: none;
     font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     letter-spacing: -0.05em;
-    color: #fff;
+    /* A token, not #fff: the node has no fill of its own, so a hard-coded
+       white glyph sat on a white page in the light scheme and disappeared. */
+    color: var(--text);
     animation: breathe .9s ease-in-out infinite;
   }
   .tool[data-s="error"] .tool-node { border-color: var(--warn); }
@@ -319,19 +321,28 @@
   }
   .tool[data-s="running"] .tool-name {
     display: inline-block;
-    background: linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--text) 30%, transparent) 0%,
-      color-mix(in srgb, var(--text) 30%, transparent) 35%,
-      var(--text) 50%,
-      color-mix(in srgb, var(--text) 30%, transparent) 65%,
-      color-mix(in srgb, var(--text) 30%, transparent) 100%
-    );
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: textShimmer 2.4s linear infinite;
+    /* Plain text first. The gradient and the transparent fill below are the
+       effect; if color-mix is unsupported the gradient is dropped as invalid
+       while -webkit-text-fill-color would still apply, which hides the name
+       entirely. So the fill only goes transparent inside a feature query. */
+    color: var(--text);
+  }
+  @supports (color: color-mix(in srgb, red 50%, blue)) {
+    .tool[data-s="running"] .tool-name {
+      background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--text) 30%, transparent) 0%,
+        color-mix(in srgb, var(--text) 30%, transparent) 35%,
+        var(--text) 50%,
+        color-mix(in srgb, var(--text) 30%, transparent) 65%,
+        color-mix(in srgb, var(--text) 30%, transparent) 100%
+      );
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: textShimmer 2.4s linear infinite;
+    }
   }
   .tool-state {
     margin-left: auto; flex: none;
@@ -381,20 +392,27 @@
     display: inline-block;
     font: 400 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
     letter-spacing: -0.01em;
-    background: linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--text) 30%, transparent) 0%,
-      color-mix(in srgb, var(--text) 30%, transparent) 35%,
-      var(--text) 50%,
-      color-mix(in srgb, var(--text) 30%, transparent) 65%,
-      color-mix(in srgb, var(--text) 30%, transparent) 100%
-    );
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
     color: var(--faint);
-    animation: textShimmer 2.4s linear infinite;
+  }
+  /* Behind the same feature query as the running tool name, for the same
+     reason: a transparent text fill with no gradient behind it is no text. */
+  @supports (color: color-mix(in srgb, red 50%, blue)) {
+    .thinking-text,
+    .thinking span {
+      background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--text) 30%, transparent) 0%,
+        color-mix(in srgb, var(--text) 30%, transparent) 35%,
+        var(--text) 50%,
+        color-mix(in srgb, var(--text) 30%, transparent) 65%,
+        color-mix(in srgb, var(--text) 30%, transparent) 100%
+      );
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: textShimmer 2.4s linear infinite;
+    }
   }
   @keyframes textShimmer {
     0% {
@@ -412,6 +430,10 @@
       -webkit-text-fill-color: currentColor;
       color: var(--text);
     }
+    /* The running node pulses through ::after, and a universal selector in the
+       other reduced-motion block does not reach it: the glyph kept breathing
+       with the setting on. Named explicitly, it stops. */
+    .tool[data-s="running"] .tool-node::after { animation: none; }
   }
   .empty { color: var(--muted); }
 
