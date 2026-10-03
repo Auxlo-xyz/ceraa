@@ -251,3 +251,53 @@ func TestRenderFileEmptyBody(t *testing.T) {
 		t.Errorf("whitespace-only file rendered %q, want empty", got)
 	}
 }
+
+// A memory file that cannot be read must not discard the store beside it.
+//
+// Both the partial render and the error have to come back: the content proves
+// the other source still worked, and the path in the error is what makes a
+// "permission denied" warning point somewhere. Without it 74 identical lines in
+// one log named no file.
+func TestLiveKeepsStoreEntriesWhenTheFileIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	dir := t.TempDir()
+	store, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add("proj", "", "from the store"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("from the file"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	live := Live(store, "proj", "", path, 4000)
+	got, err := live()
+	if err == nil {
+		t.Fatal("an unreadable memory file reported no error")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error = %v, want it to name %s", err, path)
+	}
+	if !strings.Contains(got, "from the store") {
+		t.Errorf("the source that worked was discarded: %q", got)
+	}
+}
+
+// The two sources stay independent: a store failure still surfaces as an error
+// with no partial render, because there is nothing to keep.
+func TestLiveReportsAStoreFailureWithoutPartialRender(t *testing.T) {
+	live := Live(nil, "", "", filepath.Join(t.TempDir(), "absent.md"), 4000)
+	got, err := live()
+	if err != nil {
+		t.Fatalf("no store and a missing file is the empty case, got %v", err)
+	}
+	if got != "" {
+		t.Errorf("render = %q, want empty", got)
+	}
+}

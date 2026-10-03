@@ -489,23 +489,32 @@ const DefaultMemoryFile = "memory/AGENTS.md"
 //
 // Reading per turn costs a small file read. The result sits after the static
 // prompt and the date, so an edit invalidates only the varying suffix.
+//
+// The two sources are independent, so an error from one does not discard the
+// other. The file error is returned alongside whatever rendered rather than
+// instead of it: a memory file that cannot be read used to blank the store
+// entries too, and the turn then looked exactly like "this user has no memory".
+// The path is carried because "permission denied" on its own named no file, and
+// 74 identical warnings in one log could not be traced to a location.
 func Live(store *Store, projectID, sessionID, filePath string, maxBytes int) func() (string, error) {
 	return func() (string, error) {
 		var parts []string
+		var fileErr error
 		if filePath != "" {
-			if rendered, err := RenderFile(filePath, maxBytes); err != nil {
-				// A missing memory file is the normal case, not an error worth
-				// propagating into the turn.
-				if !os.IsNotExist(err) {
-					return "", err
-				}
-			} else if rendered != "" {
+			rendered, err := RenderFile(filePath, maxBytes)
+			switch {
+			case err != nil && !os.IsNotExist(err):
+				fileErr = fmt.Errorf("%s: %w", filePath, err)
+			case err == nil && rendered != "":
 				parts = append(parts, rendered)
 			}
 		}
 		if store != nil {
 			entries, err := store.List(projectID, sessionID)
 			if err != nil {
+				if fileErr != nil {
+					return "", fmt.Errorf("%v; %w", fileErr, err)
+				}
 				return "", err
 			}
 			if rendered := RenderContext(entries, remainingBytes(maxBytes, parts)); rendered != "" {
@@ -513,9 +522,9 @@ func Live(store *Store, projectID, sessionID, filePath string, maxBytes int) fun
 			}
 		}
 		if len(parts) == 0 {
-			return "", nil
+			return "", fileErr
 		}
-		return strings.Join(parts, "\n") + "\n", nil
+		return strings.Join(parts, "\n") + "\n", fileErr
 	}
 }
 

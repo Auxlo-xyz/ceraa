@@ -280,6 +280,22 @@ func methodFromURL(url string) string {
 	return "unknown"
 }
 
+// telegramHTTPError carries a rejected call's status and body.
+//
+// The message is byte-for-byte the one this function has always produced, so
+// nothing that formats the error changes. The body is kept structured because it
+// holds Telegram's own description: callers that need to tell "message is not
+// modified" from a genuine rejection would otherwise be parsing JSON back out of
+// a string, and every attempt to do that has read the string wrong at least once.
+type telegramHTTPError struct {
+	status int
+	body   string
+}
+
+func (e *telegramHTTPError) Error() string {
+	return fmt.Sprintf("telegram HTTP %d: %s", e.status, e.body)
+}
+
 func postTelegramWithTrace(url string, body []byte, method string) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -300,7 +316,7 @@ func postTelegramWithTrace(url string, body []byte, method string) (*http.Respon
 			if readErr != nil {
 				return nil, fmt.Errorf("telegram HTTP %d: read response: %w", resp.StatusCode, readErr)
 			}
-			lastErr = fmt.Errorf("telegram HTTP %d: %s", resp.StatusCode, string(raw))
+			lastErr = &telegramHTTPError{status: resp.StatusCode, body: string(raw)}
 			if telegramTrace.Load() {
 				traceAPICall(method, body, resp.StatusCode, string(raw), false, string(raw))
 			}

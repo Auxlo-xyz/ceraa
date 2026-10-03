@@ -113,3 +113,35 @@ func TestMemoryRenderIsSafeAcrossConcurrentTurns(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// One source failing must not delete the other. Live reports the store beside
+// the file error, and the startup snapshot still carries the file's content, so
+// the turn sees both instead of a prompt that reads like "no memory at all".
+func TestMemoryRenderFailureKeepsBothTheSnapshotAndTheLiveStore(t *testing.T) {
+	r := &Runner{cfg: RunnerConfig{
+		SystemPrompt:  "STATIC",
+		MemoryContext: "<memory-file>snapshot</memory-file>",
+		MemoryContextFunc: func() (string, error) {
+			return "<memory-from-store>live</memory-from-store>", os.ErrPermission
+		},
+	}}
+	prompt := r.systemPrompt()
+	if !strings.Contains(prompt, "snapshot") {
+		t.Errorf("the snapshot of the unreadable file was dropped: %q", prompt)
+	}
+	if !strings.Contains(prompt, "live") {
+		t.Errorf("the store that rendered was dropped: %q", prompt)
+	}
+}
+
+// Nothing rendered is still the snapshot, and the turn still succeeds.
+func TestMemoryRenderFailureWithNothingRenderedStillUsesTheSnapshot(t *testing.T) {
+	r := &Runner{cfg: RunnerConfig{
+		SystemPrompt:      "STATIC",
+		MemoryContext:     "<memory>snapshot</memory>",
+		MemoryContextFunc: func() (string, error) { return "", os.ErrPermission },
+	}}
+	if !strings.Contains(r.systemPrompt(), "snapshot") {
+		t.Error("fallback snapshot missing")
+	}
+}

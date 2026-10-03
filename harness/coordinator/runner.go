@@ -229,8 +229,25 @@ func (r *Runner) memoryBlock() string {
 		if err != nil {
 			// A memory read failure must not fail the turn, and must not silently
 			// look like "there is no memory".
-			logger.Warn("Memory render failed, using startup snapshot: " + err.Error())
-		} else if strings.TrimSpace(rendered) != "" {
+			//
+			// Live returns whatever rendered alongside the error, which can only
+			// be the store: the file is the source that failed. Keeping the
+			// startup snapshot of that file beside the live store means neither
+			// source disappears because the other broke, and the log line still
+			// names what was lost.
+			logger.Warn("Memory render failed, keeping the snapshot and any partial render: " + err.Error())
+			snapshot := strings.TrimSpace(r.cfg.MemoryContext)
+			live := strings.TrimSpace(rendered)
+			switch {
+			case snapshot != "" && live != "":
+				return snapshot + "\n" + live
+			case snapshot != "":
+				return snapshot
+			default:
+				return live
+			}
+		}
+		if strings.TrimSpace(rendered) != "" {
 			return strings.TrimSpace(rendered)
 		}
 	}

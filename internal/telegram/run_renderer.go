@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -52,6 +53,10 @@ type runRenderer struct {
 	streamDone   chan struct{}
 	streamMu     sync.Mutex
 	streamClosed bool
+	// richEditUnavailable latches once this run has been refused a rich edit, so
+	// the remaining ticks take the plain path without paying for a round trip
+	// that is known to come back 400.
+	richEditUnavailable bool
 }
 
 // truncateStatus shortens a status line to fit a button label.
@@ -81,8 +86,17 @@ func newRunRenderer(token string, chatID int64) *runRenderer {
 	if messageID, err := sendRichMessage(token, chatID, "▌"); err == nil {
 		renderer.messageID = messageID
 		// The rich payload cannot carry the keyboard, so attach it separately.
+		//
+		// editMessageReplyMarkup is documented for inline keyboards and answers
+		// "inline keyboard expected" for a reply keyboard on a minority of calls
+		// (122 recorded against 2220 successes). This is the one place where a
+		// refusal cannot be recovered later: the run would stay keyboardless for
+		// its whole life. One bounded second attempt, then give up and say which
+		// end failed so a log can tell this from the final-answer attach.
 		if err := attachReplyKeyboard(token, chatID, messageID); err != nil {
-			logger.Warn("reply keyboard attach failed: " + err.Error())
+			if retryErr := attachReplyKeyboard(token, chatID, messageID); retryErr != nil {
+				logger.Warn("reply keyboard attach failed at run start: " + retryErr.Error())
+			}
 		}
 	} else {
 		// Carry the reply keyboard from creation. Every later step of the run only
@@ -138,7 +152,7 @@ func (r *runRenderer) renderCurrentState() {
 		if messageID == 0 || skipStream {
 			return
 		}
-		if err := editTelegramRichMessage(r.token, r.chatID, messageID, text); err != nil {
+		if err := r.editRichOrUnavailable(messageID, text); err != nil {
 			if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, text); fallbackErr != nil {
 				logger.Warn("Telegram streaming preview fallback failed: " + fallbackErr.Error())
 				return
@@ -208,10 +222,14 @@ func formatThought(value string, streaming bool) string {
 	if value == "" {
 		return ""
 	}
+	var clipped string
 	if streaming {
 		value += " ▌"
+		clipped = truncateStream(value)
+	} else {
+		clipped = truncateThought(value)
 	}
-	return "<blockquote expandable><b>Thought</b>\n\n" + html.EscapeString(truncateStream(value)) + "</blockquote>"
+	return "<blockquote expandable><b>Thought</b>\n\n" + html.EscapeString(clipped) + "</blockquote>"
 }
 
 func (r *runRenderer) setCancel(cancel context.CancelFunc) {
@@ -393,8 +411,10 @@ func (r *runRenderer) publishFinalAnswer(answer string, messageID int) {
 						// The answer landed but the keyboard did not. Reported rather
 						// than retried: editMessageReplyMarkup succeeds about 85% of
 						// the time, and hammering a rejection here turns one wasted
-						// call into several.
-						logger.Warn("reply keyboard attach failed: " + err.Error())
+						// call into several. Tagged with the end that failed so a log
+						// line names the caller instead of leaving two identical
+						// messages with different causes.
+						logger.Warn("reply keyboard attach failed on final answer: " + err.Error())
 					}
 				}
 			}
@@ -494,7 +514,7 @@ func (r *runRenderer) publishThoughtMessage(text string, messageID int) bool {
 
 func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
 	if messageID != 0 {
-		if err := editTelegramRichMessage(r.token, r.chatID, messageID, markdown); err == nil {
+		if err := r.editRichOrUnavailable(messageID, markdown); err == nil {
 			return true
 		}
 	}
@@ -529,6 +549,42 @@ func editTelegramRichMessage(token string, chatID int64, messageID int, markdown
 			"markdown": markdown,
 		},
 	})
+}
+
+// errRichEditUnavailable is returned when this run has already learned that the
+// API refuses rich edits, so the call is not placed at all.
+var errRichEditUnavailable = errors.New("rich edit is unavailable")
+
+// editRichOrUnavailable places one rich edit and remembers a refusal.
+//
+// editMessageText carrying rich_message is rejected with "rich edit is
+// unavailable" by the live API, while the rich send alongside it succeeds: the
+// two are recorded separately in menuhandler_test and streamedit_test from the
+// same trace. Attempting it on every streaming tick therefore bought a 400 on
+// each one, up to 1999 in the recorded log, and only fell through to the plain
+// edit after the round trip had already been paid.
+//
+// The probe stays live rather than being deleted outright: one attempt per run
+// is what keeps the branch honest if the endpoint ever starts accepting it.
+func (r *runRenderer) editRichOrUnavailable(messageID int, markdown string) error {
+	r.mu.Lock()
+	known := r.richEditUnavailable
+	r.mu.Unlock()
+	if known {
+		return errRichEditUnavailable
+	}
+	err := editTelegramRichMessage(r.token, r.chatID, messageID, markdown)
+	if isRichEditUnavailable(err) {
+		r.mu.Lock()
+		r.richEditUnavailable = true
+		r.mu.Unlock()
+	}
+	return err
+}
+
+func isRichEditUnavailable(err error) bool {
+	var apiErr *telegramAPIError
+	return errors.As(err, &apiErr) && apiErr.description == "rich edit is unavailable"
 }
 
 // attachReplyKeyboard puts the reply keyboard on a message that is already sent,
@@ -592,11 +648,57 @@ func thoughtFallbackText(value string) string {
 	return html.UnescapeString(value)
 }
 
+// telegramAPIError is a rejection the API itself described.
+//
+// It exists so a caller can branch on Telegram's own words instead of on a
+// formatted string, and so the string a human reads in the log stays identical
+// to what the call would have printed before the type existed.
+type telegramAPIError struct {
+	method      string
+	description string
+}
+
+func (e *telegramAPIError) Error() string {
+	return e.method + ": " + e.description
+}
+
+// telegramEditVerdict interprets a rejected editMessageText.
+//
+// Telegram answers every API-level rejection with a body carrying its own
+// description, and that body survives the transport: doTelegramPost reports a
+// non-2xx as an error that still holds the JSON. Reading the description there
+// is what makes the two interesting cases branchable without parsing an error
+// string back apart. A description saying the message already holds this exact
+// text is not a failure, it is the API confirming there was nothing to write:
+// calling it one left sentStream unset, so the next signal re-sent
+// byte-identical text, and that loop is what took the recorded run to
+// "retry after 227".
+//
+// fallback is returned untouched when the body is not a Telegram rejection, so
+// an unrelated transport failure keeps the message it already had.
+func telegramEditVerdict(fallback error, raw []byte) error {
+	var result struct {
+		Description string `json:"description"`
+	}
+	if json.Unmarshal(raw, &result) != nil || result.Description == "" {
+		return fallback
+	}
+	if strings.Contains(strings.ToLower(result.Description), "message is not modified") {
+		return nil
+	}
+	return &telegramAPIError{method: "editMessageText", description: result.Description}
+}
+
+// postTelegramEditMessage runs one editMessageText call.
 func postTelegramEditMessage(token string, payload map[string]any) error {
 	body, _ := json.Marshal(payload)
 	resp, err := doTelegramPost(api("editMessageText", token), body)
 	if err != nil {
-		return err
+		var httpErr *telegramHTTPError
+		if !errors.As(err, &httpErr) {
+			return err
+		}
+		return telegramEditVerdict(err, []byte(httpErr.body))
 	}
 	if resp == nil {
 		return fmt.Errorf("editMessageText: empty response")
@@ -604,17 +706,16 @@ func postTelegramEditMessage(token string, payload map[string]any) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("editMessageText: HTTP %d: %s", resp.StatusCode, raw)
+		return telegramEditVerdict(fmt.Errorf("editMessageText: HTTP %d: %s", resp.StatusCode, raw), raw)
 	}
 	var result struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
+		OK bool `json:"ok"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return fmt.Errorf("editMessageText response: %w", err)
 	}
-	if !result.OK && !strings.Contains(strings.ToLower(result.Description), "message is not modified") {
-		return fmt.Errorf("editMessageText: %s", result.Description)
+	if !result.OK {
+		return telegramEditVerdict(&telegramAPIError{method: "editMessageText"}, raw)
 	}
 	return nil
 }
@@ -692,12 +793,37 @@ func deleteTelegramMessage(token string, chatID int64, messageID int) error {
 	return nil
 }
 
+// streamPreviewLimit is the ceiling on one rendered body.
+//
+// Telegram caps editMessageText at 4096 characters and the blockquote wrapper
+// around a thought eats part of that, so nothing is sent over 4000 runes.
+const streamPreviewLimit = 4000
+
+// truncateStream keeps the newest text of a live preview.
+//
+// A streamed message has no append: the whole buffer is re-sent on every tick,
+// so the limit has to cut somewhere. The tail is the part the reader has not
+// reached yet, so the head goes, and the leading ellipsis says so instead of
+// letting a truncated answer open as though it had started there.
 func truncateStream(value string) string {
 	runes := []rune(value)
-	if len(runes) <= 4000 {
+	if len(runes) <= streamPreviewLimit {
 		return value
 	}
-	return string(runes[len(runes)-3997:]) + "..."
+	return "..." + string(runes[len(runes)-(streamPreviewLimit-3):])
+}
+
+// truncateThought keeps the opening of a completed thought.
+//
+// The published thought is a finished artifact, not a progress line, and cutting
+// its start would rewrite where the reasoning began. The same ceiling applies,
+// so the tail carries the ellipsis.
+func truncateThought(value string) string {
+	runes := []rune(value)
+	if len(runes) <= streamPreviewLimit {
+		return value
+	}
+	return string(runes[:streamPreviewLimit-3]) + "..."
 }
 
 func toolArgsSummary(name string, args map[string]any) string {
