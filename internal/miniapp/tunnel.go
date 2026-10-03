@@ -29,6 +29,23 @@ const tunnelStartup = 45 * time.Second
 // person can actually act on, and they are the ones that say why it stopped.
 const tunnelTail = 4
 
+// tunnelDrain is how long the client's pipes are given after it is stopped,
+// before they are closed regardless of who still holds them.
+//
+// Zero here is a shutdown that does not finish. Our stdout and stderr are a
+// sink rather than an *os.File, so os/exec gives each one a pipe and a
+// goroutine copying out of it, and Wait does not return until those goroutines
+// end. Cancelling the context kills the client we started and nothing else, so
+// any child it forked is reparented to init and keeps the write end of that
+// pipe open - and a shell that forks rather than execs is the ordinary case,
+// not an exotic one. Close then waits on done, which waits on Wait, which waits
+// on a process we no longer own and cannot signal.
+//
+// The grace is short because there is nothing to wait for. Whatever the client
+// had buffered is already in the sink by the time it is killed, and the tail is
+// only read on the failure paths, where being a few lines late costs nothing.
+const tunnelDrain = 500 * time.Millisecond
+
 // TunnelEnabled reports whether the public front was asked for at startup.
 //
 // It stays a separate switch from Enabled because opening a loopback port and
@@ -214,6 +231,9 @@ func startTunnel(base context.Context, command, address string) (*Tunnel, error)
 	}
 	ctx, cancel := context.WithCancel(base)
 	cmd := exec.CommandContext(ctx, command, "tunnel", "--url", address, "--no-autoupdate")
+	// Without this, Wait blocks on a pipe a child of the client is still
+	// holding, and Close blocks on Wait. See tunnelDrain.
+	cmd.WaitDelay = tunnelDrain
 
 	sink := &lineSink{}
 	found := make(chan string, 1)
