@@ -2752,9 +2752,227 @@
   },
   {
    "kind": "rule",
+   "selector": ".thought",
+   "line": 386,
+   "lineEnd": 386,
+   "comment": [
+    "The thought block is a tool card in everything but meaning: same node, same head, same chevron, same collapsible body, so the reader who has learned how to open a step already knows how to open the thinking. It sits above the reply it belongs to, never inline with it."
+   ],
+   "declarations": [
+    [
+     "position",
+     "relative"
+    ],
+    [
+     "padding-left",
+     "calc(var(--s) * 7)"
+    ],
+    [
+     "margin",
+     "0 0 calc(var(--s) * 3)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".msg .thought + .body",
+   "line": 391,
+   "lineEnd": 391,
+   "comment": [],
+   "declarations": [
+    [
+     "margin-top",
+     "0"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought.has-out .thought-head",
+   "line": 393,
+   "lineEnd": 393,
+   "comment": [
+    "Same click affordance as a step with output, so the two read identically."
+   ],
+   "declarations": [
+    [
+     "cursor",
+     "pointer"
+    ],
+    [
+     "user-select",
+     "none"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought.has-out .thought-head:hover .thought-name",
+   "line": 396,
+   "lineEnd": 396,
+   "comment": [],
+   "declarations": [
+    [
+     "color",
+     "var(--accent)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought.has-out .thought-head:hover .tool-chevron",
+   "line": 397,
+   "lineEnd": 397,
+   "comment": [],
+   "declarations": [
+    [
+     "color",
+     "var(--text)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought.has-out .thought-head:focus-visible",
+   "line": 398,
+   "lineEnd": 398,
+   "comment": [],
+   "declarations": [
+    [
+     "outline",
+     "2px solid var(--accent)"
+    ],
+    [
+     "outline-offset",
+     "2px"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought-head",
+   "line": 399,
+   "lineEnd": 399,
+   "comment": [],
+   "declarations": [
+    [
+     "display",
+     "flex"
+    ],
+    [
+     "align-items",
+     "center"
+    ],
+    [
+     "gap",
+     "calc(var(--s) * 2)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought-name",
+   "line": 400,
+   "lineEnd": 400,
+   "comment": [],
+   "declarations": [
+    [
+     "font",
+     "600 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace"
+    ],
+    [
+     "color",
+     "var(--muted)"
+    ],
+    [
+     "transition",
+     "color 120ms var(--ease)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought-state",
+   "line": 405,
+   "lineEnd": 405,
+   "comment": [],
+   "declarations": [
+    [
+     "margin-left",
+     "auto"
+    ],
+    [
+     "flex",
+     "none"
+    ],
+    [
+     "font-size",
+     "11px"
+    ],
+    [
+     "color",
+     "var(--faint)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought.has-out .tool-chevron",
+   "line": 406,
+   "lineEnd": 406,
+   "comment": [],
+   "declarations": [
+    [
+     "display",
+     "block"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought[data-open=\"true\"] .tool-chevron",
+   "line": 407,
+   "lineEnd": 407,
+   "comment": [],
+   "declarations": [
+    [
+     "transform",
+     "rotate(180deg)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
+   "selector": ".thought .tool-out",
+   "line": 410,
+   "lineEnd": 410,
+   "comment": [
+    "The reasoning is prose, not program output: same hairline and collapse, but in the body font rather than mono so it reads as an explanation."
+   ],
+   "declarations": [
+    [
+     "font-family",
+     "inherit"
+    ],
+    [
+     "font-size",
+     "13px"
+    ],
+    [
+     "line-height",
+     "1.55"
+    ],
+    [
+     "color",
+     "var(--muted)"
+    ]
+   ]
+  },
+  {
+   "kind": "rule",
    "selector": ".thinking",
-   "line": 384,
-   "lineEnd": 384,
+   "line": 418,
+   "lineEnd": 418,
    "comment": [
     "The waiting indicator displays a continuous shimmer wave sweeping across the text from left to right, matching the reference typography in motion."
    ],
@@ -2776,8 +2994,8 @@
   {
    "kind": "rule",
    "selector": ".thinking i",
-   "line": 389,
-   "lineEnd": 389,
+   "line": 423,
+   "lineEnd": 423,
    "comment": [],
    "declarations": [
     [
@@ -2789,8 +3007,8 @@
   {
    "kind": "rule",
    "selector": ".thinking-text",
-   "line": 390,
-   "lineEnd": 391,
+   "line": 424,
+   "lineEnd": 425,
    "comment": [],
    "declarations": [
     [
@@ -2814,8 +3032,8 @@
   {
    "kind": "rule",
    "selector": ".thinking span",
-   "line": 390,
-   "lineEnd": 391,
+   "line": 424,
+   "lineEnd": 425,
    "comment": [],
    "declarations": [
     [
@@ -2839,7 +3057,7 @@
   {
    "kind": "at-block",
    "at": "@supports (color: color-mix(in srgb, red 50%, blue))",
-   "line": 399,
+   "line": 433,
    "comment": [
     "Behind the same feature query as the running tool name, for the same reason: a transparent text fill with no gradient behind it is no text."
    ],
@@ -2847,8 +3065,8 @@
     {
      "kind": "rule",
      "selector": ".thinking-text",
-     "line": 400,
-     "lineEnd": 401,
+     "line": 434,
+     "lineEnd": 435,
      "comment": [],
      "declarations": [
       [
@@ -2880,8 +3098,8 @@
     {
      "kind": "rule",
      "selector": ".thinking span",
-     "line": 400,
-     "lineEnd": 401,
+     "line": 434,
+     "lineEnd": 435,
      "comment": [],
      "declarations": [
       [
@@ -2915,7 +3133,7 @@
   {
    "kind": "keyframes",
    "at": "@keyframes textShimmer",
-   "line": 417,
+   "line": 451,
    "comment": [],
    "frames": [
     {
@@ -2941,14 +3159,14 @@
   {
    "kind": "at-block",
    "at": "@media (prefers-reduced-motion: reduce)",
-   "line": 425,
+   "line": 459,
    "comment": [],
    "rules": [
     {
      "kind": "rule",
      "selector": ".thinking-text",
-     "line": 426,
-     "lineEnd": 428,
+     "line": 460,
+     "lineEnd": 462,
      "comment": [],
      "declarations": [
       [
@@ -2968,8 +3186,8 @@
     {
      "kind": "rule",
      "selector": ".thinking span",
-     "line": 426,
-     "lineEnd": 428,
+     "line": 460,
+     "lineEnd": 462,
      "comment": [],
      "declarations": [
       [
@@ -2989,8 +3207,8 @@
     {
      "kind": "rule",
      "selector": ".tool[data-s=\"running\"] .tool-name",
-     "line": 426,
-     "lineEnd": 428,
+     "line": 460,
+     "lineEnd": 462,
      "comment": [],
      "declarations": [
       [
@@ -3010,8 +3228,8 @@
     {
      "kind": "rule",
      "selector": ".tool[data-s=\"running\"] .tool-node::after",
-     "line": 436,
-     "lineEnd": 436,
+     "line": 470,
+     "lineEnd": 470,
      "comment": [
       "The running node pulses through ::after, and a universal selector in the other reduced-motion block does not reach it: the glyph kept breathing with the setting on. Named explicitly, it stops."
      ],
@@ -3027,8 +3245,8 @@
   {
    "kind": "rule",
    "selector": ".empty",
-   "line": 438,
-   "lineEnd": 438,
+   "line": 472,
+   "lineEnd": 472,
    "comment": [],
    "declarations": [
     [
@@ -3040,8 +3258,8 @@
   {
    "kind": "rule",
    "selector": ".body a",
-   "line": 443,
-   "lineEnd": 443,
+   "line": 477,
+   "lineEnd": 477,
    "comment": [
     "Markdown in assistant messages is type and hairlines, never panels: the flat-transcript rule still holds, so code and quotes get an edge each and no fills anywhere."
    ],
@@ -3055,8 +3273,8 @@
   {
    "kind": "rule",
    "selector": ".body code",
-   "line": 444,
-   "lineEnd": 444,
+   "line": 478,
+   "lineEnd": 478,
    "comment": [],
    "declarations": [
     [
@@ -3072,8 +3290,8 @@
   {
    "kind": "rule",
    "selector": ".body pre",
-   "line": 448,
-   "lineEnd": 448,
+   "line": 482,
+   "lineEnd": 482,
    "comment": [],
    "declarations": [
     [
@@ -3109,8 +3327,8 @@
   {
    "kind": "rule",
    "selector": ".body ul",
-   "line": 455,
-   "lineEnd": 455,
+   "line": 489,
+   "lineEnd": 489,
    "comment": [],
    "declarations": [
     [
@@ -3126,8 +3344,8 @@
   {
    "kind": "rule",
    "selector": ".body ol",
-   "line": 455,
-   "lineEnd": 455,
+   "line": 489,
+   "lineEnd": 489,
    "comment": [],
    "declarations": [
     [
@@ -3143,8 +3361,8 @@
   {
    "kind": "rule",
    "selector": ".body li",
-   "line": 456,
-   "lineEnd": 456,
+   "line": 490,
+   "lineEnd": 490,
    "comment": [],
    "declarations": [
     [
@@ -3156,8 +3374,8 @@
   {
    "kind": "rule",
    "selector": ".body .mh1",
-   "line": 457,
-   "lineEnd": 457,
+   "line": 491,
+   "lineEnd": 491,
    "comment": [],
    "declarations": [
     [
@@ -3181,8 +3399,8 @@
   {
    "kind": "rule",
    "selector": ".body .mh2",
-   "line": 458,
-   "lineEnd": 458,
+   "line": 492,
+   "lineEnd": 492,
    "comment": [],
    "declarations": [
     [
@@ -3202,8 +3420,8 @@
   {
    "kind": "rule",
    "selector": ".body .mh3",
-   "line": 459,
-   "lineEnd": 459,
+   "line": 493,
+   "lineEnd": 493,
    "comment": [],
    "declarations": [
     [
@@ -3223,8 +3441,8 @@
   {
    "kind": "rule",
    "selector": ".body .mh4",
-   "line": 459,
-   "lineEnd": 459,
+   "line": 493,
+   "lineEnd": 493,
    "comment": [],
    "declarations": [
     [
@@ -3244,8 +3462,8 @@
   {
    "kind": "rule",
    "selector": ".body .mq",
-   "line": 460,
-   "lineEnd": 460,
+   "line": 494,
+   "lineEnd": 494,
    "comment": [],
    "declarations": [
     [
@@ -3269,8 +3487,8 @@
   {
    "kind": "rule",
    "selector": ".body table",
-   "line": 465,
-   "lineEnd": 465,
+   "line": 499,
+   "lineEnd": 499,
    "comment": [],
    "declarations": [
     [
@@ -3298,8 +3516,8 @@
   {
    "kind": "rule",
    "selector": ".body th",
-   "line": 466,
-   "lineEnd": 466,
+   "line": 500,
+   "lineEnd": 500,
    "comment": [],
    "declarations": [
     [
@@ -3319,8 +3537,8 @@
   {
    "kind": "rule",
    "selector": ".body td",
-   "line": 466,
-   "lineEnd": 466,
+   "line": 500,
+   "lineEnd": 500,
    "comment": [],
    "declarations": [
     [
@@ -3340,8 +3558,8 @@
   {
    "kind": "rule",
    "selector": ".body th",
-   "line": 467,
-   "lineEnd": 467,
+   "line": 501,
+   "lineEnd": 501,
    "comment": [],
    "declarations": [
     [
@@ -3357,8 +3575,8 @@
   {
    "kind": "rule",
    "selector": ".body .mhr",
-   "line": 468,
-   "lineEnd": 468,
+   "line": 502,
+   "lineEnd": 502,
    "comment": [],
    "declarations": [
     [
@@ -3374,8 +3592,8 @@
   {
    "kind": "rule",
    "selector": "#composer-wrap",
-   "line": 472,
-   "lineEnd": 472,
+   "line": 506,
+   "lineEnd": 506,
    "comment": [
     "The composer is wrapped with an optional floating scroll-to-bottom arrow that appears whenever the user scrolls away from the latest turn."
    ],
@@ -3397,8 +3615,8 @@
   {
    "kind": "rule",
    "selector": "#scroll-bottom",
-   "line": 477,
-   "lineEnd": 477,
+   "line": 511,
+   "lineEnd": 511,
    "comment": [],
    "declarations": [
     [
@@ -3478,8 +3696,8 @@
   {
    "kind": "rule",
    "selector": "#scroll-bottom[data-visible=\"false\"]",
-   "line": 497,
-   "lineEnd": 497,
+   "line": 531,
+   "lineEnd": 531,
    "comment": [],
    "declarations": [
     [
@@ -3499,8 +3717,8 @@
   {
    "kind": "rule",
    "selector": "#scroll-bottom:hover",
-   "line": 502,
-   "lineEnd": 502,
+   "line": 536,
+   "lineEnd": 536,
    "comment": [],
    "declarations": [
     [
@@ -3520,8 +3738,8 @@
   {
    "kind": "rule",
    "selector": "#scroll-bottom:active",
-   "line": 507,
-   "lineEnd": 507,
+   "line": 541,
+   "lineEnd": 541,
    "comment": [],
    "declarations": [
     [
@@ -3533,8 +3751,8 @@
   {
    "kind": "rule",
    "selector": "#scroll-bottom svg",
-   "line": 510,
-   "lineEnd": 510,
+   "line": 544,
+   "lineEnd": 544,
    "comment": [],
    "declarations": [
     [
@@ -3558,8 +3776,8 @@
   {
    "kind": "rule",
    "selector": "#composer",
-   "line": 516,
-   "lineEnd": 516,
+   "line": 550,
+   "lineEnd": 550,
    "comment": [],
    "declarations": [
     [
@@ -3607,8 +3825,8 @@
   {
    "kind": "rule",
    "selector": "#prompt",
-   "line": 524,
-   "lineEnd": 524,
+   "line": 558,
+   "lineEnd": 558,
    "comment": [],
    "declarations": [
     [
@@ -3652,8 +3870,8 @@
   {
    "kind": "rule",
    "selector": "#prompt:focus",
-   "line": 529,
-   "lineEnd": 529,
+   "line": 563,
+   "lineEnd": 563,
    "comment": [],
    "declarations": [
     [
@@ -3665,8 +3883,8 @@
   {
    "kind": "rule",
    "selector": "#send",
-   "line": 530,
-   "lineEnd": 530,
+   "line": 564,
+   "lineEnd": 564,
    "comment": [],
    "declarations": [
     [
@@ -3718,8 +3936,8 @@
   {
    "kind": "rule",
    "selector": "#send:active",
-   "line": 537,
-   "lineEnd": 537,
+   "line": 571,
+   "lineEnd": 571,
    "comment": [],
    "declarations": [
     [
@@ -3731,8 +3949,8 @@
   {
    "kind": "rule",
    "selector": "#send svg",
-   "line": 538,
-   "lineEnd": 538,
+   "line": 572,
+   "lineEnd": 572,
    "comment": [],
    "declarations": [
     [
@@ -3748,8 +3966,8 @@
   {
    "kind": "rule",
    "selector": "#stop",
-   "line": 539,
-   "lineEnd": 539,
+   "line": 573,
+   "lineEnd": 573,
    "comment": [],
    "declarations": [
     [
@@ -3801,8 +4019,8 @@
   {
    "kind": "rule",
    "selector": "#stop:active",
-   "line": 546,
-   "lineEnd": 546,
+   "line": 580,
+   "lineEnd": 580,
    "comment": [],
    "declarations": [
     [
@@ -3814,8 +4032,8 @@
   {
    "kind": "rule",
    "selector": "#stop[hidden]",
-   "line": 547,
-   "lineEnd": 547,
+   "line": 581,
+   "lineEnd": 581,
    "comment": [],
    "declarations": [
     [
@@ -3827,8 +4045,8 @@
   {
    "kind": "rule",
    "selector": "#stop svg",
-   "line": 548,
-   "lineEnd": 548,
+   "line": 582,
+   "lineEnd": 582,
    "comment": [],
    "declarations": [
     [
@@ -3844,8 +4062,8 @@
   {
    "kind": "rule",
    "selector": "#panel",
-   "line": 552,
-   "lineEnd": 552,
+   "line": 586,
+   "lineEnd": 586,
    "comment": [
     "Settings and secrets are a task with steps, so they take the screen rather than floating over the conversation they will change."
    ],
@@ -3887,8 +4105,8 @@
   {
    "kind": "rule",
    "selector": "#panel[hidden]",
-   "line": 559,
-   "lineEnd": 559,
+   "line": 593,
+   "lineEnd": 593,
    "comment": [],
    "declarations": [
     [
@@ -3900,8 +4118,8 @@
   {
    "kind": "rule",
    "selector": "#panel > div",
-   "line": 560,
-   "lineEnd": 560,
+   "line": 594,
+   "lineEnd": 594,
    "comment": [],
    "declarations": [
     [
@@ -3917,8 +4135,8 @@
   {
    "kind": "rule",
    "selector": ".panel-head",
-   "line": 561,
-   "lineEnd": 561,
+   "line": 595,
+   "lineEnd": 595,
    "comment": [],
    "declarations": [
     [
@@ -3942,8 +4160,8 @@
   {
    "kind": "rule",
    "selector": ".panel-head h2",
-   "line": 565,
-   "lineEnd": 565,
+   "line": 599,
+   "lineEnd": 599,
    "comment": [],
    "declarations": [
     [
@@ -3963,8 +4181,8 @@
   {
    "kind": "rule",
    "selector": "#panel h3",
-   "line": 566,
-   "lineEnd": 566,
+   "line": 600,
+   "lineEnd": 600,
    "comment": [],
    "declarations": [
     [
@@ -3992,8 +4210,8 @@
   {
    "kind": "rule",
    "selector": ".field",
-   "line": 570,
-   "lineEnd": 570,
+   "line": 604,
+   "lineEnd": 604,
    "comment": [],
    "declarations": [
     [
@@ -4017,8 +4235,8 @@
   {
    "kind": "rule",
    "selector": ".field label",
-   "line": 571,
-   "lineEnd": 571,
+   "line": 605,
+   "lineEnd": 605,
    "comment": [],
    "declarations": [
     [
@@ -4046,8 +4264,8 @@
   {
    "kind": "rule",
    "selector": ".field input[type=text]",
-   "line": 572,
-   "lineEnd": 572,
+   "line": 606,
+   "lineEnd": 606,
    "comment": [],
    "declarations": [
     [
@@ -4095,8 +4313,8 @@
   {
    "kind": "rule",
    "selector": ".field input[type=password]",
-   "line": 572,
-   "lineEnd": 572,
+   "line": 606,
+   "lineEnd": 606,
    "comment": [],
    "declarations": [
     [
@@ -4144,8 +4362,8 @@
   {
    "kind": "rule",
    "selector": ".field input[type=text]:focus",
-   "line": 579,
-   "lineEnd": 579,
+   "line": 613,
+   "lineEnd": 613,
    "comment": [],
    "declarations": [
     [
@@ -4161,8 +4379,8 @@
   {
    "kind": "rule",
    "selector": ".field input[type=password]:focus",
-   "line": 579,
-   "lineEnd": 579,
+   "line": 613,
+   "lineEnd": 613,
    "comment": [],
    "declarations": [
     [
@@ -4178,8 +4396,8 @@
   {
    "kind": "rule",
    "selector": ".field input[data-key=\"model\"]",
-   "line": 580,
-   "lineEnd": 580,
+   "line": 614,
+   "lineEnd": 614,
    "comment": [],
    "declarations": [
     [
@@ -4195,8 +4413,8 @@
   {
    "kind": "rule",
    "selector": ".field input[data-key=\"provider\"]",
-   "line": 580,
-   "lineEnd": 580,
+   "line": 614,
+   "lineEnd": 614,
    "comment": [],
    "declarations": [
     [
@@ -4212,8 +4430,8 @@
   {
    "kind": "rule",
    "selector": ".field .ro",
-   "line": 584,
-   "lineEnd": 584,
+   "line": 618,
+   "lineEnd": 618,
    "comment": [],
    "declarations": [
     [
@@ -4241,8 +4459,8 @@
   {
    "kind": "rule",
    "selector": ".switch",
-   "line": 590,
-   "lineEnd": 590,
+   "line": 624,
+   "lineEnd": 624,
    "comment": [
     "Custom toggle switch for boolean settings"
    ],
@@ -4268,8 +4486,8 @@
   {
    "kind": "rule",
    "selector": ".switch input",
-   "line": 593,
-   "lineEnd": 593,
+   "line": 627,
+   "lineEnd": 627,
    "comment": [],
    "declarations": [
     [
@@ -4293,8 +4511,8 @@
   {
    "kind": "rule",
    "selector": ".switch-track",
-   "line": 594,
-   "lineEnd": 594,
+   "line": 628,
+   "lineEnd": 628,
    "comment": [],
    "declarations": [
     [
@@ -4330,8 +4548,8 @@
   {
    "kind": "rule",
    "selector": ".switch-track::after",
-   "line": 599,
-   "lineEnd": 599,
+   "line": 633,
+   "lineEnd": 633,
    "comment": [],
    "declarations": [
     [
@@ -4375,8 +4593,8 @@
   {
    "kind": "rule",
    "selector": ".switch input:checked + .switch-track",
-   "line": 604,
-   "lineEnd": 604,
+   "line": 638,
+   "lineEnd": 638,
    "comment": [],
    "declarations": [
     [
@@ -4392,8 +4610,8 @@
   {
    "kind": "rule",
    "selector": ".switch input:checked + .switch-track::after",
-   "line": 607,
-   "lineEnd": 607,
+   "line": 641,
+   "lineEnd": 641,
    "comment": [],
    "declarations": [
     [
@@ -4409,8 +4627,8 @@
   {
    "kind": "rule",
    "selector": ".panel-row",
-   "line": 610,
-   "lineEnd": 610,
+   "line": 644,
+   "lineEnd": 644,
    "comment": [],
    "declarations": [
     [
@@ -4434,8 +4652,8 @@
   {
    "kind": "rule",
    "selector": ".ask-btn.primary",
-   "line": 611,
-   "lineEnd": 611,
+   "line": 645,
+   "lineEnd": 645,
    "comment": [],
    "declarations": [
     [
@@ -4455,8 +4673,8 @@
   {
    "kind": "rule",
    "selector": ".ask-btn.primary:active",
-   "line": 614,
-   "lineEnd": 614,
+   "line": 648,
+   "lineEnd": 648,
    "comment": [],
    "declarations": [
     [
@@ -4468,8 +4686,8 @@
   {
    "kind": "rule",
    "selector": "#panel-msg",
-   "line": 615,
-   "lineEnd": 615,
+   "line": 649,
+   "lineEnd": 649,
    "comment": [],
    "declarations": [
     [
@@ -4509,8 +4727,8 @@
   {
    "kind": "rule",
    "selector": "#panel-msg:empty",
-   "line": 619,
-   "lineEnd": 619,
+   "line": 653,
+   "lineEnd": 653,
    "comment": [],
    "declarations": [
     [
@@ -4522,8 +4740,8 @@
   {
    "kind": "rule",
    "selector": "#panel-msg::before",
-   "line": 620,
-   "lineEnd": 620,
+   "line": 654,
+   "lineEnd": 654,
    "comment": [],
    "declarations": [
     [
@@ -4551,8 +4769,8 @@
   {
    "kind": "rule",
    "selector": "#panel-msg.warn",
-   "line": 623,
-   "lineEnd": 623,
+   "line": 657,
+   "lineEnd": 657,
    "comment": [],
    "declarations": [
     [
@@ -4564,8 +4782,8 @@
   {
    "kind": "rule",
    "selector": "#secret-list",
-   "line": 624,
-   "lineEnd": 624,
+   "line": 658,
+   "lineEnd": 658,
    "comment": [],
    "declarations": [
     [
@@ -4585,8 +4803,8 @@
   {
    "kind": "rule",
    "selector": "#secret-list li",
-   "line": 625,
-   "lineEnd": 625,
+   "line": 659,
+   "lineEnd": 659,
    "comment": [],
    "declarations": [
     [
@@ -4618,8 +4836,8 @@
   {
    "kind": "rule",
    "selector": "#secret-list li span",
-   "line": 629,
-   "lineEnd": 629,
+   "line": 663,
+   "lineEnd": 663,
    "comment": [],
    "declarations": [
     [
@@ -4643,8 +4861,8 @@
   {
    "kind": "rule",
    "selector": "#secret-list li .del-btn",
-   "line": 634,
-   "lineEnd": 634,
+   "line": 668,
+   "lineEnd": 668,
    "comment": [],
    "declarations": [
     [
@@ -4672,8 +4890,8 @@
   {
    "kind": "rule",
    "selector": "#secret-list li .del-btn:hover",
-   "line": 638,
-   "lineEnd": 638,
+   "line": 672,
+   "lineEnd": 672,
    "comment": [],
    "declarations": [
     [
@@ -4689,8 +4907,8 @@
   {
    "kind": "rule",
    "selector": "#secret-list li .del-btn:active",
-   "line": 639,
-   "lineEnd": 639,
+   "line": 673,
+   "lineEnd": 673,
    "comment": [],
    "declarations": [
     [
@@ -4706,8 +4924,8 @@
   {
    "kind": "rule",
    "selector": ".ask",
-   "line": 643,
-   "lineEnd": 643,
+   "line": 677,
+   "lineEnd": 677,
    "comment": [
     "Permission and question cards keep one thin warning edge and no fill: a tinted panel over the transcript was another grey layer."
    ],
@@ -4741,8 +4959,8 @@
   {
    "kind": "rule",
    "selector": ".ask-row",
-   "line": 649,
-   "lineEnd": 649,
+   "line": 683,
+   "lineEnd": 683,
    "comment": [],
    "declarations": [
     [
@@ -4766,8 +4984,8 @@
   {
    "kind": "rule",
    "selector": ".ask-btn",
-   "line": 650,
-   "lineEnd": 650,
+   "line": 684,
+   "lineEnd": 684,
    "comment": [],
    "declarations": [
     [
@@ -4815,8 +5033,8 @@
   {
    "kind": "rule",
    "selector": ".ask-btn:active",
-   "line": 656,
-   "lineEnd": 656,
+   "line": 690,
+   "lineEnd": 690,
    "comment": [],
    "declarations": [
     [
@@ -4828,8 +5046,8 @@
   {
    "kind": "rule",
    "selector": ".ask input",
-   "line": 657,
-   "lineEnd": 657,
+   "line": 691,
+   "lineEnd": 691,
    "comment": [],
    "declarations": [
     [
@@ -4869,7 +5087,7 @@
   {
    "kind": "keyframes",
    "at": "@keyframes rise",
-   "line": 674,
+   "line": 708,
    "comment": [
     "No fixed overlays for the resting screen. The empty state lives inside #open as normal flow content, so there is never a translucent layer floating over the conversation.",
     "--- Motion --- Everything here is under a second and either carries information or marks a state change. The frequency gate is applied first: nothing that happens a hundred times a day moves, and the parts that carry no information were deleted rather than given an effect."
@@ -4906,7 +5124,7 @@
   {
    "kind": "keyframes",
    "at": "@keyframes fadeIn",
-   "line": 678,
+   "line": 712,
    "comment": [],
    "frames": [
     {
@@ -4932,7 +5150,7 @@
   {
    "kind": "keyframes",
    "at": "@keyframes breathe",
-   "line": 679,
+   "line": 713,
    "comment": [],
    "frames": [
     {
@@ -4958,7 +5176,7 @@
   {
    "kind": "keyframes",
    "at": "@keyframes bob",
-   "line": 683,
+   "line": 717,
    "comment": [
     "One lift, shared by the waiting dots and by the mascot. Both are the run state and neither moves for any other reason, so a reader learns to read this shape as \"working\" rather than as decoration."
    ],
@@ -4986,8 +5204,8 @@
   {
    "kind": "rule",
    "selector": "#open > *",
-   "line": 688,
-   "lineEnd": 688,
+   "line": 722,
+   "lineEnd": 722,
    "comment": [
     "Messages and tool results rise in as they are appended, which is what streaming wants rather than one block that swaps. A fresh node runs this once on insertion, so nothing here re-fires while the same one is in place."
    ],
@@ -5001,8 +5219,8 @@
   {
    "kind": "rule",
    "selector": "#stats",
-   "line": 689,
-   "lineEnd": 689,
+   "line": 723,
+   "lineEnd": 723,
    "comment": [],
    "declarations": [
     [
@@ -5014,8 +5232,8 @@
   {
    "kind": "rule",
    "selector": "#open h2",
-   "line": 689,
-   "lineEnd": 689,
+   "line": 723,
+   "lineEnd": 723,
    "comment": [],
    "declarations": [
     [
@@ -5027,8 +5245,8 @@
   {
    "kind": "rule",
    "selector": ".idle-mark i:nth-child(2)",
-   "line": 694,
-   "lineEnd": 694,
+   "line": 728,
+   "lineEnd": 728,
    "comment": [
     "The resting mark is the whole point of that screen, and still it reads as dead. Giving the centre dash a slow pulse is the difference between \"a place to write\" and \"a page that will not answer\"."
    ],
@@ -5042,8 +5260,8 @@
   {
    "kind": "rule",
    "selector": ".live.on::before",
-   "line": 698,
-   "lineEnd": 698,
+   "line": 732,
+   "lineEnd": 732,
    "comment": [
     "The live dot is state: a steady colour for an assumption, a breath for a measured one. That it changes when the state does is the feedback."
    ],
@@ -5057,8 +5275,8 @@
   {
    "kind": "rule",
    "selector": "#panel",
-   "line": 701,
-   "lineEnd": 701,
+   "line": 735,
+   "lineEnd": 735,
    "comment": [
     "Settings settle in from a small rise instead of snapping into the layout."
    ],
@@ -5072,8 +5290,8 @@
   {
    "kind": "rule",
    "selector": "#panel > div",
-   "line": 702,
-   "lineEnd": 702,
+   "line": 736,
+   "lineEnd": 736,
    "comment": [],
    "declarations": [
     [
@@ -5085,7 +5303,7 @@
   {
    "kind": "at-block",
    "at": "@media (prefers-reduced-motion: reduce)",
-   "line": 710,
+   "line": 744,
    "comment": [
     "No entrance choreography on the chrome itself: the bar and composer sliding in on load is what made the frame feel like layers arriving on top of each other. Messages still rise once on insertion.",
     "Motion is a confirmation, not a performance. Under this budget the platform default is the right answer and the cheapest one."
@@ -5094,8 +5312,8 @@
     {
      "kind": "rule",
      "selector": "*",
-     "line": 713,
-     "lineEnd": 713,
+     "line": 747,
+     "lineEnd": 747,
      "comment": [
       "Transitions off, visibility still authoritative: reduced motion changes how the sheet arrives, never whether it is there."
      ],
@@ -5113,8 +5331,8 @@
     {
      "kind": "rule",
      "selector": "#list[data-open=\"true\"]",
-     "line": 714,
-     "lineEnd": 714,
+     "line": 748,
+     "lineEnd": 748,
      "comment": [],
      "declarations": [
       [
@@ -5128,14 +5346,14 @@
   {
    "kind": "at-block",
    "at": "@media (min-width: 860px)",
-   "line": 719,
+   "line": 753,
    "comment": [],
    "rules": [
     {
      "kind": "rule",
      "selector": "#list",
-     "line": 721,
-     "lineEnd": 721,
+     "line": 755,
+     "lineEnd": 755,
      "comment": [
       "A wide window has room for both, so the sheet becomes a real column."
      ],
@@ -5165,8 +5383,8 @@
     {
      "kind": "rule",
      "selector": "#scrim",
-     "line": 722,
-     "lineEnd": 722,
+     "line": 756,
+     "lineEnd": 756,
      "comment": [],
      "declarations": [
       [
@@ -5178,8 +5396,8 @@
     {
      "kind": "rule",
      "selector": "body",
-     "line": 723,
-     "lineEnd": 723,
+     "line": 757,
+     "lineEnd": 757,
      "comment": [],
      "declarations": [
       [
@@ -5191,8 +5409,8 @@
     {
      "kind": "rule",
      "selector": ".bar",
-     "line": 724,
-     "lineEnd": 724,
+     "line": 758,
+     "lineEnd": 758,
      "comment": [],
      "declarations": [
       [
@@ -5224,8 +5442,8 @@
     {
      "kind": "rule",
      "selector": "#open",
-     "line": 725,
-     "lineEnd": 725,
+     "line": 759,
+     "lineEnd": 759,
      "comment": [],
      "declarations": [
       [
@@ -5237,8 +5455,8 @@
     {
      "kind": "rule",
      "selector": "#composer-wrap",
-     "line": 726,
-     "lineEnd": 726,
+     "line": 760,
+     "lineEnd": 760,
      "comment": [],
      "declarations": [
       [
@@ -5258,8 +5476,8 @@
     {
      "kind": "rule",
      "selector": "#composer",
-     "line": 727,
-     "lineEnd": 727,
+     "line": 761,
+     "lineEnd": 761,
      "comment": [],
      "declarations": [
       [
@@ -5410,307 +5628,337 @@
  "js": {
   "elCalls": [
    {
-    "line": 987,
+    "line": 1021,
     "tag": "div",
     "class": null
    },
    {
-    "line": 988,
+    "line": 1022,
     "tag": "div",
     "class": "k"
    },
    {
-    "line": 989,
+    "line": 1023,
     "tag": "div",
     "class": "v"
    },
    {
-    "line": 1111,
+    "line": 1175,
     "tag": "div",
     "class": "tool"
    },
    {
-    "line": 1113,
+    "line": 1177,
     "tag": "span",
     "class": "tool-node"
    },
    {
-    "line": 1114,
+    "line": 1178,
     "tag": "div",
     "class": "tool-head"
    },
    {
-    "line": 1115,
+    "line": 1179,
     "tag": "span",
     "class": "tool-name"
    },
    {
-    "line": 1116,
+    "line": 1180,
     "tag": "span",
     "class": "tool-state"
    },
    {
-    "line": 1140,
+    "line": 1185,
     "tag": "pre",
     "class": "tool-out"
    },
    {
-    "line": 1193,
+    "line": 1196,
+    "tag": "div",
+    "class": "thought"
+   },
+   {
+    "line": 1198,
+    "tag": "span",
+    "class": "tool-node"
+   },
+   {
+    "line": 1199,
+    "tag": "div",
+    "class": "thought-head"
+   },
+   {
+    "line": 1200,
+    "tag": "span",
+    "class": "thought-name"
+   },
+   {
+    "line": 1201,
+    "tag": "span",
+    "class": "thought-state"
+   },
+   {
+    "line": 1206,
+    "tag": "div",
+    "class": "tool-out"
+   },
+   {
+    "line": 1261,
     "tag": "button",
     "class": null
    },
    {
-    "line": 1194,
+    "line": 1262,
     "tag": "div",
     "class": "title"
    },
    {
-    "line": 1195,
+    "line": 1263,
     "tag": "div",
     "class": "meta"
    },
    {
-    "line": 1208,
+    "line": 1276,
     "tag": "h2",
     "class": null
    },
    {
-    "line": 1209,
+    "line": 1277,
     "tag": "div",
     "class": null
    },
    {
-    "line": 1219,
+    "line": 1287,
     "tag": "p",
     "class": "empty"
    },
    {
-    "line": 1238,
+    "line": 1306,
     "tag": "div",
     "class": "msg"
    },
    {
-    "line": 1239,
+    "line": 1307,
     "tag": "div",
     "class": "body"
    },
    {
-    "line": 1313,
+    "line": 1381,
     "tag": "div",
     "class": "msg user"
    },
    {
-    "line": 1314,
+    "line": 1382,
     "tag": "div",
     "class": "body"
    },
    {
-    "line": 1320,
+    "line": 1388,
     "tag": "div",
     "class": "msg"
    },
    {
-    "line": 1321,
+    "line": 1389,
     "tag": "div",
     "class": "body"
    },
    {
-    "line": 1328,
+    "line": 1396,
     "tag": "div",
     "class": "thinking"
    },
    {
-    "line": 1329,
+    "line": 1397,
     "tag": "span",
     "class": "thinking-text"
    },
    {
-    "line": 1346,
+    "line": 1414,
     "tag": "p",
     "class": "empty"
    },
    {
-    "line": 1511,
+    "line": 1585,
     "tag": "div",
     "class": "msg"
    },
    {
-    "line": 1512,
+    "line": 1586,
     "tag": "div",
     "class": "body"
    },
    {
-    "line": 1536,
+    "line": 1610,
     "tag": "div",
     "class": "thinking"
    },
    {
-    "line": 1537,
+    "line": 1611,
     "tag": "span",
     "class": "thinking-text"
-   },
-   {
-    "line": 1577,
-    "tag": "div",
-    "class": null
-   },
-   {
-    "line": 1600,
-    "tag": "div",
-    "class": "ask"
-   },
-   {
-    "line": 1601,
-    "tag": "div",
-    "class": "tool-line"
-   },
-   {
-    "line": 1602,
-    "tag": "div",
-    "class": "ask-row"
-   },
-   {
-    "line": 1604,
-    "tag": "button",
-    "class": "ask-btn"
-   },
-   {
-    "line": 1621,
-    "tag": "div",
-    "class": "ask"
-   },
-   {
-    "line": 1622,
-    "tag": "div",
-    "class": "tool-line"
-   },
-   {
-    "line": 1624,
-    "tag": "div",
-    "class": "ask-row"
-   },
-   {
-    "line": 1626,
-    "tag": "button",
-    "class": "ask-btn"
-   },
-   {
-    "line": 1644,
-    "tag": "button",
-    "class": "ask-btn"
-   },
-   {
-    "line": 1682,
-    "tag": "div",
-    "class": "msg user"
    },
    {
     "line": 1683,
     "tag": "div",
-    "class": "body"
+    "class": null
    },
    {
-    "line": 1734,
+    "line": 1706,
+    "tag": "div",
+    "class": "ask"
+   },
+   {
+    "line": 1707,
     "tag": "div",
     "class": "tool-line"
    },
    {
-    "line": 1790,
+    "line": 1708,
+    "tag": "div",
+    "class": "ask-row"
+   },
+   {
+    "line": 1710,
+    "tag": "button",
+    "class": "ask-btn"
+   },
+   {
+    "line": 1727,
+    "tag": "div",
+    "class": "ask"
+   },
+   {
+    "line": 1728,
+    "tag": "div",
+    "class": "tool-line"
+   },
+   {
+    "line": 1730,
+    "tag": "div",
+    "class": "ask-row"
+   },
+   {
+    "line": 1732,
+    "tag": "button",
+    "class": "ask-btn"
+   },
+   {
+    "line": 1750,
+    "tag": "button",
+    "class": "ask-btn"
+   },
+   {
+    "line": 1788,
+    "tag": "div",
+    "class": "msg user"
+   },
+   {
+    "line": 1789,
+    "tag": "div",
+    "class": "body"
+   },
+   {
+    "line": 1840,
+    "tag": "div",
+    "class": "tool-line"
+   },
+   {
+    "line": 1896,
     "tag": "div",
     "class": "field"
    },
    {
-    "line": 1791,
+    "line": 1897,
     "tag": "label",
     "class": null
    },
    {
-    "line": 1799,
+    "line": 1905,
     "tag": "div",
     "class": "field"
    },
    {
-    "line": 1800,
+    "line": 1906,
     "tag": "label",
     "class": null
    },
    {
-    "line": 1801,
+    "line": 1907,
     "tag": "label",
     "class": "switch"
    },
    {
-    "line": 1806,
+    "line": 1912,
     "tag": "span",
     "class": "switch-track"
    },
    {
-    "line": 1815,
+    "line": 1921,
     "tag": "h3",
     "class": null
    },
    {
-    "line": 1819,
+    "line": 1925,
     "tag": "div",
     "class": "field"
    },
    {
-    "line": 1820,
+    "line": 1926,
     "tag": "label",
     "class": null
    },
    {
-    "line": 1821,
+    "line": 1927,
     "tag": "span",
     "class": "ro"
    },
    {
-    "line": 1847,
+    "line": 1953,
     "tag": "li",
     "class": "empty"
    },
    {
-    "line": 1851,
+    "line": 1957,
     "tag": "li",
     "class": null
    },
    {
-    "line": 1852,
+    "line": 1958,
     "tag": "span",
     "class": null
    },
    {
-    "line": 1853,
+    "line": 1959,
     "tag": "button",
     "class": "ask-btn del-btn"
    },
    {
-    "line": 1992,
+    "line": 2101,
     "tag": "div",
     "class": "tool-line"
    }
   ],
   "creates": [
    {
-    "line": 824,
+    "line": 858,
     "tag": "p",
     "class": "empty",
     "id": null
    },
    {
-    "line": 1642,
+    "line": 1748,
     "tag": "input",
     "class": null,
     "id": null
    },
    {
-    "line": 1792,
+    "line": 1898,
     "tag": "input",
     "class": null,
     "id": null
    },
    {
-    "line": 1802,
+    "line": 1908,
     "tag": "input",
     "class": null,
     "id": null
@@ -5718,121 +5966,123 @@
   ],
   "datasets": {
    "open": [
-    1027,
-    1029,
-    1112,
-    1168,
-    1175
+    1061,
+    1063,
+    1176,
+    1197,
+    1236,
+    1243,
+    1638
    ],
    "s": [
-    1152
+    1217
    ],
    "state": [
-    1387,
-    1388
+    1461,
+    1462
    ],
    "visible": [
-    1443,
-    1454
+    1517,
+    1528
    ],
    "key": [
-    1794,
-    1804
+    1900,
+    1910
    ]
   },
   "classNameWrites": [
    {
-    "line": 825,
+    "line": 859,
     "value": "empty"
    },
    {
-    "line": 1338,
+    "line": 1406,
     "value": "live on"
    },
    {
-    "line": 1937,
+    "line": 2043,
     "value": "live on"
    },
    {
-    "line": 1943,
+    "line": 2049,
     "value": "live on"
    },
    {
-    "line": 2022,
+    "line": 2131,
     "value": "live on"
    },
    {
-    "line": 2023,
+    "line": 2132,
     "value": "live"
    },
    {
-    "line": 2062,
+    "line": 2171,
     "value": "live on"
    },
    {
-    "line": 2066,
+    "line": 2175,
     "value": "live"
    }
   ],
   "textContentWrites": [
    {
-    "line": 823,
+    "line": 857,
     "value": ""
    },
    {
-    "line": 1187,
+    "line": 1255,
     "value": ""
    },
    {
-    "line": 1207,
+    "line": 1275,
     "value": ""
    },
    {
-    "line": 1337,
+    "line": 1405,
     "value": "live"
    },
    {
-    "line": 1345,
+    "line": 1413,
     "value": ""
    },
    {
-    "line": 1549,
+    "line": 1651,
     "value": ""
    },
    {
-    "line": 1783,
+    "line": 1889,
     "value": ""
    },
    {
-    "line": 1788,
+    "line": 1894,
     "value": ""
    },
    {
-    "line": 1845,
+    "line": 1951,
     "value": ""
    },
    {
-    "line": 1936,
+    "line": 2042,
     "value": "permission pending"
    },
    {
-    "line": 1942,
+    "line": 2048,
     "value": "question pending"
    },
    {
-    "line": 2022,
+    "line": 2131,
     "value": "live"
    },
    {
-    "line": 2023,
+    "line": 2132,
     "value": "reconnecting"
    },
    {
-    "line": 2061,
+    "line": 2170,
     "value": "live"
    },
    {
-    "line": 2065,
+    "line": 2174,
     "value": "reconnecting"
    }
   ],
@@ -5865,7 +6115,7 @@
    "mhr"
   ],
   "PHASE": {
-   "line": 1015,
+   "line": 1049,
    "map": {
     "": "idle",
     "sending": "thinking",
@@ -5877,7 +6127,7 @@
    }
   },
   "TOOL_WORD": {
-   "line": 1000,
+   "line": 1034,
    "map": {
     "pending": "waiting",
     "running": "running",
@@ -5890,414 +6140,439 @@
   "functions": [
    {
     "name": "headers",
-    "line": 818,
-    "endLine": 820
+    "line": 852,
+    "endLine": 854
    },
    {
     "name": "fail",
-    "line": 822,
-    "endLine": 829
+    "line": 856,
+    "endLine": 863
    },
    {
     "name": "api",
-    "line": 831,
-    "endLine": 836
+    "line": 865,
+    "endLine": 870
    },
    {
     "name": "el",
-    "line": 838,
-    "endLine": 843
+    "line": 872,
+    "endLine": 877
    },
    {
     "name": "esc",
-    "line": 849,
-    "endLine": 852
-   },
-   {
-    "name": "md",
-    "line": 853,
-    "endLine": 984
-   },
-   {
-    "name": "inline",
-    "line": 855,
-    "endLine": 869
-   },
-   {
-    "name": "cells",
-    "line": 870,
-    "endLine": 874
-   },
-   {
-    "name": "headCells",
-    "line": 875,
-    "endLine": 879
-   },
-   {
-    "name": "isSep",
-    "line": 880,
-    "endLine": 883
-   },
-   {
-    "name": "countCells",
-    "line": 884,
+    "line": 883,
     "endLine": 886
    },
    {
+    "name": "md",
+    "line": 887,
+    "endLine": 1018
+   },
+   {
+    "name": "inline",
+    "line": 889,
+    "endLine": 903
+   },
+   {
+    "name": "cells",
+    "line": 904,
+    "endLine": 908
+   },
+   {
+    "name": "headCells",
+    "line": 909,
+    "endLine": 913
+   },
+   {
+    "name": "isSep",
+    "line": 914,
+    "endLine": 917
+   },
+   {
+    "name": "countCells",
+    "line": 918,
+    "endLine": 920
+   },
+   {
     "name": "flushCode",
-    "line": 892,
-    "endLine": 896
+    "line": 926,
+    "endLine": 930
    },
    {
     "name": "textBlock",
-    "line": 897,
-    "endLine": 965
+    "line": 931,
+    "endLine": 999
    },
    {
     "name": "flushPlain",
-    "line": 905,
-    "endLine": 907
+    "line": 939,
+    "endLine": 941
    },
    {
     "name": "flushText",
-    "line": 967,
-    "endLine": 969
+    "line": 1001,
+    "endLine": 1003
    },
    {
     "name": "stat",
-    "line": 986,
-    "endLine": 991
+    "line": 1020,
+    "endLine": 1025
    },
    {
     "name": "money",
-    "line": 993,
-    "endLine": 995
+    "line": 1027,
+    "endLine": 1029
    },
    {
     "name": "toggleTool",
-    "line": 1025,
-    "endLine": 1105
+    "line": 1059,
+    "endLine": 1142
+   },
+   {
+    "name": "chevron",
+    "line": 1146,
+    "endLine": 1159
+   },
+   {
+    "name": "wireHead",
+    "line": 1161,
+    "endLine": 1169
    },
    {
     "name": "toolCard",
-    "line": 1110,
-    "endLine": 1145
+    "line": 1174,
+    "endLine": 1190
+   },
+   {
+    "name": "thoughtCard",
+    "line": 1195,
+    "endLine": 1210
    },
    {
     "name": "setToolState",
-    "line": 1147,
-    "endLine": 1154
+    "line": 1212,
+    "endLine": 1219
    },
    {
     "name": "setToolOut",
-    "line": 1159,
-    "endLine": 1184
+    "line": 1224,
+    "endLine": 1252
    },
    {
     "name": "renderSummary",
-    "line": 1186,
-    "endLine": 1204
+    "line": 1254,
+    "endLine": 1272
    },
    {
     "name": "renderSession",
-    "line": 1206,
-    "endLine": 1248
+    "line": 1274,
+    "endLine": 1316
    },
    {
     "name": "renderShowcase",
-    "line": 1250,
-    "endLine": 1340
+    "line": 1318,
+    "endLine": 1408
    },
    {
     "name": "open",
-    "line": 1342,
-    "endLine": 1351
+    "line": 1410,
+    "endLine": 1419
    },
    {
     "name": "state",
-    "line": 1384,
-    "endLine": 1389
+    "line": 1458,
+    "endLine": 1463
    },
    {
     "name": "syncSend",
-    "line": 1394,
-    "endLine": 1396
+    "line": 1468,
+    "endLine": 1470
    },
    {
     "name": "streaming",
-    "line": 1398,
-    "endLine": 1403
+    "line": 1472,
+    "endLine": 1477
    },
    {
     "name": "answered",
-    "line": 1407,
-    "endLine": 1409
+    "line": 1481,
+    "endLine": 1483
    },
    {
     "name": "paint",
-    "line": 1417,
-    "endLine": 1420
+    "line": 1491,
+    "endLine": 1494
    },
    {
     "name": "flushPaint",
-    "line": 1421,
-    "endLine": 1429
+    "line": 1495,
+    "endLine": 1503
    },
    {
     "name": "nearBottom",
-    "line": 1433,
-    "endLine": 1437
+    "line": 1507,
+    "endLine": 1511
    },
    {
     "name": "updateScrollBtn",
-    "line": 1439,
-    "endLine": 1444
+    "line": 1513,
+    "endLine": 1518
    },
    {
     "name": "scrollToLatest",
-    "line": 1446,
-    "endLine": 1482
+    "line": 1520,
+    "endLine": 1556
    },
    {
     "name": "step",
-    "line": 1464,
-    "endLine": 1476
+    "line": 1538,
+    "endLine": 1550
    },
    {
     "name": "stick",
-    "line": 1496,
-    "endLine": 1507
-   },
-   {
-    "name": "turn",
-    "line": 1509,
-    "endLine": 1530
-   },
-   {
-    "name": "thinkingShow",
-    "line": 1534,
-    "endLine": 1539
-   },
-   {
-    "name": "thinkingHide",
-    "line": 1541,
-    "endLine": 1544
-   },
-   {
-    "name": "resetTurn",
-    "line": 1548,
-    "endLine": 1555
-   },
-   {
-    "name": "dropEmptyTurn",
-    "line": 1562,
-    "endLine": 1570
-   },
-   {
-    "name": "pendingBox",
-    "line": 1574,
+    "line": 1570,
     "endLine": 1581
    },
    {
-    "name": "post",
+    "name": "turn",
     "line": 1583,
-    "endLine": 1597
+    "endLine": 1604
    },
    {
-    "name": "askPermission",
-    "line": 1599,
+    "name": "thinkingShow",
+    "line": 1608,
+    "endLine": 1613
+   },
+   {
+    "name": "thinkingHide",
+    "line": 1615,
     "endLine": 1618
    },
    {
+    "name": "thoughtShow",
+    "line": 1624,
+    "endLine": 1646
+   },
+   {
+    "name": "resetTurn",
+    "line": 1650,
+    "endLine": 1659
+   },
+   {
+    "name": "dropEmptyTurn",
+    "line": 1666,
+    "endLine": 1676
+   },
+   {
+    "name": "pendingBox",
+    "line": 1680,
+    "endLine": 1687
+   },
+   {
+    "name": "post",
+    "line": 1689,
+    "endLine": 1703
+   },
+   {
+    "name": "askPermission",
+    "line": 1705,
+    "endLine": 1724
+   },
+   {
     "name": "askQuestion",
-    "line": 1620,
-    "endLine": 1665
+    "line": 1726,
+    "endLine": 1771
    },
    {
     "name": "reply",
-    "line": 1645,
-    "endLine": 1655
+    "line": 1751,
+    "endLine": 1761
    },
    {
     "name": "submit",
-    "line": 1667,
-    "endLine": 1737
+    "line": 1773,
+    "endLine": 1843
    },
    {
     "name": "payload",
-    "line": 1764,
-    "endLine": 1766
+    "line": 1870,
+    "endLine": 1872
    },
    {
     "name": "say",
-    "line": 1778,
-    "endLine": 1785
+    "line": 1884,
+    "endLine": 1891
    },
    {
     "name": "renderSettings",
-    "line": 1787,
-    "endLine": 1824
+    "line": 1893,
+    "endLine": 1930
    },
    {
     "name": "loadSettings",
-    "line": 1826,
-    "endLine": 1829
+    "line": 1932,
+    "endLine": 1935
    },
    {
     "name": "saveSettings",
-    "line": 1831,
-    "endLine": 1841
+    "line": 1937,
+    "endLine": 1947
    },
    {
     "name": "renderSecrets",
-    "line": 1843,
-    "endLine": 1864
+    "line": 1949,
+    "endLine": 1970
    },
    {
     "name": "loadSecrets",
-    "line": 1866,
-    "endLine": 1869
+    "line": 1972,
+    "endLine": 1975
    },
    {
     "name": "addSecret",
-    "line": 1871,
-    "endLine": 1886
+    "line": 1977,
+    "endLine": 1992
    },
    {
     "name": "openSettings",
-    "line": 1888,
-    "endLine": 1893
+    "line": 1994,
+    "endLine": 1999
    },
    {
     "name": "onSecKey",
-    "line": 1908,
-    "endLine": 1908
+    "line": 2014,
+    "endLine": 2014
    },
    {
     "name": "dispatch",
-    "line": 1929,
-    "endLine": 2002
+    "line": 2035,
+    "endLine": 2111
    },
    {
     "name": "attach",
-    "line": 2016,
-    "endLine": 2048
+    "line": 2125,
+    "endLine": 2157
    },
    {
     "name": "poll",
-    "line": 2050,
-    "endLine": 2069
+    "line": 2159,
+    "endLine": 2178
    },
    {
     "name": "sheet",
-    "line": 2085,
-    "endLine": 2088
+    "line": 2194,
+    "endLine": 2197
    }
   ],
   "consts": [
    {
     "name": "codes",
-    "line": 854,
-    "value": "[]"
-   },
-   {
-    "name": "out",
     "line": 888,
     "value": "[]"
    },
    {
-    "name": "codeBuf",
-    "line": 891,
-    "value": "[]"
-   },
-   {
-    "name": "plain",
-    "line": 904,
-    "value": "[]"
-   },
-   {
-    "name": "items",
+    "name": "out",
     "line": 922,
     "value": "[]"
    },
    {
+    "name": "codeBuf",
+    "line": 925,
+    "value": "[]"
+   },
+   {
+    "name": "plain",
+    "line": 938,
+    "value": "[]"
+   },
+   {
+    "name": "items",
+    "line": 956,
+    "value": "[]"
+   },
+   {
     "name": "nums",
-    "line": 931,
+    "line": 965,
     "value": "[]"
    },
    {
     "name": "quote",
-    "line": 940,
+    "line": 974,
     "value": "[]"
    },
    {
     "name": "rows",
-    "line": 950,
+    "line": 984,
     "value": "[\"<tr>\" + headCells(line) + \"</tr>\"]"
    },
    {
     "name": "chunk",
-    "line": 966,
+    "line": 1000,
     "value": "[]"
    },
    {
     "name": "TOOL_WORD",
-    "line": 1000,
+    "line": 1034,
     "value": "{\n    pending: \"waiting\", running: \"running\", completed: \"done\",\n    canceled: \"cancelled\", cancel_requested: \"stopping\"\n  }"
    },
    {
     "name": "PHASE",
-    "line": 1015,
+    "line": 1049,
     "value": "{\n    \"\": \"idle\",\n    sending: \"thinking\",\n    streaming: \"working\",\n    busy: \"working\",\n    stopping: \"working\",\n    awaiting: \"asking\",\n    failed: \"error\"\n  }"
    },
    {
     "name": "showcaseSessions",
-    "line": 1251,
+    "line": 1319,
     "value": "[\n      { id: \"s1\", title: \"Database Adapter Optimization\", messages: 7, runs: 3 },\n      { id: \"s2\", title: \"Auth Session Compaction\", messages: 14, runs: 5 },\n      { id: \"s3\", title: \"Cluster Failover Test\", messages: 4, runs: 2 }\n    ]"
    },
    {
     "name": "turnRaw",
-    "line": 1376,
+    "line": 1444,
+    "value": "\"\""
+   },
+   {
+    "name": "turnThought",
+    "line": 1449,
     "value": "\"\""
    },
    {
     "name": "webSession",
-    "line": 1381,
+    "line": 1455,
     "value": "\"\""
    },
    {
     "name": "editable",
-    "line": 1774,
+    "line": 1880,
     "value": "[\"provider\", \"model\", \"agent\", \"reasoning\"]"
    },
    {
     "name": "checkboxKey",
-    "line": 1775,
+    "line": 1881,
     "value": "\"auto_compaction\""
    },
    {
     "name": "roKeys",
-    "line": 1812,
+    "line": 1918,
     "value": "[\"provider_name\", \"provider_model\", \"workspace\", \"session\"]"
    },
    {
     "name": "update",
-    "line": 1832,
+    "line": 1938,
     "value": "{}"
    },
    {
     "name": "watched",
-    "line": 2013,
+    "line": 2122,
     "value": "[\"permission\", \"question\", \"content\", \"thinking\",\n                 \"tool_start\", \"tool_end\", \"complete\", \"error\", \"stale\"]"
    },
    {
     "name": "d",
-    "line": 2026,
+    "line": 2135,
     "value": "{}"
    },
    {
     "name": "url",
-    "line": 2051,
+    "line": 2160,
     "value": "\"/api/events?wait=20000\""
    }
   ]

@@ -379,6 +379,40 @@
   }
   .tool-line { font-size: 13px; color: var(--muted); margin: calc(var(--s) * 2) 0; }
 
+  /* The thought block is a tool card in everything but meaning: same node, same
+     head, same chevron, same collapsible body, so the reader who has learned
+     how to open a step already knows how to open the thinking. It sits above the
+     reply it belongs to, never inline with it. */
+  .thought {
+    position: relative;
+    padding-left: calc(var(--s) * 7);
+    margin: 0 0 calc(var(--s) * 3);
+  }
+  .msg .thought + .body { margin-top: 0; }
+  /* Same click affordance as a step with output, so the two read identically. */
+  .thought.has-out .thought-head {
+    cursor: pointer; user-select: none;
+  }
+  .thought.has-out .thought-head:hover .thought-name { color: var(--accent); }
+  .thought.has-out .thought-head:hover .tool-chevron { color: var(--text); }
+  .thought.has-out .thought-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .thought-head { display: flex; align-items: center; gap: calc(var(--s) * 2); }
+  .thought-name {
+    font: 600 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    transition: color 120ms var(--ease);
+  }
+  .thought-state { margin-left: auto; flex: none; font-size: 11px; color: var(--faint); }
+  .thought.has-out .tool-chevron { display: block; }
+  .thought[data-open="true"] .tool-chevron { transform: rotate(180deg); }
+  /* The reasoning is prose, not program output: same hairline and collapse, but
+     in the body font rather than mono so it reads as an explanation. */
+  .thought .tool-out {
+    font-family: inherit;
+    font-size: 13px; line-height: 1.55;
+    color: var(--muted);
+  }
+
   /* The waiting indicator displays a continuous shimmer wave sweeping across
      the text from left to right, matching the reference typography in motion. */
   .thinking {
@@ -1027,10 +1061,13 @@
     var isOpen = card.dataset.open === "true";
     var nextOpen = !isOpen;
     card.dataset.open = nextOpen ? "true" : "false";
-    var head = card.querySelector(".tool-head");
+    // Head and body are found by capability, not by class: a step and the
+    // thought block share one open/close behaviour, and only their labels
+    // differ.
+    var head = card.querySelector(".tool-head") || card.querySelector(".thought-head");
     if (head) {
       head.setAttribute("aria-expanded", nextOpen ? "true" : "false");
-      head.setAttribute("title", nextOpen ? "Collapse output" : "Expand output");
+      head.setAttribute("title", nextOpen ? "Collapse" : "Expand");
     }
 
     var out = card.querySelector(".tool-out");
@@ -1104,17 +1141,9 @@
     }
   }
 
-  // One card per tool call, built the same way whether it is replayed from the
-  // transcript or announced by a live event. Two shapes for one thing is how
-  // the two surfaces drift into disagreeing about what a step looks like.
-  function toolCard(name, status) {
-    var card = el("div", "tool");
-    card.dataset.open = "false";
-    card.appendChild(el("span", "tool-node"));
-    var head = el("div", "tool-head");
-    head.appendChild(el("span", "tool-name", name || "tool"));
-    head.appendChild(el("span", "tool-state"));
-
+  // The chevron and its click/keyboard wiring are shared between a step and the
+  // thought block so the two cannot drift into disagreeing about how to open.
+  function chevron() {
     var chev = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     chev.setAttribute("class", "tool-chevron");
     chev.setAttribute("viewBox", "0 0 24 24");
@@ -1126,8 +1155,10 @@
     var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", "m6 9 6 6 6-9");
     chev.appendChild(path);
-    head.appendChild(chev);
+    return chev;
+  }
 
+  function wireHead(head, card) {
     head.addEventListener("click", function () { toggleTool(card); });
     head.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
@@ -1135,12 +1166,46 @@
         toggleTool(card);
       }
     });
+  }
+
+  // One card per tool call, built the same way whether it is replayed from the
+  // transcript or announced by a live event. Two shapes for one thing is how
+  // the two surfaces drift into disagreeing about what a step looks like.
+  function toolCard(name, status) {
+    var card = el("div", "tool");
+    card.dataset.open = "false";
+    card.appendChild(el("span", "tool-node"));
+    var head = el("div", "tool-head");
+    head.appendChild(el("span", "tool-name", name || "tool"));
+    head.appendChild(el("span", "tool-state"));
+    head.appendChild(chevron());
+    wireHead(head, card);
 
     card.appendChild(head);
     var out = el("pre", "tool-out");
     out.hidden = true;
     card.appendChild(out);
     setToolState(card, status || "completed");
+    return card;
+  }
+
+  // The thought block: same anatomy as a step, collapsed by default, and filled
+  // as reasoning arrives. It is built once per turn and reused, so streaming
+  // appends to one block instead of leaving a trail of them.
+  function thoughtCard() {
+    var card = el("div", "thought");
+    card.dataset.open = "false";
+    card.appendChild(el("span", "tool-node"));
+    var head = el("div", "thought-head");
+    head.appendChild(el("span", "thought-name", "thought"));
+    head.appendChild(el("span", "thought-state"));
+    head.appendChild(chevron());
+    wireHead(head, card);
+
+    card.appendChild(head);
+    var out = el("div", "tool-out");
+    out.hidden = true;
+    card.appendChild(out);
     return card;
   }
 
@@ -1159,7 +1224,10 @@
   function setToolOut(card, text) {
     var out = card.querySelector(".tool-out");
     out.textContent = text || "";
-    var head = card.querySelector(".tool-head");
+    // Either head: a step and the thought block share this setter, so the
+    // accessible name, the tab stop and the collapsed state are set the same
+    // way for both.
+    var head = card.querySelector(".tool-head") || card.querySelector(".thought-head");
     if (text) {
       card.classList.add("has-out");
       if (head) {
@@ -1374,6 +1442,12 @@
   // constructs — an unclosed fence or bold runs as literal text until the
   // closer arrives, so a partially streamed message never shows broken HTML.
   var turnRaw = "";
+  // The reasoning for the turn in progress, and the collapsible block that shows
+  // it. The server streams reasoning as its own "thinking" event carrying a
+  // delta, the same way content arrives; it was previously used only to show a
+  // shimmer label and the text was thrown away.
+  var turnThought = "";
+  var thoughtNode = null;
   // stateEl, faceEl, promptEl, sendEl and stopEl are looked up at the top of
   // this closure, because renderShowcase can run before this point.
   // Learned from the reply to the first turn rather than assumed, so this page
@@ -1543,6 +1617,34 @@
     if (dots) { dots.remove(); }
   }
 
+  // Accumulate a reasoning delta and, the first time there is any, swap the
+  // shimmer label for the collapsible block and put it above the reply. While
+  // it is still streaming the block follows the text: open if the reader opened
+  // it, closed if they did not.
+  function thoughtShow(delta) {
+    if (!turnNode) { return; }
+    turnThought += delta || "";
+    if (!turnThought) { return; }
+
+    if (!thoughtNode) {
+      thoughtNode = thoughtCard();
+      // Above the body it belongs to, which is the first child turn() made.
+      turnNode.insertBefore(thoughtNode, textBox);
+    }
+    thinkingHide();
+    // setToolOut carries the reader's open/closed choice across updates: if they
+    // opened the block it stays open as reasoning streams in, and if they left
+    // it closed it stays closed. It also keeps the aria and tab stop correct.
+    var wasOpen = thoughtNode.dataset.open === "true";
+    setToolOut(thoughtNode, turnThought);
+    if (wasOpen) {
+      var out = thoughtNode.querySelector(".tool-out");
+      // Clear any leftover collapse animation so a fresh delta is not clipped
+      // by a max-height from the previous toggle.
+      out.style.maxHeight = ""; out.style.opacity = "";
+    }
+  }
+
   var pending = null;
 
   function resetTurn() {
@@ -1552,6 +1654,8 @@
     turnNode = null;
     textBox = null;
     turnRaw = "";
+    turnThought = "";
+    thoughtNode = null;
   }
 
   // The turn node exists before the server has accepted the request, because
@@ -1560,13 +1664,15 @@
   // permanent empty gap where an answer should be. It is dropped only while it
   // is still empty: a turn that has streamed anything is transcript.
   function dropEmptyTurn() {
-    if (!turnNode || turnRaw || pending) { return; }
+    if (!turnNode || turnRaw || turnThought || pending) { return; }
     if (paintTimer) { clearTimeout(paintTimer); paintTimer = null; }
     turnNode.remove();
     paintStick = false;
     turnNode = null;
     textBox = null;
     turnRaw = "";
+    turnThought = "";
+    thoughtNode = null;
   }
 
   // A request a run is stopped on gets rendered where it happens. The buttons
@@ -1955,7 +2061,10 @@
         break;
       case "thinking":
         turn();
-        thinkingShow();
+        // Reasoning arrives as its own delta. The first one replaces the plain
+        // shimmer with the collapsible block; with no delta at all the shimmer
+        // stands, because there is nothing to open.
+        if (d.delta) { thoughtShow(d.delta); } else { thinkingShow(); }
         break;
       // A step: announced when it starts, settled when it ends. While a tool
       // runs the surface is working, not waiting, so the waiting dots go.
