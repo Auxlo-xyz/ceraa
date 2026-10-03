@@ -428,25 +428,40 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	}
 	if skillStore != nil {
 		r.Register(&SkillProposalTool{Store: skillStore})
+		// The catalogue names these skills; this is how the model reaches the
+		// one it needs. Registered together with the proposer because a store
+		// that can be written to and not read back is a dead end.
+		r.Register(&SkillUseTool{Store: skillStore})
 	}
 
 	return r
 }
 
+// DefaultRegistryForUser varies the registry by what the user just said.
+//
+// Only proposing is gated. The gate exists because proposing a skill is an offer
+// to rewrite how the agent behaves, and it should not appear because a message
+// happened to contain the word "feedback".
+//
+// Reading an approved skill is not gated, and cannot be. The catalogue is
+// rendered into the prompt unconditionally, so gating its reader on the user's
+// wording would leave the model told a skill exists and unable to ask for it,
+// which is worse than not listing it. So the store is threaded through every
+// branch and only the proposer is withdrawn.
 func DefaultRegistryForUser(user string, memoryStore *memory.Store, skillStore *skills.Store) *Registry {
 	lower := strings.ToLower(user)
 	memoryEnabled := strings.Contains(lower, "remember") || strings.Contains(lower, "memory") || strings.Contains(lower, "preference")
 	skillEnabled := strings.Contains(lower, "wrong") || strings.Contains(lower, "incorrect") || strings.Contains(lower, "not right") || strings.Contains(lower, "feedback") || strings.Contains(lower, "skill")
-	switch {
-	case memoryEnabled && skillEnabled:
-		return DefaultRegistryWithStores(memoryStore, skillStore)
-	case memoryEnabled:
-		return DefaultRegistryWithStores(memoryStore, nil)
-	case skillEnabled:
-		return DefaultRegistryWithStores(nil, skillStore)
-	default:
-		return DefaultRegistry()
+	registry := DefaultRegistry()
+	if memoryEnabled {
+		registry = DefaultRegistryWithStores(memoryStore, skillStore)
+	} else if skillStore != nil {
+		registry = DefaultRegistryWithStores(nil, skillStore)
 	}
+	if !skillEnabled {
+		registry.Remove(SkillProposalName)
+	}
+	return registry
 }
 
 // ResolvePath returns the absolute path, following symlinks.

@@ -141,7 +141,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	liveMemory := memory.Live(memoryStore, projectRoot, sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
-	skillContext, _ := skillStore.ActiveContext(2000)
+	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
 	// Recorded because a provider may reject or ignore a level, and the only way
 	// to tell a rejected level from a model that chose not to think is to know

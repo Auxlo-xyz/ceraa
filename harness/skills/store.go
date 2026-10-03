@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"os"
 	"path/filepath"
 	"sort"
@@ -174,7 +173,7 @@ func (s *Store) Approve(proposalID string) (*Skill, error) {
 		skillIndex = len(doc.Skills) - 1
 	}
 	skill := &doc.Skills[skillIndex]
-	version := latestVersion(*skill) + 1
+	version := LatestVersion(*skill) + 1
 	skill.Versions = append(skill.Versions, Version{
 		Version:    version,
 		Content:    proposal.Content,
@@ -260,7 +259,7 @@ func (s *Store) AddVersion(skillName, content string) (*Skill, error) {
 	}
 	skill := &doc.Skills[index]
 	skill.Versions = append(skill.Versions, Version{
-		Version:   latestVersion(*skill) + 1,
+		Version:   LatestVersion(*skill) + 1,
 		Content:   content,
 		CreatedAt: now,
 	})
@@ -333,7 +332,7 @@ func (s *Store) Rollback(name string, versionNumber int) (*Skill, error) {
 	}
 	now := time.Now().UTC()
 	skill.Versions = append(skill.Versions, Version{
-		Version:    latestVersion(*skill) + 1,
+		Version:    LatestVersion(*skill) + 1,
 		Content:    target.Content,
 		ProposalID: target.ProposalID,
 		CreatedAt:  now,
@@ -347,7 +346,39 @@ func (s *Store) Rollback(name string, versionNumber int) (*Skill, error) {
 	return &result, nil
 }
 
-func (s *Store) ActiveContext(maxBytes int) (string, error) {
+// Names returns the approved skill names, sorted.
+//
+// The tool that serves a skill body needs this to answer a miss with something
+// the caller can act on, and it needs it without re-parsing the rendered
+// catalogue to get it back out.
+func (s *Store) Names() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := flock.Acquire(filepath.Join(s.dir, ".skills.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("lock skills store: %w", err)
+	}
+	defer lock.Release()
+
+	doc, err := load(s.path)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(doc.Skills))
+	for _, skill := range doc.Skills {
+		names = append(names, skill.Name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// CatalogContext returns the approved-skill index for the prompt.
+//
+// It is an index rather than the skills themselves: the model is told what
+// exists and what each one covers, and asks for the body of the one the task
+// needs. CatalogContext and SkillUseTool read the same store, so the name a
+// skill is listed under is the name that resolves.
+func (s *Store) CatalogContext(maxBytes int) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	lock, err := flock.Acquire(filepath.Join(s.dir, ".skills.lock"))
@@ -360,36 +391,7 @@ func (s *Store) ActiveContext(maxBytes int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return RenderActiveContext(doc.Skills, maxBytes), nil
-}
-
-func RenderActiveContext(skillList []Skill, maxBytes int) string {
-	if maxBytes <= 0 || len(skillList) == 0 {
-		return ""
-	}
-	sorted := append([]Skill(nil), skillList...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	var out strings.Builder
-	out.WriteString("<skills>\n")
-	for _, skill := range sorted {
-		version := latestVersion(skill)
-		var content string
-		for i := len(skill.Versions) - 1; i >= 0; i-- {
-			if skill.Versions[i].Version == version {
-				content = skill.Versions[i].Content
-				break
-			}
-		}
-		item := fmt.Sprintf("<skill name=%q version=%d>%s</skill>\n", html.EscapeString(skill.Name), version, html.EscapeString(content))
-		if out.Len()+len(item)+len("</skills>\n") <= maxBytes {
-			out.WriteString(item)
-		}
-	}
-	out.WriteString("</skills>\n")
-	if out.Len() <= maxBytes {
-		return out.String()
-	}
-	return truncateUTF8(out.String(), maxBytes)
+	return RenderCatalog(doc.Skills, maxBytes), nil
 }
 
 func load(path string) (*document, error) {
@@ -482,7 +484,8 @@ func proposalIndex(proposals []Proposal, id string) int {
 	return -1
 }
 
-func latestVersion(skill Skill) int {
+// LatestVersion reports the newest version number on a skill.
+func LatestVersion(skill Skill) int {
 	version := 0
 	for _, candidate := range skill.Versions {
 		if candidate.Version > version {

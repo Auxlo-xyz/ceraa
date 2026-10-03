@@ -137,7 +137,11 @@ func TestTheCacheSeamSplitsStableFromVolatile(t *testing.T) {
 	}
 
 	cached, uncached := strings.Join(parts[:stable], "\n\n"), strings.Join(parts[stable:], "\n\n")
-	for _, want := range []string{"<workspace>", "<approved-skills>", "/srv/projects/beta"} {
+	// The preamble is asserted alongside the catalogue on purpose. They are one
+	// part, so the instruction to read a skill and the list of skills it applies
+	// to cannot be cached apart: a prefix that carried the list but not the
+	// instruction would advertise tools the model has never been told about.
+	for _, want := range []string{"<workspace>", "skill_use", "a skill", "/srv/projects/beta"} {
 		if !strings.Contains(cached, want) {
 			t.Errorf("%s is not in the cached prefix", want)
 		}

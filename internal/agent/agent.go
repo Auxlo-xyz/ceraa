@@ -91,7 +91,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	// renderer below re-reads the file every turn.
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	liveMemory := memory.Live(memoryStore, "cli", "cli", filepath.Join(cfg.WorkspaceRootPath(), memory.DefaultMemoryFile), 4000)
-	skillContext, _ := skillStore.ActiveContext(2000)
+	skillContext, _ := skillStore.CatalogContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
 	modelConfig.PromptCacheTTL = provider.PromptCacheTTL

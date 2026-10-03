@@ -23,6 +23,7 @@ import (
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
+	"ceraa/harness/skills"
 	"ceraa/harness/tool"
 	"ceraa/internal/logger"
 )
@@ -1130,7 +1131,10 @@ func (r *Runner) systemPromptParts() ([]string, int) {
 		stableCount++
 	}
 	if strings.TrimSpace(r.cfg.SkillContext) != "" {
-		parts = append(parts, "<approved-skills>\n"+strings.TrimSpace(r.cfg.SkillContext)+"\n</approved-skills>")
+		// The preamble is part of the same stable part, not a separate one, so
+		// the instruction to read a skill and the list of skills it applies to
+		// cannot be cached apart from each other.
+		parts = append(parts, skills.CatalogPreamble+"\n\n"+strings.TrimSpace(r.cfg.SkillContext))
 		stableCount++
 	}
 	// The date changes daily and memory changes whenever the agent writes, so both
