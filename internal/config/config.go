@@ -46,11 +46,13 @@ type Config struct {
 	TitleAPIURL              string         `json:"title_api_url,omitempty"`
 	TitleModel               string         `json:"title_model,omitempty"`
 	MemoryFile               string         `json:"memory_file,omitempty"`
-	// MemoryDelivery selects where memory reaches the model: "prompt" renders a
-	// block after the cache seam, "sidekick" annotates tool results instead and
-	// leaves the system prompt fully static. Unset means prompt, so a config that
-	// predates this field keeps today's behaviour rather than silently moving
-	// memory somewhere new.
+	// MemoryDelivery selects where memory reaches the model: "cached" (default)
+	// renders a bounded block in the stable, cacheable prefix so a preference is
+	// visible on every turn at cache-hit cost; "prompt" renders the same block
+	// in the varying tail; "sidekick" annotates tool results instead and leaves
+	// the system prompt fully static. The default is safe because the extractor
+	// that writes memory only runs at compaction, so the prefix does not churn
+	// between turns.
 	MemoryDelivery string `json:"memory_delivery,omitempty"`
 	SkillFile      string `json:"skill_file,omitempty"`
 	EvaluationFile string `json:"evaluation_file,omitempty"`

@@ -83,6 +83,9 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	pcfg.PromptCacheTTL = provider.PromptCacheTTL
 	pcfg.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 	compactor := compaction.New(pcfg)
+	if learn, enabled := memory.MakeLearner(pcfg, memoryStore, "cli"); enabled {
+		compactor.Learn = learn
+	}
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.CacheKey = "ceraa-compaction-cli"

@@ -357,6 +357,15 @@ type Compactor struct {
 	// This is a diagnostic and never an input: nothing read back from here reaches
 	// the model, so turning it on cannot change what the agent does.
 	ArchiveDir string
+	// Learn, if set, is asked to mine the discarded head for durable preferences
+	// immediately after the head is archived. It receives the raw discarded
+	// messages and the summary that was produced from them, never the compacted
+	// checkpoint, because the summary is not raw enough to mine.
+	//
+	// It is optional and runs off the hot path: compaction is the only trigger,
+	// so the cost per turn is zero. A hook that fails must not fail the turnover;
+	// the implementation logs and returns.
+	Learn func(ctx context.Context, sessionID string, discarded []sessionstore.Message, summary string)
 }
 
 // New creates a compactor with default settings.
@@ -517,6 +526,9 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	// the only surviving account of this stretch, and without the head there is no
 	// way to check that account later.
 	c.writeArchive(sess.ID, len(sess.Messages), text, headMessages)
+	if c.Learn != nil {
+		c.Learn(ctx, sess.ID, headMessages, text)
+	}
 	newMessages := make([]sessionstore.Message, 0, len(recentMessages)+2)
 	if systemMessage != nil {
 		newMessages = append(newMessages, *systemMessage)

@@ -217,20 +217,13 @@ func (r *Runner) recalibrateContextLimit(meta llm.ModelMetadata, lookupErr error
 	return decision
 }
 
-// memoryContext renders memory for this turn, falling back to the startup
-// snapshot when no live renderer is configured.
+// memoryBlock renders the persisted memories for this turn, falling back to the
+// startup snapshot when no live renderer is configured.
 //
-// Placed after the static prompt and the date on purpose. Memory is the most
-// likely thing to change mid-session, so it belongs in the varying suffix where an
-// edit invalidates only the tail rather than the whole cached prefix.
-func (r *Runner) memoryContext() string {
-	// Sidekick delivery suppresses the block entirely. That is what makes the
-	// system prompt fully static: with the block gone, the date is the only
-	// remaining volatile part, so the whole prompt is one cached prefix and
-	// memory costs nothing on a turn where nothing fires.
-	if r.delivery == memory.DeliverySidekick {
-		return ""
-	}
+// It is a separate method from memoryContext so the two delivery modes that do
+// not put the block in the varying suffix can share the same render without
+// copying the fallback logic.
+func (r *Runner) memoryBlock() string {
 	if r.cfg.MemoryContextFunc != nil {
 		rendered, err := r.cfg.MemoryContextFunc()
 		if err != nil {
@@ -242,6 +235,18 @@ func (r *Runner) memoryContext() string {
 		}
 	}
 	return strings.TrimSpace(r.cfg.MemoryContext)
+}
+
+// memoryContext renders memory for the varying tail of the prompt.
+//
+// Both of the modes that do not want the block here are suppressed:
+// DeliverySidekick emits nothing into the prompt at all, and DeliveryCached
+// selects the stable prefix ahead of the seam instead.
+func (r *Runner) memoryContext() string {
+	if r.delivery == memory.DeliverySidekick || r.delivery == memory.DeliveryCached {
+		return ""
+	}
+	return r.memoryBlock()
 }
 
 // promptCacheKey identifies the reusable prefix for the provider's cache router.
@@ -1136,6 +1141,17 @@ func (r *Runner) systemPromptParts() ([]string, int) {
 		// cannot be cached apart from each other.
 		parts = append(parts, skills.CatalogPreamble+"\n\n"+strings.TrimSpace(r.cfg.SkillContext))
 		stableCount++
+	}
+	// DeliveryCached puts memory ahead of the seam. That is the one mode in
+	// which memory is always visible, including on turns with no tool call, and
+	// it is only safe here because the extractor writes memory at compaction
+	// rather than mid-session: a change rebuilds the prefix, so doing it during
+	// a turn would re-bill the whole cache every time.
+	if r.delivery == memory.DeliveryCached {
+		if rendered := r.memoryBlock(); rendered != "" {
+			parts = append(parts, rendered)
+			stableCount++
+		}
 	}
 	// The date changes daily and memory changes whenever the agent writes, so both
 	// belong past the seam, where a change costs only the part that changed.

@@ -161,6 +161,9 @@ func (s *Session) build() error {
 		return fmt.Errorf("skill store: %w", err)
 	}
 	evaluationStore, err := newEvaluationStore(s.cfg)
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
+		compactor.Learn = learn
+	}
 	if err != nil {
 		return err
 	}

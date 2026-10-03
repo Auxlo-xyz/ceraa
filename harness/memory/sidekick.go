@@ -25,17 +25,36 @@ const (
 	// moves before the seam, including the date, so the whole prompt is one
 	// cached block and memory costs nothing on a turn where nothing fires.
 	DeliverySidekick Delivery = "sidekick"
+	// DeliveryCached renders a small, ranked memory block and places it in the
+	// stable, cacheable prefix rather than past the seam. The block is the
+	// always-on preference baseline: visible even on turns with no tool call,
+	// which is the shape conversational preference learning needs and the one
+	// the sidekick mode deliberately does not provide.
+	//
+	// It is only safe because the extractor writes memory rarely: a change
+	// invalidates the prefix, so this mode wants writes to land at compaction,
+	// not mid-turn.
+	DeliveryCached Delivery = "cached"
 )
 
-// ParseDelivery maps a configured value onto a mode, defaulting to the prompt
-// path so an unset or misspelt value keeps today's behaviour rather than silently
-// changing where memory goes.
+// ParseDelivery maps a configured value onto a mode.
+//
+// Unset means cached: the block sits in the stable, cacheable prefix, so a
+// preference is visible on every turn and pays only cache-hit cost. That is
+// the behaviour preference learning needs, and it is the right default because
+// the extractor that writes memory now runs at compaction, not mid-session, so
+// the block does not churn. "prompt" and "sidekick" remain available as
+// overrides.
 func ParseDelivery(value string) Delivery {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case string(DeliverySidekick), "tool", "tool_output", "tools":
 		return DeliverySidekick
-	default:
+	case string(DeliveryPrompt), "tail":
 		return DeliveryPrompt
+	case string(DeliveryCached), "cache", "prefix":
+		return DeliveryCached
+	default:
+		return DeliveryCached
 	}
 }
 

@@ -134,6 +134,9 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
 	compactor := newCompactor(cfg, providerID, sessionID)
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
+		compactor.Learn = learn
+	}
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
 	// Startup snapshot, kept as a fallback and as the first render. The live

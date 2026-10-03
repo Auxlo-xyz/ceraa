@@ -157,16 +157,31 @@ func TestTheRationaleIsBounded(t *testing.T) {
 
 // A missing store must read as "nothing to say", and an unreadable one must not
 // be reported as an empty store. The caller distinguishes the two.
-func TestParseDeliveryDefaultsToTheExistingBehaviour(t *testing.T) {
-	if got := ParseDelivery(""); got != DeliveryPrompt {
-		t.Errorf("unset delivery = %q, want prompt", got)
+func TestParseDeliveryDefaultsToCache(t *testing.T) {
+	// Cache changed from "an override you had to ask for" to the default on the
+	// same day the extractor moved memory writes to compaction. Putting the
+	// block in the prefix only thrashes the cache while writes are frequent, so
+	// the safe default before extraction existed was "prompt". Now writes are
+	// rare, which is what makes the prefix the cheap default.
+	if got := ParseDelivery(""); got != DeliveryCached {
+		t.Errorf("unset delivery = %q, want cached", got)
 	}
-	if got := ParseDelivery("nonsense"); got != DeliveryPrompt {
-		t.Errorf("a misspelt value = %q, want prompt rather than a silent change of where memory goes", got)
+	if got := ParseDelivery("nonsense"); got != DeliveryCached {
+		t.Errorf("a misspelt value = %q, want cached rather than a silent change of where memory goes", got)
 	}
 	for _, spelling := range []string{"sidekick", "SIDEKICK", " tool ", "tool_output"} {
 		if got := ParseDelivery(spelling); got != DeliverySidekick {
 			t.Errorf("%q = %q, want sidekick", spelling, got)
+		}
+	}
+	for _, spelling := range []string{"prompt", "tail"} {
+		if got := ParseDelivery(spelling); got != DeliveryPrompt {
+			t.Errorf("%q = %q, want prompt", spelling, got)
+		}
+	}
+	for _, spelling := range []string{"cached", "cache", "prefix"} {
+		if got := ParseDelivery(spelling); got != DeliveryCached {
+			t.Errorf("%q = %q, want cached", spelling, got)
 		}
 	}
 }
