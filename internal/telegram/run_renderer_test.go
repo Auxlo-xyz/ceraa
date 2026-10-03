@@ -204,6 +204,8 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	var mu sync.Mutex
 	edits := make(map[int][]string)
+	drafts := make([]string, 0)
+	posted := make([]string, 0)
 	richSends := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -224,10 +226,24 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, messageID)))
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/sendMessageDraft") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			text, _ := body["text"].(string)
+			mu.Lock()
+			drafts = append(drafts, text)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["parse_mode"] == "HTML" {
+				text, _ := body["text"].(string)
+				mu.Lock()
+				posted = append(posted, text)
+				mu.Unlock()
 				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":15}}`))
 			} else {
 				_, _ = w.Write([]byte(`{"ok":true}`))
@@ -262,18 +278,39 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	renderer.close()
 
 	mu.Lock()
-	thoughtEdits := append([]string(nil), edits[15]...)
+	streamedThought := append([]string(nil), drafts...)
+	finalThought := append([]string(nil), posted...)
 	assistantEdits := append([]string(nil), edits[16]...)
+	thoughtEdits := append([]string(nil), edits[15]...)
 	sendCount := richSends
 	mu.Unlock()
 	if sendCount < 2 {
 		t.Fatalf("rich message sends = %d, want initial and replacement", sendCount)
 	}
-	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], "<b>Thought</b>") || !strings.Contains(thoughtEdits[0], "first step") {
-		t.Fatalf("thought edits = %#v", thoughtEdits)
+	// The thought rides a draft while the run is live: revising one draft_id is
+	// animated, where rewriting a message on every tick is what flickered.
+	if len(streamedThought) == 0 {
+		t.Fatal("the streaming thought never reached a draft")
 	}
-	if !strings.Contains(thoughtEdits[len(thoughtEdits)-1], "first step\nsecond step") || strings.Contains(thoughtEdits[len(thoughtEdits)-1], "▌") {
-		t.Fatalf("final thought edit = %#v", thoughtEdits)
+	if !strings.Contains(streamedThought[0], "<blockquote expandable>") || !strings.Contains(streamedThought[0], "<b>Thought</b>") || !strings.Contains(streamedThought[0], "first step") {
+		t.Fatalf("first thought draft = %#v", streamedThought[0])
+	}
+	if !strings.Contains(streamedThought[len(streamedThought)-1], "first step\nsecond step") {
+		t.Fatalf("last thought draft = %#v", streamedThought[len(streamedThought)-1])
+	}
+	if len(thoughtEdits) != 0 {
+		t.Fatalf("the draft was rewritten with editMessageText: %#v", thoughtEdits)
+	}
+	// A draft is a preview, so the finished thought has to be posted to outlive
+	// it. Posted once, in full, with the cursor gone.
+	if len(finalThought) != 1 {
+		t.Fatalf("published thoughts = %#v, want exactly one", finalThought)
+	}
+	if !strings.Contains(finalThought[0], "<blockquote expandable>") || !strings.Contains(finalThought[0], "first step\nsecond step") {
+		t.Fatalf("published thought = %#v", finalThought[0])
+	}
+	if strings.Contains(finalThought[0], "▌") {
+		t.Fatalf("published thought kept the streaming cursor: %#v", finalThought[0])
 	}
 	if len(assistantEdits) == 0 || assistantEdits[len(assistantEdits)-1] != "done" {
 		t.Fatalf("assistant edits = %#v", assistantEdits)

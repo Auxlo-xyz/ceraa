@@ -57,6 +57,15 @@ type runRenderer struct {
 	// the remaining ticks take the plain path without paying for a round trip
 	// that is known to come back 400.
 	richEditUnavailable bool
+	// thoughtDraft is the id of the sendMessageDraft carrying the streaming
+	// thought, stable for the life of the run so revising it animates instead of
+	// re-rendering. It is a draft id, not a message id: there is nothing to edit
+	// or delete, which is why a finished thought is posted rather than edited.
+	thoughtDraftID int64
+	// thoughtDraft marks the transport already chosen. Exactly one of
+	// thoughtDraft, thoughtDraftOff and thoughtID is ever live for a run.
+	thoughtDraft    bool
+	thoughtDraftOff bool
 }
 
 // truncateStatus shortens a status line to fit a button label.
@@ -78,6 +87,10 @@ func newRunRenderer(token string, chatID int64) *runRenderer {
 		chatID:       chatID,
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
+		// Kept inside the integer range on purpose: draft_id is an ordinary
+		// Bot API Integer, and the only property that matters is that it stays
+		// put for this run while remaining clear of every other run's.
+		thoughtDraftID: time.Now().UnixNano()%2147483647 + 1,
 	}
 	// The rich branch is the one production takes: the endpoint works, so the
 	// plain fallback below is dead in practice. Attaching the keyboard only to the
@@ -135,10 +148,23 @@ func (r *runRenderer) renderCurrentState() {
 		messageID := r.messageID
 		text := r.streamTextLocked()
 		thoughtID := r.thoughtID
+		thoughtDraft := r.thoughtDraft
 		thoughtText := r.thoughtTextLocked()
 		skipStream := text == r.sentStream
-		skipThought := thoughtID != 0 && thoughtText == r.sentThought
+		skipThought := thoughtText == r.sentThought
 		r.mu.Unlock()
+		if thoughtText != "" && !skipThought && thoughtID == 0 && thoughtDraft {
+			// Revising a draft animates; editing a message replaces it and the
+			// client redraws the whole thing, which is the flicker. The draft
+			// has no message id, so there is nothing to edit here.
+			if err := sendTelegramDraft(r.token, r.chatID, r.thoughtDraftID, thoughtText); err != nil {
+				logger.Warn("Telegram thought draft update failed: " + err.Error())
+			} else {
+				r.mu.Lock()
+				r.sentThought = thoughtText
+				r.mu.Unlock()
+			}
+		}
 		if thoughtID != 0 && thoughtText != "" && !skipThought {
 			if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
 				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
@@ -266,6 +292,9 @@ func (r *runRenderer) reasoning(value string) {
 	thoughtID := r.thoughtID
 	oldMessageID := r.messageID
 	assistantPreview := r.streamTextLocked()
+	thoughtDraft := r.thoughtDraft
+	thoughtDraftOff := r.thoughtDraftOff
+	thought := r.thought
 	shouldStream := now.Sub(r.lastThought) >= 300*time.Millisecond
 	if shouldStream {
 		r.lastThought = now
@@ -275,7 +304,44 @@ func (r *runRenderer) reasoning(value string) {
 	if !shouldStream {
 		return
 	}
-	if thoughtID == 0 {
+	if thoughtID == 0 && !thoughtDraft {
+		// The transport is decided once, on the first delta, and the draft is
+		// opened before anything else: every branch below sends a message, and
+		// a message clears the draft the moment it lands.
+		if !thoughtDraftOff {
+			seed := formatThought(thought, true)
+			if err := sendTelegramDraft(r.token, r.chatID, r.thoughtDraftID, seed); err != nil {
+				logger.Warn("Telegram thought draft refused, streaming the thought as a message: " + err.Error())
+				r.mu.Lock()
+				r.thoughtDraftOff = true
+				r.mu.Unlock()
+			} else {
+				r.mu.Lock()
+				r.thoughtDraft = true
+				// Seeded because it is known byte for byte: this is the text the
+				// API just accepted, so the first signal has nothing to write.
+				// Leaving it empty cost a guaranteed identical edit, answered
+				// "message is not modified", on every run that thought.
+				r.sentThought = seed
+				r.mu.Unlock()
+				assistantMessageID := r.replaceAssistantPreview(oldMessageID, assistantPreview)
+				if assistantMessageID == 0 {
+					return
+				}
+				r.mu.Lock()
+				r.messageID = assistantMessageID
+				seed = formatThought(r.thought, true)
+				r.mu.Unlock()
+				// Reopened: the replacement above just cleared it.
+				if err := sendTelegramDraft(r.token, r.chatID, r.thoughtDraftID, seed); err != nil {
+					logger.Warn("Telegram thought draft update failed: " + err.Error())
+				}
+				r.signalStream()
+				return
+			}
+		}
+		// Message path: posted before the assistant so the thought sits above
+		// the answer in the chat.
 		thoughtMessageID, err := sendHTMLMessage(r.token, r.chatID, formatThought(value, true))
 		if err != nil {
 			thoughtMessageID = sendPlainMessage(r.token, r.chatID, thoughtFallbackText(formatThought(value, true)))
@@ -283,17 +349,9 @@ func (r *runRenderer) reasoning(value string) {
 		if thoughtMessageID == 0 {
 			return
 		}
-		assistantMessageID, assistantErr := sendRichMessage(r.token, r.chatID, assistantPreview)
-		if assistantErr != nil {
-			assistantMessageID = sendWithKeyboard(r.token, r.chatID, assistantPreview, nil)
-		}
+		assistantMessageID := r.replaceAssistantPreview(oldMessageID, assistantPreview)
 		if assistantMessageID == 0 {
 			return
-		}
-		if oldMessageID != 0 && oldMessageID != assistantMessageID {
-			if deleteErr := deleteTelegramMessage(r.token, r.chatID, oldMessageID); deleteErr != nil {
-				logger.Warn("Telegram assistant preview replacement cleanup failed: " + deleteErr.Error())
-			}
 		}
 		r.mu.Lock()
 		r.thoughtID = thoughtMessageID
@@ -306,6 +364,27 @@ func (r *runRenderer) reasoning(value string) {
 		// because it was redundant no test could tell it from its absence.
 	}
 	r.signalStream()
+}
+
+// replaceAssistantPreview swaps the run's placeholder message for one carrying
+// the current preview and drops the old message.
+//
+// It returns 0 when the swap did not happen, which is the caller's signal to
+// stop: the run would otherwise carry two assistant messages, one of them stale.
+func (r *runRenderer) replaceAssistantPreview(oldMessageID int, preview string) int {
+	messageID, err := sendRichMessage(r.token, r.chatID, preview)
+	if err != nil {
+		messageID = sendWithKeyboard(r.token, r.chatID, preview, nil)
+	}
+	if messageID == 0 {
+		return 0
+	}
+	if oldMessageID != 0 && oldMessageID != messageID {
+		if deleteErr := deleteTelegramMessage(r.token, r.chatID, oldMessageID); deleteErr != nil {
+			logger.Warn("Telegram assistant preview replacement cleanup failed: " + deleteErr.Error())
+		}
+	}
+	return messageID
 }
 
 func (r *runRenderer) tool(callID, value string) {
@@ -366,6 +445,7 @@ func (r *runRenderer) finish(answer string) {
 	r.mu.Unlock()
 	if stopped {
 		r.close()
+		r.publishStoppedThought()
 		return
 	}
 	r.close()
@@ -376,14 +456,39 @@ func (r *runRenderer) finish(answer string) {
 	thought := r.thought
 	r.mu.Unlock()
 	if stopped {
+		r.publishStoppedThought()
 		return
 	}
-	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
+	// thoughtID is 0 when the thought rode a draft, and publishThoughtMessage
+	// treats 0 as "nothing to edit" and posts instead. A draft has no message of
+	// its own to update, and it is about thirty seconds old by now.
+	if strings.TrimSpace(thought) != "" {
 		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
 			logger.Warn("Telegram final thought publication failed")
 		}
 	}
 	r.publishFinalAnswer(answer, messageID)
+}
+
+// publishStoppedThought keeps a streamed thought from expiring with its draft.
+//
+// A thought posted as a message survives a stop untouched, which is why stopping
+// never used to cost the reasoning that had already happened. A draft is a
+// preview rather than a message, so without this the same stop would quietly
+// age it out and leave nothing behind. It is posted in the streaming form,
+// cursor and all, because that is the honest record of where it got to.
+func (r *runRenderer) publishStoppedThought() {
+	r.mu.Lock()
+	thoughtID := r.thoughtID
+	draft := r.thoughtDraft
+	thought := r.thought
+	r.mu.Unlock()
+	if thoughtID != 0 || !draft || strings.TrimSpace(thought) == "" {
+		return
+	}
+	if !r.publishThoughtMessage(formatThought(thought, true), 0) {
+		logger.Warn("Telegram stopped thought publication failed")
+	}
 }
 
 // publishFinalAnswer delivers the answer and makes sure the keyboard follows it.
@@ -462,9 +567,10 @@ func (r *runRenderer) fail() {
 	thought := r.thought
 	r.mu.Unlock()
 	if stopped {
+		r.publishStoppedThought()
 		return
 	}
-	if thoughtID != 0 && strings.TrimSpace(thought) != "" {
+	if strings.TrimSpace(thought) != "" {
 		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
 			logger.Warn("Telegram failed thought publication failed")
 		}
@@ -641,6 +747,56 @@ func editTelegramHTMLMessage(token string, chatID int64, messageID int, text str
 
 func sendHTMLMessage(token string, chatID int64, text string) (int, error) {
 	return sendMessagePayload(token, chatID, text, "HTML", nil)
+}
+
+// sendTelegramDraft streams one revision of a partial message.
+//
+// sendMessageDraft is Bot API 9.3's purpose-built streaming method: revising
+// the same draft_id is animated, where editMessageText replaces the whole
+// message and the client redraws it from scratch. That redraw is the flicker -
+// the documented behaviour of a preview streamed by repeated edits is "visible
+// message flickering on each edit" - and it is what the thought block was doing
+// on every tick.
+//
+// The draft is a preview rather than a message. It has no message_id to edit,
+// it expires after about thirty seconds, and it is cleared by any other message
+// the bot sends, so publishing a thought still ends in a send. It is documented
+// for private chats, which is why the caller latches onto the message path on a
+// refusal instead of treating the thought as lost.
+func sendTelegramDraft(token string, chatID int64, draftID int64, text string) error {
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"draft_id":   draftID,
+		"text":       text,
+		"parse_mode": "HTML",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := doTelegramPost(api("sendMessageDraft", token), body)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("sendMessageDraft: empty response")
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("sendMessageDraft response: %w", err)
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("sendMessageDraft response: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("sendMessageDraft: %s", result.Description)
+	}
+	return nil
 }
 
 func thoughtFallbackText(value string) string {
