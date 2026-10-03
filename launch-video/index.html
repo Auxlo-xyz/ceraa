@@ -1,0 +1,1092 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Ceraa - launch</title>
+    <script src="assets/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Ceraa Mono";
+        src: url("assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+      }
+      @font-face {
+        font-family: "Ceraa Mono";
+        src: url("assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+      }
+      @font-face {
+        font-family: "Ceraa Sans";
+        src: url("assets/fonts/DejaVuSans.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+      }
+      @font-face {
+        font-family: "Ceraa Sans";
+        src: url("assets/fonts/DejaVuSans-Bold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+      }
+
+      :root {
+        --bg: #000;
+        --surface: #0c0c0c;
+        --raised: #161616;
+        --line: #1f1f1f;
+        --fill: #1f1f1f;
+        --text: #ededed;
+        --muted: #8a8a8a;
+        --accent: #3b6ff5;
+        --warn: #d9a441;
+        --r-pill: 999px;
+        --r-card: 16px;
+        --r-input: 10px;
+        --mono: "Ceraa Mono", monospace;
+        --sans: "Ceraa Sans", sans-serif;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+      }
+
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        font-family: var(--sans);
+        color: var(--text);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* Untimed full-bleed backdrop: survives every hard cut. */
+      #backdrop {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(1400px 900px at 50% 40%, #0b0b0b 0%, #000 68%),
+          var(--bg);
+      }
+
+      .scene {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+
+      .mono {
+        font-family: var(--mono);
+      }
+
+      /* ---------- Scene 1 : terminal hook ---------- */
+      #s1-term {
+        position: absolute;
+        left: 400px;
+        top: 250px;
+        width: 1120px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-card);
+        overflow: hidden;
+        will-change: transform, opacity;
+      }
+      .term-hd {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        height: 54px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--line);
+        background: var(--raised);
+      }
+      .term-title {
+        font-family: var(--mono);
+        font-size: 21px;
+        color: var(--muted);
+        letter-spacing: 0.02em;
+      }
+      .term-live {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        font-family: var(--mono);
+        font-size: 19px;
+        color: var(--text);
+        background: var(--fill);
+        border: 1px solid var(--line);
+        border-radius: var(--r-pill);
+        padding: 5px 15px;
+      }
+      .term-live i {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--accent);
+        display: block;
+      }
+      .term-bd {
+        padding: 34px 36px 40px;
+        font-family: var(--mono);
+        font-size: 27px;
+        line-height: 1.85;
+        white-space: nowrap;
+      }
+      .term-ln {
+        height: 50px;
+        display: flex;
+        align-items: center;
+        gap: 0;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .term-ln.base {
+        opacity: 1;
+      }
+      .term-ln .pr {
+        color: var(--accent);
+        margin-right: 16px;
+      }
+      .term-ln .out {
+        color: var(--text);
+      }
+      .term-ln .meta {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 23px;
+        padding-left: 40px;
+      }
+      .term-ln.sub {
+        padding-left: 44px;
+        color: var(--muted);
+      }
+      .term-ln .ok {
+        color: var(--text);
+        margin-right: 16px;
+      }
+      #s1-typed {
+        white-space: pre;
+      }
+      #s1-caret {
+        display: inline-block;
+        width: 15px;
+        height: 31px;
+        background: var(--accent);
+        vertical-align: -7px;
+        opacity: 0;
+        will-change: opacity;
+      }
+
+      /* ---------- Scene 2 : claim ---------- */
+      .claim {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      .claim-line {
+        font-size: 82px;
+        font-weight: 700;
+        letter-spacing: -0.035em;
+        line-height: 1.15;
+        color: var(--text);
+        will-change: transform, opacity;
+      }
+      #s2-b {
+        color: var(--text);
+        margin-top: 14px;
+      }
+      #s2-rule {
+        width: 520px;
+        height: 3px;
+        background: var(--accent);
+        margin-top: 44px;
+        will-change: transform;
+      }
+      #s2-sub {
+        margin-top: 34px;
+        font-family: var(--mono);
+        font-size: 30px;
+        color: var(--muted);
+        will-change: transform, opacity;
+      }
+
+      /* ---------- Scene 3 : durable ---------- */
+      .s3 {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      #s3-eyebrow {
+        font-family: var(--mono);
+        font-size: 23px;
+        letter-spacing: 0.34em;
+        color: var(--muted);
+        will-change: transform, opacity;
+      }
+      #s3-h {
+        margin-top: 22px;
+        font-size: 64px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: var(--text);
+        will-change: transform, opacity;
+      }
+      #s3-card {
+        margin-top: 52px;
+        width: 1060px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-card);
+        padding: 30px 40px 34px;
+        position: relative;
+        text-align: left;
+        will-change: transform, opacity;
+      }
+      .s3-row {
+        display: flex;
+        align-items: center;
+        height: 72px;
+        border-bottom: 1px solid var(--line);
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .s3-row:last-of-type {
+        border-bottom: 0;
+      }
+      .s3-node {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        border: 2px solid var(--muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--mono);
+        font-size: 17px;
+        color: var(--text);
+        margin-right: 26px;
+        flex: 0 0 auto;
+      }
+      .s3-ck {
+        display: inline-block;
+        will-change: transform, opacity;
+      }
+      .s3-key {
+        font-family: var(--mono);
+        font-size: 27px;
+        color: var(--text);
+      }
+      .s3-val {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 24px;
+        color: var(--muted);
+        position: relative;
+        width: 340px;
+        text-align: right;
+      }
+      .s3-val span {
+        position: absolute;
+        right: 0;
+        top: 0;
+        white-space: nowrap;
+      }
+      #s3-v1 {
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      #s3-v2 {
+        opacity: 0;
+        color: var(--accent);
+        will-change: transform, opacity;
+      }
+      .s3-pills {
+        display: flex;
+        gap: 18px;
+        margin-top: 30px;
+        justify-content: center;
+        height: 60px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 11px;
+        font-family: var(--mono);
+        font-size: 24px;
+        border-radius: var(--r-pill);
+        padding: 13px 26px;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .pill-warn {
+        color: var(--warn);
+        background: #17140d;
+        border: 1px solid #2c2415;
+      }
+      .pill-acc {
+        color: var(--text);
+        background: var(--fill);
+        border: 1px solid var(--line);
+      }
+      .pill-acc i {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--accent);
+        display: block;
+      }
+      #s3-foot {
+        margin-top: 40px;
+        font-family: var(--mono);
+        font-size: 27px;
+        color: var(--muted);
+        will-change: transform, opacity;
+      }
+
+      /* ---------- Scene 4 : comparison split ---------- */
+      .s4-glow {
+        position: absolute;
+        width: 900px;
+        height: 900px;
+        border-radius: 50%;
+        top: 300px;
+        opacity: 0.3;
+        will-change: opacity;
+      }
+      #s4-glow-a {
+        left: 70px;
+        background: radial-gradient(circle, rgba(140, 150, 170, 0.16) 0%, rgba(0, 0, 0, 0) 62%);
+      }
+      #s4-glow-b {
+        right: 70px;
+        background: radial-gradient(circle, rgba(59, 111, 245, 0.2) 0%, rgba(0, 0, 0, 0) 62%);
+      }
+      #s4-title {
+        position: absolute;
+        top: 132px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-size: 74px;
+        font-weight: 700;
+        letter-spacing: -0.032em;
+        color: var(--text);
+        will-change: transform, opacity;
+      }
+      #s4-title .acc {
+        color: var(--accent);
+      }
+      #s4-stage {
+        position: absolute;
+        top: 300px;
+        left: 260px;
+        width: 1400px;
+        height: 470px;
+        perspective: 1600px;
+        display: flex;
+        gap: 120px;
+      }
+      .s4-card {
+        position: relative;
+        width: 640px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-card);
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      #s4-l {
+        box-shadow: 34px 14px 76px rgba(0, 0, 0, 0.78);
+      }
+      #s4-r {
+        box-shadow: -34px 14px 76px rgba(0, 0, 0, 0.78);
+      }
+      .s4-hd {
+        height: 52px;
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        padding: 0 22px;
+        background: var(--raised);
+        border-bottom: 1px solid var(--line);
+        border-radius: var(--r-card) var(--r-card) 0 0;
+        font-family: var(--mono);
+        font-size: 20px;
+        color: var(--muted);
+      }
+      .s4-hd .d {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--muted);
+        display: block;
+      }
+      .s4-bd {
+        padding: 30px 32px 34px;
+        min-height: 340px;
+      }
+      .s4-cli .ln {
+        font-family: var(--mono);
+        font-size: 26px;
+        line-height: 2.05;
+        color: var(--text);
+        white-space: nowrap;
+      }
+      .s4-cli .ln .pr {
+        color: var(--accent);
+        margin-right: 14px;
+      }
+      .s4-cli .ln.dim {
+        color: var(--muted);
+      }
+      .s4-cli .ln .ok {
+        margin-right: 14px;
+      }
+      .s4-tg .bub {
+        font-family: var(--mono);
+        font-size: 23px;
+        padding: 14px 22px;
+        border-radius: var(--r-input);
+        margin-bottom: 16px;
+        width: fit-content;
+        max-width: 100%;
+        white-space: nowrap;
+      }
+      .s4-tg .bub-me {
+        background: var(--fill);
+        color: var(--text);
+        margin-left: auto;
+      }
+      .s4-tg .bub-bot {
+        background: transparent;
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .s4-tg .miniapp {
+        margin-top: 26px;
+        font-family: var(--mono);
+        font-size: 22px;
+        text-align: center;
+        padding: 16px 0;
+        border-radius: var(--r-input);
+        border: 1px solid var(--line);
+        background: var(--raised);
+        color: var(--text);
+      }
+      .s4-badge {
+        position: absolute;
+        bottom: 40px;
+        font-family: var(--mono);
+        font-size: 23px;
+        padding: 12px 28px;
+        border-radius: var(--r-pill);
+        background: var(--fill);
+        border: 1px solid var(--line);
+        color: var(--text);
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      #s4-badge-l {
+        left: -34px;
+      }
+      #s4-badge-r {
+        right: -34px;
+      }
+      #s4-foot {
+        position: absolute;
+        bottom: 150px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-family: var(--mono);
+        font-size: 25px;
+        color: var(--muted);
+        will-change: transform, opacity;
+      }
+
+      /* ---------- Scene 5 : CTA ---------- */
+      .s5 {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      #s5-h {
+        font-size: 68px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: var(--text);
+        will-change: transform, opacity;
+      }
+      #s5-pill {
+        margin-top: 60px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0;
+        font-family: var(--mono);
+        font-size: 44px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-pill);
+        padding: 26px 52px;
+        color: var(--text);
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      #s5-pill .pr {
+        color: var(--accent);
+        margin-right: 22px;
+      }
+      #s5-typed {
+        white-space: pre;
+      }
+      #s5-caret {
+        display: inline-block;
+        width: 19px;
+        height: 44px;
+        background: var(--accent);
+        vertical-align: -9px;
+        margin-left: 6px;
+        opacity: 0;
+        will-change: opacity;
+      }
+      #s5-meta {
+        margin-top: 46px;
+        font-family: var(--mono);
+        font-size: 25px;
+        color: var(--muted);
+        will-change: transform, opacity;
+      }
+      #s5-chips {
+        margin-top: 40px;
+        display: flex;
+        gap: 16px;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 21px;
+        color: var(--muted);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--r-pill);
+        padding: 11px 24px;
+      }
+
+      /* ---------- Scene 6 : brand outro ---------- */
+      .s6 {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      #s6-glow {
+        position: absolute;
+        width: 1100px;
+        height: 760px;
+        top: 210px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(59, 111, 245, 0.14) 0%, rgba(0, 0, 0, 0) 64%);
+        opacity: 0;
+        will-change: opacity;
+      }
+      #s6-face {
+        position: relative;
+        width: 300px;
+        height: 300px;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      #s6-face img {
+        width: 300px;
+        height: 300px;
+        display: block;
+      }
+      #s6-word {
+        position: relative;
+        margin-top: 12px;
+        font-size: 124px;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+        color: var(--text);
+        will-change: transform, opacity;
+      }
+      #s6-rule {
+        position: relative;
+        width: 300px;
+        height: 3px;
+        background: var(--accent);
+        margin-top: 34px;
+        will-change: transform;
+      }
+      #s6-tag {
+        position: relative;
+        margin-top: 34px;
+        font-family: var(--mono);
+        font-size: 31px;
+        color: var(--muted);
+        will-change: transform, opacity;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="45"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div id="backdrop"></div>
+
+      <!-- Scene 1 : the ask, worked in a real terminal -->
+      <section id="sc1" class="clip scene" data-start="0" data-duration="7" data-track-index="0">
+        <div id="s1-term">
+          <div class="term-hd">
+            <span class="term-title">ceraa : chat</span>
+            <span class="term-live"><i></i>live</span>
+          </div>
+          <div class="term-bd">
+            <div class="term-ln base">
+              <span class="pr">$</span><span id="s1-typed"></span><span id="s1-caret"></span>
+            </div>
+            <div class="term-ln" id="s1-l2">
+              <span class="out">&#9656; planning</span><span class="meta">1.24s</span>
+            </div>
+            <div class="term-ln" id="s1-l3">
+              <span class="out">&#9656; go test ./harness/...</span><span class="meta">2.10s</span>
+            </div>
+            <div class="term-ln sub" id="s1-l4"><span>14 pass, 0 fail</span></div>
+            <div class="term-ln" id="s1-l5">
+              <span class="ok">&#10003;</span><span class="out">checkpoint saved</span
+              ><span class="meta">3.05s</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 2 : the claim -->
+      <section id="sc2" class="clip scene" data-start="7" data-duration="6.5" data-track-index="1">
+        <div class="claim">
+          <div class="claim-line" id="s2-a">You closed the terminal.</div>
+          <div class="claim-line" id="s2-b">The session didn&rsquo;t.</div>
+          <div id="s2-rule"></div>
+          <div id="s2-sub">durable by default</div>
+        </div>
+      </section>
+
+      <!-- Scene 3 : durable execution -->
+      <section id="sc3" class="clip scene" data-start="13.5" data-duration="11.5" data-track-index="2">
+        <div class="s3">
+          <div id="s3-eyebrow">DURABLE EXECUTION</div>
+          <div id="s3-h">Where it stops, it starts again.</div>
+          <div id="s3-card">
+            <div class="s3-row" id="s3-r1">
+              <span class="s3-node"><span class="s3-ck">&#10003;</span></span>
+              <span class="s3-key">session.json</span>
+              <span class="s3-val">written</span>
+            </div>
+            <div class="s3-row" id="s3-r2">
+              <span class="s3-node"><span class="s3-ck">&#10003;</span></span>
+              <span class="s3-key">step 3 / 12</span>
+              <span class="s3-val">saved</span>
+            </div>
+            <div class="s3-row" id="s3-r3">
+              <span class="s3-node"><span class="s3-ck">&#10003;</span></span>
+              <span class="s3-key">tool: bash</span>
+              <span class="s3-val">result recorded</span>
+            </div>
+            <div class="s3-row" id="s3-r4">
+              <span class="s3-node"><span class="s3-ck">&#10003;</span></span>
+              <span class="s3-key">checkpoint</span>
+              <span class="s3-val"
+                ><span id="s3-v1">@ step 9</span><span id="s3-v2">resumed @ step 9</span></span
+              >
+            </div>
+          </div>
+          <div class="s3-pills">
+            <span class="pill pill-warn" id="s3-warn">connection lost</span>
+            <span class="pill pill-acc" id="s3-acc"><i></i>resumed from checkpoint</span>
+          </div>
+          <div id="s3-foot">sessions, steps, tools, checkpoints: all JSON on disk</div>
+        </div>
+      </section>
+
+      <!-- Scene 4 : one engine, two surfaces -->
+      <section id="sc4" class="clip scene" data-start="25" data-duration="10.5" data-track-index="3">
+        <div class="s4-glow" id="s4-glow-a" data-layout-allow-overflow></div>
+        <div class="s4-glow" id="s4-glow-b" data-layout-allow-overflow></div>
+        <div id="s4-title">One engine. <span class="acc">Two surfaces.</span></div>
+        <div id="s4-stage">
+          <div class="s4-card" id="s4-l">
+            <div class="s4-hd"><span class="d"></span>terminal</div>
+            <div class="s4-bd s4-cli">
+              <div class="ln"><span class="pr">$</span>ceraa start</div>
+              <div class="ln dim">&#9679; long-poll connected</div>
+              <div class="ln dim">&#9679; workspace selected</div>
+              <div class="ln"><span class="ok">&#10003;</span>ready for commands</div>
+            </div>
+            <span class="s4-badge" id="s4-badge-l">CLI</span>
+          </div>
+          <div class="s4-card" id="s4-r">
+            <div class="s4-hd"><span class="d"></span>telegram</div>
+            <div class="s4-bd s4-tg">
+              <div class="bub bub-me">fix the failing test</div>
+              <div class="bub bub-bot">&#9656; planning</div>
+              <div class="bub bub-bot">&#10003; checkpoint saved</div>
+              <div class="miniapp">Open Mini App</div>
+            </div>
+            <span class="s4-badge" id="s4-badge-r">Telegram</span>
+          </div>
+        </div>
+        <div id="s4-foot">shared runner: harness/coordinator.Runner</div>
+      </section>
+
+      <!-- Scene 5 : one command -->
+      <section id="sc5" class="clip scene" data-start="35.5" data-duration="5.5" data-track-index="4">
+        <div class="s5">
+          <div id="s5-h">Start in one command.</div>
+          <div id="s5-pill">
+            <span class="pr">$</span><span id="s5-typed"></span><span id="s5-caret"></span>
+          </div>
+          <div id="s5-meta">github.com/Auxlo-xyz/ceraa</div>
+          <div id="s5-chips">
+            <span class="chip">Go</span>
+            <span class="chip">Telegram</span>
+            <span class="chip">MIT</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 6 : brand outro -->
+      <section id="sc6" class="clip scene" data-start="41" data-duration="4" data-track-index="5">
+        <div class="s6">
+          <div id="s6-glow"></div>
+          <div id="s6-face"><img src="assets/mascot-alpha.png" alt="Ceraa" /></div>
+          <div id="s6-word">Ceraa</div>
+          <div id="s6-rule"></div>
+          <div id="s6-tag">Async-first coding agent with a durable Telegram bridge.</div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+
+      /* Character-by-character typing: the visible text is a pure function of
+         the tween value, so a seek to any time renders the right substring. */
+      function typeAt(sel, text, start, cps) {
+        const el = document.querySelector(sel);
+        const st = { n: 0 };
+        tl.to(
+          st,
+          {
+            n: text.length,
+            duration: text.length / cps,
+            ease: "none",
+            onUpdate() {
+              el.textContent = text.slice(0, Math.round(st.n));
+            },
+          },
+          start,
+        );
+      }
+
+      /* Caret: solid while typing, then a square-wave blink driven by timeline
+         time (never wall-clock), so every rendered frame is reproducible. */
+      function caret(sel, showAt, typeEnd, sceneEnd) {
+        const el = document.querySelector(sel);
+        const span = sceneEnd - showAt;
+        const cycles = Math.max(1, Math.round(span / 0.8));
+        const st = { p: 0 };
+        tl.to(
+          st,
+          {
+            p: Math.PI * 2 * cycles,
+            duration: span,
+            ease: "none",
+            onUpdate() {
+              const t = tl.time();
+              const solid = t >= showAt && t < typeEnd;
+              el.style.opacity = solid || Math.sin(st.p) > 0 ? "1" : "0";
+            },
+          },
+          showAt,
+        );
+      }
+
+      /* ---------------- Scene 1 ---------------- */
+      tl.fromTo(
+        "#s1-term",
+        { opacity: 0, scale: 0.94, y: 26 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        0.15,
+      );
+
+      typeAt("#s1-typed", 'ceraa ask "fix the failing test"', 0.95, 26);
+      caret("#s1-caret", 0.9, 0.9 + 30 / 26, 6.9);
+
+      const s1Lines = ["#s1-l2", "#s1-l3", "#s1-l4", "#s1-l5"];
+      [2.8, 3.35, 3.9, 4.5].forEach((t, i) => {
+        tl.fromTo(
+          s1Lines[i],
+          { opacity: 0, x: -22 },
+          { opacity: 1, x: 0, duration: 0.45, ease: "power2.out" },
+          t,
+        );
+      });
+
+      /* The terminal closes: the laptop shuts, the session does not. */
+      tl.to("#s1-term", { opacity: 0, scale: 0.9, duration: 0.55, ease: "power2.in" }, 6.4);
+
+      /* ---------------- Scene 2 ---------------- */
+      tl.fromTo(
+        "#s2-a",
+        { opacity: 0, y: 36 },
+        { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        7.3,
+      );
+      tl.fromTo(
+        "#s2-b",
+        { opacity: 0, y: 50, scale: 0.97 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.65, ease: "back.out(1.5)" },
+        8.7,
+      );
+      tl.fromTo(
+        "#s2-rule",
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.5, ease: "power3.out", transformOrigin: "left center" },
+        9.9,
+      );
+      tl.fromTo(
+        "#s2-sub",
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+        11.2,
+      );
+
+      /* ---------------- Scene 3 ---------------- */
+      tl.fromTo(
+        "#s3-eyebrow",
+        { opacity: 0, y: 16 },
+        { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" },
+        13.8,
+      );
+      tl.fromTo(
+        "#s3-h",
+        { opacity: 0, y: 28 },
+        { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        14.3,
+      );
+      tl.fromTo(
+        "#s3-card",
+        { opacity: 0, y: 40, scale: 0.975 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.7, ease: "power3.out" },
+        15.4,
+      );
+
+      const s3Rows = ["#s3-r1", "#s3-r2", "#s3-r3", "#s3-r4"];
+      [16.4, 16.9, 17.4, 17.9].forEach((t, i) => {
+        tl.fromTo(
+          s3Rows[i],
+          { opacity: 0, x: -26 },
+          { opacity: 1, x: 0, duration: 0.5, ease: "power2.out" },
+          t,
+        );
+        tl.fromTo(
+          s3Rows[i] + " .s3-ck",
+          { opacity: 0, scale: 0 },
+          { opacity: 1, scale: 1, duration: 0.4, ease: "back.out(2.4)" },
+          t + 0.18,
+        );
+      });
+
+      tl.fromTo(
+        "#s3-warn",
+        { opacity: 0, scale: 0.8 },
+        { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2)" },
+        18.8,
+      );
+      /* link drops: the rows lose their light */
+      tl.to(s3Rows, { opacity: 0.4, duration: 0.5, ease: "power2.inOut" }, 19.7);
+      tl.to("#s3-warn", { opacity: 0, scale: 0.9, duration: 0.35, ease: "power2.in" }, 21.0);
+      tl.fromTo(
+        "#s3-acc",
+        { opacity: 0, scale: 0.8 },
+        { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2)" },
+        21.3,
+      );
+      tl.to(s3Rows, { opacity: 1, duration: 0.5, ease: "power2.out" }, 21.3);
+      tl.fromTo(
+        "#s3-v1",
+        { opacity: 1, y: 0 },
+        { opacity: 0, y: -20, duration: 0.3, ease: "power2.in" },
+        21.3,
+      );
+      tl.fromTo(
+        "#s3-v2",
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" },
+        21.5,
+      );
+      tl.fromTo(
+        "#s3-foot",
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+        22.7,
+      );
+
+      /* ---------------- Scene 4 ---------------- */
+      tl.fromTo(
+        "#s4-title",
+        { opacity: 0, y: -40 },
+        { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        25.3,
+      );
+      tl.fromTo(
+        "#s4-l",
+        { opacity: 0, x: -720, rotateY: 26, scale: 0.85 },
+        { opacity: 1, x: 0, rotateY: -6, scale: 1, duration: 1.1, ease: "power3.out" },
+        26.0,
+      );
+      tl.fromTo(
+        "#s4-r",
+        { opacity: 0, x: 720, rotateY: -26, scale: 0.85 },
+        { opacity: 1, x: 0, rotateY: 6, scale: 1, duration: 1.1, ease: "power3.out" },
+        26.25,
+      );
+      tl.fromTo(
+        "#s4-badge-l",
+        { opacity: 0, scale: 0 },
+        { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2.4)" },
+        27.6,
+      );
+      tl.fromTo(
+        "#s4-badge-r",
+        { opacity: 0, scale: 0 },
+        { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2.4)" },
+        27.9,
+      );
+      /* phase-opposed idle so the pair never conveyor-belts */
+      tl.to("#s4-l", { y: -11, duration: 1.6, repeat: 3, yoyo: true, ease: "sine.inOut" }, 28.6);
+      tl.to("#s4-r", { y: 11, duration: 1.6, repeat: 3, yoyo: true, ease: "sine.inOut" }, 28.6);
+      tl.fromTo(
+        "#s4-foot",
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+        29.6,
+      );
+
+      /* ---------------- Scene 5 ---------------- */
+      tl.fromTo(
+        "#s5-h",
+        { opacity: 0, y: 26 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" },
+        35.7,
+      );
+      /* headline demotes to make room for the command */
+      tl.to(
+        "#s5-h",
+        { scale: 0.6, y: -46, color: "#8a8a8a", duration: 0.7, ease: "power3.inOut" },
+        36.5,
+      );
+      tl.fromTo(
+        "#s5-pill",
+        { opacity: 0, scaleX: 0.34, y: 30 },
+        { opacity: 1, scaleX: 1, y: 0, duration: 0.6, ease: "back.out(1.7)" },
+        36.9,
+      );
+      typeAt("#s5-typed", "ceraa setup", 37.5, 14);
+      caret("#s5-caret", 37.45, 37.5 + 11 / 14, 41.0);
+      tl.fromTo(
+        "#s5-meta",
+        { opacity: 0, y: 18 },
+        { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" },
+        37.75,
+      );
+      tl.fromTo(
+        "#s5-chips",
+        { opacity: 0, y: 18 },
+        { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" },
+        38.6,
+      );
+      tl.fromTo(
+        "#s5-chips .chip",
+        { opacity: 0, y: 14 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.4,
+          ease: "power2.out",
+          stagger: { each: 0.12 },
+        },
+        38.7,
+      );
+
+      /* ---------------- Scene 6 ---------------- */
+      tl.fromTo(
+        "#s6-glow",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.9, ease: "power2.out" },
+        41.2,
+      );
+      tl.fromTo(
+        "#s6-face",
+        { opacity: 0, scale: 0.72 },
+        { opacity: 1, scale: 1, duration: 0.65, ease: "back.out(1.8)" },
+        41.2,
+      );
+      tl.fromTo(
+        "#s6-word",
+        { opacity: 0, y: 28 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" },
+        41.9,
+      );
+      tl.fromTo(
+        "#s6-rule",
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.45, ease: "power3.out", transformOrigin: "left center" },
+        42.6,
+      );
+      tl.fromTo(
+        "#s6-tag",
+        { opacity: 0, y: 18 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+        43.0,
+      );
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

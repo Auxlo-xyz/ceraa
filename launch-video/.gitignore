@@ -1,0 +1,4 @@
+# HyperFrames artifacts
+renders/*
+!renders/ceraa-launch.mp4
+node_modules/
