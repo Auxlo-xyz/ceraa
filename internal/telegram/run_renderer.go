@@ -44,15 +44,20 @@ type runRenderer struct {
 	// "message is not modified". Live cost: 404 such rejections, and a run that
 	// ended in 429 retry after 227s because a single 3k answer was re-sent around
 	// thirty times.
-	sentStream   string
-	sentThought  string
-	lastSignal   time.Time
-	stopped      bool
-	cancel       context.CancelFunc
-	streamSignal chan struct{}
-	streamDone   chan struct{}
-	streamMu     sync.Mutex
-	streamClosed bool
+	sentStream  string
+	sentThought string
+	lastSignal  time.Time
+	// lastThoughtPush is when the thought block was last redrawn. It exists
+	// separately from lastThought because the two count different things:
+	// lastThought paces what reasoning() is willing to accumulate, and this one
+	// paces what the reader is shown.
+	lastThoughtPush time.Time
+	stopped         bool
+	cancel          context.CancelFunc
+	streamSignal    chan struct{}
+	streamDone      chan struct{}
+	streamMu        sync.Mutex
+	streamClosed    bool
 	// richEditUnavailable latches once this run has been refused a rich edit, so
 	// the remaining ticks take the plain path without paying for a round trip
 	// that is known to come back 400.
@@ -138,15 +143,23 @@ func (r *runRenderer) renderCurrentState() {
 		thoughtText := r.thoughtTextLocked()
 		skipStream := text == r.sentStream
 		skipThought := thoughtID != 0 && thoughtText == r.sentThought
+		lastThoughtPush := r.lastThoughtPush
 		r.mu.Unlock()
-		if thoughtID != 0 && thoughtText != "" && !skipThought {
+		if thoughtID != 0 && thoughtText != "" && !skipThought && time.Since(lastThoughtPush) >= thoughtMinInterval {
 			if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
 				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
 					logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
 				}
 			}
 			r.mu.Lock()
+			// Both timestamps move together: sentThought keeps the next signal
+			// from spending itself on identical text, and lastThoughtPush keeps
+			// a busy answer from redrawing the thought faster than a reader can
+			// follow it. A signal refused by the floor leaves sentThought alone,
+			// so the newer accumulated text goes out on the next one instead of
+			// being lost.
 			r.sentThought = thoughtText
+			r.lastThoughtPush = time.Now()
 			r.mu.Unlock()
 		}
 		if messageID == 0 || skipStream {
@@ -180,6 +193,16 @@ func (r *runRenderer) renderCurrentState() {
 // answer does not go through here at all, so a dropped tail is always superseded
 // by the real answer.
 const streamMinInterval = 300 * time.Millisecond
+
+// thoughtMinInterval is the floor between two redraws of the thought block.
+//
+// The thought used to ride the stream signal, so it was redrawn as often as the
+// answer even while the reasoning itself barely moved. Every redraw is a full
+// replacement of a block the reader may be in the middle of, so the thought now
+// paces itself: at most one redraw a second, and a signal inside that window is
+// left alone rather than spent, because the accumulated text is still there for
+// the next one.
+const thoughtMinInterval = time.Second
 
 func (r *runRenderer) signalStream() {
 	r.streamMu.Lock()
@@ -222,14 +245,22 @@ func formatThought(value string, streaming bool) string {
 	if value == "" {
 		return ""
 	}
-	var clipped string
+	var clipped, wrapper string
 	if streaming {
 		value += " ▌"
 		clipped = truncateStream(value)
+		// Plain while the run is live. An expandable blockquote is collapsed by
+		// default to three lines, and every redraw re-applies that default, so a
+		// reader watching it open is shut again on the next tick. Nothing in a
+		// plain blockquote has state to reset, so the redraw has nothing to snap.
+		wrapper = "<blockquote>"
 	} else {
 		clipped = truncateThought(value)
+		// The published thought is written once and never redrawn, so it can
+		// afford to fold itself out of the way.
+		wrapper = "<blockquote expandable>"
 	}
-	return "<blockquote expandable><b>Thought</b>\n\n" + html.EscapeString(clipped) + "</blockquote>"
+	return wrapper + "<b>Thought</b>\n\n" + html.EscapeString(clipped) + "</blockquote>"
 }
 
 func (r *runRenderer) setCancel(cancel context.CancelFunc) {
@@ -298,6 +329,12 @@ func (r *runRenderer) reasoning(value string) {
 		r.mu.Lock()
 		r.thoughtID = thoughtMessageID
 		r.messageID = assistantMessageID
+		// Seeded with what was actually posted. Leaving it empty cost one
+		// identical redraw at the start of every run, which Telegram answered
+		// "message is not modified" to, and which the reader saw as the block
+		// flashing before it started moving.
+		r.sentThought = formatThought(r.thought, true)
+		r.lastThoughtPush = now
 		r.mu.Unlock()
 		// sentStream is deliberately not seeded here. It looks necessary, since the
 		// replacement is created already carrying the preview, but a probe showed
@@ -643,8 +680,20 @@ func sendHTMLMessage(token string, chatID int64, text string) (int, error) {
 	return sendMessagePayload(token, chatID, text, "HTML", nil)
 }
 
+// thoughtFallbackText reduces a thought to the plain text it carries.
+//
+// Both wrappers are listed, and the expandable one first: the streaming form
+// dropped "expandable" once the collapse state started resetting on every
+// redraw, and a replacer that only knew the old spelling left a raw <blockquote>
+// in the plain fallback.
 func thoughtFallbackText(value string) string {
-	value = strings.NewReplacer("<blockquote expandable>", "", "</blockquote>", "", "<b>", "", "</b>", "").Replace(value)
+	value = strings.NewReplacer(
+		"<blockquote expandable>", "",
+		"<blockquote>", "",
+		"</blockquote>", "",
+		"<b>", "",
+		"</b>", "",
+	).Replace(value)
 	return html.UnescapeString(value)
 }
 

@@ -204,6 +204,7 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	var mu sync.Mutex
 	edits := make(map[int][]string)
+	posted := make([]string, 0)
 	richSends := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -228,6 +229,10 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["parse_mode"] == "HTML" {
+				text, _ := body["text"].(string)
+				mu.Lock()
+				posted = append(posted, text)
+				mu.Unlock()
 				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":15}}`))
 			} else {
 				_, _ = w.Write([]byte(`{"ok":true}`))
@@ -263,17 +268,32 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 
 	mu.Lock()
 	thoughtEdits := append([]string(nil), edits[15]...)
+	initialThought := append([]string(nil), posted...)
 	assistantEdits := append([]string(nil), edits[16]...)
 	sendCount := richSends
 	mu.Unlock()
 	if sendCount < 2 {
 		t.Fatalf("rich message sends = %d, want initial and replacement", sendCount)
 	}
-	if len(thoughtEdits) == 0 || !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], "<b>Thought</b>") || !strings.Contains(thoughtEdits[0], "first step") {
-		t.Fatalf("thought edits = %#v", thoughtEdits)
+	// The block opens as a plain blockquote, which is the shape that can be
+	// redrawn without anything to snap shut.
+	if len(initialThought) == 0 {
+		t.Fatal("the thought was never posted")
 	}
-	if !strings.Contains(thoughtEdits[len(thoughtEdits)-1], "first step\nsecond step") || strings.Contains(thoughtEdits[len(thoughtEdits)-1], "▌") {
-		t.Fatalf("final thought edit = %#v", thoughtEdits)
+	if !strings.HasPrefix(initialThought[0], "<blockquote><b>Thought</b>") || strings.Contains(initialThought[0], "expandable") {
+		t.Fatalf("streaming thought = %q, want a plain blockquote", initialThought[0])
+	}
+	// One redraw for the whole run: the published thought, written once. The
+	// intermediate state was paced out by the thought's own floor rather than
+	// redrawn on every signal.
+	if len(thoughtEdits) != 1 {
+		t.Fatalf("thought redraws = %#v, want only the published one", thoughtEdits)
+	}
+	if !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], "<b>Thought</b>") || !strings.Contains(thoughtEdits[0], "first step") {
+		t.Fatalf("published thought = %#v", thoughtEdits[0])
+	}
+	if !strings.Contains(thoughtEdits[0], "first step\nsecond step") || strings.Contains(thoughtEdits[0], "▌") {
+		t.Fatalf("published thought = %#v", thoughtEdits[0])
 	}
 	if len(assistantEdits) == 0 || assistantEdits[len(assistantEdits)-1] != "done" {
 		t.Fatalf("assistant edits = %#v", assistantEdits)

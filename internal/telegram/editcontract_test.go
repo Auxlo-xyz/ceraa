@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // stubAPI points the package at a test server for the rest of the test.
@@ -154,4 +156,116 @@ func TestAStreamPreviewMarksTheDroppedHead(t *testing.T) {
 func thoughtBody(value string) string {
 	value = strings.TrimPrefix(value, "<blockquote expandable><b>Thought</b>\n\n")
 	return strings.TrimSuffix(value, "</blockquote>")
+}
+
+// The streaming shape is the one that gets redrawn, so it must not carry the
+// collapse state that a redraw resets: an expandable blockquote is collapsed by
+// default to three lines, and re-applying that default on every tick shuts the
+// block the reader just opened. The published thought is written once and never
+// redrawn, so it is the one allowed to fold itself away.
+func TestAStreamingThoughtHasNoCollapseStateToReset(t *testing.T) {
+	streaming := formatThought("alpha bravo", true)
+	if !strings.HasPrefix(streaming, "<blockquote><b>Thought</b>") {
+		t.Errorf("streaming thought = %q, want a plain blockquote", streaming)
+	}
+	if strings.Contains(streaming, "expandable") {
+		t.Errorf("streaming thought carries state that resets on every redraw: %q", streaming)
+	}
+	if !strings.HasSuffix(streaming, "\u258c</blockquote>") {
+		t.Errorf("streaming thought lost the cursor: %q", streaming)
+	}
+	published := formatThought("alpha bravo", false)
+	if !strings.HasPrefix(published, "<blockquote expandable><b>Thought</b>") {
+		t.Errorf("published thought = %q, want the folding blockquote", published)
+	}
+	if strings.Contains(published, "\u258c") {
+		t.Errorf("published thought kept the streaming cursor: %q", published)
+	}
+}
+
+// Both wrappers have to be known by the plain fallback. The streaming form
+// dropped "expandable" when the collapse state became a problem, and a replacer
+// that only remembered the old spelling left a raw tag in the message.
+func TestAThoughtFallbackStripsEveryWrapper(t *testing.T) {
+	for _, streaming := range []bool{true, false} {
+		got := thoughtFallbackText(formatThought(`alpha <bravo> & "quotes"`, streaming))
+		for _, tag := range []string{"<blockquote", "</blockquote", "<b>", "</b>"} {
+			if strings.Contains(got, tag) {
+				t.Errorf("streaming=%v left %q behind: %q", streaming, tag, got)
+			}
+		}
+		if !strings.Contains(got, `alpha <bravo> & "quotes"`) {
+			t.Errorf("streaming=%v lost the body: %q", streaming, got)
+		}
+	}
+}
+
+// The thought used to be redrawn on every stream signal, which made it move as
+// fast as the answer even when the reasoning barely had. It paces itself now:
+// inside the window the text is held back rather than spent, and the signal is
+// not consumed, so what accumulated meanwhile goes out on the next one.
+func TestAThoughtOnlyRedrawsOncePerSecond(t *testing.T) {
+	var mu sync.Mutex
+	var thoughtEdits []string
+	stubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(raw, &payload)
+		if strings.HasSuffix(r.URL.Path, "/editMessageText") && payload["parse_mode"] == "HTML" {
+			text, _ := payload["text"].(string)
+			mu.Lock()
+			thoughtEdits = append(thoughtEdits, text)
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":55}}`))
+	})
+
+	renderer := newRunRenderer("token", 1)
+	renderer.mu.Lock()
+	renderer.thoughtID = 55
+	renderer.messageID = 56
+	renderer.thought = "alpha"
+	renderer.sentThought = formatThought("alpha", true)
+	renderer.sentStream = renderer.streamTextLocked()
+	renderer.lastThoughtPush = time.Now()
+	renderer.mu.Unlock()
+
+	// Inside the window: the text moved, but the reader has not had a second to
+	// read what is already on screen.
+	renderer.renderCurrentState()
+	mu.Lock()
+	inside := len(thoughtEdits)
+	mu.Unlock()
+	if inside != 0 {
+		t.Fatalf("thought redrawn %d time(s) inside the floor, want 0", inside)
+	}
+
+	renderer.mu.Lock()
+	renderer.thought = "alpha bravo"
+	renderer.lastThoughtPush = time.Now().Add(-thoughtMinInterval - time.Second)
+	renderer.mu.Unlock()
+
+	renderer.renderCurrentState()
+	mu.Lock()
+	after := len(thoughtEdits)
+	var last string
+	if after > 0 {
+		last = thoughtEdits[after-1]
+	}
+	mu.Unlock()
+	if after != 1 {
+		t.Fatalf("thought redraws = %d, want 1", after)
+	}
+	if !strings.Contains(last, "alpha bravo") {
+		t.Fatalf("redraw did not carry the accumulated text: %q", last)
+	}
+
+	// Nothing changed, so the window is not spent again.
+	renderer.renderCurrentState()
+	mu.Lock()
+	unchanged := len(thoughtEdits)
+	mu.Unlock()
+	if unchanged != after {
+		t.Fatalf("identical text was redrawn: %d -> %d", after, unchanged)
+	}
 }
