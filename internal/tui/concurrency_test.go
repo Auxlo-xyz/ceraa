@@ -111,3 +111,42 @@ func TestLiveCountNeverGoesNegative(t *testing.T) {
 		t.Errorf("live count = %d, want it clamped at zero", live)
 	}
 }
+
+// The answer buffer is reached from two goroutines at once: Content streams
+// deltas from the provider while a tool line from the coordinator arrives and
+// closes the stream, and a turn boundary resets the buffer underneath both.
+//
+// Before the buffer had a lock of its own, flushAnswer read aTail while
+// Content was rewriting it. A string header read half-written has a data
+// pointer and a length that do not belong together, and the panic came out in
+// strings.TrimSpace as a nil pointer with a non-zero length. This is the
+// closest this host can come to reproducing it, since the race detector needs
+// cgo and a C compiler and neither is installed here.
+func TestAnswerBufferSurvivesConcurrentStreamAndFlush(t *testing.T) {
+	r, out := renderInto()
+	r.TurnStart()
+	const workers = 8
+	const rounds = 250
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				switch (w + i) % 4 {
+				case 0, 1:
+					r.Content(fmt.Sprintf("streamed delta %d from worker %d\n", i, w))
+				case 2:
+					r.ToolStart("bash", map[string]any{"command": fmt.Sprintf("echo %d", i)})
+				case 3:
+					r.TurnStart()
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	r.TurnEnd(nil)
+	if out.Len() == 0 {
+		t.Fatal("no output after streaming against flushing")
+	}
+}

@@ -51,11 +51,25 @@ type Renderer struct {
 	// say "3 running" rather than only that something is.
 	live int
 
+	// bufMu guards the answer buffer below it, and is deliberately not mu.
+	//
+	// mu is held across the terminal writes in write and draw, and flushing the
+	// buffer has to write what it flushed, so one lock for both would have to be
+	// re-entered and Go's is not reentrant. The buffer needs a lock at all
+	// because it is reached from two goroutines: Content streams deltas from the
+	// provider while a tool line from the coordinator arrives and closes the
+	// stream, and closeStream used to read aTail while Content was rewriting it.
+	// That torn string header is what panicked inside strings.TrimSpace.
+	//
+	// The order is always bufMu then mu, and nothing takes mu and then bufMu, so
+	// holding this across the writes below cannot deadlock.
+	bufMu sync.Mutex
+
 	// Answer text is parked until it can be told apart from a Markdown table.
 	// The answer arrives a delta at a time and a table can only be laid out once
 	// its header and rule have been seen, so pipe-led lines are held. Everything
 	// else is written straight through, so prose still streams at line speed and
-	// these are empty almost all the time.
+	// these are empty almost all of the time.
 	aTail  string
 	aLine  string
 	aCells []string
@@ -177,8 +191,10 @@ func (r *Renderer) line(s string) {
 // TurnStart marks the beginning of a turn and starts the spinner.
 func (r *Renderer) TurnStart() {
 	r.setState(StateThinking)
+	r.bufMu.Lock()
 	r.aTail, r.aLine, r.aCells, r.aTable = "", "", nil, nil
 	r.aFence = false
+	r.bufMu.Unlock()
 	r.mu.Lock()
 	r.streaming = false
 	r.live = 0
@@ -265,6 +281,8 @@ func (r *Renderer) Content(s string) {
 // its next newline, which for prose is a sentence rather than an answer. What it
 // buys is that the answer arrives as something a person can read.
 func (r *Renderer) answer(s string) []string {
+	r.bufMu.Lock()
+	defer r.bufMu.Unlock()
 	width := r.width()
 	r.aTail += s
 	var out []string
@@ -375,7 +393,13 @@ func (r *Renderer) releaseHeld(width int) []string {
 
 // flushAnswer empties the detector, so a table that ran to the end of the answer
 // is still laid out rather than lost.
+//
+// The lock is held across the writes as well as the reads: content computed
+// after the tail would otherwise be written before it, and the answer would
+// come out in the wrong order.
 func (r *Renderer) flushAnswer() {
+	r.bufMu.Lock()
+	defer r.bufMu.Unlock()
 	if r.aTail == "" && r.aLine == "" && r.aTable == nil {
 		return
 	}
