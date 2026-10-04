@@ -57,10 +57,11 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	renderer := newRunRenderer("token", 42)
 	defer renderer.close()
 	answer := "## Heading\n\n1. Step\n\nTelegram Message\n    ↓"
+	renderer.throttleOverride = 5 * time.Millisecond
 	renderer.content("## Heading")
-	time.Sleep(1_100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	renderer.content("\n\n1. Step")
-	time.Sleep(1_100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	renderer.finish(answer)
 	renderer.close()
 
@@ -136,8 +137,9 @@ func TestFinishDrainsPreviewBeforeFinalEdit(t *testing.T) {
 
 	renderer := newRunRenderer("token", 42)
 	answer := "Complete answer"
+	renderer.throttleOverride = 5 * time.Millisecond
 	renderer.content("Partial preview")
-	time.Sleep(1_100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	renderer.content(" growing")
 	<-previewStarted
 	finished := make(chan struct{})

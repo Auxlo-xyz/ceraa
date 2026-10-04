@@ -139,11 +139,12 @@ func TestReasoningDoesNotResendThePreviewItJustCreated(t *testing.T) {
 
 	// Render one state, then change it. The replacement carries the newer state, so
 	// without the seed the signal below re-PUTs text the new message already shows.
+	r.throttleOverride = 5 * time.Millisecond
 	r.content("first state")
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	r.content("second state")
 	r.reasoning("thinking hard")
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	r.close()
 
 	c.mu.Lock()
@@ -166,14 +167,15 @@ func TestStreamingNeverPutsIdenticalTextTwice(t *testing.T) {
 	defer done()
 
 	const answer = "a completed answer that stops growing"
+	r.throttleOverride = 5 * time.Millisecond
 	r.content(answer)
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	// Real tool values are human-readable labels. An earlier version of this test
 	// passed JSON, which parseToolActivity rejects, so tool() returned early and
 	// never signalled: green while exercising nothing.
 	for i := 0; i < 6; i++ {
 		r.reasoning("same thought every time")
-		time.Sleep(350 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	r.finish(answer)
 	r.close()
@@ -266,13 +268,14 @@ func TestRejectedEditIsRetriedRatherThanTreatedAsSent(t *testing.T) {
 
 	// The first report creates the trail message, which is a send and cannot be
 	// refused the way an edit can. The text has to change afterwards for the
-	// edits this test is about to happen at all, and the spacing has to clear
-	// the throttle floor, which is one second in the first minute.
+	// edits this test is about to happen at all, and the signals have to clear the
+	// outbound floor, which production sets to a second.
+	r.throttleOverride = 5 * time.Millisecond
 	r.tool("call-1", "🔄 📚 Read · /tmp/other")
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	for i := 0; i < 2; i++ {
 		r.tool("call-1", "✅ 📚 Read completed · /tmp/retryme")
-		time.Sleep(1100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	r.close()
 

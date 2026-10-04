@@ -45,6 +45,13 @@ type runRenderer struct {
 	// of the run rather than staying flat, so a long run slows its own cadence
 	// down instead of walking into Telegram's rate limit.
 	started time.Time
+	// throttleOverride replaces the age-based outbound floor. Production leaves it
+	// zero and gets streamThrottle(runAge). It exists because the floor is a whole
+	// second in the first minute of a run, and a test that needs two signals
+	// through had no option but to sleep past it: five tests spent about a second
+	// each waiting for a timer rather than for behaviour. A test sets it to
+	// something small and asserts on what was sent, not on how long it took.
+	throttleOverride time.Duration
 
 	mu sync.Mutex
 	// messageID is the streamed answer. It carries the reply keyboard and is
@@ -218,7 +225,7 @@ func (r *runRenderer) renderThought() {
 	lastThoughtPush := r.lastThoughtPush
 	age := r.runAge()
 	r.mu.Unlock()
-	if thoughtID == 0 || thoughtText == "" || skip || time.Since(lastThoughtPush) < streamThrottle(age) {
+	if thoughtID == 0 || thoughtText == "" || skip || time.Since(lastThoughtPush) < r.throttleAt(age) {
 		return
 	}
 	if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
@@ -387,6 +394,14 @@ const thoughtMinInterval = time.Second
 // The ladder and its tier lengths are Soraa Code's, which is where this shape
 // came from. Every tier is at least thoughtMinInterval, so the once-a-second
 // floor the thought is pinned to still holds.
+// throttleAt is the outbound floor for this run, honouring the test override.
+func (r *runRenderer) throttleAt(age time.Duration) time.Duration {
+	if r.throttleOverride > 0 {
+		return r.throttleOverride
+	}
+	return streamThrottle(age)
+}
+
 func streamThrottle(age time.Duration) time.Duration {
 	switch {
 	case age < time.Minute:
@@ -537,7 +552,7 @@ func (r *runRenderer) signalStream() {
 	if r.streamClosed {
 		return
 	}
-	if time.Since(r.lastSignal) < streamThrottle(r.runAge()) {
+	if time.Since(r.lastSignal) < r.throttleAt(r.runAge()) {
 		return
 	}
 	r.lastSignal = time.Now()
