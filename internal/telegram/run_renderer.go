@@ -22,11 +22,25 @@ type toolActivity struct {
 	status string
 	label  string
 	detail string
+	// startedAt is when this call first appeared. A tool that blocks without
+	// printing anything emits no events at all, so elapsed time has to be read
+	// off a clock rather than off the event stream.
+	startedAt time.Time
+	// shownBucket is the bucketed duration already on screen, in milliseconds,
+	// and -1 until the first one is shown. The live line is only re-rendered
+	// when the bucket actually changes, so a running tool costs an edit when the
+	// displayed number would change and not before.
+	shownBucket int64
+	elapsed     string
 }
 
 type runRenderer struct {
 	token  string
 	chatID int64
+	// started is when the run began. The outbound throttle widens with the age
+	// of the run rather than staying flat, so a long run slows its own cadence
+	// down instead of walking into Telegram's rate limit.
+	started time.Time
 
 	mu            sync.Mutex
 	messageID     int
@@ -44,9 +58,17 @@ type runRenderer struct {
 	// "message is not modified". Live cost: 404 such rejections, and a run that
 	// ended in 429 retry after 227s because a single 3k answer was re-sent around
 	// thirty times.
-	sentStream  string
-	sentThought string
-	lastSignal  time.Time
+	//
+	// sentStreamID is the message that text was accepted on. The comparison has
+	// to be per message: the preview replacement swaps messageID underneath the
+	// buffer, and a text-only comparison would take the new message's seeded
+	// content as already delivered. That case used to be settled by timing,
+	// which made TestReasoningDoesNotResendThePreviewItJustCreated pass on a
+	// race rather than on the invariant.
+	sentStream   string
+	sentStreamID int
+	sentThought  string
+	lastSignal   time.Time
 	// lastThoughtPush is when the thought block was last redrawn. It exists
 	// separately from lastThought because the two count different things:
 	// lastThought paces what reasoning() is willing to accumulate, and this one
@@ -81,6 +103,7 @@ func newRunRenderer(token string, chatID int64) *runRenderer {
 	renderer := &runRenderer{
 		token:        token,
 		chatID:       chatID,
+		started:      time.Now(),
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
 	}
@@ -111,6 +134,7 @@ func newRunRenderer(token string, chatID int64) *runRenderer {
 		renderer.messageID = sendWithKeyboard(token, chatID, "💬", keyboard.Main())
 	}
 	go renderer.runStream()
+	go renderer.runToolTicker()
 	return renderer
 }
 
@@ -141,11 +165,12 @@ func (r *runRenderer) renderCurrentState() {
 		text := r.streamTextLocked()
 		thoughtID := r.thoughtID
 		thoughtText := r.thoughtTextLocked()
-		skipStream := text == r.sentStream
+		skipStream := messageID == r.sentStreamID && text == r.sentStream
 		skipThought := thoughtID != 0 && thoughtText == r.sentThought
 		lastThoughtPush := r.lastThoughtPush
+		age := r.runAge()
 		r.mu.Unlock()
-		if thoughtID != 0 && thoughtText != "" && !skipThought && time.Since(lastThoughtPush) >= thoughtMinInterval {
+		if thoughtID != 0 && thoughtText != "" && !skipThought && time.Since(lastThoughtPush) >= streamThrottle(age) {
 			if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
 				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
 					logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
@@ -173,14 +198,17 @@ func (r *runRenderer) renderCurrentState() {
 		}
 		// Recorded only after the API accepted the text. A rejected edit leaves the
 		// last-known-good value in place, so the next signal retries it instead of
-		// treating the message as already up to date.
+		// treating the message as already up to date. The id is recorded with it:
+		// what was accepted was accepted on this message, and no other.
 		r.mu.Lock()
 		r.sentStream = text
+		r.sentStreamID = messageID
 		r.mu.Unlock()
 	}
 }
 
-// streamMinInterval is the floor between two outbound stream edits.
+// streamMinInterval is the floor between two outbound stream edits in the first
+// minute of a run.
 //
 // The three producers used to pace themselves independently: content at 350ms,
 // reasoning at 300ms, and tool with no limit at all. A burst of tool results
@@ -192,17 +220,174 @@ func (r *runRenderer) renderCurrentState() {
 // that is let through renders the newer text rather than losing it. The final
 // answer does not go through here at all, so a dropped tail is always superseded
 // by the real answer.
-const streamMinInterval = 300 * time.Millisecond
+const streamMinInterval = time.Second
 
-// thoughtMinInterval is the floor between two redraws of the thought block.
+// thoughtMinInterval is the floor between two redraws of the thought block, and
+// is the first tier of the same ladder the stream paces itself on.
 //
 // The thought used to ride the stream signal, so it was redrawn as often as the
 // answer even while the reasoning itself barely moved. Every redraw is a full
 // replacement of a block the reader may be in the middle of, so the thought now
-// paces itself: at most one redraw a second, and a signal inside that window is
-// left alone rather than spent, because the accumulated text is still there for
-// the next one.
+// paces itself, and a signal inside that window is left alone rather than spent,
+// because the accumulated text is still there for the next one.
 const thoughtMinInterval = time.Second
+
+// streamThrottle is the floor between two outbound edits for a run of the given
+// age.
+//
+// A flat floor is right for the opening minute and wrong for everything after
+// it: the recorded incident ended in a 429 with retry after 227s, and a run that
+// has been going for twenty minutes is a run Telegram has been receiving
+// full-buffer PUTs from for twenty minutes. Widening the floor with the age of
+// the run lets a long run slow its own cadence down instead of borrowing the
+// budget from its next edit.
+//
+// The ladder and its tier lengths are Soraa Code's, which is where this shape
+// came from. Every tier is at least thoughtMinInterval, so the once-a-second
+// floor the thought is pinned to still holds.
+func streamThrottle(age time.Duration) time.Duration {
+	switch {
+	case age < time.Minute:
+		return streamMinInterval
+	case age < 5*time.Minute:
+		return 2 * time.Second
+	case age < 15*time.Minute:
+		return 5 * time.Second
+	default:
+		return 10 * time.Second
+	}
+}
+
+// runAge reports how long this run has been going. started is written once,
+// before either goroutine starts, so reading it needs no lock. A renderer built
+// by a test as a struct literal has no start time, and its age is reported as
+// zero rather than as the age of the Unix epoch, which would pin it to the
+// slowest tier for no reason.
+func (r *runRenderer) runAge() time.Duration {
+	if r.started.IsZero() {
+		return 0
+	}
+	return time.Since(r.started)
+}
+
+// Tool elapsed timing, ported from Soraa Code's RunningToolTracker and
+// duration-formatter.
+//
+// A tool that blocks without printing anything emits no events at all, so a live
+// line driven only by the event stream sits frozen with nothing to say whether
+// the run had stalled or the tool was simply still working. Elapsed time has to
+// come from an own ticker, never from incoming events.
+var (
+	// toolElapsedThreshold is how long a call runs before any duration appears.
+	// Below it the line reads exactly as it did before, so a call that finishes
+	// in under twenty seconds never looks like it was waiting on anything.
+	toolElapsedThreshold = 20 * time.Second
+	// toolElapsedTick is how often the ticker looks. It is slower than a human
+	// expects, on purpose: the displayed number is bucketed below, so a faster
+	// tick would only spend API calls re-sending a value that has not moved.
+	toolElapsedTick = 10 * time.Second
+	// toolElapsedMax stops tracking. Past this the line reads ">2h" and stays
+	// there, rather than growing a digit nobody reads.
+	toolElapsedMax = 2 * time.Hour
+)
+
+func (r *runRenderer) runToolTicker() {
+	for {
+		interval := toolElapsedTick
+		if interval <= 0 {
+			interval = time.Second
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-r.streamDone:
+			timer.Stop()
+			return
+		case <-timer.C:
+			if r.tickToolElapsed() {
+				r.signalStream()
+			}
+		}
+	}
+}
+
+// tickToolElapsed advances the duration on every running line whose displayed
+// number would change, and reports whether a duration is on screen to publish.
+//
+// It reports on every look rather than only on a change. The first look can
+// land inside the throttle window, and a change swallowed there would otherwise
+// never reach the message: the next look finds nothing left to change, so it
+// would have nothing to announce, and the number would sit in memory while the
+// chat showed nothing. renderCurrentState skips text the API already holds, so
+// a repeated signal costs no call.
+func (r *runRenderer) tickToolElapsed() bool {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.tools {
+		tool := &r.tools[i]
+		if tool.status != "🔄" && tool.status != "⚡" {
+			continue
+		}
+		elapsed := now.Sub(tool.startedAt)
+		if elapsed < toolElapsedThreshold {
+			continue
+		}
+		bucket := int64(-2)
+		if elapsed < toolElapsedMax {
+			bucket = int64(bucketElapsed(elapsed) / time.Millisecond)
+		}
+		if bucket != tool.shownBucket {
+			tool.shownBucket = bucket
+			if bucket == -2 {
+				tool.elapsed = ">" + formatElapsed(toolElapsedMax)
+			} else {
+				tool.elapsed = formatElapsed(time.Duration(bucket) * time.Millisecond)
+			}
+		}
+		return tool.elapsed != ""
+	}
+	return false
+}
+
+// bucketElapsed rounds a duration down to a display step that grows with the
+// value. The live line is rendered from the bucketed number, so it is only
+// edited when the shown number actually changes.
+func bucketElapsed(elapsed time.Duration) time.Duration {
+	if elapsed <= 0 {
+		return 0
+	}
+	switch {
+	case elapsed < time.Minute:
+		return elapsed / (10 * time.Second) * (10 * time.Second)
+	case elapsed < 10*time.Minute:
+		return elapsed / time.Minute * time.Minute
+	case elapsed < time.Hour:
+		return elapsed / (5 * time.Minute) * (5 * time.Minute)
+	default:
+		return elapsed / (15 * time.Minute) * (15 * time.Minute)
+	}
+}
+
+// formatElapsed renders a duration as "1h 2m 3s", dropping the parts that are
+// zero. A zero duration reads as "0s" rather than as an empty string so a line
+// that has just crossed the threshold says something.
+func formatElapsed(elapsed time.Duration) string {
+	total := int64(elapsed / time.Second)
+	if total < 0 {
+		total = 0
+	}
+	parts := make([]string, 0, 3)
+	if hours := total / 3600; hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes := (total % 3600) / 60; minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds := total % 60; seconds > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+	return strings.Join(parts, " ")
+}
 
 func (r *runRenderer) signalStream() {
 	r.streamMu.Lock()
@@ -210,7 +395,7 @@ func (r *runRenderer) signalStream() {
 	if r.streamClosed {
 		return
 	}
-	if time.Since(r.lastSignal) < streamMinInterval {
+	if time.Since(r.lastSignal) < streamThrottle(r.runAge()) {
 		return
 	}
 	r.lastSignal = time.Now()
@@ -335,12 +520,15 @@ func (r *runRenderer) reasoning(value string) {
 		// flashing before it started moving.
 		r.sentThought = formatThought(r.thought, true)
 		r.lastThoughtPush = now
+		// The replacement was created already carrying assistantPreview, so the
+		// API has that text on that id. Seeding both together is what makes the
+		// first render after a replacement a skip instead of a PUT of bytes the
+		// message is already showing. It used to be left to a queued signal to
+		// settle, which meant the invariant rested on the render goroutine winning
+		// a race against this one.
+		r.sentStream = assistantPreview
+		r.sentStreamID = assistantMessageID
 		r.mu.Unlock()
-		// sentStream is deliberately not seeded here. It looks necessary, since the
-		// replacement is created already carrying the preview, but a probe showed
-		// sentStream already equals that preview by this point: a queued signal
-		// renders it before reasoning() gets here. Seeding it was redundant, and
-		// because it was redundant no test could tell it from its absence.
 	}
 	r.signalStream()
 }
@@ -351,35 +539,34 @@ func (r *runRenderer) tool(callID, value string) {
 		return
 	}
 	activity.id = callID
+	now := time.Now()
+	running := activity.status == "🔄" || activity.status == "⚡"
 	r.mu.Lock()
 	r.streamContent = ""
-	if activity.status == "🔄" || activity.status == "⚡" {
+	// A running line is updated in place, not appended. Soraa Code keys the live
+	// line on the call id for the same reason: a tool that reports progress more
+	// than once is one line that moves, and a list that grew on every report made
+	// a busy run unreadable while pushing the answer off the bottom of the
+	// message. The label fallback only applies when there is no call id to key
+	// on, and never for a running line, where merging two concurrent calls that
+	// happen to share a label would silently drop one.
+	index := findToolLocked(r.tools, callID, activity.label, !running || callID == "")
+	switch {
+	case index < 0:
+		activity.startedAt = now
+		activity.shownBucket = -1
 		r.tools = append(r.tools, activity)
-	} else {
-		index := -1
-		if callID != "" {
-			for i := len(r.tools) - 1; i >= 0; i-- {
-				if r.tools[i].id == callID {
-					index = i
-					break
-				}
-			}
+	default:
+		entry := &r.tools[index]
+		entry.status = activity.status
+		if activity.detail != "" {
+			entry.detail = activity.detail
 		}
-		if index < 0 {
-			for i := len(r.tools) - 1; i >= 0; i-- {
-				if r.tools[i].label == activity.label {
-					index = i
-					break
-				}
-			}
-		}
-		if index >= 0 {
-			r.tools[index].status = activity.status
-			if activity.detail != "" {
-				r.tools[index].detail = activity.detail
-			}
-		} else {
-			r.tools = append(r.tools, activity)
+		// The elapsed time shown on a running line is frozen when the call ends.
+		// A call that never crossed the threshold has nothing on screen to freeze,
+		// and stays as it was, which is how a fast call reads as fast.
+		if !running && entry.shownBucket >= 0 {
+			entry.elapsed = formatElapsed(now.Sub(entry.startedAt))
 		}
 	}
 	messageID := r.messageID
@@ -387,6 +574,32 @@ func (r *runRenderer) tool(callID, value string) {
 	if messageID != 0 {
 		r.signalStream()
 	}
+}
+
+// findToolLocked locates the entry a tool event belongs to, newest first.
+//
+// allowLabelMatch covers the case where a completion arrives for a call whose
+// start was never seen, so the id lookup has nothing to land on.
+func findToolLocked(tools []toolActivity, callID, label string, allowLabelMatch bool) int {
+	if callID != "" {
+		for i := len(tools) - 1; i >= 0; i-- {
+			if tools[i].id == callID {
+				return i
+			}
+		}
+		if !allowLabelMatch {
+			return -1
+		}
+	}
+	if !allowLabelMatch {
+		return -1
+	}
+	for i := len(tools) - 1; i >= 0; i-- {
+		if tools[i].label == label {
+			return i
+		}
+	}
+	return -1
 }
 
 func (r *runRenderer) content(delta string) {
@@ -974,6 +1187,9 @@ func formatToolActivity(tools []toolActivity) string {
 		line := "• " + tool.status + " " + tool.label
 		if tool.detail != "" {
 			line += " · " + tool.detail
+		}
+		if tool.elapsed != "" {
+			line += " · 🕒 " + tool.elapsed
 		}
 		lines = append(lines, line)
 	}

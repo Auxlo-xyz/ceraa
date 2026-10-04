@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestEditTransportUsesOneFinalMessage(t *testing.T) {
@@ -437,4 +438,157 @@ func TestToolDisplayNamesAreHumanReadable(t *testing.T) {
 	if got := toolDisplayName("bash"); got != ">_ Run command" {
 		t.Fatalf("bash label = %q", got)
 	}
+}
+
+// A flat floor paced a twenty minute run the same as a two second one, which is
+// how the recorded incident ended in a 429 with retry after 227s. The ladder
+// widens with the age of the run, and no tier is ever below the floor the
+// thought is pinned to.
+func TestStreamThrottleWidensWithTheAgeOfTheRun(t *testing.T) {
+	cases := []struct {
+		age  time.Duration
+		want time.Duration
+	}{
+		{0, time.Second},
+		{time.Minute - time.Second, time.Second},
+		{time.Minute, 2 * time.Second},
+		{5*time.Minute - time.Second, 2 * time.Second},
+		{5 * time.Minute, 5 * time.Second},
+		{15*time.Minute - time.Second, 5 * time.Second},
+		{15 * time.Minute, 10 * time.Second},
+		{time.Hour, 10 * time.Second},
+	}
+	for _, tc := range cases {
+		got := streamThrottle(tc.age)
+		if got != tc.want {
+			t.Errorf("streamThrottle(%s) = %s, want %s", tc.age, got, tc.want)
+		}
+		if got < thoughtMinInterval {
+			t.Errorf("streamThrottle(%s) = %s, below the thought floor %s", tc.age, got, thoughtMinInterval)
+		}
+	}
+}
+
+// A running line is one line that moves, not one row per progress report.
+// Appending made a busy run unreadable and pushed the answer off the message.
+func TestRunningToolKeepsOneLinePerCall(t *testing.T) {
+	renderer := &runRenderer{messageID: 1}
+	for i := 0; i < 5; i++ {
+		renderer.tool("run-1", fmt.Sprintf("🔄 >_ Run command · find /x -name f%d", i))
+	}
+	if len(renderer.tools) != 1 {
+		t.Fatalf("running lines = %d, want 1 for one call: %q", len(renderer.tools), formatToolActivity(renderer.tools))
+	}
+	if !strings.Contains(formatToolActivity(renderer.tools), "f4") {
+		t.Fatalf("the newest progress report did not replace the line: %q", formatToolActivity(renderer.tools))
+	}
+	// Two calls that share a label are still two calls: a running line must not
+	// be merged by label, or one of them would silently vanish.
+	renderer.tool("run-2", "🔄 >_ Run command · find /x -name other")
+	if len(renderer.tools) != 2 {
+		t.Fatalf("running lines = %d, want 2 distinct calls: %q", len(renderer.tools), formatToolActivity(renderer.tools))
+	}
+	renderer.tool("run-1", "✅ >_ Run command completed")
+	if len(renderer.tools) != 2 {
+		t.Fatalf("completion grew the list to %d: %q", len(renderer.tools), formatToolActivity(renderer.tools))
+	}
+	if !strings.Contains(formatToolActivity(renderer.tools), "find /x -name f4") {
+		t.Fatalf("completion dropped the detail it inherited: %q", formatToolActivity(renderer.tools))
+	}
+}
+
+// Elapsed time has to come from a ticker rather than from the event stream,
+// because a tool that blocks prints nothing and emits nothing. It also has to
+// wait: a call that finishes fast never looked like it was waiting, and a
+// duration on every line would be noise.
+func TestRunningToolEarnsADurationOnlyAfterTheThreshold(t *testing.T) {
+	renderer := &runRenderer{messageID: 1}
+	renderer.tool("run-1", "🔄 >_ Run command · find /x -name f0")
+
+	oldThreshold := toolElapsedThreshold
+	toolElapsedThreshold = time.Hour
+	if renderer.tickToolElapsed() {
+		t.Fatal("a call that had barely started showed a duration it had not earned")
+	}
+	if strings.Contains(formatToolActivity(renderer.tools), "\U0001f552") {
+		t.Fatalf("duration before the threshold: %q", formatToolActivity(renderer.tools))
+	}
+
+	toolElapsedThreshold = 0
+	if !renderer.tickToolElapsed() {
+		t.Fatal("crossing the threshold produced no duration")
+	}
+	if !strings.Contains(formatToolActivity(renderer.tools), "\U0001f552") {
+		t.Fatalf("running line carries no duration: %q", formatToolActivity(renderer.tools))
+	}
+	// The displayed number is bucketed, so two looks inside one bucket render
+	// the same line and there is nothing for a later edit to pick up.
+	renderer.tickToolElapsed()
+	before := renderer.streamTextLocked()
+	renderer.tickToolElapsed()
+	if after := renderer.streamTextLocked(); after != before {
+		t.Fatalf("an unchanged bucket redrew the line: %q -> %q", before, after)
+	}
+
+	renderer.tool("run-1", "✅ >_ Run command completed")
+	elapsed := renderer.tools[0].elapsed
+	if elapsed == "" {
+		t.Fatal("a call that showed a duration did not keep one on completion")
+	}
+	toolElapsedThreshold = oldThreshold
+	t.Cleanup(func() { toolElapsedThreshold = oldThreshold })
+}
+
+// The ticker has to reach the message, not just the struct: without a signal
+// the duration would sit in memory while the chat showed nothing.
+func TestRunningToolTickerReachesThePreview(t *testing.T) {
+	oldThreshold, oldTick := toolElapsedThreshold, toolElapsedTick
+	toolElapsedThreshold = 0
+	toolElapsedTick = 5 * time.Millisecond
+	t.Cleanup(func() {
+		toolElapsedThreshold = oldThreshold
+		toolElapsedTick = oldTick
+	})
+
+	var mu sync.Mutex
+	var seen []string
+	stubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		// The live preview goes out as a rich edit, so the text is not always in
+		// the "text" field of the payload.
+		text, _ := payload["text"].(string)
+		if rich, ok := payload["rich_message"].(map[string]any); ok {
+			text, _ = rich["markdown"].(string)
+		}
+		if text != "" {
+			mu.Lock()
+			seen = append(seen, text)
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":31}}`))
+	})
+
+	renderer := newRunRenderer("token", 1)
+	defer renderer.close()
+	renderer.tool("run-1", "🔄 >_ Run command · find /x -name f0")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		found := false
+		for _, text := range seen {
+			if strings.Contains(text, "\U0001f552") {
+				found = true
+			}
+		}
+		mu.Unlock()
+		if found {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("the ticker never reached the preview: %#v", seen)
 }
