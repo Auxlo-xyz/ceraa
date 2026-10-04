@@ -899,3 +899,100 @@ func TestAnAnswerAfterAThoughtIsNotFiledAsReasoning(t *testing.T) {
 		t.Fatalf("the answer leaked into the thought: %q", thought)
 	}
 }
+
+// Nothing is overwritten within a run, and nothing crosses between blocks.
+//
+// One message per run meant every fragment the model wrote during a long run was
+// edited into the same bubble, each edit replacing the last, so the run ended
+// showing only its final fragment. The run log showed it as one message whose text
+// went "Container: ..." and then grew into a longer inventory line, which is the
+// model rewriting its own notes rather than a reader watching prose arrive.
+func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
+	var mu sync.Mutex
+	created := make([]string, 0)
+	edits := make(map[int][]string)
+	nextID := 0
+	idOf := func(created int) int { return 100 + created }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		text, _ := body["text"].(string)
+		if rich, ok := body["rich_message"].(map[string]any); ok {
+			text, _ = rich["markdown"].(string)
+		}
+		mu.Lock()
+		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
+		case "sendRichMessage", "sendMessage":
+			nextID++
+			created = append(created, text)
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, idOf(nextID))))
+			return
+		case "editMessageText":
+			if n, ok := body["message_id"].(float64); ok {
+				edits[int(n)] = append(edits[int(n)], text)
+			}
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	r := newRunRenderer("token", 42)
+	// A step whose reasoning arrives on the content channel, the shape the log
+	// recorded for this provider.
+	r.reasoning("The user wants a machine inventory.")
+	r.content(" Container: Debian 13.")
+	r.markReasoningOnly()
+	r.tool("c1", "🔄 "+toolNameToken("bash")+">_ Run command · df -h")
+	r.tool("c1", "✅ "+toolNameToken("bash")+">_ Run command completed")
+	// Prose written between two tool calls is its own block, not an edit of an
+	// earlier one.
+	r.content("Disk: 66G free on /workspace.")
+	r.reasoning("Let me check the listeners.")
+	r.tool("c2", "🔄 "+toolNameToken("bash")+">_ Run command · ss -tulnp")
+	r.tool("c2", "✅ "+toolNameToken("bash")+">_ Run command completed")
+	r.finish("Inventory complete.")
+	r.close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// A thought, the mid-run prose, a tool, a thought, a tool, and the answer. The
+	// mid-run prose is a message of its own because a tool call closes it, which is
+	// what stopped the run ending on its last fragment with the rest overwritten.
+	if len(created) != 6 {
+		t.Fatalf("messages = %d, want 6: %q", len(created), created)
+	}
+	// Reasoning that arrived on the content channel belongs to the thought, so no
+	// message may start with it.
+	for _, text := range created {
+		if strings.HasPrefix(text, "Container:") {
+			t.Fatalf("reasoning was shown as an answer message: %q", text)
+		}
+	}
+	// The prose written before the second tool call survives on a message of its
+	// own. It used to be edited into the same bubble the final answer went to,
+	// which is the overwrite this test exists to catch.
+	found := false
+	for _, texts := range edits {
+		for _, text := range texts {
+			if strings.Contains(text, "66G free") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the prose written mid-run was overwritten: %v", edits)
+	}
+	// No message carries the final answer and the mid-run fragment together.
+	for id, texts := range edits {
+		joined := strings.Join(texts, "\n")
+		if strings.Contains(joined, "66G free") && strings.Contains(joined, "Inventory complete.") {
+			t.Errorf("message %d holds two answers: %q", id, joined)
+		}
+	}
+}

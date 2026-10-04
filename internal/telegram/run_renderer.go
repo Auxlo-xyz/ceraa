@@ -641,6 +641,36 @@ func (r *runRenderer) endThoughtBlock() {
 	}
 }
 
+// endAnswerBlock publishes whatever the model wrote before this tool call and
+// releases the message, so the next thing it writes opens a bubble of its own.
+//
+// A tool call is the boundary here for the same reason it is for the thought: the
+// model stopped writing prose and started acting. Without this, every fragment the
+// model produced during a run was written into one message, each edit overwriting
+// the last, so the run ended showing only its final fragment and the chat held no
+// record of what it said along the way.
+func (r *runRenderer) endAnswerBlock() {
+	r.mu.Lock()
+	messageID := r.messageID
+	content := strings.TrimSpace(r.streamContent)
+	if messageID == 0 || content == "" {
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	if err := r.editRichOrUnavailable(messageID, truncateStream(content)); err != nil {
+		if err := editTelegramMessage(r.token, r.chatID, messageID, truncateStream(content)); err != nil {
+			logger.Warn("Telegram answer block publication failed: " + err.Error())
+		}
+	}
+	r.mu.Lock()
+	r.messageID = 0
+	r.streamContent = ""
+	r.sentStream = ""
+	r.sentStreamID = 0
+	r.mu.Unlock()
+}
+
 func (r *runRenderer) reasoning(value string) {
 	now := time.Now()
 	r.mu.Lock()
@@ -691,6 +721,7 @@ func (r *runRenderer) tool(callID, value string) {
 	// network call and holding the mutex across one would stall every producer.
 	if !running {
 		r.endThoughtBlock()
+		r.endAnswerBlock()
 	}
 	r.mu.Lock()
 	// streamContent is deliberately NOT cleared here. It used to be, because the
@@ -788,27 +819,20 @@ func (r *runRenderer) content(delta string) {
 func (r *runRenderer) markReasoningOnly() {
 	r.mu.Lock()
 	content := r.streamContent
-	messageID := r.messageID
+	// The answer message is released, not kept. Keeping it meant the next content
+	// delta landed on a message whose text had just been folded into a thought, so
+	// the run's next fragment overwrote the same bubble instead of opening one.
+	r.messageID = 0
 	r.streamContent = ""
-	if messageID != 0 {
-		r.sentStream = ""
-		r.sentStreamID = 0
-	}
+	r.sentStream = ""
+	r.sentStreamID = 0
 	r.mu.Unlock()
 	if strings.TrimSpace(content) == "" {
 		return
 	}
-	if messageID == 0 {
-		// No answer message was ever created, so there is nothing to correct. The
-		// reasoning still has to go somewhere: it arrived on the content channel
-		// because the provider put it there, and dropping it loses the opening of a
-		// turn. Gating this on the message existing is what lost it.
-		r.reasoning(content)
-		return
-	}
-	// The message exists only because reasoning arrived on the content channel, so
-	// it is folded into the thought rather than deleted: the reasoning has to stay
-	// readable somewhere, and deleting it would lose the opening of a turn.
+	// The text arrived on the content channel because the provider put it there, so
+	// it belongs to the thought. It is folded rather than dropped: dropping it lost
+	// the opening of a turn, and folding it is also what stops it being shown twice.
 	r.reasoning(content)
 }
 
