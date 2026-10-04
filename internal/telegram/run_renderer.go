@@ -122,35 +122,59 @@ func newRunRenderer(token string, chatID int64) *runRenderer {
 		streamSignal: make(chan struct{}, 1),
 		streamDone:   make(chan struct{}),
 	}
-	// The rich branch is the one production takes: the endpoint works, so the
-	// plain fallback below is dead in practice. Attaching the keyboard only to the
-	// fallback is why a prompt finished with no keyboard while /status, which goes
-	// down the plain path, looked correct. Both branches now carry it.
-	if messageID, err := sendRichMessage(token, chatID, "▌"); err == nil {
-		renderer.messageID = messageID
-		// The rich payload cannot carry the keyboard, so attach it separately.
-		//
-		// editMessageReplyMarkup is documented for inline keyboards and answers
-		// "inline keyboard expected" for a reply keyboard on a minority of calls
-		// (122 recorded against 2220 successes). This is the one place where a
-		// refusal cannot be recovered later: the run would stay keyboardless for
-		// its whole life. One bounded second attempt, then give up and say which
-		// end failed so a log can tell this from the final-answer attach.
-		if err := attachReplyKeyboard(token, chatID, messageID); err != nil {
-			if retryErr := attachReplyKeyboard(token, chatID, messageID); retryErr != nil {
-				logger.Warn("reply keyboard attach failed at run start: " + retryErr.Error())
-			}
-		}
-	} else {
-		// Carry the reply keyboard from creation. Every later step of the run only
-		// edits this message, and an edit that omits reply_markup leaves the
-		// existing one in place, so this one call covers the streamed text, the
-		// final answer, and the rich-message replacement.
-		renderer.messageID = sendWithKeyboard(token, chatID, "💬", keyboard.Main())
-	}
+	// No message is created here. The assistant message is created by
+	// ensureMessageLocked the first time there is something to put in it: the first
+	// reasoning, the first content, or the final answer.
+	//
+	// It used to be created up front carrying a bare cursor, so that the reply
+	// keyboard could be attached before the run produced anything. That put an
+	// empty cursor bubble at the top of every run, visible in a screenshot as a
+	// lone cursor sitting between the prompt and the thought. The keyboard is
+	// attached on the same call that creates the message, and a run that produces
+	// nothing gets no bubble at all.
 	go renderer.runStream()
 	go renderer.runToolTicker()
 	return renderer
+}
+
+// ensureMessageLocked creates the assistant message once, and attaches the reply
+// keyboard to it.
+//
+// The rich branch is the one production takes: the endpoint works, so the plain
+// fallback is dead in practice. Attaching the keyboard only to the fallback is why
+// a prompt finished with no keyboard while /status, which goes down the plain
+// path, looked correct. Both branches carry it.
+//
+// editMessageReplyMarkup is documented for inline keyboards and answers
+// "inline keyboard expected" for a reply keyboard on a minority of calls (122
+// recorded against 2220 successes). This is the one place where a refusal cannot
+// be recovered later: the run would stay keyboardless for its whole life. One
+// bounded second attempt, then give up and say which end failed so a log can tell
+// this from the final-answer attach.
+//
+// Callers must hold r.mu.
+func (r *runRenderer) ensureMessageLocked() int {
+	if r.messageID != 0 {
+		return r.messageID
+	}
+	seed := strings.TrimSpace(r.streamContent)
+	if seed == "" {
+		seed = "\u258c"
+	}
+	if messageID, err := sendRichMessage(r.token, r.chatID, seed); err == nil {
+		r.messageID = messageID
+		if err := attachReplyKeyboard(r.token, r.chatID, messageID); err != nil {
+			if retryErr := attachReplyKeyboard(r.token, r.chatID, messageID); retryErr != nil {
+				logger.Warn("reply keyboard attach failed at run start: " + retryErr.Error())
+			}
+		}
+		return messageID
+	}
+	// Carry the reply keyboard from creation. Every later step of the run only
+	// edits this message, and an edit that omits reply_markup leaves the existing
+	// one in place, so this one call covers the streamed text and the final answer.
+	r.messageID = sendWithKeyboard(r.token, r.chatID, "\U0001F4AC", keyboard.Main())
+	return r.messageID
 }
 
 func (r *runRenderer) runStream() {
@@ -254,7 +278,13 @@ func (r *runRenderer) renderTools() {
 
 func (r *runRenderer) renderStream() {
 	r.mu.Lock()
-	messageID := r.messageID
+	// Nothing to draw yet means nothing to create. A cursor alone is not worth a
+	// bubble, which is what the eager message at run start was doing.
+	if strings.TrimSpace(r.streamContent) == "" && r.sentStream == "" {
+		r.mu.Unlock()
+		return
+	}
+	messageID := r.ensureMessageLocked()
 	text := r.streamTextLocked()
 	skip := messageID == r.sentStreamID && text == r.sentStream
 	r.mu.Unlock()
@@ -604,7 +634,12 @@ func (r *runRenderer) tool(callID, value string) {
 	now := time.Now()
 	running := activity.status == "🔄" || activity.status == "⚡"
 	r.mu.Lock()
-	r.streamContent = ""
+	// streamContent is deliberately NOT cleared here. It used to be, because the
+	// tool trail rode in front of the answer in one message and a tool result
+	// ended the prose paragraph. With the trail in a message of its own, clearing
+	// it dropped the answer the reader was watching down to a bare cursor for as
+	// long as the tool ran, which is the lone "\u258c" bubble a screenshot showed
+	// sitting under the prompt.
 	// A running line is updated in place, not appended. Soraa Code keys the live
 	// line on the call id for the same reason: a tool that reports progress more
 	// than once is one line that moves, and a list that grew on every report made

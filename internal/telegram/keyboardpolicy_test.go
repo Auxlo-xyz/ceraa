@@ -184,9 +184,17 @@ func TestTheAgentAnswerCarriesTheReplyKeyboard(t *testing.T) {
 // halves are required: drop the attach and the run ends with no keyboard, put the
 // markup in the rich payload and the endpoint's tool call and thought rendering
 // breaks.
+//
+// The creation is lazy: there is no message until the run has something to put in
+// it, because creating one up front left an empty cursor bubble at the top of every
+// run. The attach therefore happens on the first content rather than at
+// construction, which is what this drives.
 func TestARunEndsWithTheKeyboardAttached(t *testing.T) {
 	cap := beginCapture(t)
-	newRunRenderer("test-token", 1)
+	renderer := newRunRenderer("test-token", 1)
+	renderer.content("the answer")
+	renderer.finish("the answer")
+	renderer.close()
 
 	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
 		t.Fatalf("the run attached no keyboard: %v", cap.methods())
@@ -211,7 +219,10 @@ func TestEveryUserFacingReplyIsACarrier(t *testing.T) {
 	cap := beginCapture(t)
 	send("test-token", 1, "command reply")
 	sendPlainMessage("test-token", 1, "answer to the prompt")
-	newRunRenderer("test-token", 1)
+	renderer := newRunRenderer("test-token", 1)
+	renderer.content("the streamed answer")
+	renderer.finish("the streamed answer")
+	renderer.close()
 
 	carriers := 0
 	for _, call := range cap.calls {
@@ -376,7 +387,10 @@ func TestTheRichEditPayloadStaysClean(t *testing.T) {
 // the live path, so if this stops happening the run finishes with no keyboard.
 func TestTheKeyboardIsAttachedToARichMessageSeparately(t *testing.T) {
 	cap := beginCapture(t)
-	newRunRenderer("test-token", 1)
+	renderer := newRunRenderer("test-token", 1)
+	renderer.content("the streamed answer")
+	renderer.finish("the streamed answer")
+	renderer.close()
 
 	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
 		t.Fatalf("no editMessageReplyMarkup was sent, so a rich-created run ends with no keyboard: %v", cap.methods())

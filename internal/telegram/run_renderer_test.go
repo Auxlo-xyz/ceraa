@@ -202,57 +202,57 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 	}
 }
 
+// The thought is a message of its own, it is never replaced by a second
+// assistant message, and the answer message is created only once there is
+// something to put in it.
+//
+// Every id is recorded as it is created rather than assumed, because creation
+// order is itself part of what is being pinned: the thought goes out first, and
+// the assistant message appears once the run has content or an answer.
 func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	var mu sync.Mutex
 	edits := make(map[int][]string)
-	posted := make([]string, 0)
 	richSends := 0
+	plainSends := 0
+	nextID := 14
+	assistantID := 0
+	created := make(map[int]string)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/sendRichMessage") {
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			rich, _ := body["rich_message"].(map[string]any)
-			markdown, _ := rich["markdown"].(string)
-			mu.Lock()
-			richSends++
-			sendNumber := richSends
-			mu.Unlock()
-			// One assistant message, id 14, for the whole run. The stub still
-			// hands out a second id so a reintroduced replacement shows up as an
-			// extra send rather than as a silently reused id.
-			messageID := 14
-			if sendNumber > 1 {
-				messageID = 16
-			}
-			_ = markdown
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, messageID)))
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["parse_mode"] == "HTML" {
-				text, _ := body["text"].(string)
-				mu.Lock()
-				posted = append(posted, text)
-				mu.Unlock()
-				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":15}}`))
-			} else {
-				_, _ = w.Write([]byte(`{"ok":true}`))
-			}
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/editMessageText") {
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			id := int(body["message_id"].(float64))
-			markdown, _ := body["text"].(string)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		textOf := func() string {
+			text, _ := body["text"].(string)
 			if rich, ok := body["rich_message"].(map[string]any); ok {
-				markdown, _ = rich["markdown"].(string)
+				text, _ = rich["markdown"].(string)
 			}
+			return text
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"),
+			strings.HasSuffix(r.URL.Path, "/sendMessage") && body["parse_mode"] == "HTML":
 			mu.Lock()
-			edits[id] = append(edits[id], markdown)
+			if strings.HasSuffix(r.URL.Path, "/sendRichMessage") {
+				richSends++
+			} else {
+				plainSends++
+			}
+			nextID++
+			id := nextID
+			created[id] = textOf()
+			// The assistant message is identified by carrying the answer, not by
+			// being created first: it is created when the run first has something
+			// to say, which is not the first thing the run does.
+			if !strings.HasPrefix(textOf(), "<blockquote>") {
+				assistantID = id
+			}
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
+			return
+		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			id := int(body["message_id"].(float64))
+			mu.Lock()
+			edits[id] = append(edits[id], textOf())
 			mu.Unlock()
 			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
 			return
@@ -267,61 +267,71 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	renderer := newRunRenderer("token", 42)
 	renderer.reasoning("first step")
 	renderer.reasoning("\nsecond step")
+	renderer.content("the answer")
 	renderer.finish("done")
 	renderer.close()
 
 	mu.Lock()
-	thoughtEdits := append([]string(nil), edits[15]...)
-	initialThought := append([]string(nil), posted...)
-	assistantEdits := append([]string(nil), edits[14]...)
-	sendCount := richSends
+	createdCopy := make(map[int]string, len(created))
+	for id, text := range created {
+		createdCopy[id] = text
+	}
+	assistantMessageID := assistantID
+	answerEdits := append([]string(nil), edits[assistantID]...)
+	richCount := richSends
+	plainCount := plainSends
 	mu.Unlock()
-	// One assistant message for the whole run. A thought used to replace it, which
-	// left a bare cursor bubble behind whenever the delete failed, and that bubble
-	// was the only thing between the reader and the answer.
-	if sendCount != 1 {
-		t.Fatalf("rich message sends = %d, want exactly one assistant message", sendCount)
+
+	if plainCount != 1 {
+		t.Fatalf("thought messages = %d, want exactly one", plainCount)
 	}
 	// The block opens as a plain blockquote, which is the shape that can be
 	// redrawn without anything to snap shut.
-	if len(initialThought) == 0 {
-		t.Fatal("the thought was never posted")
+	thinkingID := 0
+	for id, text := range createdCopy {
+		if strings.HasPrefix(text, "<blockquote>") {
+			thinkingID = id
+		}
 	}
-	if !strings.HasPrefix(initialThought[0], "<blockquote>"+thoughtHeader) || strings.Contains(initialThought[0], "expandable") {
-		t.Fatalf("streaming thought = %q, want a plain blockquote", initialThought[0])
+	if thinkingID == 0 {
+		t.Fatalf("the thought was never posted as its own message: %v", createdCopy)
+	}
+	if strings.Contains(createdCopy[thinkingID], "expandable") {
+		t.Fatalf("streaming thought = %q, want a plain blockquote", createdCopy[thinkingID])
+	}
+	if assistantMessageID == 0 {
+		t.Fatalf("no assistant message was created: %v", createdCopy)
+	}
+	if strings.HasPrefix(createdCopy[assistantMessageID], "<blockquote>") {
+		t.Fatal("the thought and the answer share one message")
 	}
 	// One redraw for the whole run: the published thought, written once. The
 	// intermediate state was paced out by the thought's own floor rather than
 	// redrawn on every signal.
-	if len(thoughtEdits) != 1 {
-		t.Fatalf("thought redraws = %#v, want only the published one", thoughtEdits)
+	published := edits[thinkingID]
+	if len(published) != 1 {
+		t.Fatalf("thought redraws = %#v, want only the published one", published)
 	}
-	if !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], thoughtHeader) || !strings.Contains(thoughtEdits[0], "first step") {
-		t.Fatalf("published thought = %#v", thoughtEdits[0])
+	if !strings.Contains(published[0], "<blockquote expandable>") || !strings.Contains(published[0], thoughtHeader) || !strings.Contains(published[0], "first step") {
+		t.Fatalf("published thought = %#v", published[0])
 	}
-	if !strings.Contains(thoughtEdits[0], "first step\nsecond step") || strings.Contains(thoughtEdits[0], "▌") {
-		t.Fatalf("published thought = %#v", thoughtEdits[0])
+	if !strings.Contains(published[0], "first step\nsecond step") || strings.Contains(published[0], "\u258c") {
+		t.Fatalf("published thought = %#v", published[0])
 	}
-	if len(assistantEdits) == 0 || assistantEdits[len(assistantEdits)-1] != "done" {
-		t.Fatalf("assistant edits = %#v", assistantEdits)
+	if len(answerEdits) == 0 || answerEdits[len(answerEdits)-1] != "done" {
+		t.Fatalf("assistant edits = %#v", answerEdits)
 	}
-	for _, edit := range assistantEdits {
-		if strings.Contains(edit, "<blockquote expandable>") {
-			t.Fatalf("thought leaked into assistant block: %#v", assistantEdits)
-		}
+	// A cursor on its own is not a message. It was, and it sat at the top of every
+	// run as an empty bubble between the prompt and the thought.
+	if richCount != 1 {
+		t.Fatalf("rich sends = %d, want exactly one assistant message", richCount)
 	}
 }
 
-// The tool trail is a message of its own, not a block in front of the answer.
-// Splitting them is what lets a running line be redrawn without re-PUTting the
-// answer, and what lets the published answer stand on its own once the run is
-// over while the trail stays below it as the record of what happened.
 func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	var mu sync.Mutex
 	byID := make(map[int]string)
 	sends := 0
-	answerID := 0
-	trailID := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body map[string]any
@@ -342,13 +352,7 @@ func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 			_, text := bodyText()
 			mu.Lock()
 			sends++
-			id := 14
-			if sends > 1 {
-				id = 15
-				trailID = id
-			} else {
-				answerID = id
-			}
+			id := 14 + sends
 			byID[id] = text
 			mu.Unlock()
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
@@ -377,16 +381,27 @@ func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	renderer.finish("Done")
 	renderer.close()
 
+	// Messages are told apart by what they carry, not by the order they were
+	// created in. Creation order is not the contract: the trail appears whenever
+	// the first tool reports, which can be before or after the answer message
+	// exists.
 	mu.Lock()
-	answer := byID[answerID]
-	trail := byID[trailID]
-	ids := []int{}
-	for id := range byID {
+	trail := ""
+	answer := ""
+	trailCount := 0
+	ids := make([]int, 0, len(byID))
+	for id, text := range byID {
 		ids = append(ids, id)
+		if strings.Contains(text, "\U0001F4D6 read") {
+			trail = text
+			trailCount++
+			continue
+		}
+		answer = text
 	}
 	mu.Unlock()
-	if trailID == 0 || trail == "" {
-		t.Fatalf("the tool trail never got its own message: ids=%v answer=%q", ids, answer)
+	if trail == "" || trailCount != 1 {
+		t.Fatalf("the tool trail is not exactly one message of its own: ids=%v answer=%q", ids, answer)
 	}
 	if !strings.Contains(trail, "📖 read /workspace/ceraa") {
 		t.Fatalf("trail message = %q", trail)
