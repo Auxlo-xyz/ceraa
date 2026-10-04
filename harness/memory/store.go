@@ -27,6 +27,68 @@ const (
 	Session Scope = "session"
 )
 
+// Veracity is how a memory came to be believed, and it is weighted rather than
+// filtered.
+//
+// The extractor already emitted a confidence of high, medium or low and Commit
+// threw away everything that was not "high", so a medium inference could never be
+// learned no matter how often it was re-asserted. Weighting instead of filtering
+// keeps the statement and lets repetition earn it trust, which is the whole point
+// of the corroboration count.
+//
+// The order is deliberate and it runs against the usual assumption. A tool
+// observation is worth less than something the user said outright, because the
+// model is the thing being uncertain about and the user is not. Tool output is
+// still weighted at 0.5 rather than discarded: it is real evidence about the
+// world, and a fact the agent verified itself is often better than one it inferred
+// from conversation.
+//
+// The values are a shape, not a measurement. They come from a different codebase
+// on a different model, and nothing here has benchmarked them. What is claimed is
+// only that the ordering is right.
+type Veracity string
+
+const (
+	// Stated is what the user said outright. The strongest thing in the store.
+	Stated Veracity = "stated"
+	// Inferred is the extractor's read of a conversation that did not say so
+	// directly. The extractor's most common output.
+	Inferred Veracity = "inferred"
+	// Tool is an observation the agent made for itself: a test result, a command
+	// output, a file it read.
+	Tool Veracity = "tool"
+	// Imported was handed to us rather than learned here, such as a memory block
+	// committed from an earlier session or written into memory/AGENTS.md.
+	Imported Veracity = "imported"
+	// Unknown is an entry that predates this field. It is deliberately mid-range:
+	// treating it as stated would promote every existing memory on upgrade, and
+	// treating it as inferred would sink a store full of good ones.
+	Unknown Veracity = "unknown"
+)
+
+// veracityWeight maps a provenance onto [0,1]. Frozen because it is a table of
+// judgement, not a calculation, and a caller that could mutate it would make every
+// score in the store depend on evaluation order.
+var veracityWeight = map[Veracity]float64{
+	Stated:   1.0,
+	Inferred: 0.7,
+	Tool:     0.5,
+	Imported: 0.6,
+	Unknown:  0.8,
+}
+
+// Weight is the provenance's share of an entry's score, in [0,1].
+//
+// An unset or unrecognised provenance reads as Unknown rather than as zero, so a
+// hand-written memory.json entry and a store written by an older build both keep
+// scoring instead of vanishing below the floor on upgrade.
+func (v Veracity) Weight() float64 {
+	if weight, ok := veracityWeight[v]; ok {
+		return weight
+	}
+	return veracityWeight[Unknown]
+}
+
 type Entry struct {
 	ID        string    `json:"id"`
 	Scope     Scope     `json:"scope"`
@@ -58,6 +120,13 @@ type Entry struct {
 	// That is the reason this field exists, and the reason it is bounded at render
 	// time rather than trusted to be short.
 	Why string `json:"why,omitempty"`
+	// Veracity is how this memory came to be believed.
+	//
+	// Absent on entries written before this field, and read as Unknown rather than
+	// as zero: a store that predates provenance has real preferences in it, and
+	// scoring them all at zero would silently empty everyone's prompt block on the
+	// upgrade that introduced this.
+	Veracity Veracity `json:"veracity,omitempty"`
 	// SeenAt is when it was last asserted, which is what decay is measured from.
 	//
 	// CreatedAt is deliberately not reused for that. Decay is about how long since
@@ -99,7 +168,8 @@ func corroborationWeight(seen int) float64 {
 	return 1 - math.Exp(-0.3*float64(seen))
 }
 
-// score is one entry's weight at a point in time: corroboration discounted by age.
+// score is one entry's weight at a point in time: provenance, then corroboration,
+// then age.
 //
 // Computed, never persisted. The store is read on every turn by Live, so a stored
 // score would be a number that has to be refreshed, snapshotted and migrated;
@@ -108,16 +178,31 @@ func corroborationWeight(seen int) float64 {
 // A zero Seen means the entry predates this field. It is treated as one
 // confirmation rather than zero, so an existing store keeps working unchanged
 // instead of every memory falling below the floor on upgrade.
+//
+// Provenance is the ceiling and corroboration is the climb, not the other way
+// round. A hard multiplier would make an inferred memory that was re-asserted
+// ninety times permanently outrank something the user stated once, which is
+// backwards: repetition is evidence the statement is right, so it should be able
+// to lift an entry toward the provenance's ceiling and stop there.
 func score(entry Entry, now time.Time) float64 {
+	ceiling := entry.Veracity.Weight()
 	corroboration := corroborationWeight(entry.Seen)
+	// Corroboration scales the ceiling rather than interpolating toward it. An
+	// earlier version took ceiling*(1-(1-c)*0.5), which let an inference converge
+	// on its 0.7 ceiling and overtake a stated memory sitting at 0.63 on a single
+	// confirmation: forty re-assertions of a guess outranked the user, which is
+	// the inversion this weighting exists to prevent. Scaling keeps the ranking
+	// total, so whatever one provenance can reach a weaker one can never pass by
+	// being repeated more often.
+	earned := ceiling * corroboration
 	if entry.SeenAt.IsZero() {
-		return corroboration
+		return earned
 	}
 	ageDays := now.Sub(entry.SeenAt).Hours() / 24
 	if ageDays < 0 {
 		ageDays = 0
 	}
-	return corroboration * math.Exp(-math.Ln2*ageDays/memoryHalfLifeDays)
+	return earned * math.Exp(-math.Ln2*ageDays/memoryHalfLifeDays)
 }
 
 type Store struct {
@@ -139,16 +224,16 @@ func New(dir string) (*Store, error) {
 }
 
 func (s *Store) Add(projectID, sessionID, content string) (*Entry, error) {
-	return s.AddScoped(projectID, sessionID, content, "", "")
+	return s.AddScoped(projectID, sessionID, content, "", "", Unknown)
 }
 
-// AddScoped adds a memory that is optionally narrowed to a path and carries a
-// rationale.
+// AddScoped adds a memory that is optionally narrowed to a path, carries a
+// rationale, and records how it came to be believed.
 //
-// Add remains the two-argument form so the existing callers and tests are
-// untouched; there is no reason for a caller that has no path to pass two empty
-// strings to say so.
-func (s *Store) AddScoped(projectID, sessionID, content, applies, why string) (*Entry, error) {
+// Add remains the shorter form so the existing callers and tests are untouched;
+// there is no reason for a caller that has no path, no rationale and no
+// provenance to pass three empty values to say so.
+func (s *Store) AddScoped(projectID, sessionID, content, applies, why string, veracity Veracity) (*Entry, error) {
 	projectID = strings.TrimSpace(projectID)
 	sessionID = strings.TrimSpace(sessionID)
 	content = compact(content)
@@ -179,6 +264,12 @@ func (s *Store) AddScoped(projectID, sessionID, content, applies, why string) (*
 			// once, so the count and the refresh below are the whole change.
 			doc.Entries[i].Seen++
 			doc.Entries[i].SeenAt = now
+			// Provenance only ever rises on a repeat. A user restating a preference
+			// they had once only inferred is the user confirming it, and the strongest
+			// provenance they can give; letting a later low-trust re-assert demote an
+			// entry the user has since vouched for would be the exact inversion
+			// weighting exists to prevent.
+			doc.Entries[i].Veracity = strongerVeracity(doc.Entries[i].Veracity, veracity)
 			if err := save(s.path, doc); err != nil {
 				return nil, err
 			}
@@ -195,6 +286,7 @@ func (s *Store) AddScoped(projectID, sessionID, content, applies, why string) (*
 		Content:   content,
 		Applies:   strings.TrimSpace(applies),
 		Why:       compact(why),
+		Veracity:  normalizeVeracity(veracity),
 		CreatedAt: now,
 		Seen:      1,
 		SeenAt:    now,
@@ -204,6 +296,27 @@ func (s *Store) AddScoped(projectID, sessionID, content, applies, why string) (*
 		return nil, err
 	}
 	return &entry, nil
+}
+
+// normalizeVeracity maps an unset or unrecognised value onto Unknown, so a caller
+// that passes "" gets the middle of the table rather than the bottom of it.
+func normalizeVeracity(v Veracity) Veracity {
+	if _, ok := veracityWeight[v]; ok {
+		return v
+	}
+	return Unknown
+}
+
+// strongerVeracity returns whichever of the two provenances is worth more.
+//
+// Used only on a repeat, and only upwards: corroboration is meant to lift an
+// entry toward its ceiling, and the only way that can go wrong is if the repeat
+// quietly lowers the ceiling it is climbing toward.
+func strongerVeracity(current, incoming Veracity) Veracity {
+	if incoming.Weight() > current.Weight() {
+		return normalizeVeracity(incoming)
+	}
+	return current
 }
 
 func (s *Store) List(projectID, sessionID string) ([]Entry, error) {

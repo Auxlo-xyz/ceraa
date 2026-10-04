@@ -148,7 +148,11 @@ func parseExtracted(text string) ([]Extracted, error) {
 // deletes.
 func Commit(store *Store, projectID, sessionID string, statements []Extracted) (added int, contradicted int, err error) {
 	for _, s := range statements {
-		if !strings.EqualFold(s.Confidence, "high") {
+		veracity := VeracityForConfidence(s.Confidence)
+		if veracity == "" {
+			// An unrecognised confidence is dropped rather than guessed at. Storing
+			// it as Unknown would launder a value this build does not understand
+			// into the middle of the table, which is worse than losing it.
 			continue
 		}
 		if strings.EqualFold(s.Kind, "contradict") {
@@ -156,13 +160,39 @@ func Commit(store *Store, projectID, sessionID string, statements []Extracted) (
 			continue
 		}
 		if strings.EqualFold(s.Kind, "add") || strings.EqualFold(s.Kind, "confirm") {
-			if _, err := store.AddScoped(projectID, sessionID, s.Statement, s.Applies, "learned at compaction"); err != nil {
+			if _, err := store.AddScoped(projectID, sessionID, s.Statement, s.Applies, "learned at compaction", veracity); err != nil {
 				return added, contradicted, err
 			}
 			added++
 		}
 	}
 	return added, contradicted, nil
+}
+
+// VeracityForConfidence maps the extractor's own confidence onto a provenance.
+//
+// The extractor's "high" means the conversation gave a clear explicit signal,
+// which is what Stated means here, so a high-confidence extraction is trusted as
+// though the user had said it. Medium is the extractor's inference and lands on
+// Inferred, which is the common case and is meant to be common.
+//
+// A "low" confidence has no equivalent, and that is deliberate. A weak guess is
+// not a lesser fact, it is a guess; the store has no way to keep it out of a
+// prompt except by weighting it, and a guess that was never stored is a guess the
+// agent will confidently re-derive and present as knowledge. It returns "" so
+// Commit skips it. Storing it at all, let alone letting it be re-asserted, was the
+// behaviour this replaces: the old filter keyed on the string "high" and threw the
+// rest away, so a medium inference could never be learned however often it was
+// re-asserted.
+func VeracityForConfidence(confidence string) Veracity {
+	switch strings.ToLower(strings.TrimSpace(confidence)) {
+	case "high", "explicit", "stated":
+		return Stated
+	case "medium", "inferred", "moderate":
+		return Inferred
+	default:
+		return ""
+	}
 }
 
 // LearnFunc matches the compaction hook's signature so the extractor can be

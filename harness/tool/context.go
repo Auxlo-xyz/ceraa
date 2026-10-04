@@ -53,7 +53,12 @@ func (m *MemoryTool) RunContext(ctx context.Context, spec operation.Spec) (strin
 		content, _ := spec.Args["content"].(string)
 		applies, _ := spec.Args["applies"].(string)
 		why, _ := spec.Args["why"].(string)
-		entry, err := m.Store.AddScoped(project, sessionID, content, applies, why)
+		// The agent chose to write this down during a live session, which is a
+		// stronger signal than the extractor reading a transcript afterwards: the
+		// model had the evidence in front of it and decided it was worth keeping.
+		// It is still not the user speaking, so it is Inferred rather than Stated,
+		// and a later user statement of the same preference lifts it.
+		entry, err := m.Store.AddScoped(project, sessionID, content, applies, why, memory.Inferred)
 		if err != nil {
 			return "", err
 		}
