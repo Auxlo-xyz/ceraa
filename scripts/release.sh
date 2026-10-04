@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the public release artifacts: four binaries, the system prompt, checksums.
+# Build the public release artifacts: four binaries, the system prompt, the
+# Mini App page, checksums.
 #
 # The system prompt ships as a file, not embedded in the binary. Ceraa reads
 # prompt/system.txt from disk on purpose: there is exactly one copy, so an edit
@@ -34,9 +35,10 @@ fi
 rm -rf dist
 mkdir -p dist
 
-# Same flags as .github/workflows/release.yml and scripts/build.sh: -trimpath
-# removes absolute build paths, -buildvcs=false removes the commit hash, and
-# -s -w strip the symbol table and DWARF.
+# Same flags as scripts/build.sh: -trimpath removes absolute build paths,
+# -buildvcs=false removes the commit hash, and -s -w strip the symbol table and
+# DWARF. Only this script adds -X for the version, which is what makes a release
+# report the tag rather than the -dev default.
 for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
   set -- $target
   echo "release: building ceraa-$1-$2"
@@ -51,15 +53,18 @@ done
 echo "release: staging prompt/system.txt"
 cp -f prompt/system.txt dist/system.txt
 
-# The Mini App page, staged the same way and for the same reason: served from
-# disk, never embedded, so the UI can be edited without shipping a binary.
-echo "release: staging miniapp/index.html"
-mkdir -p dist/miniapp
-cp -f miniapp/index.html dist/miniapp/index.html
+# The Mini App page, staged for the same reason: served from disk, never
+# embedded, so the UI can be edited without shipping a binary. It is flat here
+# the way system.txt is, because a release asset cannot contain a slash, and
+# install.sh puts it back under miniapp/ beside the binary, which is the third
+# place resolveAsset looks for it. Checksummed for the same reason the prompt is:
+# a release asset nobody verifies is a release asset nobody checked.
+echo "release: staging miniapp-index.html"
+cp -f miniapp/index.html dist/miniapp-index.html
 
 cp -f LICENSE NOTICE dist/
 
-( cd dist && sha256sum ceraa-* system.txt > SHA256SUMS )
+( cd dist && sha256sum ceraa-* system.txt miniapp-index.html > SHA256SUMS )
 
 echo "release: version $VERSION"
 echo "release: artifacts"
