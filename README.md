@@ -28,6 +28,29 @@ curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | s
 Requires `curl`, `tar` and a POSIX shell. Builds are published for `linux` and
 `darwin` on `amd64` and `arm64`.
 
+## Upgrade
+
+An installed copy can move to a new release on its own:
+
+```sh
+ceraa update                     # the newest release
+ceraa update --check             # answer the question, change nothing
+ceraa update --version v0.5.0    # a pinned tag
+```
+
+The download is checked against the release's own `SHA256SUMS`, and the new file
+is run once to confirm it starts and reports the version the tag names before
+anything is renamed over your copy. A candidate that fails either check costs
+you nothing. The system prompt is refreshed from the same release, so the binary
+never ends up newer than the prompt it runs with.
+
+A bridge started with `ceraa start` also looks once per boot, in the background
+and on a timeout, and logs the line that makes a new release visible. Set
+`CERAA_DISABLE_UPDATE_CHECK` if the machine must not make that call.
+
+A service that is already running keeps the version it started with, because the
+operating system still holds the old file open. Stop it afterwards to switch.
+
 ## Use
 
 ```sh
@@ -35,6 +58,7 @@ ceraa chat          # interactive session in the terminal
 ceraa ask "..."     # one prompt, clean output
 ceraa setup         # configure the Telegram bridge
 ceraa doctor        # check config, provider, storage
+ceraa update        # move this copy to the newest release
 ceraa version
 ```
 
