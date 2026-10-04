@@ -239,7 +239,10 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 			OnToolStart: func(callID, name string, args map[string]any) {
 				event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"call_id": callID, "tool": name, "args": args}})
 				if onTool != nil {
-					onTool(callID, "🔄 "+toolDisplayName(name)+toolArgsSummary(name, args))
+					// The tool name is carried ahead of the label so the line can
+					// read "💻 bash <command>" rather than the harness's sentence
+					// about the call. parseToolActivity splits the two back apart.
+					onTool(callID, "🔄 "+toolNameToken(name)+toolDisplayName(name)+toolArgsSummary(name, args))
 				}
 			},
 			OnToolDone: func(callID, name string, result operation.ResultEvent) {
@@ -253,7 +256,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 					"status": string(result.Status), "outcome": toolResultLabel(result),
 				}})
 				if onTool != nil {
-					onTool(callID, fmt.Sprintf("%s %s %s", status, label, toolResultLabel(result)))
+					onTool(callID, fmt.Sprintf("%s %s%s %s", status, toolNameToken(name), label, toolResultLabel(result)))
 				}
 			},
 			OnRetry: func(err error, attempt int, delay time.Duration) {

@@ -18,7 +18,11 @@ import (
 )
 
 type toolActivity struct {
-	id     string
+	id string
+	// name is the tool as the harness named it, so the line can carry the same
+	// icon and the same word Soraa Code shows. label is the sentence the harness
+	// wrote ("Read file", "Run command"), which is what the call is matched on.
+	name   string
 	status string
 	label  string
 	detail string
@@ -498,6 +502,11 @@ func (r *runRenderer) thoughtTextLocked() string {
 	return formatThought(r.thought, true)
 }
 
+// thoughtHeader is the line above the blockquote. Soraa Code writes
+// "💭 Thinking...", and a header is what tells the reader that the message below
+// it is reasoning rather than an answer, so the word alone is not enough.
+const thoughtHeader = "<b>💭 Thinking...</b>"
+
 func formatThought(value string, streaming bool) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -513,12 +522,15 @@ func formatThought(value string, streaming bool) string {
 		// plain blockquote has state to reset, so the redraw has nothing to snap.
 		wrapper = "<blockquote>"
 	} else {
+		// The header counts against the same ceiling as the body, so the room it
+		// takes is taken off the body first. Truncating the body alone let the
+		// finished message finish 45 runes over the limit the API refuses.
 		clipped = truncateThought(value)
 		// The published thought is written once and never redrawn, so it can
 		// afford to fold itself out of the way.
 		wrapper = "<blockquote expandable>"
 	}
-	return wrapper + "<b>Thought</b>\n\n" + html.EscapeString(clipped) + "</blockquote>"
+	return wrapper + thoughtHeader + "\n\n" + html.EscapeString(clipped) + "</blockquote>"
 }
 
 func (r *runRenderer) setCancel(cancel context.CancelFunc) {
@@ -553,8 +565,6 @@ func (r *runRenderer) reasoning(value string) {
 	}
 	r.thought += value
 	thoughtID := r.thoughtID
-	oldMessageID := r.messageID
-	assistantPreview := r.streamTextLocked()
 	shouldStream := now.Sub(r.lastThought) >= 300*time.Millisecond
 	if shouldStream {
 		r.lastThought = now
@@ -572,35 +582,14 @@ func (r *runRenderer) reasoning(value string) {
 		if thoughtMessageID == 0 {
 			return
 		}
-		assistantMessageID, assistantErr := sendRichMessage(r.token, r.chatID, assistantPreview)
-		if assistantErr != nil {
-			assistantMessageID = sendWithKeyboard(r.token, r.chatID, assistantPreview, nil)
-		}
-		if assistantMessageID == 0 {
-			return
-		}
-		if oldMessageID != 0 && oldMessageID != assistantMessageID {
-			if deleteErr := deleteTelegramMessage(r.token, r.chatID, oldMessageID); deleteErr != nil {
-				logger.Warn("Telegram assistant preview replacement cleanup failed: " + deleteErr.Error())
-			}
-		}
 		r.mu.Lock()
 		r.thoughtID = thoughtMessageID
-		r.messageID = assistantMessageID
 		// Seeded with what was actually posted. Leaving it empty cost one
 		// identical redraw at the start of every run, which Telegram answered
 		// "message is not modified" to, and which the reader saw as the block
 		// flashing before it started moving.
 		r.sentThought = formatThought(r.thought, true)
 		r.lastThoughtPush = now
-		// The replacement was created already carrying assistantPreview, so the
-		// API has that text on that id. Seeding both together is what makes the
-		// first render after a replacement a skip instead of a PUT of bytes the
-		// message is already showing. It used to be left to a queued signal to
-		// settle, which meant the invariant rested on the render goroutine winning
-		// a race against this one.
-		r.sentStream = assistantPreview
-		r.sentStreamID = assistantMessageID
 		r.mu.Unlock()
 	}
 	r.signalStream()
@@ -632,6 +621,9 @@ func (r *runRenderer) tool(callID, value string) {
 	default:
 		entry := &r.tools[index]
 		entry.status = activity.status
+		if activity.name != "" {
+			entry.name = activity.name
+		}
 		if activity.detail != "" {
 			entry.detail = activity.detail
 		}
@@ -1152,12 +1144,16 @@ func truncateStream(value string) string {
 // The published thought is a finished artifact, not a progress line, and cutting
 // its start would rewrite where the reasoning began. The same ceiling applies,
 // so the tail carries the ellipsis.
+// truncateThought keeps the start of a finished thought within the same ceiling
+// as a live one, counting the header that is added around it afterwards.
 func truncateThought(value string) string {
 	runes := []rune(value)
-	if len(runes) <= streamPreviewLimit {
+	// The header, the blank line after it, and the ellipsis that marks a cut.
+	room := streamPreviewLimit - len([]rune(thoughtHeader)) - 2 - 3
+	if len(runes) <= room {
 		return value
 	}
-	return string(runes[:streamPreviewLimit-3]) + "..."
+	return string(runes[:room]) + "..."
 }
 
 func toolArgsSummary(name string, args map[string]any) string {
@@ -1192,6 +1188,22 @@ func toolArgsSummary(name string, args map[string]any) string {
 	}
 	return " · " + truncateStatus(text, 96)
 }
+
+// toolNameToken carries the tool name through the same string as the label.
+//
+// The renderer is handed one line of text per tool event and nothing else, so
+// the name has to travel inside it. A space would split the name for tools whose
+// name has one in it, and the label is what the entry is matched on, so the
+// token is delimited and taken from the front.
+func toolNameToken(name string) string {
+	if name == "" {
+		return toolNameTokenPrefix + " · "
+	}
+	return toolNameTokenPrefix + " " + name + " · "
+}
+
+// toolNameTokenPrefix opens the tool name inside an event line.
+const toolNameTokenPrefix = "·tool·"
 
 func toolDisplayName(name string) string {
 	switch name {
@@ -1235,6 +1247,13 @@ func parseToolActivity(value string) (toolActivity, bool) {
 			continue
 		}
 		body := strings.TrimSpace(strings.TrimPrefix(value, item.prefix))
+		name := ""
+		if rest, ok := strings.CutPrefix(body, toolNameTokenPrefix+" "); ok {
+			if between, tail, found := strings.Cut(rest, " · "); found {
+				name = between
+				body = tail
+			}
+		}
 		detail := ""
 		if separator := strings.Index(body, " · "); separator >= 0 {
 			detail = strings.TrimSpace(body[separator+3:])
@@ -1245,27 +1264,73 @@ func parseToolActivity(value string) (toolActivity, bool) {
 			body = strings.TrimSpace(strings.TrimSuffix(body, " failed"))
 			body = strings.TrimSpace(strings.TrimSuffix(body, " cancelled"))
 		}
-		return toolActivity{status: item.status, label: body, detail: detail}, true
+		return toolActivity{name: name, status: item.status, label: body, detail: detail}, true
 	}
 	return toolActivity{}, false
 }
 
+// formatToolActivity is one line per call: icon, tool name, then whatever
+// identifies it.
+//
+// The bullet, the tick and the middle dot are all gone, and with them the line
+// that reads "• ✓ > Run command · cd /workspace". Soraa Code renders the same
+// call as "💻 bash cd /workspace", which is the tool rather than the harness's
+// sentence about it, and that is what a reader scanning the message is looking
+// for. Entries are separated by a blank line for the same reason: one call per
+// paragraph, so a long command does not run into the line under it.
+//
+// Nothing is dropped. The old six-line window existed because the lines were
+// bullets sharing one paragraph, and a window over a list that grows for twenty
+// minutes reads as the run forgetting what it did.
 func formatToolActivity(tools []toolActivity) string {
-	if len(tools) > 6 {
-		tools = tools[len(tools)-6:]
-	}
 	lines := make([]string, 0, len(tools))
 	for _, tool := range tools {
-		line := "• " + tool.status + " " + tool.label
+		name := tool.name
+		if name == "" {
+			name = tool.label
+		}
+		line := toolIcon(name) + " " + name
 		if tool.detail != "" {
-			line += " · " + tool.detail
+			line += " " + tool.detail
 		}
 		if tool.elapsed != "" {
 			line += " · 🕒 " + tool.elapsed
 		}
 		lines = append(lines, line)
 	}
-	return strings.Join(lines, "  \n")
+	return strings.Join(lines, "\n\n")
+}
+
+// toolIcon is Soraa Code's per-tool icon, so a call reads the same in both
+// bridges. An unknown tool gets a gear rather than nothing: an unlabelled line
+// is worse than a generic one.
+func toolIcon(name string) string {
+	switch name {
+	case "read":
+		return "📖"
+	case "write":
+		return "✍️"
+	case "edit", "edit_line", "batch_edit_file":
+		return "✏️"
+	case "apply_patch":
+		return "🩹"
+	case "bash":
+		return "💻"
+	case "glob":
+		return "📁"
+	case "grep", "fts_search":
+		return "🔍"
+	case "task":
+		return "🤖"
+	case "question":
+		return "❓"
+	case "todowrite":
+		return "📝"
+	case "webfetch":
+		return "🌐"
+	default:
+		return "⚙️"
+	}
 }
 
 func toolResultLabel(result operation.ResultEvent) string {

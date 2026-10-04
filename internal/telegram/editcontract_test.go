@@ -154,7 +154,14 @@ func TestAStreamPreviewMarksTheDroppedHead(t *testing.T) {
 // thoughtBody strips the blockquote wrapper so a limit assertion reads as a
 // limit on the text the user actually sees.
 func thoughtBody(value string) string {
-	value = strings.TrimPrefix(value, "<blockquote expandable><b>Thought</b>\n\n")
+	// The wrapper and the header are both stripped, whatever they currently say.
+	// Pinning the header text here made every header change look like an overflow
+	// of the body, which is not what the ceiling is about.
+	value = strings.TrimPrefix(value, "<blockquote expandable>")
+	value = strings.TrimPrefix(value, "<blockquote>")
+	if before, _, found := strings.Cut(value, "\n\n"); found && strings.HasPrefix(before, "<b>") && strings.HasSuffix(before, "</b>") {
+		value = value[len(before)+2:]
+	}
 	return strings.TrimSuffix(value, "</blockquote>")
 }
 
@@ -165,7 +172,7 @@ func thoughtBody(value string) string {
 // redrawn, so it is the one allowed to fold itself away.
 func TestAStreamingThoughtHasNoCollapseStateToReset(t *testing.T) {
 	streaming := formatThought("alpha bravo", true)
-	if !strings.HasPrefix(streaming, "<blockquote><b>Thought</b>") {
+	if !strings.HasPrefix(streaming, "<blockquote>"+thoughtHeader) {
 		t.Errorf("streaming thought = %q, want a plain blockquote", streaming)
 	}
 	if strings.Contains(streaming, "expandable") {
@@ -175,7 +182,7 @@ func TestAStreamingThoughtHasNoCollapseStateToReset(t *testing.T) {
 		t.Errorf("streaming thought lost the cursor: %q", streaming)
 	}
 	published := formatThought("alpha bravo", false)
-	if !strings.HasPrefix(published, "<blockquote expandable><b>Thought</b>") {
+	if !strings.HasPrefix(published, "<blockquote expandable>"+thoughtHeader) {
 		t.Errorf("published thought = %q, want the folding blockquote", published)
 	}
 	if strings.Contains(published, "\u258c") {

@@ -218,6 +218,9 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 			richSends++
 			sendNumber := richSends
 			mu.Unlock()
+			// One assistant message, id 14, for the whole run. The stub still
+			// hands out a second id so a reintroduced replacement shows up as an
+			// extra send rather than as a silently reused id.
 			messageID := 14
 			if sendNumber > 1 {
 				messageID = 16
@@ -270,18 +273,21 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	mu.Lock()
 	thoughtEdits := append([]string(nil), edits[15]...)
 	initialThought := append([]string(nil), posted...)
-	assistantEdits := append([]string(nil), edits[16]...)
+	assistantEdits := append([]string(nil), edits[14]...)
 	sendCount := richSends
 	mu.Unlock()
-	if sendCount < 2 {
-		t.Fatalf("rich message sends = %d, want initial and replacement", sendCount)
+	// One assistant message for the whole run. A thought used to replace it, which
+	// left a bare cursor bubble behind whenever the delete failed, and that bubble
+	// was the only thing between the reader and the answer.
+	if sendCount != 1 {
+		t.Fatalf("rich message sends = %d, want exactly one assistant message", sendCount)
 	}
 	// The block opens as a plain blockquote, which is the shape that can be
 	// redrawn without anything to snap shut.
 	if len(initialThought) == 0 {
 		t.Fatal("the thought was never posted")
 	}
-	if !strings.HasPrefix(initialThought[0], "<blockquote><b>Thought</b>") || strings.Contains(initialThought[0], "expandable") {
+	if !strings.HasPrefix(initialThought[0], "<blockquote>"+thoughtHeader) || strings.Contains(initialThought[0], "expandable") {
 		t.Fatalf("streaming thought = %q, want a plain blockquote", initialThought[0])
 	}
 	// One redraw for the whole run: the published thought, written once. The
@@ -290,7 +296,7 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	if len(thoughtEdits) != 1 {
 		t.Fatalf("thought redraws = %#v, want only the published one", thoughtEdits)
 	}
-	if !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], "<b>Thought</b>") || !strings.Contains(thoughtEdits[0], "first step") {
+	if !strings.Contains(thoughtEdits[0], "<blockquote expandable>") || !strings.Contains(thoughtEdits[0], thoughtHeader) || !strings.Contains(thoughtEdits[0], "first step") {
 		t.Fatalf("published thought = %#v", thoughtEdits[0])
 	}
 	if !strings.Contains(thoughtEdits[0], "first step\nsecond step") || strings.Contains(thoughtEdits[0], "▌") {
@@ -366,8 +372,8 @@ func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	defer func() { telegramAPIBase = oldBase }()
 
 	renderer := newRunRenderer("token", 42)
-	renderer.tool("read-1", "🔄 📚 Read file · /workspace/ceraa")
-	renderer.tool("read-1", "✅ 📚 Read file completed")
+	renderer.tool("read-1", "🔄 "+toolNameToken("read")+"📚 Read file · /workspace/ceraa")
+	renderer.tool("read-1", "✅ "+toolNameToken("read")+"📚 Read file completed")
 	renderer.finish("Done")
 	renderer.close()
 
@@ -382,7 +388,7 @@ func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	if trailID == 0 || trail == "" {
 		t.Fatalf("the tool trail never got its own message: ids=%v answer=%q", ids, answer)
 	}
-	if !strings.Contains(trail, "📚 Read file") || !strings.Contains(trail, "\u2713") {
+	if !strings.Contains(trail, "📖 read /workspace/ceraa") {
 		t.Fatalf("trail message = %q", trail)
 	}
 	if strings.Contains(trail, "\u23f3") {
@@ -418,34 +424,42 @@ func TestToolActivityIsReadableAndRedacted(t *testing.T) {
 	}
 }
 
-func TestToolActivityKeepsOneLinePerCallAndLastSix(t *testing.T) {
+// Every call keeps its own line and none are dropped. The old six-line window
+// is gone: it existed because the lines were bullets sharing one paragraph, and
+// a window over a list that grows for twenty minutes reads as the run forgetting
+// what it did.
+func TestToolActivityKeepsOneLinePerCallAndEveryCall(t *testing.T) {
 	renderer := &runRenderer{messageID: 1}
 	for i := 1; i <= 7; i++ {
 		callID := fmt.Sprintf("read-%d", i)
-		renderer.tool(callID, fmt.Sprintf("🔄 📚 Read file · file-%d", i))
-		renderer.tool(callID, "✅ 📚 Read file completed")
+		renderer.tool(callID, fmt.Sprintf("🔄 %sread %s file-%d", toolNameToken("read"), "📚 Read file · ", i))
+		renderer.tool(callID, "✅ "+toolNameToken("read")+"📚 Read file completed")
 	}
 	activity := formatToolActivity(renderer.tools)
-	lines := strings.Split(activity, "\n")
-	if len(lines) != 6 {
-		t.Fatalf("tool lines = %d, want 6: %q", len(lines), activity)
+	lines := strings.Split(activity, "\n\n")
+	if len(lines) != 7 {
+		t.Fatalf("tool lines = %d, want 7: %q", len(lines), activity)
 	}
-	if !strings.Contains(activity, "file-2  \n• ✓ 📚 Read file · file-3") {
-		t.Fatalf("tool entries lack Markdown hard breaks: %q", activity)
+	for _, i := range []int{1, 2, 7} {
+		if !strings.Contains(activity, fmt.Sprintf("file-%d", i)) {
+			t.Fatalf("call %d is missing from the trail: %q", i, activity)
+		}
 	}
-	if strings.Contains(activity, "file-1") || !strings.Contains(activity, "file-2") || !strings.Contains(activity, "file-7") {
-		t.Fatalf("tool window = %q", activity)
+	// The icon and the bare tool name are the line, so a reader can tell what
+	// ran without reading the harness's sentence about it.
+	if !strings.Contains(activity, "📖 read file-1") {
+		t.Fatalf("tool line is not icon plus tool name: %q", activity)
 	}
-	if strings.Count(activity, "Read file") != 6 || strings.Contains(activity, "completed") {
+	if strings.Contains(activity, "completed") {
 		t.Fatalf("tool activity was not normalized: %q", activity)
 	}
 }
 
 func TestToolActivityPreservesCommandDetailOnCompletion(t *testing.T) {
 	renderer := &runRenderer{messageID: 1}
-	renderer.tool("run-1", "🔄 >_ Run command · find /workspace -name config.json")
-	renderer.tool("run-1", "✅ >_ Run command completed")
-	want := "• ✓ >_ Run command · find /workspace -name config.json"
+	renderer.tool("run-1", "🔄 "+toolNameToken("bash")+">_ Run command · find /workspace -name config.json")
+	renderer.tool("run-1", "✅ "+toolNameToken("bash")+">_ Run command completed")
+	want := "💻 bash find /workspace -name config.json"
 	if got := formatToolActivity(renderer.tools); got != want {
 		t.Fatalf("tool activity = %q, want %q", got, want)
 	}
