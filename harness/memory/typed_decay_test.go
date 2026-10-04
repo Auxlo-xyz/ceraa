@@ -199,3 +199,100 @@ func TestARepeatNeverChangesAnEstablishedType(t *testing.T) {
 		t.Errorf("Seen = %d, want 5", entries[0].Seen)
 	}
 }
+
+// The extractor is asked for the type, because the kind of claim is semantic and
+// wording is not always enough. "we went with SQLite" is a decision to a reader and
+// a preference to a pattern matcher, and the difference is a two-year lifetime
+// against a three-year one.
+func TestAModelNamedTypeIsUsedOverTheClassifier(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reads as a preference to the classifier on wording alone.
+	if _, err := store.AddTyped("p", "s", "we went with SQLite because it is already deployed", "", "", Stated, MemoryTypeFromName("decision")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.List("p", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entries[0].Type; got != Decision {
+		t.Errorf("type = %q, want the model's %q", got, Decision)
+	}
+}
+
+// A type the model invented is discarded, not guessed at. The failure this prevents
+// is the quiet one: an unrecognised value assigned some other type would mislabel
+// the memory's lifetime with nothing in the log to show for it.
+func TestAnInventedTypeFallsBackToTheClassifier(t *testing.T) {
+	for _, invented := range []string{"important", "fact", "note", "", "PREFERENCE!"} {
+		if got := MemoryTypeFromName(invented); got != "" && got != Preference {
+			t.Errorf("MemoryTypeFromName(%q) = %q, want it discarded or the one real alias", invented, got)
+		}
+	}
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddTyped("p", "s", "never force push to main", "", "", Stated, MemoryTypeFromName("important")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.List("p", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An invented type must not cost a standing rule the shortest life in the table.
+	if got := entries[0].Type; got != Instruction {
+		t.Errorf("type = %q after an invented value, want the inferred %q", got, Instruction)
+	}
+}
+
+// The aliases a model will actually reach for, since a small free model asked for
+// one word will use the nearest one it knows.
+func TestTypeNamesAcceptTheSpellingsAModelReachesFor(t *testing.T) {
+	cases := map[string]MemoryType{
+		"rule": Instruction, "directive": Instruction, "instruction": Instruction,
+		"preference": Preference, "identity": Profile, "about": Profile,
+		"goal": Goal, "choice": Decision, "decision": Decision,
+		"limit": Constraint, "boundary": Constraint, "constraint": Constraint,
+		"task": Request, "request": Request, "project": Context, "context": Context,
+		"mistake": Error, "lesson": Error, "error": Error,
+		"observation":    Observation,
+		"  PREFERENCE  ": Preference,
+	}
+	for name, want := range cases {
+		if got := MemoryTypeFromName(name); got != want {
+			t.Errorf("MemoryTypeFromName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// The prompt has to actually ask, or nothing above changes. It previously asked for
+// four fields and described itself as a preference extractor, so no other type could
+// ever be named.
+func TestThePromptAsksForTheTypeItNowUses(t *testing.T) {
+	for _, required := range []string{`"type"`, "instruction", "profile", "decision", "constraint"} {
+		if !contains(promptBody(extractorPrompt), required) {
+			t.Errorf("the extractor prompt no longer mentions %q, so the field it is parsed for is never produced", required)
+		}
+	}
+	// The field list must not claim to be exactly four any more.
+	if contains(extractorPrompt, "exactly these string fields") && !contains(extractorPrompt, `"type"`) {
+		t.Error("the prompt pins a field list without the type field in it")
+	}
+}
+
+func promptBody(prompt string) string { return prompt }
+func contains(haystack, needle string) bool {
+	return len(needle) == 0 || indexOf(haystack, needle) >= 0
+}
+
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}

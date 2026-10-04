@@ -23,22 +23,74 @@ const (
 // extractorPrompt is the whole system instruction. It is tight on purpose:
 // the model is asked for statements about durable preferences, not for
 // anything a session file already has.
-const extractorPrompt = `You are a preference extractor for a coding agent. Read the conversation and the checkpoint summary, and extract durable facts about HOW the user wants work done: formatting rules, tool preferences, review discipline, conventions, and explicit reversals of previous preferences.
+const extractorPrompt = `You are a memory extractor for a coding agent. Read the conversation and the checkpoint summary, and extract durable claims about how the user wants work done and about standing facts that will still hold later.
 
-Do not extract task state, files, temporary details, or anything that does not generalize across sessions. Return ONLY a JSON array of objects, no prose before or after, each with exactly these string fields:
-- "statement": a single concrete sentence about the user's preference. Name things that are stable.
-- "applies": a path prefix or glob this preference is about, or "" if it applies everywhere.
-- "kind": "add" for a new preference, "contradict" if the statement reverses an existing preference.
+Extract these kinds of claim:
+- how the user wants work done: formatting rules, tool preferences, review discipline, conventions
+- standing instructions the user gave as a rule ("always run gofmt before committing")
+- things that are true about the user or their role
+- goals the user is working towards that are still live
+- decisions already made, with the reason given
+- limits and constraints in force
+- mistakes worth not repeating, and what the correct approach turned out to be
+
+Do not extract task state, files, temporary details, what was done in this session, or anything else that does not generalize.
+
+Return ONLY a JSON array of objects, no prose before or after, each with exactly these string fields:
+- "statement": a single concrete sentence. Name things that are stable.
+- "type": one of exactly "instruction", "preference", "profile", "goal", "decision", "constraint", "error", "context". Use "preference" when you are unsure; it is the safest and the most common answer. Use "request" only for something the user asked for once and clearly will not want again.
+- "applies": a path prefix or glob this claim is about, or "" if it applies everywhere.
+- "kind": "add" for a new claim, "contradict" if the statement reverses an existing one.
 - "confidence": "high" only if the conversation gives a clear, explicit signal; "medium" for inferred; "low" for weak.
 
-If nothing in the conversation reveals a durable preference, return an empty array: [].`
+If nothing in the conversation reveals a durable claim, return an empty array: [].`
 
 // Extracted is one candidate the model produced.
 type Extracted struct {
-	Statement  string `json:"statement"`
+	Statement string `json:"statement"`
+	// Type is what kind of claim this is, and it decides the lifetime. Empty is
+	// allowed and means the classifier decides from the statement's wording, which
+	// is also what an older build of the extractor leaves behind.
+	Type       string `json:"type"`
 	Applies    string `json:"applies"`
 	Kind       string `json:"kind"`
 	Confidence string `json:"confidence"`
+}
+
+// MemoryTypeFromName validates a type the model named.
+//
+// An unrecognised value returns "" rather than a guess, and the caller falls back
+// to the classifier. That is the difference between a model that invented a type
+// and a memory quietly assigned the wrong lifetime: the first is discarded, the
+// second is not detected at all.
+//
+// The aliases exist because a model asked for one word will reach for the nearest
+// one it knows, and "instruction" arriving as "rule" is not a signal worth losing.
+func MemoryTypeFromName(name string) MemoryType {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "instruction", "rule", "directive":
+		return Instruction
+	case "preference":
+		return Preference
+	case "profile", "identity", "about":
+		return Profile
+	case "goal":
+		return Goal
+	case "decision", "choice":
+		return Decision
+	case "constraint", "limit", "boundary":
+		return Constraint
+	case "request", "task":
+		return Request
+	case "context", "project":
+		return Context
+	case "error", "mistake", "lesson":
+		return Error
+	case "observation":
+		return Observation
+	default:
+		return ""
+	}
 }
 
 // ExtractConfigFromENV reads the extraction provider override from the
@@ -130,6 +182,7 @@ func parseExtracted(text string) ([]Extracted, error) {
 		item.Statement = strings.TrimSpace(item.Statement)
 		item.Applies = strings.TrimSpace(item.Applies)
 		item.Confidence = strings.TrimSpace(item.Confidence)
+		item.Type = strings.TrimSpace(item.Type)
 		if item.Statement == "" || item.Confidence == "" {
 			continue
 		}
@@ -160,7 +213,11 @@ func Commit(store *Store, projectID, sessionID string, statements []Extracted) (
 			continue
 		}
 		if strings.EqualFold(s.Kind, "add") || strings.EqualFold(s.Kind, "confirm") {
-			if _, err := store.AddScoped(projectID, sessionID, s.Statement, s.Applies, "learned at compaction", veracity); err != nil {
+			// The model's type wins when it is one we recognise, and the classifier
+			// decides otherwise. It is asked for because the kind of claim is
+			// semantic and the wording is not always enough: "we went with SQLite"
+			// is a decision to a reader and a preference to a pattern matcher.
+			if _, err := store.AddTyped(projectID, sessionID, s.Statement, s.Applies, "learned at compaction", veracity, MemoryTypeFromName(s.Type)); err != nil {
 				return added, contradicted, err
 			}
 			added++
