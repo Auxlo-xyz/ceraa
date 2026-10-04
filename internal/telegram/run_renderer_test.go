@@ -306,37 +306,55 @@ func TestThoughtStreamsInSeparateMessage(t *testing.T) {
 	}
 }
 
-func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
+// The tool trail is a message of its own, not a block in front of the answer.
+// Splitting them is what lets a running line be redrawn without re-PUTting the
+// answer, and what lets the published answer stand on its own once the run is
+// over while the trail stays below it as the record of what happened.
+func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	var mu sync.Mutex
-	var liveText string
-	var finalMarkdown string
+	byID := make(map[int]string)
+	sends := 0
+	answerID := 0
+	trailID := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodyText := func() (int, string) {
+			id := 0
+			if n, ok := body["message_id"].(float64); ok {
+				id = int(n)
+			}
+			text, _ := body["text"].(string)
+			if richMessage, ok := body["rich_message"].(map[string]any); ok {
+				text, _ = richMessage["markdown"].(string)
+			}
+			return id, text
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
-			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":14}}`))
+			_, text := bodyText()
+			mu.Lock()
+			sends++
+			id := 14
+			if sends > 1 {
+				id = 15
+				trailID = id
+			} else {
+				answerID = id
+			}
+			byID[id] = text
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":12}}`))
 		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
-			if messageID, ok := body["message_id"].(float64); ok && messageID == 14 {
-				if text, ok := body["text"].(string); ok {
-					mu.Lock()
-					liveText = text
-					mu.Unlock()
-				}
-				if richMessage, ok := body["rich_message"].(map[string]any); ok {
-					markdown, _ := richMessage["markdown"].(string)
-					mu.Lock()
-					if strings.Contains(markdown, "📚 Read file") {
-						liveText = markdown
-					} else {
-						finalMarkdown = markdown
-					}
-					mu.Unlock()
-				}
+			id, text := bodyText()
+			mu.Lock()
+			if id != 0 {
+				byID[id] = text
 			}
+			mu.Unlock()
 			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
 		default:
 			_, _ = w.Write([]byte(`{"ok":true}`))
@@ -354,20 +372,28 @@ func TestToolActivityStaysOnAssistantMessage(t *testing.T) {
 	renderer.close()
 
 	mu.Lock()
-	live := liveText
-	final := finalMarkdown
+	answer := byID[answerID]
+	trail := byID[trailID]
+	ids := []int{}
+	for id := range byID {
+		ids = append(ids, id)
+	}
 	mu.Unlock()
-	if !strings.Contains(live, "📚 Read file") || !strings.Contains(live, "✓") || strings.Contains(live, "⏳") {
-		t.Fatalf("live assistant message = %q", live)
+	if trailID == 0 || trail == "" {
+		t.Fatalf("the tool trail never got its own message: ids=%v answer=%q", ids, answer)
 	}
-	if final != "Done" {
-		t.Fatalf("final assistant message = %q", final)
+	if !strings.Contains(trail, "📚 Read file") || !strings.Contains(trail, "\u2713") {
+		t.Fatalf("trail message = %q", trail)
 	}
-	// This used to assert that a pinned status message carried no tool activity.
-	// There is no pinned message: PinnedManager was removed, having been
-	// unreachable since newRunRenderer started discarding it, so the assertion had
-	// nothing left to read and could no longer fail. Tool activity staying on the
-	// assistant message is what the two assertions above cover.
+	if strings.Contains(trail, "\u23f3") {
+		t.Fatalf("trail message carries a running marker after completion: %q", trail)
+	}
+	if strings.Contains(answer, "📚 Read file") {
+		t.Fatalf("tool activity leaked into the answer message: %q", answer)
+	}
+	if answer != "Done" {
+		t.Fatalf("final answer = %q", answer)
+	}
 }
 
 func TestRunRendererStopCancelsTheRun(t *testing.T) {

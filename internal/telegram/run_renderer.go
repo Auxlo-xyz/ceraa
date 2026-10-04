@@ -42,8 +42,15 @@ type runRenderer struct {
 	// down instead of walking into Telegram's rate limit.
 	started time.Time
 
-	mu            sync.Mutex
-	messageID     int
+	mu sync.Mutex
+	// messageID is the streamed answer. It carries the reply keyboard and is
+	// edited down to the final answer when the run completes.
+	messageID int
+	// toolMessageID is the tool trail, and it is a message of its own. Keeping
+	// it separate is what lets a running line be redrawn without re-PUTting the
+	// answer, and what lets the answer be published without the tool trail
+	// riding along inside it.
+	toolMessageID int
 	thoughtID     int
 	streamContent string
 	thought       string
@@ -67,8 +74,12 @@ type runRenderer struct {
 	// race rather than on the invariant.
 	sentStream   string
 	sentStreamID int
-	sentThought  string
-	lastSignal   time.Time
+	// sentTool is the tool trail text the API accepted, for the same reason as
+	// sentStream: without it a signal that did not change the trail still PUT
+	// the whole buffer.
+	sentTool    string
+	sentThought string
+	lastSignal  time.Time
 	// lastThoughtPush is when the thought block was last redrawn. It exists
 	// separately from lastThought because the two count different things:
 	// lastThought paces what reasoning() is willing to accumulate, and this one
@@ -153,58 +164,113 @@ func (r *runRenderer) runStream() {
 	}
 }
 
-// renderCurrentState pushes the current stream and thought text, skipping either
-// when the API already has it.
+// renderCurrentState pushes the thought, the tool trail and the answer, skipping
+// each when the API already has it.
 //
-// Shared by the loop and the final render so the two cannot drift on what counts
-// as changed.
+// Shared by the loop and the final render so the three cannot drift on what
+// counts as changed. Each keeps its own message and its own last-accepted text,
+// so a tool line moving costs one edit of one message and leaves the answer the
+// reader is watching alone.
 func (r *runRenderer) renderCurrentState() {
-	{
-		r.mu.Lock()
-		messageID := r.messageID
-		text := r.streamTextLocked()
-		thoughtID := r.thoughtID
-		thoughtText := r.thoughtTextLocked()
-		skipStream := messageID == r.sentStreamID && text == r.sentStream
-		skipThought := thoughtID != 0 && thoughtText == r.sentThought
-		lastThoughtPush := r.lastThoughtPush
-		age := r.runAge()
-		r.mu.Unlock()
-		if thoughtID != 0 && thoughtText != "" && !skipThought && time.Since(lastThoughtPush) >= streamThrottle(age) {
-			if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
-				if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
-					logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
-				}
-			}
-			r.mu.Lock()
-			// Both timestamps move together: sentThought keeps the next signal
-			// from spending itself on identical text, and lastThoughtPush keeps
-			// a busy answer from redrawing the thought faster than a reader can
-			// follow it. A signal refused by the floor leaves sentThought alone,
-			// so the newer accumulated text goes out on the next one instead of
-			// being lost.
-			r.sentThought = thoughtText
-			r.lastThoughtPush = time.Now()
-			r.mu.Unlock()
+	r.renderThought()
+	r.renderTools()
+	r.renderStream()
+}
+
+func (r *runRenderer) renderThought() {
+	r.mu.Lock()
+	thoughtID := r.thoughtID
+	thoughtText := r.thoughtTextLocked()
+	skip := thoughtID != 0 && thoughtText == r.sentThought
+	lastThoughtPush := r.lastThoughtPush
+	age := r.runAge()
+	r.mu.Unlock()
+	if thoughtID == 0 || thoughtText == "" || skip || time.Since(lastThoughtPush) < streamThrottle(age) {
+		return
+	}
+	if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, thoughtText); err != nil {
+		if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(thoughtText)); fallbackErr != nil {
+			logger.Warn("Telegram thought preview fallback failed: " + fallbackErr.Error())
 		}
-		if messageID == 0 || skipStream {
+	}
+	r.mu.Lock()
+	// Both values move together: sentThought keeps the next signal from spending
+	// itself on identical text, and lastThoughtPush keeps a busy answer from
+	// redrawing the thought faster than a reader can follow it. A signal refused
+	// by the floor leaves sentThought alone, so the newer accumulated text goes
+	// out on the next one instead of being lost.
+	r.sentThought = thoughtText
+	r.lastThoughtPush = time.Now()
+	r.mu.Unlock()
+}
+
+// renderTools owns the tool trail message. It is created on the first tool
+// report rather than at run start, because a run with no tools should not leave
+// an empty progress bubble behind, and it is never deleted: the trail is the
+// record of what the run did, and it outlives the answer above it.
+func (r *runRenderer) renderTools() {
+	r.mu.Lock()
+	text := r.toolTextLocked()
+	toolMessageID := r.toolMessageID
+	skip := toolMessageID != 0 && text == r.sentTool
+	r.mu.Unlock()
+	if text == "" {
+		return
+	}
+	if toolMessageID == 0 {
+		id, err := sendRichMessage(r.token, r.chatID, text)
+		if err != nil {
+			id = sendWithKeyboard(r.token, r.chatID, text, nil)
+		}
+		if id == 0 {
+			logger.Warn("Telegram tool preview could not be created")
 			return
 		}
-		if err := r.editRichOrUnavailable(messageID, text); err != nil {
-			if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, text); fallbackErr != nil {
-				logger.Warn("Telegram streaming preview fallback failed: " + fallbackErr.Error())
-				return
-			}
-		}
-		// Recorded only after the API accepted the text. A rejected edit leaves the
-		// last-known-good value in place, so the next signal retries it instead of
-		// treating the message as already up to date. The id is recorded with it:
-		// what was accepted was accepted on this message, and no other.
 		r.mu.Lock()
-		r.sentStream = text
-		r.sentStreamID = messageID
+		r.toolMessageID = id
+		r.sentTool = text
 		r.mu.Unlock()
+		return
 	}
+	if skip {
+		return
+	}
+	if err := r.editRichOrUnavailable(toolMessageID, text); err != nil {
+		if fallbackErr := editTelegramMessage(r.token, r.chatID, toolMessageID, text); fallbackErr != nil {
+			logger.Warn("Telegram tool preview fallback failed: " + fallbackErr.Error())
+			return
+		}
+	}
+	// Recorded only after the API accepted the text, so a rejected edit leaves
+	// the last-known-good value in place and the next signal retries it.
+	r.mu.Lock()
+	r.sentTool = text
+	r.mu.Unlock()
+}
+
+func (r *runRenderer) renderStream() {
+	r.mu.Lock()
+	messageID := r.messageID
+	text := r.streamTextLocked()
+	skip := messageID == r.sentStreamID && text == r.sentStream
+	r.mu.Unlock()
+	if messageID == 0 || skip {
+		return
+	}
+	if err := r.editRichOrUnavailable(messageID, text); err != nil {
+		if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, text); fallbackErr != nil {
+			logger.Warn("Telegram streaming preview fallback failed: " + fallbackErr.Error())
+			return
+		}
+	}
+	// Recorded only after the API accepted the text. A rejected edit leaves the
+	// last-known-good value in place, so the next signal retries it instead of
+	// treating the message as already up to date. The id is recorded with it:
+	// what was accepted was accepted on this message, and no other.
+	r.mu.Lock()
+	r.sentStream = text
+	r.sentStreamID = messageID
+	r.mu.Unlock()
 }
 
 // streamMinInterval is the floor between two outbound stream edits in the first
@@ -405,17 +471,24 @@ func (r *runRenderer) signalStream() {
 	}
 }
 
+// streamTextLocked is the answer preview, and nothing else. The tool trail
+// used to ride in front of it in the same message, which meant every tool line
+// redraw re-PUT the answer and the final answer had to shed the trail on the
+// way out.
 func (r *runRenderer) streamTextLocked() string {
-	parts := make([]string, 0, 2)
-	if len(r.tools) > 0 {
-		parts = append(parts, formatToolActivity(r.tools))
+	content := strings.TrimSpace(r.streamContent)
+	if content == "" {
+		return "▌"
 	}
-	if content := strings.TrimSpace(r.streamContent); content != "" {
-		parts = append(parts, truncateStream(content+" ▌"))
-	} else if len(parts) == 0 {
-		parts = append(parts, "▌")
+	return truncateStream(content + " ▌")
+}
+
+// toolTextLocked is the tool trail, empty while no tool has reported.
+func (r *runRenderer) toolTextLocked() string {
+	if len(r.tools) == 0 {
+		return ""
 	}
-	return strings.Join(parts, "\n\n")
+	return formatToolActivity(r.tools)
 }
 
 func (r *runRenderer) thoughtTextLocked() string {
@@ -569,11 +642,10 @@ func (r *runRenderer) tool(callID, value string) {
 			entry.elapsed = formatElapsed(now.Sub(entry.startedAt))
 		}
 	}
-	messageID := r.messageID
 	r.mu.Unlock()
-	if messageID != 0 {
-		r.signalStream()
-	}
+	// Signalled unconditionally: the tool trail is created by the render, so the
+	// first report has to reach it before any message exists.
+	r.signalStream()
 }
 
 // findToolLocked locates the entry a tool event belongs to, newest first.

@@ -187,17 +187,23 @@ func TestStreamingNeverPutsIdenticalTextTwice(t *testing.T) {
 // A rejected edit must not be recorded as delivered, or the message stays stale
 // for the rest of the run.
 //
-// Only a completed tool re-reported with the same status re-renders identical
-// text: it updates the existing entry in place. A running one appends a line, and
-// tool() clears streamContent, so neither produces a genuine retry.
+// A repeated report for the same call updates the entry in place, so it
+// re-renders identical text and is skipped, and tool() clears streamContent:
+// neither is a genuine retry. The text has to change for one to be exercised.
 func TestRejectedEditIsRetriedRatherThanTreatedAsSent(t *testing.T) {
 	c := &countingTelegram{failContains: "retryme", failOnce: true}
 	r, done := c.newRenderer(t)
 	defer done()
 
-	for i := 0; i < 3; i++ {
-		r.tool("call-1", "✅ 📚 Read retryme completed")
-		time.Sleep(350 * time.Millisecond)
+	// The first report creates the trail message, which is a send and cannot be
+	// refused the way an edit can. The text has to change afterwards for the
+	// edits this test is about to happen at all, and the spacing has to clear
+	// the throttle floor, which is one second in the first minute.
+	r.tool("call-1", "🔄 📚 Read · /tmp/other")
+	time.Sleep(1100 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		r.tool("call-1", "✅ 📚 Read completed · /tmp/retryme")
+		time.Sleep(1100 * time.Millisecond)
 	}
 	r.close()
 
