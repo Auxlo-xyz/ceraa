@@ -159,9 +159,12 @@ func (r *runRenderer) ensureMessageLocked() int {
 	if r.messageID != 0 {
 		return r.messageID
 	}
+	// Never create a message with nothing in it. The cursor that used to stand in
+	// for absent text is gone, so an empty seed has to be refused here rather than
+	// posted as a bubble containing nothing.
 	seed := strings.TrimSpace(r.streamContent)
 	if seed == "" {
-		seed = "\u258c"
+		return 0
 	}
 	if messageID, err := sendRichMessage(r.token, r.chatID, seed); err == nil {
 		r.messageID = messageID
@@ -175,7 +178,7 @@ func (r *runRenderer) ensureMessageLocked() int {
 	// Carry the reply keyboard from creation. Every later step of the run only
 	// edits this message, and an edit that omits reply_markup leaves the existing
 	// one in place, so this one call covers the streamed text and the final answer.
-	r.messageID = sendWithKeyboard(r.token, r.chatID, "\U0001F4AC", keyboard.Main())
+	r.messageID = sendWithKeyboard(r.token, r.chatID, seed, keyboard.Main())
 	return r.messageID
 }
 
@@ -305,14 +308,26 @@ func (r *runRenderer) renderTools() {
 
 func (r *runRenderer) renderStream() {
 	r.mu.Lock()
-	// Nothing to draw yet means nothing to create. A cursor alone is not worth a
-	// bubble, which is what the eager message at run start was doing.
+	// Nothing to draw yet means nothing to create. An empty message is not worth
+	// posting, which is what the eager message at run start was doing.
 	if strings.TrimSpace(r.streamContent) == "" && r.sentStream == "" {
 		r.mu.Unlock()
 		return
 	}
 	messageID := r.ensureMessageLocked()
 	text := r.streamTextLocked()
+	if messageID != 0 && r.sentStreamID != messageID {
+		// The message was just created carrying exactly this text, so there is
+		// nothing to edit: recording it as delivered and returning is the only
+		// correct reading. It used to get away with falling through because the
+		// preview appended a cursor the creation seed did not, so the two always
+		// differed and the redundant edit looked like a real update. Telegram
+		// answered "message is not modified" to the copy.
+		r.sentStream = text
+		r.sentStreamID = messageID
+		r.mu.Unlock()
+		return
+	}
 	skip := messageID == r.sentStreamID && text == r.sentStream
 	r.mu.Unlock()
 	if messageID == 0 || skip {
@@ -537,11 +552,16 @@ func (r *runRenderer) signalStream() {
 // redraw re-PUT the answer and the final answer had to shed the trail on the
 // way out.
 func (r *runRenderer) streamTextLocked() string {
+	// No cursor. Telegram already draws a typing indicator on the bot's own
+	// message while it is being edited, so a block cursor appended to the text
+	// showed up twice, and when the run ended without publishing it was left
+	// standing in the message as a stray "▌" on a line of its own. The reference
+	// sends plain text and relies on the indicator too.
 	content := strings.TrimSpace(r.streamContent)
 	if content == "" {
-		return "▌"
+		return ""
 	}
-	return truncateStream(content + " ▌")
+	return truncateStream(content)
 }
 
 // toolTextLocked is the tool trail, empty while no tool has reported.
@@ -666,8 +686,11 @@ func (r *runRenderer) endAnswerBlock() {
 	r.mu.Lock()
 	r.messageID = 0
 	r.streamContent = ""
-	r.sentStream = ""
-	r.sentStreamID = 0
+	// sentStream and sentStreamID are deliberately kept. They identify the message
+	// now holding the published fragment, so finish can complete that message in
+	// place when the final answer supersedes it, instead of sending a duplicate.
+	// Clearing them here is what left the fragment orphaned while the final went
+	// out as a brand new message beside it.
 	r.mu.Unlock()
 }
 
@@ -819,6 +842,8 @@ func (r *runRenderer) content(delta string) {
 func (r *runRenderer) markReasoningOnly() {
 	r.mu.Lock()
 	content := r.streamContent
+	messageID := r.messageID
+	sent := r.sentStream
 	// The answer message is released, not kept. Keeping it meant the next content
 	// delta landed on a message whose text had just been folded into a thought, so
 	// the run's next fragment overwrote the same bubble instead of opening one.
@@ -834,6 +859,19 @@ func (r *runRenderer) markReasoningOnly() {
 	// it belongs to the thought. It is folded rather than dropped: dropping it lost
 	// the opening of a turn, and folding it is also what stops it being shown twice.
 	r.reasoning(content)
+	if messageID == 0 {
+		return
+	}
+	// The message this text was shown on is now redundant: its whole content lives
+	// in the thought. Leaving it meant the chat held the reasoning twice, once as
+	// the thought and once as an answer that never was. It is deleted only when it
+	// holds nothing but the folded text; if a real answer landed on it since, the
+	// sent text no longer matches and it is left alone.
+	if sent != "" && strings.TrimSpace(sent) == strings.TrimSpace(content) {
+		if err := deleteTelegramMessage(r.token, r.chatID, messageID); err != nil {
+			logger.Warn("Telegram folded reasoning cleanup failed: " + err.Error())
+		}
+	}
 }
 
 func (r *runRenderer) finish(answer string) {
@@ -848,6 +886,8 @@ func (r *runRenderer) finish(answer string) {
 	r.mu.Lock()
 	stopped = r.stopped
 	messageID := r.messageID
+	fragmentID := r.sentStreamID
+	fragment := r.sentStream
 	thoughtID := r.thoughtID
 	thought := r.thought
 	r.mu.Unlock()
@@ -858,6 +898,16 @@ func (r *runRenderer) finish(answer string) {
 		if !r.publishThoughtMessage(formatThought(thought, false), thoughtID) {
 			logger.Warn("Telegram final thought publication failed")
 		}
+	}
+	// When the live preview was released (a tool call closed the block) but the
+	// final answer is that same text grown to completion, the final belongs on the
+	// preview's message. Sending it as a new message left the chat holding the
+	// fragment and the final side by side, which is the duplication a run log
+	// showed as an 829-rune streaming message next to its own 855-rune final.
+	// A fragment the final does not contain is independent history and is left
+	// alone; only a preview the final supersedes is completed in place.
+	if messageID == 0 && fragmentID != 0 && fragment != "" && strings.HasPrefix(strings.TrimSpace(answer), strings.TrimSpace(fragment)) {
+		messageID = fragmentID
 	}
 	r.publishFinalAnswer(answer, messageID)
 }
@@ -1011,6 +1061,16 @@ func (r *runRenderer) isStopped() bool {
 
 func (r *runRenderer) publishThoughtMessage(text string, messageID int) bool {
 	if messageID != 0 {
+		// Publishing text the message is already showing is the one edit Telegram
+		// answers "message is not modified". It started happening once the cursor
+		// came off the live preview, because the live and published forms became
+		// identical for a thought whose last delta had already been drawn.
+		r.mu.Lock()
+		alreadyShown := r.sentThought == text
+		r.mu.Unlock()
+		if alreadyShown {
+			return true
+		}
 		if err := editTelegramHTMLMessage(r.token, r.chatID, messageID, text); err == nil {
 			return true
 		}
@@ -1032,8 +1092,27 @@ func (r *runRenderer) publishThoughtMessage(text string, messageID int) bool {
 
 func (r *runRenderer) publishRichMessage(markdown string, messageID int) bool {
 	if messageID != 0 {
+		// The streaming preview may already show exactly this text, because the
+		// message was created carrying it and the creation was recorded as
+		// delivered. Re-PUTting it is the one edit Telegram answers "message is
+		// not modified", and in production the rich edit then fails loudly enough
+		// to trigger the replacement path below, which sends a duplicate and
+		// deletes the original for no reason at all.
+		r.mu.Lock()
+		alreadyShown := messageID == r.sentStreamID && strings.TrimSpace(markdown) == strings.TrimSpace(r.sentStream)
+		r.mu.Unlock()
+		if alreadyShown {
+			return true
+		}
 		if err := r.editRichOrUnavailable(messageID, markdown); err == nil {
 			return true
+		} else {
+			// Named with the id and the refusal, because the fallback below sends a
+			// brand new message and deletes this one: if the delete then fails or
+			// targets the wrong id, the chat holds two copies of the same answer,
+			// and without this line there is no way to tell why the edit path was
+			// abandoned.
+			logger.Warn(fmt.Sprintf("Telegram rich edit of message %d refused (%s); sending replacement", messageID, err.Error()))
 		}
 	}
 	if _, err := sendRichMessage(r.token, r.chatID, markdown); err != nil {

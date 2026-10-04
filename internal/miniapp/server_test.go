@@ -78,7 +78,13 @@ func newFixture(t *testing.T, allowID int64) (*Server, *sessionstore.Store, *eve
 		warn = previousWarn
 		note = previousNote
 	})
-	return New(Config{Token: testToken, AllowID: allowID, Store: store, Bus: bus}), store, bus
+	// Port 0, so the kernel hands the test a free port. The fixture used to leave
+	// the address empty, which made every Start() in the package bind the real
+	// 8787: two tests failed with "address already in use" whenever the service
+	// was running, and the only way to get a green suite was to stop the bot.
+	// That is a test defect, not a fact about the world, and it was written up in
+	// AGENTS.md as if it were the latter for a day.
+	return New(Config{Token: testToken, AllowID: allowID, Store: store, Bus: bus, Address: "127.0.0.1:0"}), store, bus
 }
 
 // do performs an authenticated request against the handler.

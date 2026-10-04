@@ -28,7 +28,7 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if richMessage, ok := body["rich_message"].(map[string]any); ok {
 				if markdown, ok := richMessage["markdown"].(string); ok {
-					if strings.Contains(markdown, "▌") {
+					if strings.HasPrefix(markdown, "## Heading") {
 						mu.Lock()
 						streamMarkdown = markdown
 						mu.Unlock()
@@ -57,7 +57,10 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	renderer := newRunRenderer("token", 42)
 	defer renderer.close()
 	answer := "## Heading\n\n1. Step\n\nTelegram Message\n    ↓"
-	renderer.content("## Heading\n\n1. Step\n\nTelegram Message\n    ↓")
+	renderer.content("## Heading")
+	time.Sleep(1_100 * time.Millisecond)
+	renderer.content("\n\n1. Step")
+	time.Sleep(1_100 * time.Millisecond)
 	renderer.finish(answer)
 	renderer.close()
 
@@ -69,8 +72,14 @@ func TestEditTransportUsesOneFinalMessage(t *testing.T) {
 	if final != answer {
 		t.Fatalf("final message = %q", final)
 	}
-	if !strings.Contains(stream, "## Heading") || !strings.Contains(stream, "▌") {
+	if !strings.Contains(stream, "## Heading") {
 		t.Fatalf("stream message = %q", stream)
+	}
+	// The preview carries no cursor. Telegram draws its own typing indicator on the
+	// bot's message, so the block cursor was a second one, and it survived as a
+	// stray glyph whenever a run ended without publishing.
+	if strings.Contains(stream, "\u258c") {
+		t.Fatalf("the preview still carries a cursor: %q", stream)
 	}
 	for _, path := range paths {
 		if strings.HasSuffix(path, "/sendMessageDraft") {
@@ -107,7 +116,10 @@ func TestFinishDrainsPreviewBeforeFinalEdit(t *testing.T) {
 				mu.Lock()
 				edits = append(edits, markdown)
 				mu.Unlock()
-				if strings.Contains(markdown, "▌") {
+				// Gate on the preview edit itself. It used to gate on the cursor the
+				// preview carried, and with the cursor gone no edit ever matched and
+				// the test hung waiting for a signal that could not arrive.
+				if strings.Contains(markdown, "growing") {
 					previewOnce.Do(func() { close(previewStarted) })
 					<-releasePreview
 				}
@@ -124,7 +136,9 @@ func TestFinishDrainsPreviewBeforeFinalEdit(t *testing.T) {
 
 	renderer := newRunRenderer("token", 42)
 	answer := "Complete answer"
-	renderer.content("Complete")
+	renderer.content("Partial preview")
+	time.Sleep(1_100 * time.Millisecond)
+	renderer.content(" growing")
 	<-previewStarted
 	finished := make(chan struct{})
 	go func() {
@@ -189,7 +203,8 @@ func TestRichMessageFallbackReplacesPreview(t *testing.T) {
 
 	renderer := newRunRenderer("token", 42)
 	answer := "## Heading\n\n1. Step"
-	renderer.content(answer)
+	renderer.content("## Heading")
+	time.Sleep(150 * time.Millisecond)
 	renderer.finish(answer)
 	renderer.close()
 
@@ -711,7 +726,7 @@ func TestAnAbandonedPreviewIsNeverLeftTyping(t *testing.T) {
 				}
 				gone = deleted
 				mu.Unlock()
-				if !strings.Contains(last, "\u258c") || time.Now().After(deadline) {
+				if last != "" || time.Now().After(deadline) {
 					break
 				}
 				time.Sleep(20 * time.Millisecond)

@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -181,6 +182,74 @@ func TestStreamingNeverPutsIdenticalTextTwice(t *testing.T) {
 	defer c.mu.Unlock()
 	if c.rejected != 0 {
 		t.Errorf("Telegram rejected %d no-op edit(s); text was re-sent unchanged", c.rejected)
+	}
+}
+
+// The cursor is gone from the answer preview, so the text a message is created
+// with and the text it is first edited with are now identical. Telegram answers
+// that "message is not modified", and it is a wasted call on every single run, so
+// the creation is recorded as delivered rather than redrawn.
+func TestAnAnswerIsNotReplacedByAnIdenticalEdit(t *testing.T) {
+	var mu sync.Mutex
+	posts := make([]string, 0)
+	edits := make(map[int][]string)
+	nextID := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
+		case "sendRichMessage":
+			rich, _ := body["rich_message"].(map[string]any)
+			markdown, _ := rich["markdown"].(string)
+			nextID++
+			posts = append(posts, markdown)
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, 100+nextID)))
+			return
+		case "editMessageText":
+			if n, ok := body["message_id"].(float64); ok {
+				id := int(n)
+				text, _ := body["text"].(string)
+				if rich, ok := body["rich_message"].(map[string]any); ok {
+					text, _ = rich["markdown"].(string)
+				}
+				edits[id] = append(edits[id], text)
+			}
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	const answer = "the completed answer"
+	r := newRunRenderer("token", 42)
+	r.content(answer)
+	time.Sleep(300 * time.Millisecond)
+	r.finish(answer)
+	r.close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	created := false
+	for _, text := range posts {
+		if text == answer {
+			created = true
+		}
+	}
+	if !created {
+		t.Fatalf("the answer message was never created carrying its own text: %q", posts)
+	}
+	for id, texts := range edits {
+		for i, text := range texts {
+			if text == answer && i == 0 && created {
+				t.Errorf("message %d was re-PUT the exact text it was created with", id)
+			}
+		}
 	}
 }
 
