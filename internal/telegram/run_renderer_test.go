@@ -728,3 +728,96 @@ func TestAnAbandonedPreviewIsNeverLeftTyping(t *testing.T) {
 		})
 	}
 }
+
+// One message per thinking block and one per tool call.
+//
+// A single message for the whole run made every block of reasoning one bubble
+// redrawn for the entire run, so the last block overwrote the first, and every
+// tool call a line in a list that grew into a wall. The reference maps each entry
+// to its own message id for the same reason.
+func TestEveryThoughtBlockAndToolCallGetsItsOwnMessage(t *testing.T) {
+	var mu sync.Mutex
+	created := make([]string, 0)
+	final := make(map[int]string)
+	nextID := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		text, _ := body["text"].(string)
+		if rich, ok := body["rich_message"].(map[string]any); ok {
+			text, _ = rich["markdown"].(string)
+		}
+		mu.Lock()
+		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
+		case "sendRichMessage", "sendMessage":
+			nextID++
+			created = append(created, text)
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, 100+nextID)))
+			return
+		case "editMessageText":
+			if n, ok := body["message_id"].(float64); ok {
+				final[int(n)] = text
+			}
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	r := newRunRenderer("token", 42)
+	r.reasoning("first block of reasoning")
+	r.tool("c1", "🔄 "+toolNameToken("bash")+">_ Run command · ls -la /workspace")
+	r.tool("c1", "✅ "+toolNameToken("bash")+">_ Run command completed")
+	r.content("an answer in progress")
+	r.reasoning("second block of reasoning")
+	r.tool("c2", "🔄 "+toolNameToken("bash")+">_ Run command · du -sh /workspace")
+	r.tool("c2", "✅ "+toolNameToken("bash")+">_ Run command completed")
+	r.finish("the final answer")
+	r.close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	thoughts, tools := 0, 0
+	toolLines := make(map[string]int)
+	for _, text := range created {
+		switch {
+		case strings.Contains(text, thoughtHeader):
+			thoughts++
+		case strings.HasPrefix(text, "\U0001F4BB bash"):
+			tools++
+			key := strings.Join(strings.Fields(text)[1:], " ")
+			toolLines[key]++
+		}
+	}
+	if thoughts != 2 {
+		t.Errorf("thought messages = %d, want one per block (2): %q", thoughts, created)
+	}
+	if tools != 2 {
+		t.Errorf("tool messages = %d, want one per call (2): %q", tools, created)
+	}
+	// Two calls that happen to share a prefix must not be merged into one
+	// message, which is what reusing a single trail message did.
+	for line, count := range toolLines {
+		if count != 1 {
+			t.Errorf("tool line %q appears in %d messages, want its own", line, count)
+		}
+	}
+	// Every thought block is published rather than left carrying a live cursor.
+	published := 0
+	for _, text := range final {
+		if strings.Contains(text, "blockquote expandable") && strings.Contains(text, thoughtHeader) {
+			published++
+			if strings.Contains(text, "\u258c") {
+				t.Errorf("a published thought kept its cursor: %q", text)
+			}
+		}
+	}
+	if published != 2 {
+		t.Errorf("published thought blocks = %d, want 2", published)
+	}
+}

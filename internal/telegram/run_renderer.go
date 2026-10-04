@@ -50,16 +50,22 @@ type runRenderer struct {
 	// messageID is the streamed answer. It carries the reply keyboard and is
 	// edited down to the final answer when the run completes.
 	messageID int
-	// toolMessageID is the tool trail, and it is a message of its own. Keeping
-	// it separate is what lets a running line be redrawn without re-PUTting the
-	// answer, and what lets the answer be published without the tool trail
-	// riding along inside it.
-	toolMessageID int
+	// toolMessageIDs is one message per tool call, keyed by call id, and
+	// toolSent is the text last accepted on each. One message for the whole run
+	// made every call a line in a list that grew into a wall, and reusing that
+	// one message across calls meant the record of what the run did was the last
+	// call only. The reference maps entry index to message id for the same
+	// reason: an entry is a message.
+	toolMessageIDs map[string]int
+	toolSent       map[string]string
+	// thoughtID is the current thinking block's message, and thoughtSent is what
+	// the API accepted on it. A run reasons in several blocks, and each is its own
+	// message rather than one message redrawn for the whole run.
 	thoughtID     int
+	thoughtSent   string
 	streamContent string
 	thought       string
 	tools         []toolActivity
-	lastThought   time.Time
 	lastStatus    time.Time
 	// Last text accepted by the API for each message, used to skip no-op edits.
 	//
@@ -78,15 +84,11 @@ type runRenderer struct {
 	// race rather than on the invariant.
 	sentStream   string
 	sentStreamID int
-	// sentTool is the tool trail text the API accepted, for the same reason as
-	// sentStream: without it a signal that did not change the trail still PUT
-	// the whole buffer.
-	sentTool    string
-	sentThought string
-	lastSignal  time.Time
+	sentThought  string
+	lastSignal   time.Time
 	// lastThoughtPush is when the thought block was last redrawn. It exists
-	// separately from lastThought because the two count different things:
-	// lastThought paces what reasoning() is willing to accumulate, and this one
+	// separately from the redraw floor because the two count different things:
+	// the floor paces how often a block is redrawn, and this one
 	// paces what the reader is shown.
 	lastThoughtPush time.Time
 	stopped         bool
@@ -232,48 +234,73 @@ func (r *runRenderer) renderThought() {
 	r.mu.Unlock()
 }
 
-// renderTools owns the tool trail message. It is created on the first tool
-// report rather than at run start, because a run with no tools should not leave
-// an empty progress bubble behind, and it is never deleted: the trail is the
-// record of what the run did, and it outlives the answer above it.
+// renderTools gives every tool call a message of its own.
+//
+// It used to be one message for the whole run, with each call a line inside it.
+// That made a twenty minute run a single unreadable wall, and it meant the chat
+// held no record of individual calls once the last one overwrote the text. The
+// reference maps each entry to its own message id for the same reason.
+//
+// A message is created when the call first reports, edited in place while the
+// call runs so the elapsed time ticks on the message it belongs to, and left
+// alone once the call is over. That is why a running line updates rather than
+// appends, and why the duration can be frozen onto a message that is not going
+// to be edited again.
 func (r *runRenderer) renderTools() {
 	r.mu.Lock()
-	text := r.toolTextLocked()
-	toolMessageID := r.toolMessageID
-	skip := toolMessageID != 0 && text == r.sentTool
-	r.mu.Unlock()
-	if text == "" {
-		return
+	type pending struct {
+		callID  string
+		text    string
+		message int
+		sent    string
 	}
-	if toolMessageID == 0 {
-		id, err := sendRichMessage(r.token, r.chatID, text)
-		if err != nil {
-			id = sendWithKeyboard(r.token, r.chatID, text, nil)
+	work := make([]pending, 0, len(r.tools))
+	for _, tool := range r.tools {
+		text := formatToolActivity([]toolActivity{tool})
+		if text == "" {
+			continue
 		}
-		if id == 0 {
-			logger.Warn("Telegram tool preview could not be created")
-			return
+		message := r.toolMessageIDs[tool.id]
+		sent := r.toolSent[tool.id]
+		if message != 0 && text == sent {
+			continue
 		}
+		work = append(work, pending{callID: tool.id, text: text, message: message, sent: sent})
+	}
+	r.mu.Unlock()
+
+	for _, item := range work {
+		if item.message == 0 {
+			id, err := sendRichMessage(r.token, r.chatID, item.text)
+			if err != nil {
+				id = sendWithKeyboard(r.token, r.chatID, item.text, nil)
+			}
+			if id == 0 {
+				logger.Warn("Telegram tool message could not be created")
+				continue
+			}
+			r.mu.Lock()
+			if r.toolMessageIDs == nil {
+				r.toolMessageIDs = make(map[string]int)
+				r.toolSent = make(map[string]string)
+			}
+			r.toolMessageIDs[item.callID] = id
+			r.toolSent[item.callID] = item.text
+			r.mu.Unlock()
+			continue
+		}
+		if err := r.editRichOrUnavailable(item.message, item.text); err != nil {
+			if fallbackErr := editTelegramMessage(r.token, r.chatID, item.message, item.text); fallbackErr != nil {
+				logger.Warn("Telegram tool message fallback failed: " + fallbackErr.Error())
+				continue
+			}
+		}
+		// Recorded only after the API accepted the text, so a rejected edit leaves
+		// the last known good value in place and the next signal retries it.
 		r.mu.Lock()
-		r.toolMessageID = id
-		r.sentTool = text
+		r.toolSent[item.callID] = item.text
 		r.mu.Unlock()
-		return
 	}
-	if skip {
-		return
-	}
-	if err := r.editRichOrUnavailable(toolMessageID, text); err != nil {
-		if fallbackErr := editTelegramMessage(r.token, r.chatID, toolMessageID, text); fallbackErr != nil {
-			logger.Warn("Telegram tool preview fallback failed: " + fallbackErr.Error())
-			return
-		}
-	}
-	// Recorded only after the API accepted the text, so a rejected edit leaves
-	// the last-known-good value in place and the next signal retries it.
-	r.mu.Lock()
-	r.sentTool = text
-	r.mu.Unlock()
 }
 
 func (r *runRenderer) renderStream() {
@@ -586,6 +613,34 @@ func (r *runRenderer) close() {
 	<-r.streamDone
 }
 
+// endThoughtBlock closes the current thinking block, so the reasoning that comes
+// after it opens a message of its own.
+//
+// The boundary is a tool call, because that is where the model stops reasoning
+// and starts acting. One message for the whole run forced every block of
+// reasoning into a single bubble that was redrawn for the entire run, so the last
+// block overwrote the first and the reader could only ever see the tail of the
+// thinking. The closing block is published on the way out, not left carrying a
+// live cursor.
+func (r *runRenderer) endThoughtBlock() {
+	r.mu.Lock()
+	thoughtID := r.thoughtID
+	thought := r.thought
+	empty := strings.TrimSpace(thought) == ""
+	r.thoughtID = 0
+	r.thought = ""
+	r.sentThought = ""
+	r.mu.Unlock()
+	if thoughtID == 0 || empty {
+		return
+	}
+	if err := editTelegramHTMLMessage(r.token, r.chatID, thoughtID, formatThought(thought, false)); err != nil {
+		if fallbackErr := editTelegramMessage(r.token, r.chatID, thoughtID, thoughtFallbackText(formatThought(thought, false))); fallbackErr != nil {
+			logger.Warn("Telegram thought block publication failed: " + fallbackErr.Error())
+		}
+	}
+}
+
 func (r *runRenderer) reasoning(value string) {
 	now := time.Now()
 	r.mu.Lock()
@@ -595,15 +650,12 @@ func (r *runRenderer) reasoning(value string) {
 	}
 	r.thought += value
 	thoughtID := r.thoughtID
-	shouldStream := now.Sub(r.lastThought) >= 300*time.Millisecond
-	if shouldStream {
-		r.lastThought = now
-	}
 	r.lastStatus = now
 	r.mu.Unlock()
-	if !shouldStream {
-		return
-	}
+	// Opening a message is never rate limited. The floor below paces redraws of
+	// a block that already exists, and applying it to creation meant a new block
+	// of reasoning that arrived inside the window never got a message at all: the
+	// text was accumulated into a thought with no message to show it on.
 	if thoughtID == 0 {
 		thoughtMessageID, err := sendHTMLMessage(r.token, r.chatID, formatThought(value, true))
 		if err != nil {
@@ -615,7 +667,7 @@ func (r *runRenderer) reasoning(value string) {
 		r.mu.Lock()
 		r.thoughtID = thoughtMessageID
 		// Seeded with what was actually posted. Leaving it empty cost one
-		// identical redraw at the start of every run, which Telegram answered
+		// identical redraw at the start of every block, which Telegram answered
 		// "message is not modified" to, and which the reader saw as the block
 		// flashing before it started moving.
 		r.sentThought = formatThought(r.thought, true)
@@ -633,6 +685,13 @@ func (r *runRenderer) tool(callID, value string) {
 	activity.id = callID
 	now := time.Now()
 	running := activity.status == "🔄" || activity.status == "⚡"
+	// A tool call is a block boundary: the model stopped reasoning and started
+	// acting, so whatever reasons next is a new block and gets its own message.
+	// Taken outside the lock below, because publishing the closing block is a
+	// network call and holding the mutex across one would stall every producer.
+	if !running {
+		r.endThoughtBlock()
+	}
 	r.mu.Lock()
 	// streamContent is deliberately NOT cleared here. It used to be, because the
 	// tool trail rode in front of the answer in one message and a tool result
