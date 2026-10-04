@@ -127,6 +127,12 @@ type Entry struct {
 	// scoring them all at zero would silently empty everyone's prompt block on the
 	// upgrade that introduced this.
 	Veracity Veracity `json:"veracity,omitempty"`
+	// Type is what kind of claim this is, and it sets the half-life.
+	//
+	// Absent on entries written before this field, and read as the old single
+	// half-life rather than as anything typed, so an upgrade changes nothing about
+	// how an existing store decays.
+	Type MemoryType `json:"type,omitempty"`
 	// SeenAt is when it was last asserted, which is what decay is measured from.
 	//
 	// CreatedAt is deliberately not reused for that. Decay is about how long since
@@ -138,12 +144,81 @@ type Entry struct {
 
 // Decay and corroboration, and why the score is never stored.
 //
-// memoryHalfLifeDays is how long a single unconfirmed assertion takes to halve in
-// weight. One constant and no config: the shape Hermes uses for this is a
-// DecayConfig with an enabled flag and two dialects, and nothing here needs either,
-// because the cost of being wrong is a preference that fades and can be re-asserted
-// rather than a preference that is never learned.
+// MemoryType is what kind of thing a memory is, which decides how long it lasts.
+//
+// One decay constant for everything meant a stated preference faded at exactly the
+// rate of a one-off note, so the things most worth remembering were the first to be
+// forgotten. A profile and a request are not the same kind of claim and must not
+// share a lifetime.
+type MemoryType string
+
+const (
+	// Preference is how the user wants work done. The bulk of what this store
+	// holds, and the thing that was previously being under-protected.
+	Preference MemoryType = "preference"
+	// Profile is who the user is and how they work: role, conventions, standing
+	// constraints. Changes rarely and should not need re-stating.
+	Profile MemoryType = "profile"
+	// Instruction is a standing directive, phrased as one: "never force push".
+	Instruction MemoryType = "instruction"
+	// Decision is a choice with a reason that still holds.
+	Decision MemoryType = "decision"
+	// Goal is something the user is working toward, which expires on its own terms.
+	Goal MemoryType = "goal"
+	// Constraint is a limit that applies until lifted.
+	Constraint MemoryType = "constraint"
+	// Request is a one-off task. Deliberately the shortest life of all: these are
+	// what should be forgotten first, and were previously kept the longest.
+	Request MemoryType = "request"
+	// Observation is something noticed once, about the state of the world.
+	Observation MemoryType = "observation"
+	// Error is a mistake worth not repeating.
+	Error MemoryType = "error"
+	// Context is a fact about the project or codebase.
+	Context MemoryType = "context"
+)
+
+// memoryHalfLifeDays is the half-life for an entry with no recognised type.
+//
+// It is the old single constant, kept as the fallback so an unclassifiable memory
+// behaves exactly as it did before typed decay existed rather than silently
+// adopting somebody else's lifetime.
 const memoryHalfLifeDays = 30.0
+
+// halfLifeDaysByType is how long each type takes to halve in weight, in days.
+//
+// The spread is the whole point and it is deliberately wide. A profile outlives a
+// request by two and a half orders of magnitude, because one is a standing fact
+// about a person and the other is a thing that was asked for once.
+//
+// The numbers are ordered by how often the underlying claim stops being true, not
+// by how important it is. That is the distinction that matters: a goal is important
+// and short-lived, a preference is ordinary and long-lived, and ranking by
+// importance would have got both backwards.
+var halfLifeDaysByType = map[MemoryType]float64{
+	Profile:     3650, // ten years
+	Instruction: 1825, // five
+	Preference:  1095, // three
+	Decision:    730,  // two
+	Constraint:  730,  // two
+	Goal:        365,  // one
+	Context:     365,  // one
+	Error:       270,
+	Observation: 120,
+	Request:     45, // six weeks
+}
+
+// halfLifeDays is the half-life for an entry's type.
+//
+// An unset or unrecognised type reads as the old single constant, so every store in
+// the field keeps decaying exactly as it did before this existed and nothing is
+// silently promoted to a lifetime nobody chose.
+func halfLifeDays(entry Entry) float64 {
+	if halfLife, ok := halfLifeDaysByType[entry.Type]; ok {
+		return halfLife
+	}
+	return memoryHalfLifeDays
+}
 
 // memoryScoreFloor is the weight below which an entry is not worth the prompt
 // bytes. Entries fade rather than disappear, so this is what keeps a long-lived
@@ -202,7 +277,7 @@ func score(entry Entry, now time.Time) float64 {
 	if ageDays < 0 {
 		ageDays = 0
 	}
-	return earned * math.Exp(-math.Ln2*ageDays/memoryHalfLifeDays)
+	return earned * math.Exp(-math.Ln2*ageDays/halfLifeDays(entry))
 }
 
 type Store struct {
@@ -224,16 +299,22 @@ func New(dir string) (*Store, error) {
 }
 
 func (s *Store) Add(projectID, sessionID, content string) (*Entry, error) {
-	return s.AddScoped(projectID, sessionID, content, "", "", Unknown)
+	return s.AddTyped(projectID, sessionID, content, "", "", Unknown, "")
 }
 
 // AddScoped adds a memory that is optionally narrowed to a path, carries a
-// rationale, and records how it came to be believed.
-//
-// Add remains the shorter form so the existing callers and tests are untouched;
-// there is no reason for a caller that has no path, no rationale and no
-// provenance to pass three empty values to say so.
+// rationale, and records how it came to be believed. Its type is inferred.
 func (s *Store) AddScoped(projectID, sessionID, content, applies, why string, veracity Veracity) (*Entry, error) {
+	return s.AddTyped(projectID, sessionID, content, applies, why, veracity, "")
+}
+
+// AddTyped is AddScoped with an explicit memory type, for a caller that already
+// knows what kind of claim it is making.
+//
+// An empty memoryType is inferred from the statement rather than defaulted, because
+// defaulting would mean every entry that did not name its type shared one lifetime
+// and typed decay would only ever apply to the minority that opted in.
+func (s *Store) AddTyped(projectID, sessionID, content, applies, why string, veracity Veracity, memoryType MemoryType) (*Entry, error) {
 	projectID = strings.TrimSpace(projectID)
 	sessionID = strings.TrimSpace(sessionID)
 	content = compact(content)
@@ -270,6 +351,12 @@ func (s *Store) AddScoped(projectID, sessionID, content, applies, why string, ve
 			// entry the user has since vouched for would be the exact inversion
 			// weighting exists to prevent.
 			doc.Entries[i].Veracity = strongerVeracity(doc.Entries[i].Veracity, veracity)
+			// The type is never re-derived on a repeat. The statement has not
+			// changed, so a classifier run twice would only risk flipping a
+			// classified memory to a different lifetime for no new information.
+			if _, known := halfLifeDaysByType[doc.Entries[i].Type]; !known {
+				doc.Entries[i].Type = resolveMemoryType(doc.Entries[i].Content, memoryType)
+			}
 			if err := save(s.path, doc); err != nil {
 				return nil, err
 			}
@@ -287,6 +374,7 @@ func (s *Store) AddScoped(projectID, sessionID, content, applies, why string, ve
 		Applies:   strings.TrimSpace(applies),
 		Why:       compact(why),
 		Veracity:  normalizeVeracity(veracity),
+		Type:      resolveMemoryType(content, memoryType),
 		CreatedAt: now,
 		Seen:      1,
 		SeenAt:    now,
@@ -296,6 +384,19 @@ func (s *Store) AddScoped(projectID, sessionID, content, applies, why string, ve
 		return nil, err
 	}
 	return &entry, nil
+}
+
+// resolveMemoryType prefers the caller's type and otherwise reads it off the
+// statement.
+//
+// An unrecognised explicit type is inferred rather than rejected, because the
+// alternative is a caller who typo'd a type silently getting the shortest life in
+// the table for a standing preference.
+func resolveMemoryType(content string, explicit MemoryType) MemoryType {
+	if _, known := halfLifeDaysByType[explicit]; known {
+		return explicit
+	}
+	return classifyMemoryType(content)
 }
 
 // normalizeVeracity maps an unset or unrecognised value onto Unknown, so a caller
@@ -673,4 +774,144 @@ func RenderFile(path string, maxBytes int) (string, error) {
 		return open + truncateUTF8(html.EscapeString(body), maxBytes-len(open)-len("\n</memory-file>\n")) + "\n</memory-file>\n", nil
 	}
 	return entry, nil
+}
+
+// isImperative reports whether a statement is phrased as a standing directive.
+//
+// Anywhere in the statement, not only at the front. "for this task, always run the
+// gate" is a one-off phrase followed by a standing rule, and the rule is the part
+// that decides the lifetime.
+func isImperative(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for _, prefix := range []string{
+		"never ", "always ", "do not ", "don't ", "must ", "avoid ", "stop ",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+		if strings.Contains(trimmed, ", "+prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsWord reports whether a bare word appears in the text, so "mistake," and
+// "mistakes." match while "remistake" does not.
+func containsWord(text, word string) bool {
+	for offset := 0; ; {
+		index := strings.Index(text[offset:], word)
+		if index < 0 {
+			return false
+		}
+		at := offset + index
+		beforeOK := at == 0 || isSeparator(text[at-1])
+		after := at + len(word)
+		afterOK := after >= len(text) || isSeparator(text[after])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = at + len(word)
+	}
+}
+
+// isSeparator reports whether a byte ends a word. Anything that is not a letter or
+// digit does, which is why the check is a negation rather than an allow-list: a
+// miss here means a memory keeps the wrong lifetime, and the set of bytes that are
+// not word characters is far larger than any list worth writing down.
+func isSeparator(b byte) bool {
+	if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' {
+		return false
+	}
+	return true
+}
+
+// classifyMemoryType infers the kind of claim from the statement's own wording.
+//
+// Deliberately a classifier over text rather than a field the model fills in. The
+// extractor is asked for a preference every time and it complies, so asking it
+// again for a type would produce a type for everything and therefore no
+// information. Reading the statement for the words that actually carry the claim
+// is the only signal here that the model does not control.
+//
+// It is conservative on purpose and returns "" when nothing matches, which reads as
+// the old single half-life. A wrong type is worse than no type: mislabelling a
+// one-off request as a profile would keep it for ten years.
+//
+// The order is significant. Instruction and constraint are checked before
+// preference, because "always run gofmt before committing" is a preference by
+// subject and an instruction by form, and the shorter life of an instruction is the
+// safer error when it is genuinely one. Request is checked last so that a request
+// phrased as a rule does not get the short life, which is the failure that would
+// actually lose a preference.
+func classifyMemoryType(content string) MemoryType {
+	text := strings.ToLower(strings.TrimSpace(content))
+	if text == "" {
+		return ""
+	}
+
+	// A prohibition on a specific thing is a constraint, and is checked before the
+	// generic imperative block because "do not use the vendored SDK" is an
+	// instruction by form and a constraint by meaning. Reading it the other way
+	// gives a two-year lifetime where the claim is about something being off the
+	// table, which is the wrong error: over-keeping a constraint is recoverable and
+	// under-keeping an instruction is not.
+	for _, marker := range []string{"must not ", "out of scope", "do not use ", "cannot ", "never use "} {
+		if strings.Contains(text, marker) {
+			return Constraint
+		}
+	}
+	// Something that went wrong, so it is not repeated. Before the imperative block
+	// for the same reason: "avoid the mistake of ..." is about the past.
+	if containsWord(text, "mistake") || containsWord(text, "broke") ||
+		containsWord(text, "failed") || containsWord(text, "regression") ||
+		strings.Contains(text, "the bug was ") {
+		return Error
+	}
+	// Standing directives, by the imperative or the prohibition.
+	for _, prefix := range []string{
+		"never ", "always ", "do not ", "don't ", "must ", "avoid ", "stop ",
+	} {
+		if strings.HasPrefix(text, prefix) {
+			return Instruction
+		}
+	}
+	// Explicit self-description of the user, which outlives any single task.
+	if strings.Contains(text, "i am ") || strings.Contains(text, "i'm ") ||
+		strings.Contains(text, "the user is ") || strings.Contains(text, "the user prefers ") {
+		return Profile
+	}
+	// A goal is something being worked towards, not a rule or a fact.
+	for _, marker := range []string{"i want to", "the goal is", "we are building", "the plan is"} {
+		if strings.Contains(text, marker) {
+			return Goal
+		}
+	}
+	// A choice that was made, with its reason attached.
+	if strings.Contains(text, "because ") || strings.Contains(text, "decided to ") ||
+		strings.Contains(text, "chose ") || strings.Contains(text, "we use ") {
+		return Decision
+	}
+	// A one-off, and only when it is unmistakably one. Checked last on purpose, see
+	// above: anything that reads as a standing rule keeps the longer life.
+	for _, marker := range []string{"this time", "just for now", "for this task", "right now "} {
+		if !strings.Contains(text, marker) {
+			continue
+		}
+		// A one-off phrase inside a standing rule is still a standing rule.
+		// "for this task, always run the gate" carries both, and taking the shorter
+		// life would forget a directive the user meant to keep.
+		if isImperative(text) {
+			continue
+		}
+		return Request
+	}
+	// Anything about the project's own shape.
+	if strings.Contains(text, "the repo ") || strings.Contains(text, "the build ") ||
+		strings.Contains(text, "the api ") || strings.Contains(text, "architecture") {
+		return Context
+	}
+	// The default, because this store is a preference extractor and almost
+	// everything it holds is a preference.
+	return Preference
 }
