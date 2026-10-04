@@ -81,10 +81,22 @@ func traceAPICall(method string, body []byte, status int, response string, apiOK
 	}
 	kind := markupKind(body)
 	var payload struct {
-		Text string `json:"text"`
+		Text    string `json:"text"`
+		RichMsg struct {
+			Markdown string `json:"markdown"`
+		} `json:"rich_message"`
 	}
 	_ = json.Unmarshal(body, &payload)
 	textLen := len([]rune(payload.Text))
+	// A rich call carries its body in rich_message.markdown and leaves text
+	// empty, so measuring only text reported 0 for every rich send and edit. That
+	// made the trace unable to answer the one question it exists for, which is
+	// what a message actually holds.
+	markdownLen := len([]rune(payload.RichMsg.Markdown))
+	body_ := payload.Text
+	if body_ == "" {
+		body_ = payload.RichMsg.Markdown
+	}
 	verdict := "ok"
 	switch {
 	case !apiOK:
@@ -92,12 +104,24 @@ func traceAPICall(method string, body []byte, status int, response string, apiOK
 	case status < 200 || status >= 300:
 		verdict = fmt.Sprintf("HTTP %d", status)
 	}
-	line := fmt.Sprintf("tgapi %s markup=%s textlen=%d verdict=%s raw=%s",
-		method, kind, textLen, verdict, truncate(response, 200))
+	line := fmt.Sprintf("tgapi %s markup=%s textlen=%d mdlen=%d preview=%q verdict=%s raw=%s",
+		method, kind, textLen, markdownLen, previewForTrace(body_), verdict, truncate(response, 200))
 	if hook := traceObserver.Load(); hook != nil {
 		(*hook)(line)
 	}
 	logger.Warn(line)
+}
+
+// previewForTrace is one line of the body a call carries, so a trace can be read
+// without reconstructing it. Newlines are folded rather than dropped: the content
+// of a message is largely where its line breaks are.
+func previewForTrace(value string) string {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "\n", "\\n")
+	runes := []rune(value)
+	if len(runes) > 110 {
+		return string(runes[:110]) + "..."
+	}
+	return value
 }
 
 func truncate(s string, max int) string {

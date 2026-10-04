@@ -818,6 +818,41 @@ func (r *runRenderer) fail() {
 			logger.Warn("Telegram failed thought publication failed")
 		}
 	}
+	r.resolvePreview()
+}
+
+// resolvePreview retires the live answer preview when no final answer is coming.
+//
+// A run that errors, or that a new prompt supersedes, never reaches finish, so
+// the preview kept the streaming cursor forever: a message in the chat claiming
+// to still be typing, minutes after the run was over, with nothing to replace it.
+// The text produced so far is published without the cursor when there is any, and
+// the message is deleted when there is not, because an empty bubble is worse than
+// no bubble.
+func (r *runRenderer) resolvePreview() {
+	r.mu.Lock()
+	messageID := r.messageID
+	content := strings.TrimSpace(r.streamContent)
+	if content == "" {
+		r.messageID = 0
+		r.sentStream = ""
+		r.sentStreamID = 0
+	}
+	r.mu.Unlock()
+	if messageID == 0 {
+		return
+	}
+	if content == "" {
+		if err := deleteTelegramMessage(r.token, r.chatID, messageID); err != nil {
+			logger.Warn("Telegram empty preview cleanup failed: " + err.Error())
+		}
+		return
+	}
+	if err := r.editRichOrUnavailable(messageID, truncateStream(content)); err != nil {
+		if err := editTelegramMessage(r.token, r.chatID, messageID, truncateStream(content)); err != nil {
+			logger.Warn("Telegram abandoned preview could not be finalised: " + err.Error())
+		}
+	}
 }
 
 func (r *runRenderer) stop() {
@@ -832,6 +867,13 @@ func (r *runRenderer) stop() {
 	if cancel != nil {
 		cancel()
 	}
+	// A stopped run never reaches finish, so its preview is retired here for the
+	// same reason fail() does it. Without this, stopping a run to ask something else
+	// left the old preview claiming to still be typing.
+	go func() {
+		<-r.streamDone
+		r.resolvePreview()
+	}()
 }
 
 func (r *runRenderer) isStopped() bool {

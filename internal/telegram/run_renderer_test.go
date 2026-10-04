@@ -647,3 +647,84 @@ func TestRunningToolTickerReachesThePreview(t *testing.T) {
 	defer mu.Unlock()
 	t.Fatalf("the ticker never reached the preview: %#v", seen)
 }
+
+// A run that never reaches finish leaves a preview claiming to still be typing.
+// It showed in a screenshot as a message with a live cursor minutes after the run
+// was over, with nothing coming to replace it. Erroring and being stopped are the
+// two ways a run ends without an answer, and both must retire the preview.
+func TestAnAbandonedPreviewIsNeverLeftTyping(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave func(*runRenderer)
+	}{
+		{"failed", func(r *runRenderer) { r.fail() }},
+		{"stopped", func(r *runRenderer) { r.stop() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			edits := make([]string, 0)
+			deleted := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+					mu.Lock()
+					deleted++
+					mu.Unlock()
+				case strings.HasSuffix(r.URL.Path, "/sendRichMessage"),
+					strings.HasSuffix(r.URL.Path, "/sendMessage"):
+					_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":21}}`))
+					return
+				case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+					text, _ := body["text"].(string)
+					if rich, ok := body["rich_message"].(map[string]any); ok {
+						text, _ = rich["markdown"].(string)
+					}
+					mu.Lock()
+					edits = append(edits, text)
+					mu.Unlock()
+				}
+				_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+			}))
+			defer server.Close()
+			oldBase := telegramAPIBase
+			telegramAPIBase = server.URL + "/bot"
+			defer func() { telegramAPIBase = oldBase }()
+
+			renderer := newRunRenderer("token", 42)
+			renderer.content("half an answer")
+			tc.leave(renderer)
+			renderer.close()
+
+			// stop() retires the preview on its own goroutine once the render
+			// goroutine has drained, so the last edit lands shortly after close()
+			// returns rather than before it.
+			deadline := time.Now().Add(2 * time.Second)
+			var last string
+			var gone int
+			for {
+				mu.Lock()
+				if len(edits) > 0 {
+					last = edits[len(edits)-1]
+				}
+				gone = deleted
+				mu.Unlock()
+				if !strings.Contains(last, "\u258c") || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if strings.Contains(last, "\u258c") {
+				t.Fatalf("the abandoned preview still shows a live cursor: %q", last)
+			}
+			if !strings.Contains(last, "half an answer") {
+				t.Fatalf("the text produced before the run ended was lost: %q", last)
+			}
+			if gone != 0 {
+				t.Fatalf("a preview with content was deleted instead of finalised")
+			}
+		})
+	}
+}
