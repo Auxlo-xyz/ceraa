@@ -668,6 +668,9 @@ func Run() error {
 		if !startup.providerReady {
 			logger.Info("Telegram token-only startup: provider onboarding required")
 		}
+		// Looked for in the background, so a release nobody has noticed is
+		// visible in the log of the next boot without the boot waiting on it.
+		go noteNewRelease()
 		defer logger.Get().Flush()
 	}
 

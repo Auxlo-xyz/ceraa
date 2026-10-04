@@ -247,6 +247,7 @@ func registerSubcommands() {
 	attach(doctorCmd)
 	attach(configCmd)
 	attach(configInitCmd)
+	attach(updateCmd)
 }
 
 func Execute() {
