@@ -821,3 +821,81 @@ func TestEveryThoughtBlockAndToolCallGetsItsOwnMessage(t *testing.T) {
 		t.Errorf("published thought blocks = %d, want 2", published)
 	}
 }
+
+// A provider may put its reasoning on the content channel, and then the thought
+// and the answer carry the same text and the reader sees the thinking twice.
+//
+// Atria does this when no reasoning level was requested, which the run log
+// recorded as reasoning="" next to an answer message that opened with the same
+// sentence as the thought block above it. The two channels cannot be told apart
+// from the deltas, because they interleave and the split lands mid-word, so the
+// coordinator reports the boundary and the renderer folds the text back into the
+// thought.
+func TestReasoningArrivingOnTheContentChannelIsShownOnce(t *testing.T) {
+	var mu sync.Mutex
+	nextID := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
+		mu.Lock()
+		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
+		case "sendRichMessage", "sendMessage":
+			nextID++
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, 100+nextID)))
+			return
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	renderer := newRunRenderer("token", 42)
+	renderer.reasoning("The first cold build exceeded the timeout. The module cache should")
+	// The provider keeps reasoning, but on the content channel.
+	renderer.content(" be partially populated now, so a retry should be much faster.")
+	// The step ends in a tool call, so none of it was an answer.
+	renderer.markReasoningOnly()
+	renderer.close()
+
+	renderer.mu.Lock()
+	thought := renderer.thought
+	content := renderer.streamContent
+	renderer.mu.Unlock()
+
+	if strings.TrimSpace(content) != "" {
+		t.Fatalf("the answer still carries text the thought is also showing: %q", content)
+	}
+	if !strings.Contains(thought, "partially populated now") {
+		t.Fatalf("the reasoning did not reach the thought: %q", thought)
+	}
+	if !strings.Contains(thought, "The first cold build exceeded") {
+		t.Fatalf("the reasoning that arrived on the content channel replaced the block instead of extending it: %q", thought)
+	}
+}
+
+// A real answer is not reasoning, even when it arrives right after a thought, and
+// the two channels routinely say similar things. Filing an answer as reasoning
+// would leave the answer message empty for the whole run.
+func TestAnAnswerAfterAThoughtIsNotFiledAsReasoning(t *testing.T) {
+	r := &runRenderer{}
+
+	r.reasoning("I should check the caches first.")
+	r.content("Here is the report you asked for.")
+	r.content(" The totals are below.")
+
+	r.mu.Lock()
+	thought := r.thought
+	content := r.streamContent
+	r.mu.Unlock()
+
+	if content != "Here is the report you asked for. The totals are below." {
+		t.Fatalf("answer = %q", content)
+	}
+	if strings.Contains(thought, "report") {
+		t.Fatalf("the answer leaked into the thought: %q", thought)
+	}
+}

@@ -98,11 +98,18 @@ type RunnerConfig struct {
 type Config = RunnerConfig
 
 type Callbacks struct {
-	OnContent         func(string)
-	OnReasoning       func(string)
-	OnToolStart       func(string, string, map[string]any)
-	OnToolDone        func(string, string, operation.ResultEvent)
-	OnCompactionStart func()
+	OnContent   func(string)
+	OnReasoning func(string)
+	// OnStepReasoningOnly fires after a step that ended in a tool call, which is
+	// how this runner defines a final answer: a step with no calls is the answer,
+	// so a step with calls was still working. A provider that puts its reasoning on
+	// the content channel leaves a consumer unable to tell that text from the
+	// answer by looking at it, because the two interleave and the split lands
+	// mid-word. It can be told.
+	OnStepReasoningOnly func()
+	OnToolStart         func(string, string, map[string]any)
+	OnToolDone          func(string, string, operation.ResultEvent)
+	OnCompactionStart   func()
 	// OnRetry fires before each provider retry wait, with the error, the attempt
 	// number and the delay. A gateway backoff runs to about a minute and a silent
 	// wait that long is indistinguishable from a hang.
@@ -763,6 +770,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					continue
 				}
 			}
+		}
+		// This step is continuing work rather than answering, so anything it put on
+		// the content channel was reasoning. Told before the calls are dispatched so
+		// a consumer can correct its own state while the step is still in hand.
+		if r.cb.OnStepReasoningOnly != nil {
+			r.cb.OnStepReasoningOnly()
 		}
 		calls = llm.EnsureToolCallIDs(calls, fmt.Sprintf("%s_%d", runID, step))
 		calls = r.uniqueToolCallIDs(calls, sess)

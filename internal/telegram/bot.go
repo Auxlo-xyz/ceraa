@@ -712,7 +712,7 @@ func Run() error {
 					if job.ChatID != 0 {
 						send(token, job.ChatID, "⏰ "+job.Name+": "+answer)
 					}
-				})
+				}, nil)
 			})
 			if err != nil && schedulerCtx.Err() == nil {
 				logger.Warn("Scheduler stopped: " + err.Error())
@@ -1366,7 +1366,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 	go func() {
 		err := runWithThinkingContext(runCtx, sessionID, prompt, renderer.content, renderer.reasoning, renderer.tool, func(answer string) {
 			doneCh <- answer
-		})
+		}, renderer.markReasoningOnly)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				doneCh <- ""
@@ -1491,8 +1491,8 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 	return dst, nil
 }
 
-func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
-	return runAgentContext(ctx, sessionID, prompt, onContent, onReasoning, onTool, onAnswer)
+func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
+	return runAgentContext(ctx, sessionID, prompt, onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly)
 }
 
 func handleSetSecret(token string, chatID int64, text string) {
@@ -2558,7 +2558,7 @@ func buildMiniAppSurface(token string, allowID int64) (*miniapp.Server, error) {
 		// renderer was asked to print. Reusing the chat session here would put
 		// two frontends in one transcript.
 		Prompt: func(ctx context.Context, text string) error {
-			return runAgentContext(ctx, miniapp.WebSessionID, text, nil, nil, nil, nil)
+			return runAgentContext(ctx, miniapp.WebSessionID, text, nil, nil, nil, nil, nil)
 		},
 		AnswerPermission: func(requestID, decision string) bool {
 			return permission.Default.Answer(miniapp.WebSessionID, requestID, decision)

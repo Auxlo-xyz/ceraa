@@ -761,11 +761,55 @@ func findToolLocked(tools []toolActivity, callID, label string, allowLabelMatch 
 }
 
 func (r *runRenderer) content(delta string) {
+	if delta == "" {
+		return
+	}
 	r.mu.Lock()
 	r.streamContent += delta
 	r.mu.Unlock()
 	// Pacing lives in signalStream now, so a stream tick cannot outrun the others.
 	r.signalStream()
+}
+
+// markReasoningOnly records that the step which just ended produced no tool call,
+// which is how the coordinator defines a final answer. Everything on the content
+// channel so far was therefore reasoning.
+//
+// A provider is free to put its reasoning on the content channel and Atria does
+// exactly that when no reasoning level was requested, which the run log recorded
+// as reasoning="" next to an answer message that opened with the same sentence as
+// the thought block above it. The preview then showed the thinking a second time,
+// in a bubble meant for the answer, and it never recovered: the run ended with the
+// answer published into a message that had been carrying reasoning all along.
+//
+// There is no way to tell the two apart from the delta alone, because the split
+// lands mid-word and the channels interleave. The coordinator can tell, so it says
+// so rather than leaving the renderer to guess.
+func (r *runRenderer) markReasoningOnly() {
+	r.mu.Lock()
+	content := r.streamContent
+	messageID := r.messageID
+	r.streamContent = ""
+	if messageID != 0 {
+		r.sentStream = ""
+		r.sentStreamID = 0
+	}
+	r.mu.Unlock()
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	if messageID == 0 {
+		// No answer message was ever created, so there is nothing to correct. The
+		// reasoning still has to go somewhere: it arrived on the content channel
+		// because the provider put it there, and dropping it loses the opening of a
+		// turn. Gating this on the message existing is what lost it.
+		r.reasoning(content)
+		return
+	}
+	// The message exists only because reasoning arrived on the content channel, so
+	// it is folded into the thought rather than deleted: the reasoning has to stay
+	// readable somewhere, and deleting it would lose the opening of a turn.
+	r.reasoning(content)
 }
 
 func (r *runRenderer) finish(answer string) {

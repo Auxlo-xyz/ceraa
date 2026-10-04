@@ -48,16 +48,16 @@ func memoryEntries(store *memory.Store, projectID, sessionID string) func() ([]m
 	}
 }
 
-func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
+func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer)
+	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly)
 }
 
-func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
-	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer)
+func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
+	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly)
 }
 
 // applySearchScope points an fts_search at the project index and gives it a
@@ -80,7 +80,7 @@ func applySearchScope(spec *operation.Spec, projectRoot, workspaceRoot string) {
 	spec.Args["db_path"] = search.ProjectIndexPath(workspaceRoot, projectRoot)
 }
 
-func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string)) error {
+func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
 	if err := parent.Err(); err != nil {
 		return err
 	}
@@ -234,6 +234,11 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"delta": reasoning}})
 				if onReasoning != nil {
 					onReasoning(reasoning)
+				}
+			},
+			OnStepReasoningOnly: func() {
+				if onStepReasoningOnly != nil {
+					onStepReasoningOnly()
 				}
 			},
 			OnToolStart: func(callID, name string, args map[string]any) {
