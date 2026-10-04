@@ -774,7 +774,14 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		// This step is continuing work rather than answering, so anything it put on
 		// the content channel was reasoning. Told before the calls are dispatched so
 		// a consumer can correct its own state while the step is still in hand.
-		if r.cb.OnStepReasoningOnly != nil {
+		//
+		// Only when there ARE calls. Firing this unconditionally was firing it on the
+		// final step too, where the content channel was carrying the answer and not
+		// reasoning: the renderer folded the answer into a thought and released the
+		// message the answer was streaming in, so the final publish had nothing to
+		// edit and sent the same text as a second message. It only reproduced when the
+		// last step also carried tool calls, which is why it looked intermittent.
+		if len(calls) > 0 && r.cb.OnStepReasoningOnly != nil {
 			r.cb.OnStepReasoningOnly()
 		}
 		calls = llm.EnsureToolCallIDs(calls, fmt.Sprintf("%s_%d", runID, step))

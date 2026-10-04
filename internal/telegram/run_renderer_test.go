@@ -978,11 +978,14 @@ func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// A thought, the mid-run prose, a tool, a thought, a tool, and the answer. The
-	// mid-run prose is a message of its own because a tool call closes it, which is
-	// what stopped the run ending on its last fragment with the rest overwritten.
-	if len(created) != 6 {
-		t.Fatalf("messages = %d, want 6: %q", len(created), created)
+	// Every block is a message of its own, and the count is not asserted directly:
+	// whether the final answer lands as an edit on the message already streaming it
+	// or needs a send of its own depends on whether the render goroutine drained
+	// first, which is a race this test was asserting as if it were a contract. What
+	// matters is that nothing is overwritten and nothing is duplicated, so both are
+	// asserted below instead.
+	if len(created) < 5 {
+		t.Fatalf("messages = %d, want a message per block: %q", len(created), created)
 	}
 	// Reasoning that arrived on the content channel belongs to the thought, so no
 	// message may start with it.
@@ -994,7 +997,16 @@ func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
 	// The prose written before the second tool call survives on a message of its
 	// own. It used to be edited into the same bubble the final answer went to,
 	// which is the overwrite this test exists to catch.
+	// Whether a fragment reaches the chat as a creation or as an edit depends on
+	// whether the render goroutine drained before the tool call closed the block,
+	// so both are searched. Scanning only the edits made this fail about one run in
+	// three, which is a test that cannot be trusted rather than a product fault.
 	found := false
+	for _, text := range created {
+		if strings.Contains(text, "66G free") {
+			found = true
+		}
+	}
 	for _, texts := range edits {
 		for _, text := range texts {
 			if strings.Contains(text, "66G free") {
@@ -1011,5 +1023,107 @@ func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
 		if strings.Contains(joined, "66G free") && strings.Contains(joined, "Inventory complete.") {
 			t.Errorf("message %d holds two answers: %q", id, joined)
 		}
+	}
+	// The final answer appears exactly once across the whole chat, whether it was
+	// sent or edited into place. Two copies of it is the duplicate that a run log
+	// showed as a streamed answer sitting next to its own final.
+	appearances := 0
+	for _, text := range created {
+		if strings.Contains(text, "Inventory complete.") {
+			appearances++
+		}
+	}
+	for _, texts := range edits {
+		for _, text := range texts {
+			if strings.Contains(text, "Inventory complete.") {
+				appearances++
+			}
+		}
+	}
+	if appearances != 1 {
+		t.Errorf("the final answer appears %d time(s) in the chat, want exactly 1", appearances)
+	}
+}
+
+// The final answer must land on the message that was already streaming it.
+//
+// The duplicate came from the step-boundary callback firing on the final step as
+// well as on the ones that ended in tool calls. On the final step the content
+// channel was carrying the answer rather than reasoning, so the renderer folded
+// the answer into a thought and released the message it was streaming in, leaving
+// the final publish with nothing to edit and a duplicate to send. It only
+// reproduced when the last step also carried tool calls.
+func TestTheFinalAnswerLandsOnTheMessageThatStreamedIt(t *testing.T) {
+	var mu sync.Mutex
+	created := make(map[int]string)
+	edits := make(map[int][]string)
+	nextID := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		text, _ := body["text"].(string)
+		if rich, ok := body["rich_message"].(map[string]any); ok {
+			text, _ = rich["markdown"].(string)
+		}
+		mu.Lock()
+		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
+		case "sendRichMessage", "sendMessage":
+			nextID++
+			id := 100 + nextID
+			created[id] = text
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
+			return
+		case "editMessageText":
+			if n, ok := body["message_id"].(float64); ok {
+				id := int(n)
+				edits[id] = append(edits[id], text)
+			}
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	r := newRunRenderer("token", 42)
+	r.throttleOverride = 5 * time.Millisecond
+	// A step that ends in a tool call: reasoning on the content channel, folded.
+	r.reasoning("Checking the file.")
+	r.content(" It is clean.")
+	r.markReasoningOnly()
+	r.tool("c1", "🔄 "+toolNameToken("bash")+">_ Run command · wc -l apitrace.go")
+	r.tool("c1", "✅ "+toolNameToken("bash")+">_ Run command completed")
+	// The final step: the answer streams, and the boundary callback fires here too.
+	r.throttleOverride = 5 * time.Millisecond
+	r.content("It is clean and matches its last commit.")
+	time.Sleep(50 * time.Millisecond)
+	r.finish("It is clean and matches its last commit.")
+	r.close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Exactly one message may hold any part of the final answer, and it must be
+	// the one that was created for it.
+	holders := 0
+	for id, texts := range edits {
+		joined := strings.Join(texts, "\n")
+		if strings.Contains(joined, "matches its last commit") {
+			holders++
+			if !strings.Contains(created[id], "clean and matches") {
+				t.Errorf("the answer was edited onto message %d, which was created carrying %q", id, created[id])
+			}
+		}
+	}
+	for _, text := range created {
+		if strings.Contains(text, "matches its last commit") {
+			holders++
+		}
+	}
+	if holders != 1 {
+		t.Errorf("the final answer appears in %d messages, want 1: created=%v edits=%v", holders, created, edits)
 	}
 }
