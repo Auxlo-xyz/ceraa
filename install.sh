@@ -80,6 +80,9 @@ curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $bas
 # The system prompt is optional in the sense that an older release predates it, so
 # a 404 here is not fatal; it is only fatal that the binary then runs degraded.
 curl -fsSL -o "$tmp/system.txt" "$base/system.txt" 2>/dev/null || rm -f "$tmp/system.txt"
+# The Mini App page is optional for the same reason: an older release has none,
+# and what breaks without it is one route rather than the whole agent.
+curl -fsSL -o "$tmp/miniapp-index.html" "$base/miniapp-index.html" 2>/dev/null || rm -f "$tmp/miniapp-index.html"
 
 # Checksum. The line is "<sha256>  <filename>", so the filename is matched
 # exactly and not by prefix: a substring match would also accept
@@ -98,6 +101,7 @@ The download is corrupt or was tampered with. Do not run it."
 }
 verify "$asset"
 [ -f "$tmp/system.txt" ] && verify system.txt
+[ -f "$tmp/miniapp-index.html" ] && verify miniapp-index.html
 
 if [ "$VERIFY_ONLY" -eq 1 ]; then
   info "checksum OK. Not installing because --verify-only was passed."
@@ -141,6 +145,23 @@ if [ -f "$tmp/system.txt" ]; then
   fi
 else
   info "warning: the release has no system.txt, so Ceraa will start degraded."
+fi
+
+# The Mini App page ships as a file beside the binary, for the same reason and
+# with the same fallback as the prompt. resolveAsset looks in the data directory,
+# then the working directory, then next to the executable, so this is the third
+# of those and it is the one an install controls. The release asset is flat
+# because a release asset cannot contain a slash; the directory is created here.
+if [ -f "$tmp/miniapp-index.html" ]; then
+  miniapp_dir="$INSTALL_DIR/miniapp"
+  mkdir -p "$miniapp_dir" || die "could not create $miniapp_dir"
+  if cp -f "$tmp/miniapp-index.html" "$miniapp_dir/index.html"; then
+    info "installed $miniapp_dir/index.html"
+  else
+    info "warning: could not install the Mini App page."
+    info "    mkdir -p $miniapp_dir"
+    info "    curl -fsSL -o $miniapp_dir/index.html $base/miniapp-index.html"
+  fi
 fi
 
 # Create the agent's workspace, so the first run does not fail on a missing
