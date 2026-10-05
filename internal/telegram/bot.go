@@ -202,6 +202,46 @@ func setChatMenuButton(token string, text string, url string) error {
 	return nil
 }
 
+// clearChatMenuButton puts the button back to a plain label with no web app
+// behind it.
+//
+// It exists because the button Telegram is holding outlives the process that
+// set it. A quick tunnel's hostname is minted per boot, so a restart leaves the
+// button pointing at a URL that is already dead, and every tap in the startup
+// window answers 1033. A label that does nothing is visibly incomplete; a dead
+// link reads as Ceraa being down. The boot path clears first and sets the real
+// address the moment the tunnel announces, so the button is never wrong.
+func clearChatMenuButton(token string, text string) error {
+	body, err := json.Marshal(map[string]any{
+		"menu_button": map[string]any{
+			"type": "default",
+			"text": text,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	resp, err := doTelegramPost(api("setChatMenuButton", token), body)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("setChatMenuButton returned no response")
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Ok          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.Ok {
+		return fmt.Errorf("setChatMenuButton: %s", result.Description)
+	}
+	return nil
+}
+
 // publishMiniAppAddress tells the chat where the surface is, and moves the menu
 // button to match so the next launch does not depend on remembering a hostname.
 //
@@ -815,6 +855,19 @@ func Run() error {
 			// The button is moved here as well as in /web. A tunnel opened at
 			// boot has a hostname nobody has been told yet, and a stale one from
 			// a previous boot is the failure this whole arrangement removes.
+			//
+			// The stale one is cleared before the handshake rather than left to
+			// be overwritten by it. A quick tunnel's hostname lives only as long
+			// as the process that minted it, so the button Telegram is still
+			// holding after a restart points at a URL that is already dead, and
+			// it keeps pointing there for the whole of the startup window. That
+			// window is seconds on a good boot and a minute on a bad one, and
+			// either way every second of it serves 1033. The button is taken
+			// back to a plain label first, so it is never wrong, only briefly
+			// incomplete.
+			if err := clearChatMenuButton(token, "🌐 Web (starting)"); err != nil {
+				logger.Warn("Mini App menu button not cleared: " + err.Error())
+			}
 			go func() {
 				address, err := srv.StartTunnel()
 				if err != nil {
