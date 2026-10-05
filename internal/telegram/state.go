@@ -24,12 +24,19 @@ import (
 // which model was serving. They live in config.json and are reached through
 // providerState.
 type bridgeState struct {
-	mu              sync.RWMutex
-	writeMu         sync.Mutex
-	path            string
-	loadErr         error
-	AllowedUserID   int64 `json:"allowed_user_id,omitempty"`
-	answerRequests  map[string]int64
+	mu             sync.RWMutex
+	writeMu        sync.Mutex
+	path           string
+	loadErr        error
+	AllowedUserID  int64 `json:"allowed_user_id,omitempty"`
+	answerRequests map[string]int64
+	// pendingUploads holds files the user sent since the last run, oldest
+	// first, keyed by chat. A save notice goes to the chat as a message, which
+	// the next run never sees, so without this "check that file out" resolves
+	// against stale conversation instead of the file that just arrived.
+	// Runtime only, never persisted: a restart drops them, and the user can
+	// simply name the file again.
+	pendingUploads  map[int64][]uploadNote
 	ActiveSessions  map[string]string `json:"active_sessions,omitempty"`
 	Projects        map[string]string `json:"projects,omitempty"`
 	SessionProjects map[string]string `json:"session_projects,omitempty"`
@@ -447,4 +454,80 @@ func (s *bridgeState) takeAnswer(chatID int64) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// uploadContext renders waiting uploads as a prompt prefix. It names the
+// saved path every time, because the run needs something it can hand to read
+// or view_image, not just the knowledge that a file exists.
+func uploadContext(chatID int64) string {
+	notes := defaultState.takeUploads(chatID)
+	if len(notes) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, note := range notes {
+		line := note.kind + " " + note.path
+		if note.name != "" {
+			line = note.kind + " " + note.name + " saved at " + note.path
+		}
+		if note.kind == "photo" {
+			line += " (view it with the view_image tool)"
+		}
+		if note.kind == "voice" {
+			line += " (transcription is not available; ask the user for text if you need its content)"
+		}
+		lines = append(lines, "- "+line)
+	}
+	context := "[Files the user sent since your last reply, oldest first. " +
+		"The last one is the most recent, and a bare \"that file\" or \"it\" " +
+		"in the message below most plausibly means it unless the user names " +
+		"something else.]\n" + strings.Join(lines, "\n")
+	return context
+}
+
+// withUploadContext prefixes a prompt with waiting uploads, if any.
+func withUploadContext(chatID int64, prompt string) string {
+	if context := uploadContext(chatID); context != "" {
+		return context + "\n\n" + prompt
+	}
+	return prompt
+}
+
+// uploadNote is one file the user sent that no run has seen yet.
+type uploadNote struct {
+	// kind is photo, document or voice, the words the save notice used.
+	kind string
+	// path is where the file was saved on disk.
+	path string
+	// name is the sender's filename, empty for photos and voice notes.
+	name string
+}
+
+// maxPendingUploads bounds the notes kept per chat. Uploads without a
+// following prompt are abandoned, and an unbounded list would let them pile up
+// across a session of pure file drops.
+const maxPendingUploads = 5
+
+// noteUpload records that a file arrived and is waiting for a prompt.
+func (s *bridgeState) noteUpload(chatID int64, kind, path, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingUploads == nil {
+		s.pendingUploads = make(map[int64][]uploadNote)
+	}
+	notes := append(s.pendingUploads[chatID], uploadNote{kind: kind, path: path, name: name})
+	if len(notes) > maxPendingUploads {
+		notes = notes[len(notes)-maxPendingUploads:]
+	}
+	s.pendingUploads[chatID] = notes
+}
+
+// takeUploads returns the waiting files, oldest first, and clears them so the
+// next prompt is not told about the same upload twice.
+func (s *bridgeState) takeUploads(chatID int64) []uploadNote {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notes := s.pendingUploads[chatID]
+	delete(s.pendingUploads, chatID)
+	return notes
 }

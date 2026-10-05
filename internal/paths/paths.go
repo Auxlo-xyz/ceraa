@@ -43,6 +43,32 @@ func DefaultWorkspaceRoot() string {
 	return filepath.Join(home, DirName, "workspace")
 }
 
+// FilesDir is where Telegram uploads land: photos, documents, voice notes.
+//
+// It used to be /tmp/ceraa-uploads, and /tmp is wiped on reboot, so saved
+// documents silently vanished along with every extraction done from them.
+// CERAA_FILES_DIR overrides the location, which is what tests use to stay
+// hermetic. Otherwise it is <repo>/files, where <repo> is the parent of the
+// directory holding the binary: the house layout is <repo>/bin/ceraa. When the
+// binary lives anywhere else (a system install, a test binary), the working
+// directory is used instead, which is the repo for the bot and the package
+// directory for tests.
+func FilesDir() string {
+	if override := os.Getenv("CERAA_FILES_DIR"); override != "" {
+		return override
+	}
+	if exe, err := os.Executable(); err == nil {
+		if dir := filepath.Dir(exe); filepath.Base(dir) == "bin" {
+			return filepath.Join(filepath.Dir(dir), "files")
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	return filepath.Join(cwd, "files")
+}
+
 // ConfigFile is the one place config.json is read from and written to.
 //
 // There is exactly one, and it is anchored to the data directory rather than to

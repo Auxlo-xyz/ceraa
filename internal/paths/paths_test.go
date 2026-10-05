@@ -75,3 +75,21 @@ func TestWorkingDirectoryIsNeverTheOnlyOption(t *testing.T) {
 	}
 	_ = cwd
 }
+
+// Uploads must not land in /tmp: it is wiped on reboot, which silently deleted
+// saved documents and every extraction done from them. The override exists so
+// tests never touch the live files directory.
+func TestFilesDirHonoursTheOverride(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "files")
+	t.Setenv("CERAA_FILES_DIR", dir)
+	if got := FilesDir(); got != dir {
+		t.Fatalf("FilesDir() = %q, want the override %q", got, dir)
+	}
+}
+
+func TestFilesDirNeverPointsAtTmp(t *testing.T) {
+	t.Setenv("CERAA_FILES_DIR", "")
+	if got := FilesDir(); got == filepath.Join(os.TempDir(), "ceraa-uploads") {
+		t.Fatal("FilesDir() still points at the wiped-on-reboot /tmp location")
+	}
+}

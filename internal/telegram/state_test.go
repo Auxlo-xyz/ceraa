@@ -3,6 +3,7 @@ package telegram
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +139,58 @@ func TestExpectAnswerRoutesTheNextMessageToTheQuestion(t *testing.T) {
 	}
 	if _, waiting := state.takeAnswer(4242); waiting {
 		t.Fatal("a second message must be treated as a new task, not another answer")
+	}
+}
+
+// A file the user sends must reach the next run as context, or "check that
+// file out" resolves against stale conversation. This is the regression test
+// for a run that read "that file" as .gitignore minutes after a zip arrived,
+// because the save notice was a chat message no run ever saw.
+func TestPendingUploadsReachTheNextPromptOnce(t *testing.T) {
+	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
+	state.noteUpload(4242, "document", "/tmp/ceraa-uploads/file_0.zip", "app-designer.zip")
+	state.noteUpload(4242, "photo", "/tmp/ceraa-uploads/photo.jpg", "")
+
+	notes := state.takeUploads(4242)
+	if len(notes) != 2 {
+		t.Fatalf("takeUploads = %d notes, want 2", len(notes))
+	}
+	if notes[0].name != "app-designer.zip" || notes[1].kind != "photo" {
+		t.Fatalf("notes out of order or misrecorded: %+v", notes)
+	}
+	if again := state.takeUploads(4242); len(again) != 0 {
+		t.Fatalf("the next prompt would be told about the same upload twice: %+v", again)
+	}
+	if other := state.takeUploads(9999); len(other) != 0 {
+		t.Fatal("another chat must not see this chat's uploads")
+	}
+}
+
+func TestPendingUploadsAreBoundedPerChat(t *testing.T) {
+	state := loadBridgeStateFromFile(filepath.Join(t.TempDir(), "bridge-state.json"))
+	for i := 0; i < maxPendingUploads+3; i++ {
+		state.noteUpload(4242, "document", "/tmp/f.zip", "f.zip")
+	}
+	if notes := state.takeUploads(4242); len(notes) != maxPendingUploads {
+		t.Fatalf("takeUploads = %d notes, want the %d most recent", len(notes), maxPendingUploads)
+	}
+}
+
+func TestUploadContextNamesThePathAndTheReferent(t *testing.T) {
+	// uploadContext reads defaultState, so this test borrows it and drains it.
+	// Anything left behind would leak into the next prompt of the live bot in
+	// tests that share the process, which is why the take is asserted empty.
+	defaultState.noteUpload(4242, "document", "/tmp/ceraa-uploads/file_0.zip", "app-designer.zip")
+	context := uploadContext(4242)
+	for _, want := range []string{"/tmp/ceraa-uploads/file_0.zip", "app-designer.zip", "that file"} {
+		if !strings.Contains(context, want) {
+			t.Errorf("upload context missing %q:\n%s", want, context)
+		}
+	}
+	if leftover := defaultState.takeUploads(4242); len(leftover) != 0 {
+		t.Fatalf("upload context did not consume the notes: %+v", leftover)
+	}
+	if withUploadContext(4242, "hello") != "hello" {
+		t.Error("a prompt with no uploads must pass through unchanged")
 	}
 }

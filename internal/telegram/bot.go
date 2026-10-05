@@ -959,6 +959,7 @@ func Run() error {
 				// Download largest photo via getFile -> attach to harness
 				fileID := u.Message.Photo[len(u.Message.Photo)-1].FileID
 				if path, err := downloadTelegramFile(token, fileID); err == nil {
+					defaultState.noteUpload(u.Message.Chat.ID, "photo", path, "")
 					send(token, u.Message.Chat.ID, "📷 Photo saved: "+path+" — send a prompt describing what to do with it, it will be attached via harness/tool view_image")
 				} else {
 					send(token, u.Message.Chat.ID, "📷 Photo received: "+telegramFilePreview(fileID)+" (download failed: "+err.Error()+")")
@@ -968,6 +969,7 @@ func Run() error {
 			if u.Message.Document != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				if path, err := downloadTelegramFile(token, u.Message.Document.FileID); err == nil {
+					defaultState.noteUpload(u.Message.Chat.ID, "document", path, u.Message.Document.FileName)
 					send(token, u.Message.Chat.ID, "📄 Document saved: "+path+" ("+u.Message.Document.FileName+") — send a prompt to read it: zips unpack with a member listing, PDF/DOCX/PPTX come back as text")
 				} else {
 					send(token, u.Message.Chat.ID, "📄 Document: "+u.Message.Document.FileName+" (download failed)")
@@ -978,6 +980,7 @@ func Run() error {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				// Voice -> STT stub maps to soraacode stt-service.js whisper-large-v3-turbo
 				if path, err := downloadTelegramFile(token, u.Message.Voice.FileID); err == nil {
+					defaultState.noteUpload(u.Message.Chat.ID, "voice", path, "")
 					send(token, u.Message.Chat.ID, "🎤 Voice saved: "+path+" — STT via whisper not yet wired, send text prompt instead")
 				} else {
 					send(token, u.Message.Chat.ID, "🎤 Voice received (download failed)")
@@ -1225,6 +1228,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 		return
 	}
 	sessionID := currentSessionID(chatID)
+	prompt = withUploadContext(chatID, prompt)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	renderer := newRunRenderer(token, chatID)
 	renderer.setCancel(cancelRun)
@@ -1481,8 +1485,10 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 	}
 	defer resp2.Body.Close()
 	data, _ := io.ReadAll(resp2.Body)
-	// Save to /tmp/ceraa-uploads
-	dir := filepath.Join(os.TempDir(), "ceraa-uploads")
+	// Save to the files directory, which survives reboots unlike /tmp. The name
+	// below is Telegram's, not the sender's: two uploads with the same remote
+	// name overwrite each other, and the save notice carries the original.
+	dir := paths.FilesDir()
 	_ = os.MkdirAll(dir, 0o755)
 	dst := filepath.Join(dir, filepath.Base(out.Result.FilePath))
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
