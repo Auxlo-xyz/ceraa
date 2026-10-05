@@ -1246,6 +1246,7 @@
       const [botStatus, setBotStatus] = useState({
         running: true,
         pollingState: "Connecting…",
+        runCount: 0,
         activeRun: { active: false, sessionTitle: "", step: "", elapsed: "" },
         version: "",
         updateCheckEnabled: true,
@@ -1629,11 +1630,15 @@
         const runs = st.active_runs || [];
         const first = runs[0] || null;
         setWebSessionId(st.session || "web");
+        // The hero counts live runs, not queued prompts: a big 0 beside the
+        // word RUNNING is a contradiction, and it was showing exactly that.
+        // Queue depth rides underneath as its own line.
         setBotStatus({
           running: st.running !== false,
           pollingState: "Long-polling (OK)",
+          runCount: runs.length,
           activeRun: first
-            ? { active: true, sessionTitle: first.session || "", step: "run in chat " + (first.chat || ""), elapsed: "" }
+            ? { active: true, sessionTitle: first.title || first.session || "", step: "session " + (first.session || ""), elapsed: "" }
             : { active: false, sessionTitle: "", step: "No active run in flight", elapsed: "" },
           version: st.version || "",
           updateCheckEnabled: st.update_check !== false,
@@ -2227,9 +2232,9 @@
               <section className="col col-left">
                 <div className="hero-band">
                   <div>
-                    <div className="t-mono" style={{ marginBottom: 8 }}>RUNNER & QUEUE DEPTH</div>
+                    <div className="t-mono" style={{ marginBottom: 8 }}>LIVE RUNS · QUEUE {botStatus.promptQueueDepth}</div>
                     <div className="t-hero tnum">
-                      <AnimatedNumber value={botStatus.promptQueueDepth} />
+                      <AnimatedNumber value={botStatus.runCount || 0} />
                       <span className="hero-unit">
                         {botStatus.activeRun.active ? "RUNNING" : "IDLE"}
                       </span>

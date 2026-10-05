@@ -1008,6 +1008,10 @@ func webFiles(rel string) ([]miniapp.FileEntry, error) {
 // fresh probe: a status poll must never make a network call.
 func webStatus(tunnelAddr func() string) func() (map[string]any, error) {
 	return func() (map[string]any, error) {
+		// Active run titles resolve through the session store, because a raw
+		// session id is an implementation detail the dashboard must not show.
+		// DisplayTitle redacts secrets, so it is safe to render.
+		var store *sessionstore.Store
 		runs := []map[string]any{}
 		activeRuns.Range(func(key, value any) bool {
 			chat, _ := key.(int64)
@@ -1015,10 +1019,20 @@ func webStatus(tunnelAddr func() string) func() (map[string]any, error) {
 			if run == nil {
 				return true
 			}
-			runs = append(runs, map[string]any{
+			entry := map[string]any{
 				"chat":    chat,
 				"session": run.sessionID,
-			})
+				"title":   run.sessionID,
+			}
+			if store == nil {
+				store, _ = configuredStore()
+			}
+			if store != nil {
+				if sess, err := store.Load(run.sessionID); err == nil {
+					entry["title"] = sess.DisplayTitle()
+				}
+			}
+			runs = append(runs, entry)
 			return true
 		})
 		queued := 0
