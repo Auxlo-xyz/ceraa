@@ -1293,7 +1293,9 @@
       });
 
       const activeProfile = useMemo(
-        () => providerProfiles.find((p) => p.id === activeProviderId) || providerProfiles[0],
+        () =>
+          providerProfiles.find((p) => p.id === activeProviderId) ||
+          providerProfiles[0] || { id: activeProviderId || "default", name: activeProviderId || "default" },
         [providerProfiles, activeProviderId]
       );
 
@@ -2387,7 +2389,7 @@
                   <div>
                     <div className="t-mono">ACTIVE EFFORT DETENT</div>
                     <div className="t-display" style={{ marginTop: 4, textTransform: "uppercase" }}>
-                      {runParams.reasoningEffort}
+                      {runParams.reasoningEffort || "default"}
                     </div>
                     <div className="t-body" style={{ marginTop: 4 }}>
                       Step dial: off · minimal · low · medium · high · xhigh · max
@@ -2412,7 +2414,7 @@
                         strokeWidth="2.5"
                         strokeLinecap="round"
                         style={{
-                          transform: `rotate(${(reasoningIndex / 6) * 260 - 130}deg)`
+                          transform: `rotate(${reasoningIndex >= 0 ? (reasoningIndex / 6) * 260 - 130 : -90}deg)`
                         }}
                       />
                       <circle cx="40" cy="34" r="3.5" fill="#121110" />
@@ -3520,7 +3522,7 @@
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>REASONING EFFORT LEVER</div>
                     <div className="t-hero" style={{ textTransform: "uppercase" }}>
-                      {runParams.reasoningEffort}
+                      {runParams.reasoningEffort || "default"}
                     </div>
                   </div>
                   <div>
