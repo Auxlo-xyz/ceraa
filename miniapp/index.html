@@ -1651,6 +1651,9 @@
       const [sessions, setSessions] = useState([]);
 
       const [selectedSessionId, setSelectedSessionId] = useState(null);
+      // Six sessions per page; the page clamps itself when the list shrinks
+      // (a delete on the last page) instead of rendering an empty page.
+      const [sessionPage, setSessionPage] = useState(0);
       const [renamingSessionId, setRenamingSessionId] = useState(null);
       const [renameValue, setRenameValue] = useState("");
       const [sessionInspectorTab, setSessionInspectorTab] = useState("todos");
@@ -1665,6 +1668,8 @@
         const extra = inspect[found.id] || { todos: [], history: [] };
         return { ...found, todos: extra.todos, history: extra.history, snapshots };
       }, [sessions, selectedSessionId, inspect, snapshots]);
+      const maxSessionPage = Math.max(0, Math.ceil(sessions.length / 6) - 1);
+      const shownSessionPage = Math.min(sessionPage, maxSessionPage);
 
       const [fileScope, setFileScope] = useState("files/");
       const [workspaceFiles, setWorkspaceFiles] = useState({ "files/": [], "workspace/": [] });
@@ -3055,7 +3060,7 @@
                 </div>
 
                 <div className="hairline-list">
-                  {sessions.map((sess) => {
+                  {sessions.slice(shownSessionPage * 6, shownSessionPage * 6 + 6).map((sess) => {
                     const isSelected = sess.id === activeSession.id;
                     return (
                       <div
@@ -3156,6 +3161,37 @@
                     );
                   })}
                 </div>
+
+                {sessions.length > 6 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "12px 0 0"
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      disabled={sessionPage <= 0}
+                      onClick={() => setSessionPage((p) => Math.max(0, p - 1))}
+                    >
+                      ← Prev
+                    </button>
+                    <span className="t-mono tnum">
+                      Page {shownSessionPage + 1} of {maxSessionPage + 1}
+                    </span>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      disabled={shownSessionPage >= maxSessionPage}
+                      onClick={() => setSessionPage((p) => p + 1)}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
 
                 {/* Selected Session Inspector: Todos, Snapshots, Run History */}
                 <div className="filter-bar" style={{ marginTop: 24 }}>
