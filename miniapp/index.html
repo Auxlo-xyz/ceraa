@@ -2899,6 +2899,7 @@
                 </div>
 
                 {/* Active Run & Bot Control Rows */}
+                <div className="card">
                 <div className="sec-head">
                   <h2 className="t-sec">Status & Control</h2>
                   <span className="t-mono" style={{ color: botStatus.activeRun.active ? "var(--accent)" : "var(--ink-2)" }}>
@@ -2954,8 +2955,10 @@
                     </div>
                   </div>
                 </div>
+                </div>
 
                 {/* Reasoning Effort Rotary Dial */}
+                <div className="card" style={{ marginTop: 12 }}>
                 <div className="sec-head">
                   <h2 className="t-sec">Reasoning Effort</h2>
                   <button className="action-link" onClick={() => setActiveTab("Agents")}>
@@ -3025,6 +3028,7 @@
                     </div>
                     <div className="t-body">Cache TTL {runParams.promptCacheTTL}</div>
                   </div>
+                </div>
                 </div>
               </section>
 
