@@ -46,13 +46,12 @@ func DefaultWorkspaceRoot() string {
 // FilesDir is where Telegram uploads land: photos, documents, voice notes.
 //
 // It used to be /tmp/ceraa-uploads, and /tmp is wiped on reboot, so saved
-// documents silently vanished along with every extraction done from them.
-// CERAA_FILES_DIR overrides the location, which is what tests use to stay
-// hermetic. Otherwise it is <repo>/files, where <repo> is the parent of the
-// directory holding the binary: the house layout is <repo>/bin/ceraa. When the
-// binary lives anywhere else (a system install, a test binary), the working
-// directory is used instead, which is the repo for the bot and the package
-// directory for tests.
+// documents silently vanished along with every extraction done from them. It
+// then moved to <repo>/files, which put user uploads inside the source tree
+// the bot is forbidden to write to. Production pins CERAA_FILES_DIR to
+// /workspace/ceraa/files, which is data, not source, and the override is what
+// tests use to stay hermetic. The exe-anchored fallback below is for shell
+// and dev use only, and must never become the live bot's location again.
 func FilesDir() string {
 	if override := os.Getenv("CERAA_FILES_DIR"); override != "" {
 		return override
