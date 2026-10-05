@@ -3478,6 +3478,7 @@
             <main className="board" key="board-context">
               {/* COLUMN 1: WORKSPACE ROOT (ENV-PINNED) + PROJECT ROOTS + FILE BROWSER */}
               <section className="col col-left">
+                <div className="card">
                 <div className="hero-band">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>MOUNTED PROJECT ROOTS</div>
@@ -3490,6 +3491,7 @@
                     <span className="t-mono" style={{ color: "var(--accent)" }}>ENV-PINNED</span>
                     <div className="t-body">Source tree protected</div>
                   </div>
+                </div>
                 </div>
 
                 <div className="sec-head">
@@ -3754,6 +3756,7 @@
             <main className="board" key="board-tools">
               {/* COLUMN 1: 3. ALWAYSAIIOW TOOL PERMISSIONS */}
               <section className="col col-left">
+                <div className="card">
                 <div className="hero-band">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>ALWAYS-ALLOW LIST</div>
@@ -3766,6 +3769,7 @@
                     <span className="t-mono" style={{ color: "var(--accent)" }}>config.AlwaysAllow</span>
                     <div className="t-body">Tools off this list prompt for approval</div>
                   </div>
+                </div>
                 </div>
 
                 <div className="sec-head">
@@ -3930,6 +3934,7 @@
             <main className="board" key="board-agents">
               {/* COLUMN 1: 1. PROVIDER PROFILES, SUBSCRIPTION AUTH & MODEL CATALOG */}
               <section className="col col-left">
+                <div className="card">
                 <div className="hero-band">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>PROVIDER PROFILES</div>
@@ -3944,6 +3949,7 @@
                     </button>
                     <div className="t-body">Active: {activeProfile.name}</div>
                   </div>
+                </div>
                 </div>
 
                 {addingProfile && (
@@ -4074,7 +4080,7 @@
                                 Cancel
                               </button>
                             </React.Fragment>
-                          ) : (
+                          ) : prof.id !== "default" ? (
                             <button
                               type="button"
                               className="card-btn danger"
@@ -4082,7 +4088,7 @@
                             >
                               Remove
                             </button>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     );
