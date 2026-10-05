@@ -827,6 +827,29 @@
       width: 15px;
       height: 15px;
     }
+    /* Selection tick: the circle fills sienna with a light check the moment
+       its card is the inspected one, so a tap answers visibly. */
+    .select-tick {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      flex: none;
+      border-radius: 50%;
+      border: 1.5px solid var(--rule);
+      color: transparent;
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+    }
+    .select-tick.on {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--ground);
+    }
+    .select-tick svg {
+      width: 14px;
+      height: 14px;
+    }
     .mini-btn {
       font-family: var(--mono);
       font-size: 12px;
@@ -3198,12 +3221,12 @@
                             </button>
                           </div>
                           <span
-                            className="t-mono tnum"
-                            style={{ color: sess.pricingUsable ? "var(--ink)" : "var(--accent)" }}
-                            title={sess.pricingUsable ? "Verified pricing table rate" : "PricingUsable=false: Estimated spend"}
+                            className={`select-tick ${isSelected ? "on" : ""}`}
+                            aria-hidden="true"
                           >
-                            ${sess.spend.toFixed(2)}
-                            {!sess.pricingUsable ? " EST" : ""}
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
                           </span>
                         </div>
                       </div>
