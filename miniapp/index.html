@@ -539,6 +539,121 @@
       background: rgba(184, 58, 8, 0.055);
     }
 
+    /* Resource cards: icon plus title plus status pill, a description line,
+       and pill actions. Reserved for content with identity: skill proposals,
+       provider profiles, schedules, subscriptions, memory types, run history.
+       Ledgers, toggles, forms and secrets stay rows. */
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card {
+      background: #FFFDF9;
+      border: 1px solid var(--rule);
+      border-radius: 16px;
+      padding: 16px 18px;
+    }
+    .card-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .card-icon {
+      width: 22px;
+      height: 22px;
+      flex: none;
+      color: var(--ink);
+    }
+    .card-title {
+      font-family: var(--sf);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .card-pill {
+      flex: none;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--well);
+      color: var(--ink-2);
+    }
+    .card-pill.hot {
+      background: var(--accent);
+      color: var(--ground);
+    }
+    .card-pill.bad {
+      background: var(--fault);
+      color: var(--ground);
+    }
+    .card-desc {
+      color: var(--ink-2);
+      font-size: 14px;
+      line-height: 1.45;
+      margin-top: 8px;
+      word-break: break-word;
+    }
+    .card-meta {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ink-3);
+      margin-top: 6px;
+      word-break: break-all;
+    }
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+    .card-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 10px;
+      background: var(--ground);
+      border: 1px solid var(--rule);
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+    }
+    .card-btn:hover {
+      border-color: var(--ink);
+    }
+    .card-btn.primary {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: var(--ground);
+    }
+    .card-btn.primary:hover {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .card-btn.danger {
+      color: var(--fault);
+    }
+    .card-btn.danger:hover {
+      background: var(--fault);
+      border-color: var(--fault);
+      color: var(--ground);
+    }
+    .card-btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
     @media (max-width: 560px) {
       .h-row.stack-mobile {
         flex-direction: column;
@@ -3119,27 +3234,35 @@
                     ))}
 
                   {sessionInspectorTab === "history" &&
-                    activeSession.history.map((h) => (
-                      <div key={h.id} className="h-row">
-                        <div className="h-left">
-                          <span className={`dot ${h.status === "ERR" ? "fault" : "done"}`} />
-                          <div>
-                            <div className="t-row">{h.summary}</div>
-                            <div className="t-body tnum">
-                              {h.id} · {h.tools} requests
-                            </div>
-                          </div>
+                    <div className="card-list">
+                    {activeSession.history.map((h) => (
+                      <div key={h.id} className="card">
+                        <div className="card-top">
+                          {h.status === "ERR" ? (
+                            <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="var(--fault)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="12" r="10" />
+                              <line x1="15" y1="9" x2="9" y2="15" />
+                              <line x1="9" y1="9" x2="15" y2="15" />
+                            </svg>
+                          ) : (
+                            <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="12" r="10" />
+                              <polyline points="8.5 12.5 11 15 16 9.5" />
+                            </svg>
+                          )}
+                          <span className="card-title">{h.summary}</span>
+                          {h.status === "ERR" ? (
+                            <span className="card-pill bad">ERR</span>
+                          ) : (
+                            <span className="card-pill">{h.status}</span>
+                          )}
                         </div>
-                        <div className="h-right">
-                          <span
-                            className="t-mono"
-                            style={{ color: h.status === "ERR" ? "var(--fault)" : "var(--ink-2)" }}
-                          >
-                            {h.status} · {h.time}
-                          </span>
+                        <div className="card-meta">
+                          {h.id} · {h.tools} requests · {h.time}
                         </div>
                       </div>
                     ))}
+                    </div>}
                 </div>
               </section>
 
@@ -3497,23 +3620,20 @@
                   Ceraa's memory extractor assigns every observation to a closed type with a mathematical decay half-life, explaining why a <code>profile</code> or <code>preference</code> persists for years while a <code>request</code> decays in weeks.
                 </div>
 
-                <div className="hairline-list">
+                <div className="card-list">
                   {memoryTypes.map((row) => (
-                    <div key={row.type} className="h-row">
-                      <div className="h-left">
-                        <span className="dot done" />
-                        <div>
-                          <div className="t-row">
-                            <span className="t-mono" style={{ color: "var(--ink)" }}>{row.type}</span>
-                          </div>
-                          {row.rationale ? <div className="t-body">{row.rationale}</div> : null}
-                        </div>
+                    <div key={row.type} className="card">
+                      <div className="card-top">
+                        <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 22h14" />
+                          <path d="M5 2h14" />
+                          <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12 7.586 16.414A2 2 0 0 0 7 17.828V22" />
+                          <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+                        </svg>
+                        <span className="card-title t-mono">{row.type}</span>
+                        <span className="card-pill">t½ = {row.halfLife}</span>
                       </div>
-                      <div className="h-right">
-                        <span className="t-mono tnum" style={{ color: "var(--accent)" }}>
-                          t½ = {row.halfLife}
-                        </span>
-                      </div>
+                      {row.rationale ? <div className="card-desc">{row.rationale}</div> : null}
                     </div>
                   ))}
                 </div>
@@ -3539,41 +3659,41 @@
                   <span className="t-mono">ACCEPT OR DISMISS</span>
                 </div>
 
-                <div className="hairline-list">
+                <div className="card-list">
                   {skillProposals.map((sk) => (
-                    <div key={sk.id} className="h-row stack-mobile">
-                      <div className="h-left">
-                        <span className={`dot ${sk.status === "approved" ? "" : sk.status === "rejected" ? "idle" : ""}`} />
-                        <div>
-                          <div className="t-row">{sk.name}</div>
-                          <div className="t-body" style={{ marginTop: 2 }}>{sk.summary}</div>
-                          <div className="t-mono" style={{ marginTop: 4 }}>{sk.source}</div>
-                        </div>
-                      </div>
-                      <div className="h-right">
+                    <div key={sk.id} className="card">
+                      <div className="card-top">
+                        <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                        </svg>
+                        <span className="card-title">{sk.name}</span>
                         {sk.status === "pending" ? (
-                          <div className="row-actions">
-                              <button
-                                type="button"
-                                className="mini-btn"
-                                onClick={() => decideSkill(sk.id, "approve")}
-                              >
-                                Accept
-                              </button>
-                              <button
-                                type="button"
-                                className="mini-btn danger"
-                                onClick={() => decideSkill(sk.id, "reject")}
-                              >
-                                Dismiss
-                              </button>
-                          </div>
+                          <span className="card-pill hot">PENDING</span>
+                        ) : sk.status === "approved" ? (
+                          <span className="card-pill">APPROVED</span>
                         ) : (
-                          <span className="t-mono" style={{ color: sk.status === "approved" ? "var(--accent)" : "var(--ink-3)" }}>
-                            {sk.status.toUpperCase()}
-                          </span>
+                          <span className="card-pill">REJECTED</span>
                         )}
                       </div>
+                      {sk.summary ? <div className="card-desc">{sk.summary}</div> : null}
+                      {sk.status === "pending" ? (
+                        <div className="card-actions">
+                          <button
+                            type="button"
+                            className="card-btn primary"
+                            onClick={() => decideSkill(sk.id, "approve")}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            className="card-btn danger"
+                            onClick={() => decideSkill(sk.id, "reject")}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -3728,23 +3848,22 @@
                   <span className="t-mono">CRON DISPATCHER</span>
                 </div>
 
-                <div className="hairline-list">
+                <div className="card-list">
                   {scheduledJobs.map((job) => (
-                    <div key={job.id} className="h-row stack-mobile">
-                      <div className="h-left">
-                        <span className="dot" />
-                        <div>
-                          <div className="t-row">{job.task}</div>
-                          <div className="t-body" style={{ marginTop: 2 }}>
-                            <span className="t-mono" style={{ color: "var(--accent)" }}>{job.cron}</span>
-                            {" · "}Target: {job.session}
-                          </div>
-                        </div>
+                    <div key={job.id} className="card">
+                      <div className="card-top">
+                        <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span className="card-title">{job.task}</span>
+                        <span className="card-pill">{job.cron}</span>
                       </div>
-                      <div className="h-right">
+                      {job.session ? <div className="card-meta">Target: {job.session}</div> : null}
+                      <div className="card-actions">
                         <button
                           type="button"
-                          className="mini-btn danger"
+                          className="card-btn danger"
                           onClick={() => deleteSchedule(job.id)}
                         >
                           Delete
@@ -3846,39 +3965,47 @@
                   <span className="t-mono">WITH CONFIRM DELETE</span>
                 </div>
 
-                <div className="hairline-list">
+                <div className="card-list">
                   {providerProfiles.map((prof) => {
                     const isAct = prof.id === activeProviderId;
                     return (
-                      <div key={prof.id} className={`h-row stack-mobile ${isAct ? "active-row" : ""}`}>
-                        <div className="h-left" onClick={async () => {
-                          try {
-                            await Api.call("/api/providers", "POST", { active: prof.id });
-                            await refreshProviders();
-                          } catch (err) {
-                            setApiError("Switch provider failed: " + (err.message || err));
-                          }
-                        }} style={{ cursor: "pointer" }}>
-                          <span className={`dot ${isAct ? "" : "done"}`} />
-                          <div>
-                            <div className="t-row">
-                              {prof.name}{" "}
-                              {isAct && <span className="t-mono" style={{ color: "var(--accent)" }}>● ACTIVE</span>}
-                            </div>
-                            <div className="t-body tnum">
-                              {prof.model} · {prof.endpoint}
-                            </div>
-                            <div className="t-mono tnum" style={{ marginTop: 4 }}>
-                              Key: {prof.apiKeyRef} · Effort: {prof.reasoning} · Ctx: {(prof.contextLimit / 1000).toFixed(0)}k · Out: {prof.outputCap} · Cache: {prof.cacheMode}
-                            </div>
-                          </div>
+                      <div key={prof.id} className="card">
+                        <div className="card-top">
+                          <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="3" width="20" height="7" rx="2" />
+                            <rect x="2" y="14" width="20" height="7" rx="2" />
+                            <line x1="6" y1="6.5" x2="6.01" y2="6.5" />
+                            <line x1="6" y1="17.5" x2="6.01" y2="17.5" />
+                          </svg>
+                          <span className="card-title">{prof.name}</span>
+                          {isAct ? <span className="card-pill hot">ACTIVE</span> : null}
                         </div>
-                        <div className="h-right">
+                        <div className="card-desc">{prof.model} · {prof.endpoint}</div>
+                        <div className="card-meta">
+                          Key: {prof.apiKeyRef} · Effort: {prof.reasoning || "default"} · Ctx: {(prof.contextLimit / 1000).toFixed(0)}k · Out: {prof.outputCap} · Cache: {prof.cacheMode || "—"}
+                        </div>
+                        <div className="card-actions">
+                          {!isAct ? (
+                            <button
+                              type="button"
+                              className="card-btn primary"
+                              onClick={async () => {
+                                try {
+                                  await Api.call("/api/providers", "POST", { active: prof.id });
+                                  await refreshProviders();
+                                } catch (err) {
+                                  setApiError("Switch provider failed: " + (err.message || err));
+                                }
+                              }}
+                            >
+                              Set active
+                            </button>
+                          ) : null}
                           {confirmDeleteProfileId === prof.id ? (
-                            <div className="row-actions">
+                            <React.Fragment>
                               <button
                                 type="button"
-                                className="mini-btn danger"
+                                className="card-btn danger"
                                 onClick={async () => {
                                   if (providerProfiles.length <= 1) return;
                                   try {
@@ -3895,16 +4022,16 @@
                               </button>
                               <button
                                 type="button"
-                                className="mini-btn"
+                                className="card-btn"
                                 onClick={() => setConfirmDeleteProfileId(null)}
                               >
                                 Cancel
                               </button>
-                            </div>
+                            </React.Fragment>
                           ) : (
                             <button
                               type="button"
-                              className="mini-btn danger"
+                              className="card-btn danger"
                               onClick={() => setConfirmDeleteProfileId(prof.id)}
                             >
                               Remove
@@ -3922,22 +4049,22 @@
                   <span className="t-mono">OAUTH / KEY</span>
                 </div>
 
-                <div className="hairline-list">
+                <div className="card-list">
                   {subscriptions.map((sub) => (
-                    <div key={sub.id} className="h-row">
-                      <div className="h-left">
-                        <span className={`dot ${sub.signedIn ? "" : "idle"}`} />
-                        <div>
-                          <div className="t-row">{sub.provider}</div>
-                          <div className="t-body">
-                            {sub.signedIn ? "Signed in · manage from Telegram" : "Not signed in · connect from Telegram"}
-                          </div>
-                        </div>
+                    <div key={sub.id} className="card">
+                      <div className="card-top">
+                        <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                        </svg>
+                        <span className="card-title">{sub.provider}</span>
+                        {sub.signedIn ? (
+                          <span className="card-pill hot">SIGNED IN</span>
+                        ) : (
+                          <span className="card-pill">OFF</span>
+                        )}
                       </div>
-                      <div className="h-right">
-                        <span className="t-mono" style={{ color: sub.signedIn ? "var(--accent)" : "var(--ink-3)" }}>
-                          {sub.signedIn ? "SIGNED IN" : "OFF"}
-                        </span>
+                      <div className="card-desc">
+                        {sub.signedIn ? "Connected. Manage from Telegram." : "Not signed in. Connect from Telegram."}
                       </div>
                     </div>
                   ))}
