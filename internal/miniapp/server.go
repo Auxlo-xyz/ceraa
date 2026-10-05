@@ -554,6 +554,15 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 	full, ok := resolveAsset(name)
 	if !ok {
+		// The embedded copy is the floor: a run whose staging step was skipped
+		// used to serve a bare 404 through a healthy tunnel, which read as
+		// "Web didn't load" with no log line explaining it.
+		if data, contentType, found := embeddedAsset(name); found {
+			w.Header().Set("Cache-Control", "no-store, must-revalidate")
+			w.Header().Set("Content-Type", contentType)
+			w.Write(data)
+			return
+		}
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}

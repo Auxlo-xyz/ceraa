@@ -60,7 +60,7 @@ cp -f prompt/system.txt dist/system.txt
 # place resolveAsset looks for it. Checksummed for the same reason the prompt is:
 # a release asset nobody verifies is a release asset nobody checked.
 echo "release: staging miniapp-index.html"
-cp -f miniapp/index.html dist/miniapp-index.html
+cp -f internal/miniapp/assets/index.html dist/miniapp-index.html
 
 cp -f LICENSE NOTICE dist/
 

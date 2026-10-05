@@ -67,5 +67,5 @@ done
 # mascot is fetched by that page as /mascot.svg, so it ships with it or the
 # header renders an empty state box on a single-binary install.
 mkdir -p bin/miniapp
-cp -f miniapp/index.html bin/miniapp/index.html
-cp -f miniapp/mascot.svg bin/miniapp/mascot.svg
+cp -f internal/miniapp/assets/index.html bin/miniapp/index.html
+cp -f internal/miniapp/assets/mascot.svg bin/miniapp/mascot.svg

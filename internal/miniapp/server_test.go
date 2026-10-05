@@ -211,7 +211,7 @@ func serveAStubShell(t *testing.T) {
 func TestTheShellReachesTheCredentialFromTheFragment(t *testing.T) {
 	// Read the file that actually ships, not a stub: the bug this guards is in
 	// the page that runs in Telegram, and a fixture cannot reproduce it.
-	shell := filepath.Join("..", "..", "miniapp", "index.html")
+	shell := filepath.Join("..", "..", "internal", "miniapp", "assets", "index.html")
 	raw, err := os.ReadFile(shell)
 	if err != nil {
 		t.Fatalf("read shipped shell %s: %v", shell, err)
@@ -524,15 +524,16 @@ func TestIndexIsServedFromDisk(t *testing.T) {
 	}
 }
 
-// TestIndexIsRefusedWhenAbsent keeps a binary installed without its assets from
-// pretending the page exists.
-func TestIndexIsRefusedWhenAbsent(t *testing.T) {
+// TestIndexSurvivesMissingAssets pins the floor: a binary installed without
+// its staged assets still answers, from the embedded copy, rather than 404ing
+// behind a healthy tunnel and reading as "Web didn't load".
+func TestIndexSurvivesMissingAssets(t *testing.T) {
 	t.Setenv("CERAA_HOME", t.TempDir())
 	server, _, _ := newFixture(t, testUser)
 	initData := initDataFor(t, testToken, testUser, 0)
 	got := do(t, server.Handler(), http.MethodGet, "/?initData="+url.QueryEscape(initData), "")
-	if got.Code != http.StatusNotFound {
-		t.Fatalf("index = %d, want 404 when the page is missing", got.Code)
+	if got.Code != http.StatusOK {
+		t.Fatalf("index = %d, want 200 from the embedded asset when staging is absent", got.Code)
 	}
 }
 
@@ -1087,7 +1088,7 @@ func TestTheShellIsNotCached(t *testing.T) {
 // the transform is only how it arrives.
 func TestTheClosedSheetCannotCoverTheConversation(t *testing.T) {
 	// The shipped file, not a stub: the defect is in the page that runs.
-	shell := filepath.Join("..", "..", "miniapp", "index.html")
+	shell := filepath.Join("..", "..", "internal", "miniapp", "assets", "index.html")
 	raw, err := os.ReadFile(shell)
 	if err != nil {
 		t.Fatalf("read shipped shell %s: %v", shell, err)
@@ -1111,7 +1112,7 @@ func TestTheClosedSheetCannotCoverTheConversation(t *testing.T) {
 // still looking correct in a screenshot. The evidence is structural rather than
 // visual, so it is asserted structurally.
 func TestTheShippedScriptIsWhole(t *testing.T) {
-	shell := filepath.Join("..", "..", "miniapp", "index.html")
+	shell := filepath.Join("..", "..", "internal", "miniapp", "assets", "index.html")
 	raw, err := os.ReadFile(shell)
 	if err != nil {
 		t.Fatalf("read shipped shell %s: %v", shell, err)
