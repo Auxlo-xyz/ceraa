@@ -481,6 +481,27 @@ func (s *Server) TunnelAddress() string {
 	return s.tunnel.Origin()
 }
 
+// CloseTunnel releases the current tunnel so the next StartTunnel mints a fresh
+// hostname, and reports the origin that was in use.
+//
+// It exists because a quick tunnel's hostname cannot be re-advertised: it is
+// assigned per client process, and the old one is dead the moment that process
+// exits. A client holding a cached address has no way to be told "same link,
+// new place" - it can only be handed a different link. Closing is what makes
+// the next open produce one.
+func (s *Server) CloseTunnel() string {
+	s.tunnelMu.Lock()
+	tunnel := s.tunnel
+	s.tunnel = nil
+	s.tunnelMu.Unlock()
+	if tunnel == nil {
+		return ""
+	}
+	origin := tunnel.Origin()
+	tunnel.Close()
+	return origin
+}
+
 // handleTunnel reports where this surface is reachable from outside the
 // machine, so the page can show the address it is being read through without
 // the answer having to come back through chat.

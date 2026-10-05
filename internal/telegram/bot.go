@@ -1175,6 +1175,9 @@ func Run() error {
 			case "/web":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleWebShare(token, u.Message.Chat.ID, startMiniApp)
+			case "/purge":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handlePurge(token, u.Message.Chat.ID, startMiniApp)
 			case "/new":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				startNewSession(token, u.Message.Chat.ID)

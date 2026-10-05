@@ -13,6 +13,7 @@ func Commands() []CommandSpec {
 		{"apilog", "Toggle Telegram API call tracing"},
 		{"hub", "Open the control hub"},
 		{"web", "Share the Mini App link"},
+		{"purge", "Mint a fresh web address and republish it"},
 		{"new", "Start a fresh session"},
 		{"sessions", "List stored sessions"},
 		{"session", "Open session controls"},
