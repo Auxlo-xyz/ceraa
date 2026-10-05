@@ -48,11 +48,22 @@ func TestPurgeKeyboardCarriesAWebApp(t *testing.T) {
 // button is exactly the cached surface this whole mechanism exists to route
 // around, so a republication that only moved the button would fix nothing.
 func TestRepublishSendsAnInlineLink(t *testing.T) {
+	// The storage half is stubbed rather than redirected: bridge-state.json is
+	// loaded once at package init, so CERAA_HOME cannot move it, and a test
+	// that really saved would persist its own chat id into the running bot's
+	// state. The next boot would then push a link at "chat not found".
+	previousPersist := persistNotifyChat
+	var persisted []int64
+	persistNotifyChat = func(chatID int64) error {
+		persisted = append(persisted, chatID)
+		return nil
+	}
 	miniappMu.Lock()
 	previous := miniappChat
 	miniappChat = 0
 	miniappMu.Unlock()
 	t.Cleanup(func() {
+		persistNotifyChat = previousPersist
 		miniappMu.Lock()
 		miniappChat = previous
 		miniappMu.Unlock()
@@ -67,5 +78,8 @@ func TestRepublishSendsAnInlineLink(t *testing.T) {
 	noteMiniAppChat(0)
 	if got := miniAppChat(); got != 4242 {
 		t.Errorf("miniAppChat = %d after a zero write, want the recorded 4242", got)
+	}
+	if len(persisted) != 1 || persisted[0] != 4242 {
+		t.Errorf("persisted = %v, want exactly [4242]: a zero write must not be stored", persisted)
 	}
 }

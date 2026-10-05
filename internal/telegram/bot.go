@@ -154,6 +154,17 @@ func noteMiniAppPublished(origin string) {
 	miniappPublished = origin
 }
 
+// persistNotifyChat is the storage half of noteMiniAppChat, behind a variable so
+// a test can exercise the in-memory behaviour without writing to the real
+// bridge-state.json.
+//
+// This mattered: the state file is loaded once at package init, so CERAA_HOME
+// cannot redirect it per test, and any test that published an address persisted
+// its own chat id. A later boot then pushed a link at "chat not found".
+var persistNotifyChat = func(chatID int64) error {
+	return defaultState.setNotifyChat(chatID)
+}
+
 // noteMiniAppChat records the chat an address was published to, so a later
 // republication has somewhere to go without being asked.
 //
@@ -168,7 +179,7 @@ func noteMiniAppChat(chatID int64) {
 	miniappMu.Lock()
 	miniappChat = chatID
 	miniappMu.Unlock()
-	if err := defaultState.setNotifyChat(chatID); err != nil {
+	if err := persistNotifyChat(chatID); err != nil {
 		logger.Warn("Mini App notify chat not persisted: " + err.Error())
 	}
 }

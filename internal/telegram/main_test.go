@@ -36,6 +36,12 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	providers = newProviderState(config.NewStoreAt(filepath.Join(dir, "config.json")))
+	// defaultState is a package-level var, so it was loaded before TestMain ran
+	// and before CERAA_HOME pointed anywhere. Without rebinding it here it stays
+	// bound to the live install: a test that recorded a chat id persisted it
+	// into the running bot's bridge-state.json, and the next boot pushed a
+	// republished address at "chat not found".
+	defaultState = loadBridgeStateFromFile(filepath.Join(dir, "bridge-state.json"))
 	os.Exit(m.Run())
 }
 
