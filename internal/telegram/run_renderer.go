@@ -1586,9 +1586,13 @@ func formatToolActivity(tools []toolActivity) string {
 		if name == "" {
 			name = tool.label
 		}
-		line := toolIcon(name) + " " + name
+		// Underscores read as code, not language: send_media renders as send
+		// media. The icon and the bolding key off the raw name, so only the
+		// displayed word changes.
+		display := strings.ReplaceAll(name, "_", " ")
+		line := toolIcon(name) + " " + display
 		if boldWordTool(name) {
-			line = "<b>" + name + "</b>"
+			line = "<b>" + display + "</b>"
 		}
 		if tool.detail != "" {
 			line += " " + tool.detail
