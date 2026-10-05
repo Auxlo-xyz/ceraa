@@ -133,3 +133,17 @@ func TestConcurrentWritersDoNotLoseAnEntry(t *testing.T) {
 		t.Fatalf("stored %d names, want %d: a concurrent write was lost", len(got), writers*perWriter)
 	}
 }
+
+// The dashboard validates names client-side against this list, so the list
+// must be the truth rather than a copy quoted in the page.
+func TestReservedPrefixesAreExposedForValidation(t *testing.T) {
+	prefixes := ReservedPrefixes()
+	if len(prefixes) == 0 {
+		t.Fatal("no reserved prefixes exposed")
+	}
+	for _, prefix := range prefixes {
+		if !IsInternal(prefix + "anything") {
+			t.Errorf("exposed prefix %q does not match IsInternal", prefix)
+		}
+	}
+}

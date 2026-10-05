@@ -343,6 +343,15 @@
       padding: 16px;
       box-shadow: 0 20px 44px rgba(18, 17, 16, 0.14);
       z-index: 300;
+      visibility: hidden;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease, visibility 160ms ease;
+    }
+    .grid-menu-popover.open {
+      visibility: visible;
+      opacity: 1;
+      pointer-events: auto;
     }
     .grid-menu-grid {
       display: grid;
@@ -877,8 +886,71 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <script>
+    window.CeraaApi = (function () {
+      function initData() {
+        try {
+          var w = window.Telegram && window.Telegram.WebApp;
+          if (w && w.initData) return w.initData;
+        } catch (e) {}
+        try {
+          var hash = window.location.hash || "";
+          var key = "tgWebAppData=";
+          var idx = hash.indexOf(key);
+          if (idx >= 0) {
+            var frag = hash.substring(idx + key.length);
+            var amp = frag.indexOf("&");
+            return decodeURIComponent(amp >= 0 ? frag.substring(0, amp) : frag);
+          }
+        } catch (e2) {}
+        return "";
+      }
+      function call(path, method, body) {
+        var headers = {};
+        var data = initData();
+        if (data) headers["Authorization"] = "tma " + data;
+        var opts = { method: method || "GET", headers: headers };
+        if (body !== undefined) {
+          headers["Content-Type"] = "application/json";
+          opts.body = JSON.stringify(body);
+        }
+        return fetch(path, opts).then(function (res) {
+          return res.text().then(function (text) {
+            var parsed = null;
+            try { parsed = text ? JSON.parse(text) : null; } catch (e) {}
+            if (!res.ok) throw new Error(text || ("request failed " + res.status));
+            return parsed;
+          });
+        });
+      }
+      function relTime(iso) {
+        if (!iso) return "";
+        var t = new Date(iso).getTime();
+        if (isNaN(t)) return String(iso);
+        var mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+        if (mins < 1) return "just now";
+        if (mins < 60) return mins + "m ago";
+        var hours = Math.round(mins / 60);
+        if (hours < 48) return hours + "h ago";
+        return Math.round(hours / 24) + "d ago";
+      }
+      function fmtK(n) {
+        n = Number(n) || 0;
+        if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
+        return String(n);
+      }
+      function fmtBytes(n) {
+        n = Number(n) || 0;
+        if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+        if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+        return n + " B";
+      }
+      return { initData: initData, call: call, relTime: relTime, fmtK: fmtK, fmtBytes: fmtBytes };
+    })();
+  </script>
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
+    const Api = window.CeraaApi;
 
     // =========================================================================
     // SMOOTH ANIMATED NUMBER COUNTER HOOK & COMPONENT
@@ -939,78 +1011,13 @@
       );
     }
 
-    // =========================================================================
-    // TOKEN CONSUMPTION TIMEFRAME DATASETS (1d, 7d, 30d, All time)
-    // =========================================================================
-    const TOKEN_TIMEFRAMES = {
-      "1d": {
-        label: "Last 24 Hours (Hourly Buckets)",
-        multiplier: 1,
-        spend: 0.86,
-        cacheHitRate: 84,
-        points: [
-          { label: "00:00", cacheRead: 18, input: 11, output: 4, cacheWrite: 3 },
-          { label: "03:00", cacheRead: 12, input: 8, output: 3, cacheWrite: 2 },
-          { label: "06:00", cacheRead: 26, input: 14, output: 5, cacheWrite: 4 },
-          { label: "09:00", cacheRead: 54, input: 24, output: 9, cacheWrite: 8 },
-          { label: "12:00", cacheRead: 72, input: 31, output: 12, cacheWrite: 9 },
-          { label: "15:00", cacheRead: 88, input: 36, output: 15, cacheWrite: 11 },
-          { label: "18:00", cacheRead: 64, input: 27, output: 11, cacheWrite: 7 },
-          { label: "21:00", cacheRead: 95, input: 39, output: 16, cacheWrite: 12 }
-        ]
-      },
-      "7d": {
-        label: "Last 7 Days (Daily Buckets)",
-        multiplier: 5.8,
-        spend: 4.92,
-        cacheHitRate: 86,
-        points: [
-          { label: "Mon", cacheRead: 310, input: 145, output: 52, cacheWrite: 38 },
-          { label: "Tue", cacheRead: 420, input: 178, output: 64, cacheWrite: 44 },
-          { label: "Wed", cacheRead: 385, input: 160, output: 58, cacheWrite: 39 },
-          { label: "Thu", cacheRead: 540, input: 210, output: 82, cacheWrite: 56 },
-          { label: "Fri", cacheRead: 615, input: 240, output: 94, cacheWrite: 62 },
-          { label: "Sat", cacheRead: 290, input: 118, output: 41, cacheWrite: 28 },
-          { label: "Sun", cacheRead: 480, input: 192, output: 71, cacheWrite: 49 }
-        ]
-      },
-      "30d": {
-        label: "Last 30 Days (Weekly Cohorts)",
-        multiplier: 22.4,
-        spend: 19.40,
-        cacheHitRate: 88,
-        points: [
-          { label: "W1", cacheRead: 1420, input: 610, output: 220, cacheWrite: 165 },
-          { label: "W2", cacheRead: 1890, input: 740, output: 275, cacheWrite: 198 },
-          { label: "W3", cacheRead: 1640, input: 680, output: 245, cacheWrite: 174 },
-          { label: "W4", cacheRead: 2280, input: 890, output: 320, cacheWrite: 230 },
-          { label: "W5", cacheRead: 2510, input: 940, output: 355, cacheWrite: 248 },
-          { label: "Now", cacheRead: 2790, input: 1020, output: 390, cacheWrite: 265 }
-        ]
-      },
-      "All": {
-        label: "All Time (Monthly Ledger)",
-        multiplier: 68.5,
-        spend: 58.90,
-        cacheHitRate: 89,
-        points: [
-          { label: "May", cacheRead: 3200, input: 1450, output: 510, cacheWrite: 390 },
-          { label: "Jun", cacheRead: 4600, input: 1920, output: 680, cacheWrite: 510 },
-          { label: "Jul", cacheRead: 5900, input: 2340, output: 840, cacheWrite: 620 },
-          { label: "Aug", cacheRead: 7400, input: 2810, output: 1020, cacheWrite: 760 },
-          { label: "Sep", cacheRead: 9100, input: 3390, output: 1240, cacheWrite: 890 },
-          { label: "Oct", cacheRead: 11200, input: 3980, output: 1490, cacheWrite: 1040 }
-        ]
-      }
-    };
-
-    // =========================================================================
     // STYLISH INTERACTIVE TOKEN CONSUMPTION STACKED BAR CHART COMPONENT
     // =========================================================================
-    function TokenConsumptionChart({ timeframe, setTimeframe }) {
+    function TokenConsumptionChart({ timeframe, setTimeframe, buckets }) {
       const [hoverIdx, setHoverIdx] = useState(null);
-      const dataset = TOKEN_TIMEFRAMES[timeframe] || TOKEN_TIMEFRAMES["1d"];
-      const pts = dataset.points;
+      const pts = buckets && buckets.length
+        ? buckets
+        : [{ label: "—", cacheRead: 0, input: 0, output: 0, cacheWrite: 0 }];
 
       const maxTotal = useMemo(() => {
         return Math.max(
@@ -1190,43 +1197,21 @@
     // =========================================================================
     const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-    const MEMORY_HALF_LIFE_TABLE = [
-      { type: "identity", halfLife: "1,825d (5 yr)", rationale: "Core user bio, role, & permanent constraints" },
-      { type: "preference", halfLife: "730d (2 yr)", rationale: "Coding style, workflow habits, & tone rules" },
-      { type: "architecture", halfLife: "365d (1 yr)", rationale: "Repo boundaries, stack choices, & invariants" },
-      { type: "project_fact", halfLife: "180d (6 mo)", rationale: "Active milestones, schemas, & domain terms" },
-      { type: "episodic", halfLife: "45d (6 wk)", rationale: "Recent debugging notes & PR context" },
-      { type: "request", halfLife: "14d (2 wk)", rationale: "Short-lived task instructions & scratch state" }
-    ];
+    // Server truth arrives in App state via /api/meta; these two lists exist
+    // only so validation has something to check before the first load, and
+    // the server re-checks everything on write.
+    const RESERVED_SECRET_PREFIXES = ["ceraa_", "provider_api_key_", "codex_", "hermes_", "xai_", "cline_", "minimax_"];
 
-    const TOOL_INVENTORY = [
-      { id: "bash_exec", category: "Execution", desc: "Execute shell commands in workspace root" },
-      { id: "fs_read", category: "Filesystem", desc: "Read UTF-8 or binary files inside project roots" },
-      { id: "fs_write", category: "Filesystem", desc: "Create or overwrite files atomically" },
-      { id: "fs_patch", category: "Filesystem", desc: "Apply unified diff hunks to target files" },
-      { id: "rg_search", category: "Search", desc: "Ripgrep regex search across mounted roots" },
-      { id: "git_status_diff", category: "VCS", desc: "Inspect working tree, staged diffs, and log" },
-      { id: "web_fetch", category: "Network", desc: "Fetch & extract markdown from external URLs" },
-      { id: "browser_cdp", category: "Headless", desc: "Playwright DOM inspection & screenshot capture" },
-      { id: "memory_store", category: "Memory", desc: "Write typed entry to Ceraa long-term memory" },
-      { id: "schedule_cron", category: "Automation", desc: "Register recurring cron prompt job" }
-    ];
-
-    const RESERVED_SECRET_PREFIXES = ["CERAA_", "TELEGRAM_", "SYSTEM_", "INTERNAL_"];
-    const RESERVED_EXACT_NAMES = ["BOT_TOKEN", "MASTER_KEY", "AES_KEY", "WORKSPACE_ROOT", "DATABASE_URL"];
-
-    function isInternalSecretName(name) {
-      const upper = name.trim().toUpperCase();
-      if (!upper) return "Secret name is required.";
-      if (RESERVED_EXACT_NAMES.includes(upper)) {
-        return `Rejected by IsInternal: "${upper}" is a reserved core runtime key.`;
-      }
-      for (const prefix of RESERVED_SECRET_PREFIXES) {
-        if (upper.startsWith(prefix)) {
-          return `Rejected by IsInternal: Prefix "${prefix}" is reserved for internal Ceraa state.`;
+    function isInternalSecretName(name, prefixes) {
+      const list = (prefixes && prefixes.length ? prefixes : RESERVED_SECRET_PREFIXES);
+      const trimmed = name.trim();
+      if (!trimmed) return "Secret name is required.";
+      for (const prefix of list) {
+        if (trimmed.startsWith(prefix)) {
+          return `Rejected by IsInternal: prefix "${prefix}" is reserved for internal Ceraa state.`;
         }
       }
-      if (!/^[A-Z0-9_]+$/.test(upper)) {
+      if (!/^[A-Z0-9_]+$/.test(trimmed.toUpperCase())) {
         return "Use uppercase letters, digits, and underscores only (e.g. STRIPE_LIVE_KEY).";
       }
       return null;
@@ -1239,95 +1224,61 @@
       const [activeTab, setActiveTab] = useState("All");
       const [menuOpen, setMenuOpen] = useState(false);
       const [tokenTimeframe, setTokenTimeframe] = useState("7d");
+      const [meta, setMeta] = useState(null);
+      const [apiError, setApiError] = useState(null);
+      const [webSessionId, setWebSessionId] = useState("web");
+      const [envWorkspaceRoot, setEnvWorkspaceRoot] = useState("");
+      const [forbiddenSourceTreePrefix, setForbiddenSourceTreePrefix] = useState("/workspace/development/ceraa");
+      const [toolInventory, setToolInventory] = useState([]);
+      const [memoryTypes, setMemoryTypes] = useState([]);
+      const [snapshots, setSnapshots] = useState([]);
+      const [inspect, setInspect] = useState({});
+      const [chartPoints, setChartPoints] = useState([]);
+      const [promptText, setPromptText] = useState("");
+      const [runBusy, setRunBusy] = useState(false);
+      const [runFeed, setRunFeed] = useState([]);
+      const [pendingCards, setPendingCards] = useState([]);
+      const [cardAnswers, setCardAnswers] = useState({});
 
       // =======================================================================
       // 9. STATUS AND CONTROL (Bot status, /stop, version, Mini App tunnel, queue)
       // =======================================================================
       const [botStatus, setBotStatus] = useState({
         running: true,
-        pollingState: "Long-polling (OK · 18ms)",
-        activeRun: {
-          active: true,
-          sessionTitle: "auth-middleware-refactor",
-          step: "fs_patch → src/middleware/jwt.ts (tool 2/4)",
-          elapsed: "14.2s"
-        },
-        version: "v0.19.4-prod",
+        pollingState: "Connecting…",
+        activeRun: { active: false, sessionTitle: "", step: "", elapsed: "" },
+        version: "",
         updateCheckEnabled: true,
-        updateStatus: "Up to date (checked 14m ago)",
-        miniAppEndpoint: "https://tma.ceraa.internal:8443/app",
-        tunnelState: "Connected (Cloudflare QuickTunnel · TLS 1.3)",
-        promptQueueDepth: 2
+        updateStatus: "",
+        miniAppEndpoint: "",
+        tunnelState: "",
+        promptQueueDepth: 0
       });
 
-      const handleStopActiveRun = () => {
-        setBotStatus((prev) => ({
-          ...prev,
-          activeRun: {
-            active: false,
-            sessionTitle: prev.activeRun.sessionTitle,
-            step: "Halted via /stop command",
-            elapsed: prev.activeRun.elapsed
-          },
-          promptQueueDepth: 0
-        }));
-      };
+      // A chat run cannot be stopped from here: the cancel route only reaches
+      // this surface's own session, by design. The button enables only when
+      // the active run is ours; otherwise it says where the stop lives.
+      const cancellableRun =
+        botStatus.activeRun.active && botStatus.activeRun.sessionTitle === webSessionId;
 
-      const handleResumeMockRun = () => {
-        setBotStatus((prev) => ({
-          ...prev,
-          activeRun: {
-            active: true,
-            sessionTitle: "auth-middleware-refactor",
-            step: "rg_search → verifying token verifier call sites",
-            elapsed: "0.8s"
-          },
-          promptQueueDepth: 1
-        }));
+      const handleStopActiveRun = async () => {
+        if (!cancellableRun) return;
+        try {
+          await Api.call("/api/sessions/" + webSessionId + "/cancel", "POST");
+          setBotStatus((prev) => ({
+            ...prev,
+            activeRun: { active: false, sessionTitle: "", step: "Halted from the dashboard", elapsed: "" }
+          }));
+        } catch (err) {
+          setApiError("Stop failed: " + (err.message || err));
+        }
       };
 
       // =======================================================================
       // 1. PROVIDER AND MODEL (ActiveProvider, profiles, subscriptions, catalog)
       // =======================================================================
-      const [activeProviderId, setActiveProviderId] = useState("anthropic-prod");
-      const [providerProfiles, setProviderProfiles] = useState([
-        {
-          id: "anthropic-prod",
-          name: "anthropic-prod",
-          endpoint: "https://api.anthropic.com/v1",
-          model: "claude-3-7-sonnet-20250219",
-          apiKeyRef: "secret:ANTHROPIC_PROD_KEY",
-          reasoning: "high",
-          contextLimit: 200000,
-          outputCap: 16384,
-          cacheMode: "ephemeral-5m",
-          pricingUsable: true
-        },
-        {
-          id: "openai-reasoning",
-          name: "openai-reasoning",
-          endpoint: "https://api.openai.com/v1",
-          model: "o3-mini-high",
-          apiKeyRef: "secret:OPENAI_ORG_KEY",
-          reasoning: "xhigh",
-          contextLimit: 128000,
-          outputCap: 32768,
-          cacheMode: "auto-prefix",
-          pricingUsable: true
-        },
-        {
-          id: "openrouter-edge",
-          name: "openrouter-edge",
-          endpoint: "https://openrouter.ai/api/v1",
-          model: "deepseek/deepseek-r1-zero:free",
-          apiKeyRef: "secret:OPENROUTER_KEY",
-          reasoning: "max",
-          contextLimit: 64000,
-          outputCap: 8192,
-          cacheMode: "off",
-          pricingUsable: false
-        }
-      ]);
+      const [activeProviderId, setActiveProviderId] = useState("");
+      const [providerProfiles, setProviderProfiles] = useState([]);
       const [confirmDeleteProfileId, setConfirmDeleteProfileId] = useState(null);
       const [addingProfile, setAddingProfile] = useState(false);
       const [profileDraft, setProfileDraft] = useState({
@@ -1346,75 +1297,102 @@
         [providerProfiles, activeProviderId]
       );
 
-      const [subscriptions, setSubscriptions] = useState([
-        { id: "sub-claude", provider: "Anthropic Claude Max", signedIn: true, entry: "george@ceraa.dev", authType: "OAuth PKCE" },
-        { id: "sub-codex", provider: "OpenAI ChatGPT Pro", signedIn: true, entry: "org-ceraa-prod", authType: "Key-based" },
-        { id: "sub-gemini", provider: "Google AI Ultra", signedIn: false, entry: "—", authType: "OAuth" }
-      ]);
+      const [subscriptions, setSubscriptions] = useState([]);
 
       const [modelCatalog, setModelCatalog] = useState({
-        sourceUrl: "https://models.litellm.ai/model_prices_and_context_window.json",
-        lastRefresh: "38m ago (412 models indexed)",
-        refreshHours: 12
+        sourceUrl: "",
+        lastRefresh: "—",
+        refreshHours: 0
       });
 
       // =======================================================================
       // 2. RUN PARAMETERS (Bound to Reasoning Effort + real Ceraa parameters)
       // =======================================================================
       const [runParams, setRunParams] = useState({
-        reasoningEffort: "high",
-        contextLimit: 128000,
-        maxOutputTokens: 16384,
-        maxToolResultChars: 24000,
-        maxConcurrentTools: 4,
-        promptCacheMode: "ephemeral",
-        promptCacheTTL: "5m",
+        reasoningEffort: "medium",
+        contextLimit: 0,
+        maxOutputTokens: 0,
+        maxToolResultChars: 0,
+        maxConcurrentTools: 1,
+        promptCacheMode: "",
+        promptCacheTTL: "",
         memoryDelivery: "cached",
-        agentRole: "architect-default"
+        agentRole: ""
       });
+      const [paramsDirty, setParamsDirty] = useState(false);
+      const [paramsSaved, setParamsSaved] = useState("");
 
-      const reasoningIndex = REASONING_LEVELS.indexOf(runParams.reasoningEffort);
-      const stepReasoningEffort = () => {
-        const nextIdx = (reasoningIndex + 1) % REASONING_LEVELS.length;
-        const nextLevel = REASONING_LEVELS[nextIdx];
-        setRunParams((prev) => ({ ...prev, reasoningEffort: nextLevel }));
+      const reasoningLevels = (meta && meta.reasoning_levels) || REASONING_LEVELS;
+      const reasoningIndex = reasoningLevels.indexOf(runParams.reasoningEffort);
+      const stepReasoningEffort = async () => {
+        const nextIdx = (reasoningIndex + 1) % reasoningLevels.length;
+        const nextLevel = reasoningLevels[nextIdx];
+        try {
+          await Api.call("/api/runparams", "POST", { params: { reasoning: nextLevel } });
+          setRunParams((prev) => ({ ...prev, reasoningEffort: nextLevel }));
+        } catch (err) {
+          setApiError("Reasoning change failed: " + (err.message || err));
+        }
+      };
+
+      const editRunParams = (patch) => {
+        setRunParams((prev) => ({ ...prev, ...patch }));
+        setParamsDirty(true);
+        setParamsSaved("");
+      };
+
+      const saveRunParams = async () => {
+        const params = {
+          reasoning: runParams.reasoningEffort,
+          context_limit: Number(runParams.contextLimit) || 0,
+          max_output_tokens: Number(runParams.maxOutputTokens) || 0,
+          max_tool_result_chars: Number(runParams.maxToolResultChars) || 0,
+          max_concurrent_tools: Number(runParams.maxConcurrentTools) || 1,
+          prompt_cache_mode: runParams.promptCacheMode,
+          prompt_cache_ttl: runParams.promptCacheTTL,
+          memory_delivery: runParams.memoryDelivery,
+          agent: runParams.agentRole
+        };
+        try {
+          await Api.call("/api/runparams", "POST", { params });
+          setParamsDirty(false);
+          setParamsSaved("Saved just now");
+        } catch (err) {
+          setApiError("Run parameters failed: " + (err.message || err));
+        }
       };
 
       // =======================================================================
       // 3. TOOLS AND PERMISSIONS (AlwaysAllow + read-only Tool Inventory)
       // =======================================================================
-      const [alwaysAllow, setAlwaysAllow] = useState([
-        "fs_read",
-        "rg_search",
-        "git_status_diff",
-        "memory_store"
-      ]);
+      const [alwaysAllow, setAlwaysAllow] = useState([]);
 
-      const toggleAlwaysAllow = (toolId) => {
-        setAlwaysAllow((prev) =>
-          prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId]
-        );
+      const toggleAlwaysAllow = async (toolId) => {
+        const allowed = !alwaysAllow.includes(toolId);
+        try {
+          await Api.call("/api/tools", "POST", { name: toolId, allowed });
+          setAlwaysAllow((prev) =>
+            allowed ? [...prev, toolId] : prev.filter((id) => id !== toolId)
+          );
+        } catch (err) {
+          setApiError("Tool permission failed: " + (err.message || err));
+        }
       };
 
       // =======================================================================
       // 4. SECRETS (AES at rest, never echoed in DOM, IsInternal enforced)
       // =======================================================================
-      const [secrets, setSecrets] = useState([
-        { name: "ANTHROPIC_PROD_KEY", length: 108, updated: "14d ago" },
-        { name: "OPENAI_ORG_KEY", length: 56, updated: "29d ago" },
-        { name: "OPENROUTER_KEY", length: 73, updated: "6d ago" },
-        { name: "GITHUB_PAT_REPO", length: 40, updated: "42d ago" }
-      ]);
+      const [secrets, setSecrets] = useState([]);
       const [addingSecret, setAddingSecret] = useState(false);
       const [secretNameInput, setSecretNameInput] = useState("");
       const [secretError, setSecretError] = useState(null);
       const [confirmDeleteSecret, setConfirmDeleteSecret] = useState(null);
       const secretValueRef = useRef(null);
 
-      const handleSaveSecret = (e) => {
+      const handleSaveSecret = async (e) => {
         e.preventDefault();
         const cleanName = secretNameInput.trim().toUpperCase();
-        const validationError = isInternalSecretName(cleanName);
+        const validationError = isInternalSecretName(cleanName, meta && meta.reserved_prefixes);
         if (validationError) {
           if (secretValueRef.current) secretValueRef.current.value = "";
           setSecretError(validationError);
@@ -1429,237 +1407,171 @@
           return;
         }
 
-        setSecrets((prev) => {
-          const exists = prev.some((s) => s.name === cleanName);
-          if (exists) {
-            return prev.map((s) => (s.name === cleanName ? { ...s, length: byteLength, updated: "Just now" } : s));
-          }
-          return [{ name: cleanName, length: byteLength, updated: "Just now" }, ...prev];
-        });
+        try {
+          await Api.call("/api/secrets/" + encodeURIComponent(cleanName), "PUT", { value: rawVal });
+        } catch (err) {
+          setSecretError("Seal failed: " + (err.message || err));
+          return;
+        }
+        await refreshSecrets();
         setSecretNameInput("");
         setSecretError(null);
         setAddingSecret(false);
       };
 
+      const deleteSecret = async (name) => {
+        try {
+          await Api.call("/api/secrets/" + encodeURIComponent(name), "DELETE");
+        } catch (err) {
+          setSecretError("Delete failed: " + (err.message || err));
+          return;
+        }
+        setConfirmDeleteSecret(null);
+        await refreshSecrets();
+      };
+
       // =======================================================================
       // 5. SESSIONS AND PROJECTS
       // =======================================================================
-      const envWorkspaceRoot = "/var/lib/ceraa/workspaces/prod";
-      const forbiddenSourceTreePrefix = "/usr/src/ceraa";
 
-      const [projectRoots, setProjectRoots] = useState([
-        "/var/lib/ceraa/workspaces/prod/ceraa-core",
-        "/var/lib/ceraa/workspaces/prod/telegram-miniapp"
-      ]);
+      const [projectRoots, setProjectRoots] = useState([]);
+      const [projectCurrent, setProjectCurrent] = useState("");
       const [newRootInput, setNewRootInput] = useState("");
       const [rootError, setRootError] = useState(null);
       const [addingRoot, setAddingRoot] = useState(false);
 
-      const handleAddProjectRoot = (e) => {
+      const handleAddProjectRoot = async (e) => {
         e.preventDefault();
         const path = newRootInput.trim();
         if (!path) return;
-        if (path.startsWith(forbiddenSourceTreePrefix) || path.includes("/ceraa-runner/src")) {
-          setRootError(`Refused: Project root cannot be set inside Ceraa source tree (${forbiddenSourceTreePrefix}).`);
-          return;
-        }
         if (!path.startsWith("/")) {
           setRootError("Project root must be an absolute path.");
           return;
         }
-        if (!projectRoots.includes(path)) {
-          setProjectRoots([...projectRoots, path]);
+        // The server enforces inside-the-workspace containment, which implies
+        // outside-the-source-tree. A client check here would duplicate a rule
+        // it cannot see, so the refusal text comes from the server.
+        try {
+          await Api.call("/api/projects", "POST", { root: path });
+        } catch (err) {
+          setRootError("Refused: " + (err.message || err));
+          return;
         }
         setNewRootInput("");
         setRootError(null);
         setAddingRoot(false);
+        await refreshProjects();
       };
 
-      const [sessions, setSessions] = useState([
-        {
-          id: "sess-01",
-          title: "auth-middleware-refactor",
-          active: true,
-          runs: 14,
-          toolCalls: 38,
-          errors: 0,
-          inputTok: 184200,
-          outputTok: 19400,
-          cacheReadTok: 152000,
-          cacheWriteTok: 21000,
-          spend: 0.48,
-          pricingUsable: true,
-          snapshots: [
-            { id: "snap-9a2f", label: "Before JWT verifier split", time: "18m ago" },
-            { id: "snap-4c11", label: "Post-test green baseline", time: "6m ago" }
-          ],
-          todos: [
-            { id: "td-1", text: "Extract verifySessionToken into dedicated module", done: true },
-            { id: "td-2", text: "Add unit tests for expired OAuth refresh", done: true },
-            { id: "td-3", text: "Wire rate-limiter middleware to /api/webhook", done: false }
-          ],
-          history: [
-            { id: "run-104", time: "2m ago", tools: 4, status: "OK", summary: "Patched jwt.ts & ran vitest suite" },
-            { id: "run-103", time: "11m ago", tools: 6, status: "OK", summary: "Inspected session store schema" }
-          ]
-        },
-        {
-          id: "sess-02",
-          title: "telegram-menu-pagination",
-          active: false,
-          runs: 9,
-          toolCalls: 22,
-          errors: 1,
-          inputTok: 112000,
-          outputTok: 11800,
-          cacheReadTok: 89000,
-          cacheWriteTok: 14000,
-          spend: 0.29,
-          pricingUsable: true,
-          snapshots: [
-            { id: "snap-3b09", label: "Initial inline keyboard layout", time: "2h ago" }
-          ],
-          todos: [
-            { id: "td-4", text: "Paginate SecretsMenu at 8 items per page", done: true },
-            { id: "td-5", text: "Verify callback_data byte length <= 64B", done: false }
-          ],
-          history: [
-            { id: "run-98", time: "1h ago", tools: 3, status: "OK", summary: "Fixed callback_data overflow" },
-            { id: "run-97", time: "2h ago", tools: 2, status: "ERR", summary: "Telegram 400 BUTTON_DATA_INVALID" }
-          ]
-        },
-        {
-          id: "sess-03",
-          title: "r1-zero-prompt-experiment",
-          active: false,
-          runs: 5,
-          toolCalls: 7,
-          errors: 0,
-          inputTok: 64000,
-          outputTok: 9200,
-          cacheReadTok: 0,
-          cacheWriteTok: 0,
-          spend: 0.09,
-          pricingUsable: false,
-          snapshots: [],
-          todos: [
-            { id: "td-6", text: "Compare reasoning effort xhigh vs max on math bench", done: false }
-          ],
-          history: [
-            { id: "run-91", time: "5h ago", tools: 2, status: "OK", summary: "Evaluated 12 benchmark prompts" }
-          ]
-        }
-      ]);
+      const [sessions, setSessions] = useState([]);
 
-      const [selectedSessionId, setSelectedSessionId] = useState("sess-01");
+      const [selectedSessionId, setSelectedSessionId] = useState(null);
       const [renamingSessionId, setRenamingSessionId] = useState(null);
       const [renameValue, setRenameValue] = useState("");
       const [sessionInspectorTab, setSessionInspectorTab] = useState("todos");
 
-      const activeSession = useMemo(
-        () => sessions.find((s) => s.id === selectedSessionId) || sessions[0],
-        [sessions, selectedSessionId]
-      );
+      const blankSession = {
+        id: "", title: "—", active: false, runs: 0, toolCalls: 0, errors: 0,
+        inputTok: 0, outputTok: 0, cacheReadTok: 0, cacheWriteTok: 0,
+        spend: 0, pricingUsable: true, snapshots: [], todos: [], history: []
+      };
+      const activeSession = useMemo(() => {
+        const found = sessions.find((s) => s.id === selectedSessionId) || sessions[0] || blankSession;
+        const extra = inspect[found.id] || { todos: [], history: [] };
+        return { ...found, todos: extra.todos, history: extra.history, snapshots };
+      }, [sessions, selectedSessionId, inspect, snapshots]);
 
       const [fileScope, setFileScope] = useState("files/");
-      const [workspaceFiles] = useState({
-        "files/": [
-          { name: "files/schema_dump_2026_10.sql", size: "148 KB", note: "Telegram upload · 19m ago" },
-          { name: "files/wireframe_tma_v2.png", size: "412 KB", note: "Telegram upload · 2h ago" },
-          { name: "files/customer_har_trace.json", size: "1.8 MB", note: "Telegram upload · 1d ago" }
-        ],
-        "workspace/": [
-          { name: "ceraa-core/config.json", size: "4.2 KB", note: "Modified 6m ago" },
-          { name: "ceraa-core/src/middleware/jwt.ts", size: "9.8 KB", note: "Modified 2m ago" },
-          { name: "ceraa-core/src/menus/secrets.ts", size: "6.1 KB", note: "Unchanged" },
-          { name: "telegram-miniapp/index.html", size: "38.4 KB", note: "Modified just now" }
-        ]
-      });
+      const [workspaceFiles, setWorkspaceFiles] = useState({ "files/": [], "workspace/": [] });
 
       // =======================================================================
       // 6. MEMORY
       // =======================================================================
       const [autoCompaction, setAutoCompaction] = useState(true);
-      const [lastCompactionStatus, setLastCompactionStatus] = useState("Last compacted 4h ago (merged 7 episodic entries)");
-      const [memories, setMemories] = useState([
-        {
-          id: "mem-1",
-          type: "identity",
-          text: "Primary engineer on Ceraa; prefers single-file portable HTML exports for UI artifacts.",
-          provenance: "extracted · sess-01 · 18d ago"
-        },
-        {
-          id: "mem-2",
-          type: "preference",
-          text: "Never ship controls that lack backing config fields; enforce strict burnt-sienna (#B83A08) daylight theme.",
-          provenance: "user-pinned · sess-01 · 2h ago"
-        },
-        {
-          id: "mem-3",
-          type: "architecture",
-          text: "SecretsMenu must never echo secret values into DOM or logs; IsInternal blocks reserved prefixes.",
-          provenance: "extracted · sess-02 · 5d ago"
-        },
-        {
-          id: "mem-4",
-          type: "request",
-          text: "Audit callback_data length across all Telegram pagination menus before v0.20 release.",
-          provenance: "extracted · sess-02 · 1h ago"
-        }
-      ]);
+      const [lastCompactionStatus, setLastCompactionStatus] = useState("Not compacted from here yet");
+      const [memories, setMemories] = useState([]);
 
-      const triggerManualCompaction = () => {
-        setLastCompactionStatus("Compaction complete just now · consolidated 4 active memory vectors");
+      const triggerManualCompaction = async () => {
+        setLastCompactionStatus("Compacting…");
+        try {
+          const res = await Api.call("/api/compaction", "POST", { session_id: selectedSessionId || "" });
+          const c = (res && res.compaction) || {};
+          setLastCompactionStatus(
+            c.compacted
+              ? "Compaction complete just now"
+              : "Nothing to compact: session already fits"
+          );
+          await refreshMemories();
+        } catch (err) {
+          setLastCompactionStatus("Compaction failed: " + (err.message || err));
+        }
+      };
+
+      const toggleAutoCompaction = async () => {
+        const next = !autoCompaction;
+        try {
+          await Api.call("/api/settings", "POST", { settings: { auto_compaction: next } });
+          setAutoCompaction(next);
+        } catch (err) {
+          setApiError("Auto-compaction failed: " + (err.message || err));
+        }
+      };
+
+      const deleteMemory = async (id) => {
+        try {
+          await Api.call("/api/memories/" + encodeURIComponent(id), "DELETE");
+          await refreshMemories();
+        } catch (err) {
+          setApiError("Memory delete failed: " + (err.message || err));
+        }
       };
 
       // =======================================================================
       // 7. SKILLS AND SCHEDULES
       // =======================================================================
-      const [skillProposals, setSkillProposals] = useState([
-        {
-          id: "sk-1",
-          name: "telegram-callback-linter",
-          summary: "Statically verifies Telegram inline keyboard callback_data payloads stay under 64 bytes.",
-          source: "Proposed from sess-02",
-          status: "pending"
-        },
-        {
-          id: "sk-2",
-          name: "litellm-pricing-sync",
-          summary: "Validates model catalog pricing tiers and flags PricingUsable=false when cache rates are missing.",
-          source: "Proposed from sess-01",
-          status: "pending"
-        }
-      ]);
+      const [skillProposals, setSkillProposals] = useState([]);
 
-      const [scheduledJobs, setScheduledJobs] = useState([
-        { id: "cron-1", cron: "0 */12 * * *", task: "Refresh Model Catalog & verify endpoint pricing table", session: "system" },
-        { id: "cron-2", cron: "30 8 * * 1-5", task: "Summarize overnight GitHub PR activity & cache hit report", session: "sess-01" },
-        { id: "cron-3", cron: "0 3 * * 0", task: "Run memory half-life decay & episodic compaction pass", session: "system" }
-      ]);
-      const [addingJob, setAddingJob] = useState(false);
-      const [newJobCron, setNewJobCron] = useState("0 9 * * *");
-      const [newJobTask, setNewJobTask] = useState("");
+      const [scheduledJobs, setScheduledJobs] = useState([]);
 
-      const handleAddJob = (e) => {
+      const handleAddJob = async (e) => {
         e.preventDefault();
         if (!newJobTask.trim()) return;
-        setScheduledJobs([
-          ...scheduledJobs,
-          { id: `cron-${Date.now()}`, cron: newJobCron.trim() || "0 9 * * *", task: newJobTask.trim(), session: activeSession.title }
-        ]);
+        try {
+          await Api.call("/api/schedules", "POST", {
+            cron: newJobCron.trim() || "0 9 * * *",
+            task: newJobTask.trim()
+          });
+        } catch (err) {
+          setApiError("Schedule failed: " + (err.message || err));
+          return;
+        }
         setNewJobTask("");
         setAddingJob(false);
+        await refreshSchedules();
+      };
+
+      const deleteSchedule = async (id) => {
+        try {
+          await Api.call("/api/schedules/" + encodeURIComponent(id), "DELETE");
+          await refreshSchedules();
+        } catch (err) {
+          setApiError("Schedule delete failed: " + (err.message || err));
+        }
+      };
+
+      const decideSkill = async (id, decision) => {
+        try {
+          await Api.call("/api/skills/" + encodeURIComponent(id), "POST", { decision });
+          await refreshSkills();
+        } catch (err) {
+          setApiError("Skill decision failed: " + (err.message || err));
+        }
       };
 
       // =======================================================================
       // 8. STATS
       // =======================================================================
-      const endpointCacheStats = [
-        { endpoint: "api.anthropic.com", model: "claude-3-7-sonnet", hitRate: 84, readTok: "241k", writeTok: "35k" },
-        { endpoint: "api.openai.com", model: "o3-mini-high", hitRate: 71, readTok: "118k", writeTok: "19k" },
-        { endpoint: "openrouter.ai", model: "deepseek-r1-zero", hitRate: 0, readTok: "0", writeTok: "0" }
-      ];
+      const [endpointCacheStats, setEndpointCacheStats] = useState([]);
 
       const totals = useMemo(() => {
         const spend = sessions.reduce((acc, s) => acc + s.spend, 0);
@@ -1667,17 +1579,410 @@
         const tools = sessions.reduce((acc, s) => acc + s.toolCalls, 0);
         const errors = sessions.reduce((acc, s) => acc + s.errors, 0);
         const hasEstimate = sessions.some((s) => !s.pricingUsable);
-        const titleModelCost = 0.0042;
-        return {
-          spend: (spend + titleModelCost).toFixed(2),
-          runs,
-          tools,
-          errors,
-          hasEstimate,
-          titleModel: "claude-3-5-haiku",
-          titleModelCost: "$0.004"
-        };
+        return { spend: spend.toFixed(2), runs, tools, errors, hasEstimate };
       }, [sessions]);
+
+      // =======================================================================
+      // LIVE DATA LAYER: every read below hits the control surface. Nothing
+      // renders from a literal again past this point.
+      // =======================================================================
+      async function refreshMeta() {
+        const body = await Api.call("/api/meta");
+        const m = (body && body.meta) || {};
+        setMeta(m);
+        if (m.source_tree) setForbiddenSourceTreePrefix(m.source_tree);
+        if (m.tool_ids) {
+          const toolsBody = await Api.call("/api/tools").catch(() => null);
+          const inv = ((toolsBody && toolsBody.inventory) || []).map((t) => ({
+            id: t.name, category: "Tool", desc: t.description || ""
+          }));
+          setToolInventory(inv);
+          setAlwaysAllow((toolsBody && toolsBody.always_allow) || []);
+        }
+        if (m.memory_types) {
+          setMemoryTypes(m.memory_types.map((t) => ({
+            type: t.type,
+            halfLife: fmtHalfLife(t.half_life_days),
+            rationale: ""
+          })));
+        }
+      }
+
+      function fmtHalfLife(days) {
+        days = Number(days) || 0;
+        if (days >= 365) {
+          const yrs = days / 365;
+          return days + "d (" + (Number.isInteger(yrs) ? yrs : yrs.toFixed(1)) + " yr)";
+        }
+        if (days >= 7) return days + "d (" + Math.round(days / 7) + " wk)";
+        return days + "d";
+      }
+
+      async function refreshStatus() {
+        const body = await Api.call("/api/status");
+        const st = (body && body.status) || {};
+        const runs = st.active_runs || [];
+        const first = runs[0] || null;
+        setWebSessionId(st.session || "web");
+        setBotStatus({
+          running: st.running !== false,
+          pollingState: "Long-polling (OK)",
+          activeRun: first
+            ? { active: true, sessionTitle: first.session || "", step: "run in chat " + (first.chat || ""), elapsed: "" }
+            : { active: false, sessionTitle: "", step: "No active run in flight", elapsed: "" },
+          version: st.version || "",
+          updateCheckEnabled: st.update_check !== false,
+          updateStatus: st.update_available
+            ? "Update available: " + (st.update_latest || "")
+            : "Up to date",
+          miniAppEndpoint: st.tunnel || "",
+          tunnelState: st.tunnel ? "TLS TUNNEL UP" : "NO TUNNEL",
+          promptQueueDepth: st.queued_prompts || 0
+        });
+        if (st.workspace) setEnvWorkspaceRoot(st.workspace);
+      }
+
+      async function refreshProviders() {
+        const body = await Api.call("/api/providers");
+        const list = (body && body.providers) || [];
+        setProviderProfiles(list.map((p) => ({
+          id: p.id, name: p.id, endpoint: p.endpoint, model: p.model,
+          apiKeyRef: p.has_key ? "stored" : "not set",
+          reasoning: p.reasoning || "", contextLimit: p.context_limit || 0,
+          outputCap: p.output_cap || 0, cacheMode: p.cache_mode || "",
+          pricingUsable: !!p.pricing_usable
+        })));
+        if (body && body.active) setActiveProviderId(body.active);
+      }
+
+      async function refreshSubscriptions() {
+        const body = await Api.call("/api/subscriptions");
+        setSubscriptions(((body && body.subscriptions) || []).map((x) => ({
+          id: x.id, provider: x.label, signedIn: !!x.signed_in
+        })));
+      }
+
+      async function refreshCatalog() {
+        const body = await Api.call("/api/catalog");
+        const c = (body && body.catalog) || {};
+        setModelCatalog({
+          sourceUrl: c.source_url || "",
+          lastRefresh: c.models >= 0
+            ? Api.relTime(c.last_refresh) + " (" + c.models + " models indexed)"
+            : "—",
+          refreshHours: c.refresh_hours || 0
+        });
+      }
+
+      async function refreshRunParams() {
+        const body = await Api.call("/api/runparams");
+        const p = (body && body.params) || {};
+        setRunParams({
+          reasoningEffort: p.reasoning || "medium",
+          contextLimit: p.context_limit || 0,
+          maxOutputTokens: p.max_output_tokens || 0,
+          maxToolResultChars: p.max_tool_result_chars || 0,
+          maxConcurrentTools: p.max_concurrent_tools || 1,
+          promptCacheMode: p.prompt_cache_mode || "",
+          promptCacheTTL: p.prompt_cache_ttl || "",
+          memoryDelivery: p.memory_delivery || "cached",
+          agentRole: p.agent || ""
+        });
+        setParamsDirty(false);
+        if (typeof p.auto_compaction === "boolean") setAutoCompaction(p.auto_compaction);
+      }
+
+      async function refreshSecrets() {
+        const body = await Api.call("/api/secrets");
+        setSecrets(((body && body.secrets) || []).map((x) => ({ name: x.name, length: x.length || "?" })));
+      }
+
+      async function refreshProjects() {
+        const body = await Api.call("/api/projects");
+        const p = (body && body.projects) || {};
+        if (p.workspace) setEnvWorkspaceRoot(p.workspace);
+        const entries = p.entries || [];
+        setProjectRoots(entries.map((e) => (p.workspace || "") + "/" + e));
+        setProjectCurrent(p.current || "");
+      }
+
+      function mapSessionStat(x, index) {
+        return {
+          id: x.id, title: x.title || "Untitled session", active: index === 0,
+          runs: x.runs || 0, toolCalls: x.tool_calls || 0, errors: x.errors || 0,
+          inputTok: x.input_tokens || 0, outputTok: x.output_tokens || 0,
+          cacheReadTok: x.cache_read_tokens || 0, cacheWriteTok: x.cache_write_tokens || 0,
+          spend: x.spend_usd || 0, pricingUsable: !x.has_estimate
+        };
+      }
+
+      async function refreshStats() {
+        const body = await Api.call("/api/stats");
+        const st = (body && body.stats) || {};
+        const list = (st.sessions || []).map(mapSessionStat);
+        setSessions(list);
+        setSelectedSessionId((prev) => {
+          if (prev && list.some((x) => x.id === prev)) return prev;
+          return list.length ? list[0].id : null;
+        });
+        setEndpointCacheStats(((st.endpoints) || []).map((e) => ({
+          endpoint: e.endpoint, model: (e.models || []).join(", "),
+          hitRate: Math.round((e.hit_rate || 0) * 100),
+          readTok: Api.fmtK(e.read_tokens), writeTok: Api.fmtK(e.write_tokens)
+        })));
+        setChartPoints(st.points || []);
+      }
+
+      async function loadInspect(id) {
+        if (!id) return;
+        try {
+          const [detailBody, todosBody] = await Promise.all([
+            Api.call("/api/sessions/" + encodeURIComponent(id)),
+            Api.call("/api/todos?session=" + encodeURIComponent(id))
+          ]);
+          const d = (detailBody && detailBody.detail) || {};
+          const history = ((d.runs) || []).map((r) => ({
+            id: r.id,
+            time: Api.relTime(r.updated_at || r.created_at),
+            tools: r.requests || 0,
+            status: r.status === "completed" ? "OK" : r.status === "failed" || r.error ? "ERR" : String(r.status || "").toUpperCase(),
+            summary: (r.pricing_model || "run") + (r.error ? " · " + r.error : "")
+          }));
+          const todos = ((todosBody && todosBody.todos) || []).map((t) => ({
+            id: t.id, text: t.text, done: !!t.done
+          }));
+          setInspect((prev) => ({ ...prev, [id]: { todos, history } }));
+        } catch (err) {
+          setInspect((prev) => ({ ...prev, [id]: { todos: [], history: [] } }));
+        }
+      }
+
+      async function refreshMemories() {
+        const body = await Api.call("/api/memories");
+        setMemories(((body && body.memories) || []).map((m) => ({
+          id: m.id, type: m.type || "preference", text: m.content || "",
+          provenance: (m.veracity || "unknown") +
+            (m.seen > 1 ? " · confirmed " + m.seen + "x" : "") +
+            (m.applies ? " · " + m.applies : "")
+        })));
+      }
+
+      async function refreshSkills() {
+        const body = await Api.call("/api/skills");
+        setSkillProposals(((body && body.proposals) || []).map((x) => ({
+          id: x.id, name: x.name, summary: x.summary || "", source: "", status: x.status
+        })));
+      }
+
+      async function refreshSchedules() {
+        const body = await Api.call("/api/schedules");
+        setSchedules(((body && body.jobs) || []).map((j) => ({
+          id: j.id, cron: j.cron, task: j.task, session: j.session || ""
+        })));
+      }
+
+      async function refreshSnapshots() {
+        const body = await Api.call("/api/snapshots").catch(() => null);
+        const list = ((body && body.snapshots) || []).map((x) => ({
+          id: x.id, label: x.label, time: Api.relTime(x.time)
+        }));
+        setSnapshots(list);
+      }
+
+      async function loadFiles(scope) {
+        try {
+          const body = await Api.call("/api/files?path=" + encodeURIComponent(scope || "files/"));
+          const list = ((body && body.files) || []).map((f) => ({
+            name: (scope || "files/") + f.name,
+            size: Api.fmtBytes(f.size),
+            note: f.is_dir ? "directory" : ""
+          }));
+          setWorkspaceFiles((prev) => ({ ...prev, [scope || "files/"]: list }));
+        } catch (err) {
+          setWorkspaceFiles((prev) => ({ ...prev, [scope || "files/"]: [] }));
+        }
+      }
+
+      async function refreshAll() {
+        setApiError(null);
+        const steps = [
+          refreshMeta, refreshStatus, refreshProviders, refreshSubscriptions,
+          refreshCatalog, refreshRunParams, refreshSecrets, refreshProjects,
+          refreshStats, refreshMemories, refreshSkills, refreshSchedules,
+          refreshSnapshots
+        ];
+        const results = await Promise.allSettled(steps.map((fn) => fn()));
+        const failed = results.find((r) => r.status === "rejected");
+        if (failed) setApiError("Dashboard load incomplete: " + (failed.reason.message || failed.reason));
+        await loadFiles("files/");
+      }
+
+      useEffect(() => {
+        refreshAll();
+        const timer = setInterval(() => { refreshStatus().catch(() => {}); }, 20000);
+        return () => clearInterval(timer);
+      }, []);
+
+      useEffect(() => {
+        if (!selectedSessionId) {
+          if (sessions.length) setSelectedSessionId(sessions[0].id);
+          return;
+        }
+        loadInspect(selectedSessionId);
+      }, [selectedSessionId, sessions]);
+
+      useEffect(() => {
+        loadFiles(fileScope);
+      }, [fileScope]);
+
+      // Chart buckets: per-run instants grouped by timeframe. Sparse data
+      // renders sparse bars rather than invented ones.
+      const chartBuckets = useMemo(() => {
+        const spans = {
+          "1d": { span: 24 * 3600 * 1000, n: 8, fmt: (t) => new Date(t).getHours() + ":00" },
+          "7d": { span: 7 * 24 * 3600 * 1000, n: 7, fmt: (t) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(t).getDay()] },
+          "30d": { span: 30 * 24 * 3600 * 1000, n: 10, fmt: (t) => (new Date(t).getMonth() + 1) + "/" + new Date(t).getDate() },
+          "All": { span: 0, n: 12, fmt: (t) => (new Date(t).getMonth() + 1) + "/" + new Date(t).getDate() }
+        };
+        const conf = spans[tokenTimeframe] || spans["1d"];
+        const now = Date.now();
+        const start = conf.span ? now - conf.span : (chartPoints.length ? new Date(chartPoints[0].t).getTime() : now);
+        const width = conf.span || Math.max(1, now - start);
+        const buckets = [];
+        for (let i = 0; i < conf.n; i++) {
+          const from = start + (width * i) / conf.n;
+          const to = start + (width * (i + 1)) / conf.n;
+          buckets.push({ label: conf.fmt(from), cacheRead: 0, input: 0, output: 0, cacheWrite: 0, cost: 0, known: true });
+          buckets[i].from = from;
+        }
+        for (const p of chartPoints) {
+          const t = new Date(p.t).getTime();
+          if (isNaN(t) || t < start) continue;
+          let idx = Math.floor(((t - start) / width) * conf.n);
+          if (idx >= conf.n) idx = conf.n - 1;
+          if (idx < 0) idx = 0;
+          const b = buckets[idx];
+          b.cacheRead += (p.read || 0) / 1000;
+          b.input += ((p.in || 0) - (p.read || 0)) / 1000;
+          b.output += (p.out || 0) / 1000;
+          b.cacheWrite += (p.write || 0) / 1000;
+          b.cost += p.known ? p.cost || 0 : 0;
+          if (!p.known) b.known = false;
+        }
+        let spend = 0, known = true, readSum = 0, inSum = 0;
+        for (const b of buckets) {
+          spend += b.cost;
+          if (!b.known) known = false;
+          readSum += b.cacheRead;
+          inSum += b.input;
+        }
+        return {
+          buckets,
+          spend,
+          hitRate: inSum + readSum > 0 ? Math.round((readSum / (inSum + readSum)) * 100) : 0,
+          known,
+          label: { "1d": "Last 24 Hours", "7d": "Last 7 Days", "30d": "Last 30 Days", "All": "All Time" }[tokenTimeframe] || "Last 24 Hours"
+        };
+      }, [chartPoints, tokenTimeframe]);
+
+      // =======================================================================
+      // LIVE RUN: prompt composer, event stream, permission and question cards.
+      // POST /prompt starts the turn (202, busy is 409); the reply arrives on
+      // GET /events, polled with the initData query form because the first
+      // request is a navigation that cannot carry a header the page has not
+      // loaded yet. Every later call uses the Authorization header instead.
+      // =======================================================================
+      async function sendPrompt(e) {
+        e.preventDefault();
+        const text = promptText.trim();
+        if (!text || runBusy) return;
+        setPromptText("");
+        setRunBusy(true);
+        setRunFeed([]);
+        setPendingCards([]);
+        try {
+          await Api.call("/prompt", "POST", { text });
+        } catch (err) {
+          setRunFeed([{ seq: -1, kind: "error", text: String((err && err.message) || err) }]);
+          setRunBusy(false);
+          return;
+        }
+        pollEvents(0);
+      }
+
+      async function pollEvents(seq) {
+        try {
+          const res = await Api.call(
+            "/events?initData=" + encodeURIComponent(Api.initData()) + "&after=" + seq + "&wait=15000"
+          );
+          let next = seq;
+          const feed = [];
+          const cards = [];
+          for (const item of ((res && res.events) || [])) {
+            next = item.seq;
+            const ev = item.event || {};
+            const d = ev.data || {};
+            if (ev.type === "permission" || ev.type === "question") {
+              cards.push({
+                seq: item.seq, type: ev.type,
+                requestId: d.request_id || d.requestId || "",
+                text: d.text || d.message || d.prompt || "",
+                detail: d.tool || d.command || ""
+              });
+            } else if (ev.type === "complete") {
+              feed.push({ seq: item.seq, kind: "done", text: "Run complete." });
+            } else if (ev.type === "error") {
+              feed.push({ seq: item.seq, kind: "error", text: d.message || d.text || "Run failed." });
+            } else if (ev.type === "thinking" || ev.type === "content") {
+              const t = d.text || d.delta || d.message || "";
+              if (t) feed.push({ seq: item.seq, kind: "stream", text: t });
+            } else {
+              const t = d.text || d.message || "";
+              feed.push({ seq: item.seq, kind: "info", text: ev.type + (t ? ": " + t : "") });
+            }
+          }
+          if (feed.length) setRunFeed((prev) => [...prev, ...feed]);
+          if (cards.length) setPendingCards((prev) => [...prev, ...cards]);
+          if (res && res.stale) {
+            setRunFeed((prev) => [...prev, { seq: -1, kind: "error", text: "Stream gap: the buffer moved on. Re-open for full history." }]);
+            setRunBusy(false);
+            refreshStatus();
+            return;
+          }
+          if (feed.some((f) => f.kind === "done" || f.kind === "error")) {
+            setRunBusy(false);
+            refreshStatus();
+            refreshStats();
+            return;
+          }
+          pollEvents(next);
+        } catch (err) {
+          setRunFeed((prev) => [...prev, { seq: -1, kind: "error", text: "Stream interrupted: " + ((err && err.message) || err) }]);
+          setRunBusy(false);
+        }
+      }
+
+      async function answerCard(card, decision, answerText) {
+        try {
+          if (card.type === "permission") {
+            // The vocabulary the manager accepts: allowOnce, allowAlways, deny.
+            await Api.call("/api/permission", "POST", { request_id: card.requestId, decision });
+          } else {
+            await Api.call("/api/answer", "POST", { request_id: card.requestId, answer: answerText || "" });
+          }
+          setPendingCards((prev) => prev.filter((c) => c.seq !== card.seq));
+        } catch (err) {
+          setApiError("Decision failed: " + ((err && err.message) || err));
+        }
+      }
+
+      async function cancelWebRun() {
+        try {
+          await Api.call("/api/sessions/" + webSessionId + "/cancel", "POST");
+        } catch (err) {
+          setApiError("Cancel failed: " + ((err && err.message) || err));
+        }
+      }
 
       return (
         <div className="shell">
@@ -1785,8 +2090,8 @@
                   </svg>
                 </button>
 
-                {menuOpen && (
-                  <div className="grid-menu-popover">
+                {(
+                  <div className={`grid-menu-popover ${menuOpen ? "open" : ""}`} aria-hidden={!menuOpen}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: "1px solid var(--rule)" }}>
                       <span className="t-mono">CERAA CONTROL BOARDS</span>
                       <span className="t-mono" style={{ color: "var(--accent)" }}>4 VIEWS</span>
@@ -1796,7 +2101,7 @@
                       {[
                         { id: "All", title: "All", sub: "Status, spend & sessions" },
                         { id: "Context", title: "Context", sub: "Roots, files/, memory & skills" },
-                        { id: "Tools", title: "Tools", sub: `${alwaysAllow.length}/${TOOL_INVENTORY.length} AlwaysAllow` },
+                        { id: "Tools", title: "Tools", sub: `${alwaysAllow.length}/${toolInventory.length} AlwaysAllow` },
                         { id: "Agents", title: "Agents", sub: "Providers, params & secrets" }
                       ].map((b) => (
                         <button
@@ -1901,6 +2206,11 @@
               ================================================================= */}
           {activeTab === "All" && (
             <main className="board" key="board-all">
+              {apiError && (
+                <div className="notice-bar">
+                  <div className="t-body" style={{ color: "var(--fault)", fontWeight: 600 }}>{apiError}</div>
+                </div>
+              )}
               {/* COLUMN 1: 9. STATUS AND CONTROL + QUICK RUN LEVERS */}
               <section className="col col-left">
                 <div className="hero-band">
@@ -1920,18 +2230,13 @@
                         type="button"
                         className="mini-btn stop-btn"
                         onClick={handleStopActiveRun}
-                        title="Send /stop to halt active run and drain prompt queue"
+                        disabled={!cancellableRun}
+                        title={cancellableRun ? "Halt this surface's run" : "Chat runs stop from /stop in Telegram"}
                       >
                         ■ /STOP RUN
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        className="mini-btn"
-                        onClick={handleResumeMockRun}
-                      >
-                        ▶ Simulate run
-                      </button>
+                      <div className="t-body">Idle. Send a prompt in Live Run below.</div>
                     )}
                   </div>
                 </div>
@@ -1971,19 +2276,11 @@
                       </div>
                     </div>
                     <div className="h-right">
-                      <span className="t-mono" style={{ color: "var(--accent)" }}>TLS TUNNEL UP</span>
+                      <span className="t-mono" style={{ color: botStatus.miniAppEndpoint ? "var(--accent)" : "var(--ink-3)" }}>{botStatus.tunnelState || "—"}</span>
                     </div>
                   </div>
 
-                  <div
-                    className="h-row clickable"
-                    onClick={() =>
-                      setBotStatus((prev) => ({
-                        ...prev,
-                        updateCheckEnabled: !prev.updateCheckEnabled
-                      }))
-                    }
-                  >
+                  <div className="h-row">
                     <div className="h-left">
                       <span className={`dot ${botStatus.updateCheckEnabled ? "done" : "idle"}`} />
                       <div>
@@ -2000,6 +2297,73 @@
                     </div>
                   </div>
                 </div>
+
+                {/* Live Run: prompt composer, event stream, permission & question cards */}
+                <div className="sec-head">
+                  <h2 className="t-sec">Live Run</h2>
+                  <span className="t-mono">{runBusy ? "RUNNING" : "IDLE"}</span>
+                </div>
+
+                <form className="drawer-form" onSubmit={sendPrompt}>
+                  <input
+                    type="text"
+                    className="input-clean"
+                    style={{ flex: 1 }}
+                    placeholder="Prompt this surface's session…"
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                  />
+                  <button type="submit" className="btn-solid" disabled={runBusy || !promptText.trim()}>
+                    {runBusy ? "Running…" : "Send"}
+                  </button>
+                </form>
+
+                {pendingCards.map((card) => (
+                  <div key={card.seq} className="notice-bar">
+                    <div className="t-row">{card.type === "permission" ? "Permission requested" : "Question"} {card.detail ? <span className="t-mono">· {card.detail}</span> : null}</div>
+                    {card.text ? <div className="t-body" style={{ marginTop: 4 }}>{card.text}</div> : null}
+                    {card.type === "permission" ? (
+                      <div className="row-actions" style={{ marginTop: 8 }}>
+                        <button type="button" className="mini-btn" onClick={() => answerCard(card, "allowOnce")}>Allow once</button>
+                        <button type="button" className="mini-btn" onClick={() => answerCard(card, "allowAlways")}>Always</button>
+                        <button type="button" className="mini-btn danger" onClick={() => answerCard(card, "deny")}>Deny</button>
+                      </div>
+                    ) : (
+                      <form
+                        className="drawer-form"
+                        style={{ marginTop: 8 }}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          answerCard(card, "", cardAnswers[card.seq] || "");
+                          setCardAnswers((prev) => ({ ...prev, [card.seq]: "" }));
+                        }}
+                      >
+                        <input
+                          type="text"
+                          className="input-clean"
+                          style={{ flex: 1 }}
+                          placeholder="Answer…"
+                          value={cardAnswers[card.seq] || ""}
+                          onChange={(e) => setCardAnswers((prev) => ({ ...prev, [card.seq]: e.target.value }))}
+                        />
+                        <button type="submit" className="btn-solid">Answer</button>
+                      </form>
+                    )}
+                  </div>
+                ))}
+
+                {runFeed.length > 0 && (
+                  <div className="hairline-list">
+                    {runFeed.slice(-8).map((line, i) => (
+                      <div key={line.seq + "-" + i} className="h-row">
+                        <div className="h-left">
+                          <span className={`dot ${line.kind === "error" ? "fault" : line.kind === "done" ? "done" : "idle"}`} />
+                          <div className="t-body" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{line.text}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* Reasoning Effort Rotary Dial */}
                 <div className="sec-head">
@@ -2119,12 +2483,15 @@
                           <div style={{ flex: 1, minWidth: 0 }}>
                             {renamingSessionId === sess.id ? (
                               <form
-                                onSubmit={(e) => {
+                                onSubmit={async (e) => {
                                   e.preventDefault();
                                   if (renameValue.trim()) {
-                                    setSessions((prev) =>
-                                      prev.map((s) => (s.id === sess.id ? { ...s, title: renameValue.trim() } : s))
-                                    );
+                                    try {
+                                      await Api.call("/api/sessions/" + encodeURIComponent(sess.id), "POST", { title: renameValue.trim() });
+                                      await refreshStats();
+                                    } catch (err) {
+                                      setApiError("Rename failed: " + (err.message || err));
+                                    }
                                   }
                                   setRenamingSessionId(null);
                                 }}
@@ -2178,9 +2545,14 @@
                             <button
                               type="button"
                               className="mini-btn danger"
-                              onClick={() => {
+                              onClick={async () => {
                                 if (sessions.length <= 1) return;
-                                setSessions((prev) => prev.filter((s) => s.id !== sess.id));
+                                try {
+                                  await Api.call("/api/sessions/" + encodeURIComponent(sess.id), "DELETE");
+                                  await refreshStats();
+                                } catch (err) {
+                                  setApiError("Delete failed: " + (err.message || err));
+                                }
                               }}
                             >
                               Delete
@@ -2223,24 +2595,22 @@
                 <div className="hairline-list" style={{ borderTop: "none" }}>
                   {sessionInspectorTab === "todos" &&
                     activeSession.todos.map((td) => (
-                      <div
-                        key={td.id}
-                        className="h-row clickable"
-                        onClick={() =>
-                          setSessions((prev) =>
-                            prev.map((s) =>
-                              s.id === activeSession.id
-                                ? {
-                                    ...s,
-                                    todos: s.todos.map((item) =>
-                                      item.id === td.id ? { ...item, done: !item.done } : item
-                                    )
-                                  }
-                                : s
-                            )
-                          )
+                    <div
+                      key={td.id}
+                      className="h-row clickable"
+                      onClick={async () => {
+                        try {
+                          await Api.call("/api/todos", "POST", {
+                            session: activeSession.id,
+                            content: td.text,
+                            status: td.done ? "pending" : "completed"
+                          });
+                          await loadInspect(activeSession.id);
+                        } catch (err) {
+                          setApiError("Todo update failed: " + (err.message || err));
                         }
-                      >
+                      }}
+                    >
                         <div className="h-left">
                           <span className={`dot ${td.done ? "done" : ""}`} />
                           <span
@@ -2274,7 +2644,7 @@
                       ))
                     ) : (
                       <div className="h-row">
-                        <span className="t-body">No snapshots recorded for this session.</span>
+                        <span className="t-body">No snapshots recorded yet.</span>
                       </div>
                     ))}
 
@@ -2286,7 +2656,7 @@
                           <div>
                             <div className="t-row">{h.summary}</div>
                             <div className="t-body tnum">
-                              {h.id} · {h.tools} tool calls
+                              {h.id} · {h.tools} requests
                             </div>
                           </div>
                         </div>
@@ -2310,25 +2680,16 @@
                     <div className="t-mono" style={{ marginBottom: 8 }}>
                       {tokenTimeframe.toUpperCase()} SPEND {totals.hasEstimate ? "(INCLUDES EST.)" : "(VERIFIED)"}
                     </div>
-                    <div className="t-hero tnum">
+                    <div className="t-mono tnum" style={{ color: "var(--accent)" }}>
                       <AnimatedNumber
-                        value={(TOKEN_TIMEFRAMES[tokenTimeframe] || TOKEN_TIMEFRAMES["1d"]).spend}
+                        value={chartBuckets.spend}
                         decimals={2}
                         prefix="$"
                       />
                       <span className="hero-unit">USD</span>
                     </div>
-                  </div>
-
-                  <div>
-                    <div className="t-mono tnum" style={{ color: "var(--accent)" }}>
-                      <AnimatedNumber
-                        value={(TOKEN_TIMEFRAMES[tokenTimeframe] || TOKEN_TIMEFRAMES["1d"]).cacheHitRate}
-                        suffix="% CACHE HIT"
-                      />
-                    </div>
                     <div className="t-body tnum" style={{ marginTop: 4 }}>
-                      Title model ({totals.titleModel}): {totals.titleModelCost}
+                      <AnimatedNumber value={chartBuckets.hitRate} suffix="% CACHE HIT" />
                     </div>
                   </div>
                 </div>
@@ -2337,13 +2698,14 @@
                 <div className="sec-head" style={{ marginBottom: 4 }}>
                   <h2 className="t-sec">Token Consumption</h2>
                   <span className="t-mono">
-                    {(TOKEN_TIMEFRAMES[tokenTimeframe] || TOKEN_TIMEFRAMES["1d"]).label}
+                    {chartBuckets.label}
                   </span>
                 </div>
 
                 <TokenConsumptionChart
                   timeframe={tokenTimeframe}
                   setTimeframe={setTokenTimeframe}
+                  buckets={chartBuckets.buckets}
                 />
 
                 {/* Per-Endpoint Cache Hit Rate Dials */}
@@ -2453,10 +2815,15 @@
                     </span>
                   </div>
                   <div className="t-body" style={{ marginTop: 6 }}>
-                    Session title generator ({totals.titleModel}) folded into total spend ({totals.titleModelCost}).
+                    Spend sums verified run costs only.
                     {!activeSession.pricingUsable && (
                       <span style={{ color: "var(--accent)", fontWeight: 600 }}>
                         {" "}· Note: Active session uses an estimated rate (PricingUsable=false).
+                      </span>
+                    )}
+                    {totals.hasEstimate && (
+                      <span style={{ color: "var(--accent)", fontWeight: 600 }}>
+                        {" "}· Totals include estimates.
                       </span>
                     )}
                   </div>
@@ -2494,7 +2861,7 @@
                   {envWorkspaceRoot}
                 </div>
                 <div className="t-body" style={{ marginTop: 8 }}>
-                  Pinned via <code>CERAA_WORKSPACE_ROOT</code>. Cannot be pointed inside Ceraa's own source tree (<code>{forbiddenSourceTreePrefix}</code>).
+                  Pinned via <code>CERAA_WORKSPACE_ROOT</code>. Roots must live inside it, which keeps them out of Ceraa's own source tree.
                 </div>
 
                 {/* Project Roots Picker */}
@@ -2530,17 +2897,13 @@
                   {projectRoots.map((rootPath) => (
                     <div key={rootPath} className="h-row stack-mobile">
                       <div className="h-left">
-                        <span className="dot" />
-                        <span className="t-mono" style={{ color: "var(--ink)", wordBreak: "break-all" }}>{rootPath}</span>
-                      </div>
-                      <div className="h-right">
-                        <button
-                          type="button"
-                          className="mini-btn danger"
-                          onClick={() => setProjectRoots(projectRoots.filter((r) => r !== rootPath))}
-                        >
-                          Remove
-                        </button>
+                        <span className={`dot ${rootPath === projectCurrent ? "" : "done"}`} />
+                        <span className="t-mono" style={{ color: "var(--ink)", wordBreak: "break-all" }}>
+                          {rootPath}
+                          {rootPath === projectCurrent && (
+                            <span style={{ color: "var(--accent)", marginLeft: 8 }}>● CURRENT</span>
+                          )}
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -2607,7 +2970,7 @@
                 {/* Auto-Compaction Toggle */}
                 <div
                   className="h-row clickable"
-                  onClick={() => setAutoCompaction(!autoCompaction)}
+                  onClick={toggleAutoCompaction}
                   style={{ borderBottom: "1px solid var(--rule)" }}
                 >
                   <div className="h-left">
@@ -2646,7 +3009,7 @@
                         <button
                           type="button"
                           className="mini-btn danger"
-                          onClick={() => setMemories(memories.filter((item) => item.id !== m.id))}
+                          onClick={() => deleteMemory(m.id)}
                         >
                           Delete
                         </button>
@@ -2661,11 +3024,11 @@
                   <span className="t-mono">READ-ONLY SPEC</span>
                 </div>
                 <div className="t-body" style={{ marginBottom: 12 }}>
-                  Ceraa's memory extractor assigns every observation to a closed type with a mathematical decay half-life—explaining why an <code>identity</code> or <code>preference</code> persists for years while a <code>request</code> decays in weeks.
+                  Ceraa's memory extractor assigns every observation to a closed type with a mathematical decay half-life, explaining why a <code>profile</code> or <code>preference</code> persists for years while a <code>request</code> decays in weeks.
                 </div>
 
                 <div className="hairline-list">
-                  {MEMORY_HALF_LIFE_TABLE.map((row) => (
+                  {memoryTypes.map((row) => (
                     <div key={row.type} className="h-row">
                       <div className="h-left">
                         <span className="dot done" />
@@ -2673,7 +3036,7 @@
                           <div className="t-row">
                             <span className="t-mono" style={{ color: "var(--ink)" }}>{row.type}</span>
                           </div>
-                          <div className="t-body">{row.rationale}</div>
+                          {row.rationale ? <div className="t-body">{row.rationale}</div> : null}
                         </div>
                       </div>
                       <div className="h-right">
@@ -2710,7 +3073,7 @@
                   {skillProposals.map((sk) => (
                     <div key={sk.id} className="h-row stack-mobile">
                       <div className="h-left">
-                        <span className={`dot ${sk.status === "accepted" ? "" : sk.status === "dismissed" ? "idle" : ""}`} />
+                        <span className={`dot ${sk.status === "approved" ? "" : sk.status === "rejected" ? "idle" : ""}`} />
                         <div>
                           <div className="t-row">{sk.name}</div>
                           <div className="t-body" style={{ marginTop: 2 }}>{sk.summary}</div>
@@ -2720,31 +3083,23 @@
                       <div className="h-right">
                         {sk.status === "pending" ? (
                           <div className="row-actions">
-                            <button
-                              type="button"
-                              className="mini-btn"
-                              onClick={() =>
-                                setSkillProposals((prev) =>
-                                  prev.map((item) => (item.id === sk.id ? { ...item, status: "accepted" } : item))
-                                )
-                              }
-                            >
-                              Accept
-                            </button>
-                            <button
-                              type="button"
-                              className="mini-btn danger"
-                              onClick={() =>
-                                setSkillProposals((prev) =>
-                                  prev.map((item) => (item.id === sk.id ? { ...item, status: "dismissed" } : item))
-                                )
-                              }
-                            >
-                              Dismiss
-                            </button>
+                              <button
+                                type="button"
+                                className="mini-btn"
+                                onClick={() => decideSkill(sk.id, "approve")}
+                              >
+                                Accept
+                              </button>
+                              <button
+                                type="button"
+                                className="mini-btn danger"
+                                onClick={() => decideSkill(sk.id, "reject")}
+                              >
+                                Dismiss
+                              </button>
                           </div>
                         ) : (
-                          <span className="t-mono" style={{ color: sk.status === "accepted" ? "var(--accent)" : "var(--ink-3)" }}>
+                          <span className="t-mono" style={{ color: sk.status === "approved" ? "var(--accent)" : "var(--ink-3)" }}>
                             {sk.status.toUpperCase()}
                           </span>
                         )}
@@ -2768,7 +3123,7 @@
                     <div className="t-mono" style={{ marginBottom: 8 }}>ALWAYS-ALLOW LIST</div>
                     <div className="t-hero tnum">
                       <AnimatedNumber value={alwaysAllow.length} padStart={2} />
-                      <span className="hero-unit">/ {TOOL_INVENTORY.length}</span>
+                      <span className="hero-unit">/ {toolInventory.length}</span>
                     </div>
                   </div>
                   <div>
@@ -2783,7 +3138,7 @@
                 </div>
 
                 <div className="hairline-list">
-                  {TOOL_INVENTORY.map((tool) => {
+                  {toolInventory.map((tool) => {
                     const allowed = alwaysAllow.includes(tool.id);
                     return (
                       <div
@@ -2813,7 +3168,7 @@
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>REGISTERED HARNESS TOOLS</div>
                     <div className="t-hero tnum">
-                      {TOOL_INVENTORY.length}
+                      {toolInventory.length}
                       <span className="hero-unit">TOOLS</span>
                     </div>
                   </div>
@@ -2833,7 +3188,7 @@
                 </div>
 
                 <div className="hairline-list">
-                  {TOOL_INVENTORY.map((tool) => {
+                  {toolInventory.map((tool) => {
                     const isAllowed = alwaysAllow.includes(tool.id);
                     return (
                       <div key={tool.id} className="h-row">
@@ -2920,7 +3275,7 @@
                         <button
                           type="button"
                           className="mini-btn danger"
-                          onClick={() => setScheduledJobs(scheduledJobs.filter((j) => j.id !== job.id))}
+                          onClick={() => deleteSchedule(job.id)}
                         >
                           Delete
                         </button>
@@ -2959,15 +3314,26 @@
                 {addingProfile && (
                   <form
                     className="drawer-form"
-                    onSubmit={(e) => {
+                    onSubmit={async (e) => {
                       e.preventDefault();
                       if (!profileDraft.name.trim()) return;
                       const id = profileDraft.name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "-");
-                      setProviderProfiles([
-                        ...providerProfiles,
-                        { ...profileDraft, id, name: id, pricingUsable: true }
-                      ]);
+                      try {
+                        await Api.call("/api/providers/" + encodeURIComponent(id), "POST", {
+                          endpoint: profileDraft.endpoint,
+                          model: profileDraft.model,
+                          api_key: profileDraft.apiKey || "",
+                          reasoning: profileDraft.reasoning || "",
+                          context_limit: Number(profileDraft.contextLimit) || 0,
+                          output_cap: Number(profileDraft.outputCap) || 0,
+                          cache_mode: profileDraft.cacheMode || ""
+                        });
+                      } catch (err) {
+                        setApiError("Save profile failed: " + (err.message || err));
+                        return;
+                      }
                       setAddingProfile(false);
+                      await refreshProviders();
                     }}
                   >
                     <input
@@ -2992,6 +3358,15 @@
                       onChange={(e) => setProfileDraft({ ...profileDraft, endpoint: e.target.value })}
                       style={{ flex: "1 1 100%" }}
                     />
+                    <input
+                      type="password"
+                      className="input-clean"
+                      placeholder="API key (optional — blank keeps stored key)"
+                      value={profileDraft.apiKey || ""}
+                      onChange={(e) => setProfileDraft({ ...profileDraft, apiKey: e.target.value })}
+                      autoComplete="new-password"
+                      style={{ flex: "1 1 100%" }}
+                    />
                     <button type="submit" className="btn-solid">Save Profile</button>
                   </form>
                 )}
@@ -3006,7 +3381,14 @@
                     const isAct = prof.id === activeProviderId;
                     return (
                       <div key={prof.id} className={`h-row stack-mobile ${isAct ? "active-row" : ""}`}>
-                        <div className="h-left" onClick={() => setActiveProviderId(prof.id)} style={{ cursor: "pointer" }}>
+                        <div className="h-left" onClick={async () => {
+                          try {
+                            await Api.call("/api/providers", "POST", { active: prof.id });
+                            await refreshProviders();
+                          } catch (err) {
+                            setApiError("Switch provider failed: " + (err.message || err));
+                          }
+                        }} style={{ cursor: "pointer" }}>
                           <span className={`dot ${isAct ? "" : "done"}`} />
                           <div>
                             <div className="t-row">
@@ -3027,12 +3409,16 @@
                               <button
                                 type="button"
                                 className="mini-btn danger"
-                                onClick={() => {
+                                onClick={async () => {
                                   if (providerProfiles.length <= 1) return;
-                                  const next = providerProfiles.filter((p) => p.id !== prof.id);
-                                  setProviderProfiles(next);
-                                  if (activeProviderId === prof.id) setActiveProviderId(next[0].id);
+                                  try {
+                                    await Api.call("/api/providers/" + encodeURIComponent(prof.id), "DELETE");
+                                  } catch (err) {
+                                    setApiError("Remove profile failed: " + (err.message || err));
+                                    return;
+                                  }
                                   setConfirmDeleteProfileId(null);
+                                  await refreshProviders();
                                 }}
                               >
                                 Confirm
@@ -3074,26 +3460,14 @@
                         <div>
                           <div className="t-row">{sub.provider}</div>
                           <div className="t-body">
-                            {sub.authType} · {sub.signedIn ? sub.entry : "Not signed in"}
+                            {sub.signedIn ? "Signed in · manage from Telegram" : "Not signed in · connect from Telegram"}
                           </div>
                         </div>
                       </div>
                       <div className="h-right">
-                        <button
-                          type="button"
-                          className="mini-btn"
-                          onClick={() =>
-                            setSubscriptions((prev) =>
-                              prev.map((s) =>
-                                s.id === sub.id
-                                  ? { ...s, signedIn: !s.signedIn, entry: !s.signedIn ? "operator@ceraa.dev" : "—" }
-                                  : s
-                              )
-                            )
-                          }
-                        >
-                          {sub.signedIn ? "Disconnect" : "Connect"}
-                        </button>
+                        <span className="t-mono" style={{ color: sub.signedIn ? "var(--accent)" : "var(--ink-3)" }}>
+                          {sub.signedIn ? "SIGNED IN" : "OFF"}
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -3105,12 +3479,21 @@
                   <button
                     type="button"
                     className="action-link"
-                    onClick={() =>
-                      setModelCatalog((prev) => ({
-                        ...prev,
-                        lastRefresh: "Just now (414 models indexed)"
-                      }))
-                    }
+                    onClick={async () => {
+                      try {
+                        const body = await Api.call("/api/catalog/refresh", "POST");
+                        const c = (body && body.catalog) || {};
+                        setModelCatalog({
+                          sourceUrl: c.source_url || "",
+                          lastRefresh: (c.models >= 0
+                            ? Api.relTime(c.last_refresh) + " (" + c.models + " models indexed)"
+                            : "—") + (c.refresh_error ? " · refresh failed, serving cache" : ""),
+                          refreshHours: c.refresh_hours || 0
+                        });
+                      } catch (err) {
+                        setApiError("Catalog refresh failed: " + (err.message || err));
+                      }
+                    }}
                   >
                     ↻ Refresh now
                   </button>
@@ -3163,9 +3546,16 @@
                       <select
                         className="input-clean"
                         value={runParams.reasoningEffort}
-                        onChange={(e) => setRunParams({ ...runParams, reasoningEffort: e.target.value })}
+                        onChange={async (e) => {
+                          try {
+                            await Api.call("/api/runparams", "POST", { params: { reasoning: e.target.value } });
+                            setRunParams((prev) => ({ ...prev, reasoningEffort: e.target.value }));
+                          } catch (err) {
+                            setApiError("Reasoning change failed: " + (err.message || err));
+                          }
+                        }}
                       >
-                        {REASONING_LEVELS.map((lvl) => (
+                        {reasoningLevels.map((lvl) => (
                           <option key={lvl} value={lvl}>{lvl.toUpperCase()}</option>
                         ))}
                       </select>
@@ -3187,7 +3577,7 @@
                         className="input-clean tnum"
                         style={{ width: 110, textAlign: "right" }}
                         value={runParams.contextLimit}
-                        onChange={(e) => setRunParams({ ...runParams, contextLimit: Number(e.target.value) || 0 })}
+                        onChange={(e) => editRunParams({ contextLimit: Number(e.target.value) || 0 })}
                       />
                     </div>
                   </div>
@@ -3207,7 +3597,7 @@
                         className="input-clean tnum"
                         style={{ width: 110, textAlign: "right" }}
                         value={runParams.maxOutputTokens}
-                        onChange={(e) => setRunParams({ ...runParams, maxOutputTokens: Number(e.target.value) || 0 })}
+                        onChange={(e) => editRunParams({ maxOutputTokens: Number(e.target.value) || 0 })}
                       />
                     </div>
                   </div>
@@ -3227,7 +3617,7 @@
                         className="input-clean tnum"
                         style={{ width: 110, textAlign: "right" }}
                         value={runParams.maxToolResultChars}
-                        onChange={(e) => setRunParams({ ...runParams, maxToolResultChars: Number(e.target.value) || 0 })}
+                        onChange={(e) => editRunParams({ maxToolResultChars: Number(e.target.value) || 0 })}
                       />
                     </div>
                   </div>
@@ -3248,7 +3638,7 @@
                         className="input-clean tnum"
                         style={{ width: 80, textAlign: "right" }}
                         value={runParams.maxConcurrentTools}
-                        onChange={(e) => setRunParams({ ...runParams, maxConcurrentTools: Number(e.target.value) || 1 })}
+                        onChange={(e) => editRunParams({ maxConcurrentTools: Number(e.target.value) || 1 })}
                       />
                     </div>
                   </div>
@@ -3265,7 +3655,7 @@
                       <select
                         className="input-clean"
                         value={runParams.promptCacheMode}
-                        onChange={(e) => setRunParams({ ...runParams, promptCacheMode: e.target.value })}
+                        onChange={(e) => editRunParams({ promptCacheMode: e.target.value })}
                       >
                         <option value="ephemeral">ephemeral</option>
                         <option value="auto-prefix">auto-prefix</option>
@@ -3274,7 +3664,7 @@
                       <select
                         className="input-clean"
                         value={runParams.promptCacheTTL}
-                        onChange={(e) => setRunParams({ ...runParams, promptCacheTTL: e.target.value })}
+                        onChange={(e) => editRunParams({ promptCacheTTL: e.target.value })}
                       >
                         <option value="5m">5m</option>
                         <option value="1h">1h</option>
@@ -3297,7 +3687,7 @@
                             key={mode}
                             type="button"
                             className={`seg-item ${runParams.memoryDelivery === mode ? "active" : ""}`}
-                            onClick={() => setRunParams({ ...runParams, memoryDelivery: mode })}
+                            onClick={() => editRunParams({ memoryDelivery: mode })}
                           >
                             {mode}
                           </button>
@@ -3318,12 +3708,31 @@
                       <select
                         className="input-clean"
                         value={runParams.agentRole}
-                        onChange={(e) => setRunParams({ ...runParams, agentRole: e.target.value })}
+                        onChange={(e) => editRunParams({ agentRole: e.target.value })}
                       >
-                        <option value="architect-default">architect-default</option>
-                        <option value="code-surgical">code-surgical</option>
-                        <option value="research-sidekick">research-sidekick</option>
+                        <option value="build">build</option>
+                        <option value="plan">plan</option>
                       </select>
+                    </div>
+                  </div>
+
+                  {/* Save: inputs edit locally, this persists them to config */}
+                  <div className="h-row">
+                    <div className="h-left">
+                      <div>
+                        <div className="t-row">Persist Run Parameters</div>
+                        <div className="t-body">{paramsSaved || "Inputs above edit locally until saved"}</div>
+                      </div>
+                    </div>
+                    <div className="h-right">
+                      <button
+                        type="button"
+                        className="btn-solid"
+                        disabled={!paramsDirty}
+                        onClick={saveRunParams}
+                      >
+                        Save
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -3392,7 +3801,7 @@
                   <span className="t-mono">NO VALUE IN DOM</span>
                 </div>
                 <div className="t-body" style={{ marginBottom: 12 }}>
-                  Values are encrypted at rest and wiped from the input buffer on save. Reserved prefixes (<code>CERAA_</code>, <code>TELEGRAM_</code>, <code>SYSTEM_</code>, <code>INTERNAL_</code>) are blocked by <code>IsInternal</code>.
+                  Values are encrypted at rest and wiped from the input buffer on save. Reserved prefixes are blocked by <code>IsInternal</code> on the server; the page mirrors the same list for early feedback.
                 </div>
 
                 <div className="hairline-list">
@@ -3403,23 +3812,20 @@
                         <div>
                           <div className="t-mono" style={{ color: "var(--ink)" }}>{sec.name}</div>
                           <div className="t-body tnum">
-                            Length: {sec.length} chars · Updated {sec.updated}
+                            Length: {sec.length}{sec.updated ? <span> · Updated {sec.updated}</span> : null}
                           </div>
                         </div>
                       </div>
                       <div className="h-right">
                         {confirmDeleteSecret === sec.name ? (
                           <div className="row-actions">
-                            <button
-                              type="button"
-                              className="mini-btn danger"
-                              onClick={() => {
-                                setSecrets(secrets.filter((s) => s.name !== sec.name));
-                                setConfirmDeleteSecret(null);
-                              }}
-                            >
-                              Confirm Delete
-                            </button>
+                              <button
+                                type="button"
+                                className="mini-btn danger"
+                                onClick={() => deleteSecret(sec.name)}
+                              >
+                                Confirm Delete
+                              </button>
                             <button
                               type="button"
                               className="mini-btn"
@@ -3448,8 +3854,11 @@
       );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App />);
+    function attach() {
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    }
+    attach();
   </script>
 </body>
 </html>

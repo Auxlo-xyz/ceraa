@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"ceraa/internal/logger"
@@ -14,6 +15,22 @@ import (
 // link, short enough that a hung endpoint is abandoned while the bridge is
 // still coming up rather than minutes later.
 const updateCheckBudget = 12 * time.Second
+
+// lastUpdateCheck keeps the startup check's answer for surfaces that report
+// it. A status poll must never make a network call, so the dashboard reads
+// this instead of probing: no answer yet means the check has not run, which
+// is itself the state worth showing.
+var lastUpdateCheck = struct {
+	mu      sync.Mutex
+	checked bool
+	status  selfupdate.Status
+}{}
+
+func lastUpdateResult() (selfupdate.Status, bool) {
+	lastUpdateCheck.mu.Lock()
+	defer lastUpdateCheck.mu.Unlock()
+	return lastUpdateCheck.status, lastUpdateCheck.checked
+}
 
 // noteNewRelease logs when a newer release exists.
 //
@@ -40,6 +57,10 @@ func noteNewRelease() {
 		logger.Warn("Update check failed: " + err.Error())
 		return
 	}
+	lastUpdateCheck.mu.Lock()
+	lastUpdateCheck.status = status
+	lastUpdateCheck.checked = true
+	lastUpdateCheck.mu.Unlock()
 	if status.Available {
 		logger.Info(fmt.Sprintf("Update available: %s (running %s); run `ceraa update`", status.Latest, status.Current))
 	}

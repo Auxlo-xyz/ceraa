@@ -84,7 +84,21 @@ func newFixture(t *testing.T, allowID int64) (*Server, *sessionstore.Store, *eve
 	// was running, and the only way to get a green suite was to stop the bot.
 	// That is a test defect, not a fact about the world, and it was written up in
 	// AGENTS.md as if it were the latter for a day.
-	return New(Config{Token: testToken, AllowID: allowID, Store: store, Bus: bus, Address: "127.0.0.1:0"}), store, bus
+	return New(Config{Token: testToken, AllowID: allowID, Store: store, Bus: bus, Address: "127.0.0.1:0",
+		// Lengths are computed here, server-side, one Get per name: the list
+		// response carries numbers, never values.
+		Secrets: func() ([]SecretEntry, error) {
+			out := []SecretEntry{}
+			for _, name := range secret.ListUser() {
+				length := "?"
+				if value, err := secret.Get(name); err == nil {
+					length = fmt.Sprintf("%d chars", len([]rune(value)))
+				}
+				out = append(out, SecretEntry{Name: name, Length: length})
+			}
+			return out, nil
+		},
+	}), store, bus
 }
 
 // do performs an authenticated request against the handler.

@@ -2553,7 +2553,7 @@ func buildMiniAppSurface(token string, allowID int64) (*miniapp.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session store unavailable: %w", err)
 	}
-	srv := miniapp.New(miniapp.Config{
+	cfg := miniapp.Config{
 		Token:     token,
 		AllowID:   allowID,
 		Store:     store,
@@ -2574,7 +2574,22 @@ func buildMiniAppSurface(token string, allowID int64) (*miniapp.Server, error) {
 		},
 		Settings:    webSettings,
 		SetSettings: applyWebSettings,
+	}
+	// The dashboard's backend. Wired before New copies the config, with the
+	// tunnel address resolving late through the holder: the tunnel does not
+	// exist until Start runs, and the status function must ask the live server
+	// rather than the address at build time. One line per concern inside
+	// webControl, so a missing wire is visible there rather than as a 503
+	// discovered from the page.
+	var surface *miniapp.Server
+	webControl(&cfg, func() string {
+		if surface == nil {
+			return ""
+		}
+		return surface.TunnelAddress()
 	})
+	srv := miniapp.New(cfg)
+	surface = srv
 	if err := srv.Start(); err != nil {
 		return nil, err
 	}

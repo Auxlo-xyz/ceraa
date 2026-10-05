@@ -121,6 +121,41 @@ type Config struct {
 	// which of those keys exist.
 	Settings    func() map[string]any
 	SetSettings func(update map[string]any) error
+	// Control surface. One function per dashboard concern, all injected for
+	// the same reason as Settings: the stores live with the bot. Each has a
+	// handler in control.go, and a nil function answers 503 so a build
+	// without the wiring reports itself instead of an empty account.
+	Meta              func() map[string]any
+	Providers         func() (string, []ProviderEntry, error)
+	SetActiveProvider func(id string) error
+	SaveProvider      func(id string, profile map[string]any) error
+	DeleteProvider    func(id string) error
+	Subscriptions     func() ([]SubscriptionEntry, error)
+	Catalog           func() (map[string]any, error)
+	RefreshCatalog    func() (map[string]any, error)
+	RunParams         func() map[string]any
+	SetRunParams      func(update map[string]any) error
+	Tools             func() ([]string, []ToolEntry, error)
+	SetToolAllowed    func(name string, allowed bool) error
+	Secrets           func() ([]SecretEntry, error)
+	Memories          func() ([]MemoryEntry, error)
+	DeleteMemory      func(id string) error
+	TriggerCompaction func(sessionID string) (map[string]any, error)
+	Skills            func() ([]SkillProposal, error)
+	DecideSkill       func(id string, approve bool) error
+	Schedules         func() ([]ScheduleJob, error)
+	AddSchedule       func(job map[string]any) (string, error)
+	DeleteSchedule    func(id string) error
+	Stats             func() (map[string]any, error)
+	Files             func(rel string) ([]FileEntry, error)
+	Status            func() (map[string]any, error)
+	Snapshots         func() ([]SnapshotEntry, error)
+	Todos             func(sessionID string) ([]TodoEntry, error)
+	SetTodo           func(sessionID, content, status string) error
+	RenameSession     func(id, title string) error
+	DeleteSession     func(id string) error
+	Projects          func() (map[string]any, error)
+	SetProject        func(root string) error
 }
 
 // Server is the loopbound HTTP surface. One per process, started once and shut
@@ -188,6 +223,36 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("GET /api/secrets", s.handleSecrets)
 	mux.HandleFunc("PUT /api/secrets/{name}", s.handleSecretPut)
 	mux.HandleFunc("DELETE /api/secrets/{name}", s.handleSecretDelete)
+	mux.HandleFunc("GET /api/meta", s.handleMeta)
+	mux.HandleFunc("GET /api/subscriptions", s.handleSubscriptions)
+	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
+	mux.HandleFunc("POST /api/catalog/refresh", s.handleRefreshCatalog)
+	mux.HandleFunc("GET /api/providers", s.handleProviders)
+	mux.HandleFunc("POST /api/providers", s.handleSetActiveProvider)
+	mux.HandleFunc("POST /api/providers/{id}", s.handleSaveProvider)
+	mux.HandleFunc("DELETE /api/providers/{id}", s.handleDeleteProvider)
+	mux.HandleFunc("GET /api/runparams", s.handleRunParams)
+	mux.HandleFunc("POST /api/runparams", s.handleSetRunParams)
+	mux.HandleFunc("GET /api/tools", s.handleTools)
+	mux.HandleFunc("POST /api/tools", s.handleSetToolAllowed)
+	mux.HandleFunc("GET /api/memories", s.handleMemories)
+	mux.HandleFunc("DELETE /api/memories/{id}", s.handleDeleteMemory)
+	mux.HandleFunc("POST /api/compaction", s.handleCompaction)
+	mux.HandleFunc("GET /api/skills", s.handleSkills)
+	mux.HandleFunc("POST /api/skills/{id}", s.handleDecideSkill)
+	mux.HandleFunc("GET /api/schedules", s.handleSchedules)
+	mux.HandleFunc("POST /api/schedules", s.handleAddSchedule)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
+	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/files", s.handleFiles)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/snapshots", s.handleSnapshots)
+	mux.HandleFunc("GET /api/todos", s.handleTodos)
+	mux.HandleFunc("POST /api/todos", s.handleSetTodo)
+	mux.HandleFunc("GET /api/projects", s.handleProjects)
+	mux.HandleFunc("POST /api/projects", s.handleSetProject)
+	mux.HandleFunc("POST /api/sessions/{id}", s.handleRenameSession)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("POST /api/sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc(assetPattern, s.handleAsset)
@@ -1080,12 +1145,23 @@ func (s *Server) secretName(w http.ResponseWriter, r *http.Request) (string, boo
 	return name, true
 }
 
-// handleSecrets lists names and never values.
+// handleSecrets lists user secrets with lengths, never values. The lengths
+// are computed by the injected function, server-side, so the response carries
+// numbers: a leaked response body is not a leaked key.
 func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
-	// Names only. The values are not in this response because there is no code
-	// path in this server that reads one: a surface which can show a credential
-	// has a leak it has not had yet.
-	writeJSON(w, map[string]any{"secrets": secret.ListUser()})
+	if s.cfg.Secrets == nil {
+		http.Error(w, "secrets are not exposed on this surface", http.StatusServiceUnavailable)
+		return
+	}
+	entries, err := s.cfg.Secrets()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []SecretEntry{}
+	}
+	writeJSON(w, map[string]any{"secrets": entries})
 }
 
 func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {

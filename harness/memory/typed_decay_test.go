@@ -296,3 +296,47 @@ func indexOf(haystack, needle string) int {
 	}
 	return -1
 }
+
+// The dashboard lists every memory across projects, newest first. The menu
+// keeps the scoped List for its per-chat view; this is the global one, and it
+// must not silently drop a project.
+func TestListAllSeesEveryProjectNewestFirst(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddTyped("alpha", "s1", "first memory", "", "", Stated, Preference); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddTyped("beta", "s2", "second memory", "", "", Stated, Preference); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("ListAll = %d entries, want 2", len(entries))
+	}
+	if entries[0].Content != "second memory" || entries[1].Content != "first memory" {
+		t.Errorf("ListAll is not newest-first: %+v", entries)
+	}
+}
+
+// The decay table the dashboard renders comes from here, not from a copy
+// quoted in the page. A type missing from this list is a lifetime the page
+// cannot explain.
+func TestTypeHalfLivesNamesEveryClassifiedType(t *testing.T) {
+	seen := map[MemoryType]bool{}
+	for _, entry := range TypeHalfLives() {
+		seen[entry.Type] = true
+		if entry.HalfLife <= 0 {
+			t.Errorf("type %q has no positive half-life", entry.Type)
+		}
+	}
+	for _, typ := range []MemoryType{Profile, Instruction, Preference, Decision, Constraint, Goal, Context, Error, Observation, Request} {
+		if !seen[typ] {
+			t.Errorf("type %q missing from the rendered decay table", typ)
+		}
+	}
+}

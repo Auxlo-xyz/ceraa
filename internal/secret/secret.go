@@ -179,6 +179,14 @@ var internalPrefixes = []string{
 	"minimax_",
 }
 
+// ReservedPrefixes returns the prefixes Ceraa keeps for itself, for surfaces
+// that validate names before sending them. A copy quoted in a UI would drift
+// from this list without anyone noticing, so the dashboard asks instead.
+func ReservedPrefixes() []string {
+	out := append([]string(nil), internalPrefixes...)
+	return out
+}
+
 // IsInternal reports whether a name is Ceraa's own rather than a user's.
 //
 // A deny-list and not an allow-list on purpose: a name the store learns about later

@@ -195,6 +195,23 @@ const memoryHalfLifeDays = 30.0
 // by how important it is. That is the distinction that matters: a goal is important
 // and short-lived, a preference is ordinary and long-lived, and ranking by
 // importance would have got both backwards.
+// TypeHalfLife reports one memory type's half-life in days, for surfaces that
+// explain the decay table rather than applying it. The dashboard renders this;
+// the scoring path keeps using the map directly.
+type TypeHalfLife struct {
+	Type     MemoryType `json:"type"`
+	HalfLife float64    `json:"half_life_days"`
+}
+
+func TypeHalfLives() []TypeHalfLife {
+	out := make([]TypeHalfLife, 0, len(halfLifeDaysByType))
+	for typ, days := range halfLifeDaysByType {
+		out = append(out, TypeHalfLife{Type: typ, HalfLife: days})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].HalfLife > out[j].HalfLife })
+	return out
+}
+
 var halfLifeDaysByType = map[MemoryType]float64{
 	Profile:     3650, // ten years
 	Instruction: 1825, // five
@@ -448,6 +465,31 @@ func (s *Store) List(projectID, sessionID string) ([]Entry, error) {
 			entries = append(entries, entry)
 		}
 	}
+	return entries, nil
+}
+
+// ListAll returns every entry in the store across projects and sessions,
+// newest first. The menu keeps the scoped List for its per-chat view; the
+// dashboard needs the global view, and filtering client-side from one call
+// beats one call per project.
+func (s *Store) ListAll() ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := flock.Acquire(filepath.Join(s.dir, ".memory.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("lock memory store: %w", err)
+	}
+	defer lock.Release()
+
+	doc, err := load(s.path)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]Entry, 0, len(doc.Entries))
+	entries = append(entries, doc.Entries...)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CreatedAt.After(entries[j].CreatedAt)
+	})
 	return entries, nil
 }
 
