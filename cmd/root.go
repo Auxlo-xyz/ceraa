@@ -189,6 +189,12 @@ func runRestart() error {
 		if !alive {
 			return fmt.Errorf("daemon exited without restarting; start it with ceraa start")
 		}
+		// Alive with the pid file untouched means the signal was ignored: a
+		// daemon that predates the SIGUSR1 watcher never acts on it. It is
+		// not shutting down, so waiting longer would change nothing.
+		if fi, statErr := os.Stat(path); statErr == nil && !fi.ModTime().After(mark.ModTime()) {
+			return fmt.Errorf("daemon ignored the restart signal (it predates self-restart support); move it once with ceraa stop and ceraa start")
+		}
 		return fmt.Errorf("daemon did not come back within %s; it may still be shutting down", restartWait)
 	}
 	// The exec keeps the process, so the record must still match: a pid file
