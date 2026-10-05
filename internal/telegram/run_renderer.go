@@ -1625,6 +1625,30 @@ func toolIcon(name string) string {
 		return "📌"
 	case "webfetch":
 		return "🔍"
+	case "view_image":
+		return "🖼️"
+	case "browser":
+		return "🧭"
+	case "websearch":
+		return "🔍"
+	case "create_goal", "get_goal":
+		return "🎯"
+	case "update_goal":
+		return "🔄"
+	case "run_command_with_secret":
+		return "🔐"
+	case "list_secrets":
+		return "🔑"
+	case "send_media":
+		return "📤"
+	case "memory":
+		return "💭"
+	case "skill_propose":
+		return "💡"
+	case "skill_use":
+		return "🛠️"
+	case "script":
+		return "📜"
 	case "compaction":
 		return "⚡"
 	default:
