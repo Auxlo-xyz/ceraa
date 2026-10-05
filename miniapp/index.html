@@ -176,6 +176,15 @@
       font-weight: 400;
       color: var(--accent);
     }
+    /* The Dashboard wordmark: same 28px box as the serif title, but set in
+       the Bricolage Grotesque sans at 600 in ink black to match the IDLE hero
+       unit beside the run count. */
+    .brand-title .brand-sans {
+      font-family: var(--sf);
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+    }
 
     .status-pill {
       display: inline-flex;
@@ -2504,7 +2513,7 @@
 <path d="" fill="#000000" transform="translate(0,0)"/>
 <path d="" fill="#FF0000" transform="translate(0,0)"/>
 </svg>` }} />
-                Dashboard
+                <span className="brand-sans">Dashboard</span>
               </h1>
             </div>
 
