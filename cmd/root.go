@@ -58,7 +58,17 @@ var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the Ceraa Telegram service",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return telegram.Run()
+		if err := telegram.Run(); err != nil {
+			return err
+		}
+		// /restart ends Run through the normal shutdown path, so every close
+		// hook has already run by the time this is checked. Exec replaces the
+		// process in place: same pid, same args, same environment, and the
+		// pid file claim is re-taken by the new image.
+		if telegram.RestartRequested() {
+			return telegram.ExecSelf()
+		}
+		return nil
 	},
 }
 

@@ -42,6 +42,7 @@ func Commands() []CommandSpec {
 		{"file_browser", "Browse workspace files"},
 		{"abort", "Stop the current run (alias: /stop)"},
 		{"stop", "Stop the current run"},
+		{"restart", "Restart the bot process"},
 		{"detach", "Detach from the current session"},
 		{"attach", "Attach to the current session"},
 		{"worktree", "Show worktree information"},

@@ -830,6 +830,10 @@ func Run() error {
 	}
 
 	fmt.Printf("telegram polling start offset=%d\n", offset)
+	// A restart that nobody confirms looks identical to a crash from the
+	// chat side, so the new image says it is back. Async so a slow send can
+	// never hold the poll loop open.
+	go sendRestartNotice(token)
 	// The poll loop is an unconditional for{} with no exit, so before a signal
 	// handler existed the deferred scheduler cancel and log flush above could
 	// never run and the process had to be killed outright. Every clean shutdown
@@ -1098,6 +1102,9 @@ func Run() error {
 			case "/abort", "/stop", "/cancel":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleAbort(token, u.Message.Chat.ID)
+			case "/restart":
+				GetDefaultInbox().CheckAndRecord(u.UpdateID)
+				handleRestart(token, u.Message.Chat.ID)
 			case "/detach":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				detachedChats.Store(u.Message.Chat.ID, true)
