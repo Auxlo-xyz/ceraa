@@ -968,7 +968,7 @@ func Run() error {
 			if u.Message.Document != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				if path, err := downloadTelegramFile(token, u.Message.Document.FileID); err == nil {
-					send(token, u.Message.Chat.ID, "📄 Document saved: "+path+" ("+u.Message.Document.FileName+") — send a prompt to process it via harness read/tool")
+					send(token, u.Message.Chat.ID, "📄 Document saved: "+path+" ("+u.Message.Document.FileName+") — send a prompt to read it: zips unpack with a member listing, PDF/DOCX/PPTX come back as text")
 				} else {
 					send(token, u.Message.Chat.ID, "📄 Document: "+u.Message.Document.FileName+" (download failed)")
 				}

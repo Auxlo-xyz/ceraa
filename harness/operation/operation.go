@@ -15,6 +15,7 @@ import (
 
 	"ceraa/internal/envs"
 
+	"ceraa/harness/document"
 	"ceraa/harness/event"
 	"ceraa/harness/llm"
 	"ceraa/harness/primitives"
@@ -358,6 +359,27 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 				}
 				result.Images = []string{p}
 				result.Output = fmt.Sprintf("%s attached as an image (%s, %s).", filepath.Base(p), mime, llm.HumanBytes(len(attachment.Data)))
+				result.Status = StatusCompleted
+				break
+			}
+			// An archive or office document is extracted, not transcribed.
+			//
+			// It used to fall through to the generic reader, which returns
+			// string(bytes) and hands the model a zip or PDF as mojibake. A zip
+			// is unpacked next to itself and listed with the member paths, so the
+			// next read is obvious; PDF, DOCX and PPTX are converted to text.
+			// Refusals name the gap (a scanned PDF needs OCR) rather than
+			// succeeding empty, because empty would read as "says nothing".
+			// Range arguments do not apply here: extraction is already capped,
+			// and paging raw bytes of a zip would page the container, not the text.
+			if _, ok := document.KindForPath(p); ok {
+				summary, err := document.Summarize(p)
+				if err != nil {
+					result.Error = err.Error()
+					result.Status = StatusFailed
+					break
+				}
+				result.Output = summary
 				result.Status = StatusCompleted
 				break
 			}

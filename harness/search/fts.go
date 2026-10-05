@@ -11,6 +11,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"ceraa/harness/document"
 )
 
 // Index is a SQLite FTS5 backed search index.
@@ -152,6 +154,58 @@ func (idx *Index) RemoveFile(path string) error {
 	return tx.Commit()
 }
 
+// indexDocument indexes an archive or office document by what it contains
+// rather than what it is. A zip contributes its member names, so a filename
+// inside an archive still finds the archive; PDF, DOCX and PPTX contribute
+// extracted text. Anything that fails to extract is removed from the index,
+// matching the old behaviour of skipping what cannot be read.
+func (idx *Index) indexDocument(path string, kind document.Kind, seen map[string]bool) error {
+	if kind == document.KindArchive {
+		members, err := document.ExtractArchive(path)
+		if err != nil {
+			_ = idx.RemoveFile(path)
+			return nil
+		}
+		var names []string
+		for _, m := range members {
+			names = append(names, m.Path)
+		}
+		if err := idx.IndexFile(path, strings.Join(names, "\n")); err != nil {
+			return err
+		}
+		// The walker listed this directory before the extraction created the
+		// member files, so it will never visit them on this pass. Index the
+		// extracted text members here instead of waiting for the next run,
+		// or a file inside an archive is unsearchable until someone reindexes.
+		for _, m := range members {
+			if m.Skipped != "" || ignoredFile(filepath.Base(m.Path)) {
+				continue
+			}
+			info, infoErr := os.Stat(m.Path)
+			if infoErr != nil || info.IsDir() || info.Size() > 5*1024*1024 {
+				continue
+			}
+			data, readErr := os.ReadFile(m.Path)
+			if readErr != nil || isBinary(data) {
+				continue
+			}
+			if indexErr := idx.IndexFile(m.Path, string(data)); indexErr != nil {
+				return indexErr
+			}
+			// The walker never visits extracted members, so without this the
+			// prune at the end of the run deletes what was just indexed.
+			seen[m.Path] = true
+		}
+		return nil
+	}
+	text, err := document.ExtractText(path)
+	if err != nil {
+		_ = idx.RemoveFile(path)
+		return nil
+	}
+	return idx.IndexFile(path, text)
+}
+
 // IndexDir walks root and indexes text files incrementally.
 func (idx *Index) IndexDir(root string) (int, error) {
 	root, err := filepath.Abs(root)
@@ -178,7 +232,7 @@ func (idx *Index) IndexDir(root string) (int, error) {
 		}
 		ext := strings.ToLower(filepath.Ext(path))
 		switch ext {
-		case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".tar", ".gz", ".bin", ".exe", ".so", ".db", ".sqlite":
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tar", ".gz", ".bin", ".exe", ".so", ".db", ".sqlite":
 			return nil
 		}
 		info, infoErr := d.Info()
@@ -190,6 +244,20 @@ func (idx *Index) IndexDir(root string) (int, error) {
 		var storedSize int64
 		err = idx.db.QueryRow(`SELECT mtime, size FROM files WHERE path = ?`, path).Scan(&storedMtime, &storedSize)
 		if err == nil && storedMtime == info.ModTime().Unix() && storedSize == info.Size() {
+			return nil
+		}
+		// Documents index as their extracted text, not their bytes. A PDF of
+		// binary would otherwise fail the binary check below and vanish from
+		// search; a zip indexes its member names, so a filename inside an
+		// archive still finds the archive. Extraction failures fall back to
+		// skipping, because an unscanned file was the old behaviour and is
+		// still better than indexing mojibake.
+		if kind, ok := document.KindForPath(path); ok {
+			indexErr := idx.indexDocument(path, kind, seen)
+			if indexErr != nil {
+				return nil
+			}
+			count++
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -226,6 +294,11 @@ func ignoredDirectory(name string) bool {
 
 func ignoredFile(name string) bool {
 	lower := strings.ToLower(name)
+	// The extraction marker is bookkeeping, not content. Indexing it would
+	// attach bare numbers to every archive directory.
+	if lower == ".ceraa-extracted" {
+		return true
+	}
 	return lower == ".env" || strings.HasPrefix(lower, ".env.") || lower == "credentials" || lower == "secrets.json"
 }
 
