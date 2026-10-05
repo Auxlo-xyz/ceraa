@@ -125,7 +125,29 @@ func webProviders() (string, []miniapp.ProviderEntry, error) {
 	if cfg != nil {
 		catalog = llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, time.Duration(cfg.ModelCatalogRefreshHours)*time.Hour)
 	}
-	list := make([]miniapp.ProviderEntry, 0, len(names))
+	// The default provider is top-level config, not a stored profile, and most
+	// installs run on exactly it. A list without it is empty for those installs,
+	// and an empty provider picker reads as a broken dashboard rather than an
+	// account with one provider. It leads because it is the common case.
+	list := []miniapp.ProviderEntry{}
+	if cfg != nil {
+		def := miniapp.ProviderEntry{
+			ID:           "default",
+			Endpoint:     cfg.LLM.URL,
+			Model:        cfg.LLM.Model,
+			Reasoning:    cfg.LLM.Reasoning,
+			ContextLimit: cfg.LLM.ContextLimit,
+			OutputCap:    cfg.LLM.MaxOutputTokens,
+			CacheMode:    cfg.LLM.PromptCacheMode,
+			HasKey:       strings.TrimSpace(cfg.LLM.APIKey) != "",
+		}
+		if catalog != nil && strings.TrimSpace(cfg.LLM.Model) != "" {
+			if metadata, err := catalog.Lookup(ctx, cfg.LLM.Model); err == nil {
+				def.PricingUsable = metadata.PricingUsable()
+			}
+		}
+		list = append(list, def)
+	}
 	for _, name := range names {
 		profile := profiles[name]
 		entry := miniapp.ProviderEntry{
@@ -163,6 +185,12 @@ func webSaveProvider(id string, profile map[string]any) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("provider name is empty")
+	}
+	// Default is top-level config, not a stored profile. Writing a profile
+	// under that name would shadow it in some lookups and not others, which
+	// is how a provider gets two definitions that disagree.
+	if id == "default" {
+		return fmt.Errorf("the default provider is edited through run parameters, not profiles")
 	}
 	stored := config.ProviderProfile{}
 	if raw, ok := profile["endpoint"].(string); ok {

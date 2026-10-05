@@ -1285,7 +1285,7 @@
         name: "",
         endpoint: "https://api.openai.com/v1",
         model: "gpt-4.1",
-        apiKeyRef: "secret:OPENAI_ORG_KEY",
+        apiKey: "",
         reasoning: "medium",
         contextLimit: 128000,
         outputCap: 16384,
@@ -2066,7 +2066,14 @@
                 <span className="t-mono">PROVIDER</span>
                 <select
                   value={activeProviderId}
-                  onChange={(e) => setActiveProviderId(e.target.value)}
+                  onChange={async (e) => {
+                    try {
+                      await Api.call("/api/providers", "POST", { active: e.target.value });
+                      await refreshProviders();
+                    } catch (err) {
+                      setApiError("Switch provider failed: " + (err.message || err));
+                    }
+                  }}
                   className="input-clean"
                   style={{ cursor: "pointer" }}
                 >
