@@ -31,6 +31,36 @@ const purgeNotice = 20 * time.Second
 // cached menu-button value, so that link opens the live surface even while the
 // menu button is still stale. It is the difference between a button that is
 // eventually right and a link that is right every time it is used.
+// republishMiniAppAddress moves the button and posts a tap-time link, with no
+// chat message saying a repair happened.
+//
+// This is the automatic half. A quick tunnel's hostname changes on every boot
+// and whenever the client dies, but Telegram caches the button server-side per
+// client, so a stale phone keeps opening a dead URL for a while after the server
+// has already published the new one. There is no API to evict that cache. What
+// there is to do is stop depending on it: the button is still moved, and a fresh
+// inline link is pushed to the chat, which is resolved when tapped. The user is
+// never asked to run anything, and never told about the churn unless they look
+// at the log.
+func republishMiniAppAddress(token string, srv *miniapp.Server, origin string) {
+	if err := setChatMenuButton(token, "🌐 Web", origin); err != nil {
+		logger.Warn("Mini App republish: menu button not updated: " + err.Error())
+		return
+	}
+	noteMiniAppPublished(origin)
+	chatID := miniAppChat()
+	if chatID != 0 {
+		// Inline, not the menu button: this one is fetched when tapped.
+		sendMessageWithMarkup(token, chatID, "Fresh address, tap to open:", purgeKeyboard(origin))
+	}
+	logger.Info("Mini App republished at " + origin)
+}
+
+// handlePurge forces a brand-new tunnel right now.
+//
+// It is the manual half of the same idea republishMiniAppAddress handles
+// automatically: the button is stubborn, so this gives a fresh tap-time link on
+// demand rather than waiting for a restart to mint one.
 func handlePurge(token string, chatID int64, start func() (*miniapp.Server, error)) {
 	server, err := start()
 	if err != nil {

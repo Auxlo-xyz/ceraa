@@ -111,12 +111,10 @@ func watchMiniAppButton(srv *miniapp.Server, token string) {
 		if origin == "" || origin == miniAppPublishedOrigin() {
 			continue
 		}
-		if err := setChatMenuButton(token, "🌐 Web", origin); err != nil {
-			logger.Warn("Mini App watchdog: menu button not updated: " + err.Error())
-			continue
-		}
-		logger.Info("Mini App watchdog: tunnel moved, menu button now " + origin)
-		noteMiniAppPublished(origin)
+		// The tunnel moved. The button is moved to match and a fresh tap-time
+		// link is pushed, because the client holding the old one is already
+		// answering 1033 and no API call makes it refetch.
+		republishMiniAppAddress(token, srv, origin)
 	}
 }
 
@@ -131,6 +129,12 @@ var (
 	miniappMu        sync.Mutex
 	miniappServer    *miniapp.Server
 	miniappPublished string
+	// miniappChat is where a republished address is announced when nobody
+	// asked for it. Recorded from the chats that publish, because the only
+	// signal that a URL moved is observed by this process and not by the
+	// client holding a stale copy of it - the client never tells us, it just
+	// renders a 1033 to a thumb.
+	miniappChat int64
 )
 
 // miniAppPublishedOrigin is the address the menu button was last given.
@@ -148,6 +152,20 @@ func noteMiniAppPublished(origin string) {
 	miniappMu.Lock()
 	defer miniappMu.Unlock()
 	miniappPublished = origin
+}
+
+// noteMiniAppChat records the chat an address was published to, so a later
+// republication has somewhere to go without being asked.
+func noteMiniAppChat(chatID int64) {
+	miniappMu.Lock()
+	defer miniappMu.Unlock()
+	miniappChat = chatID
+}
+
+func miniAppChat() int64 {
+	miniappMu.Lock()
+	defer miniappMu.Unlock()
+	return miniappChat
 }
 
 // miniAppWatchInterval is how often the tunnel is checked for having died.
@@ -250,6 +268,7 @@ func clearChatMenuButton(token string, text string) error {
 // whichever happened. Sending the address and setting the button from the same
 // function is what keeps them from disagreeing.
 func publishMiniAppAddress(token string, chatID int64, address string) {
+	noteMiniAppChat(chatID)
 	send(token, chatID, "Mini App:\n"+address)
 	if err := setChatMenuButton(token, "🌐 Web", address); err != nil {
 		logger.Warn("Mini App menu button not updated: " + err.Error())
@@ -881,6 +900,13 @@ func Run() error {
 				}
 				noteMiniAppPublished(address)
 				logger.Info("Mini App menu button set to " + address)
+				// A restart mints a new hostname, so every client still holding
+				// the old button is one tap from a 1033. Push a tap-time link
+				// to the chat that is known to be in use, so the fastest way
+				// back in does not depend on the cache being refreshed.
+				if chatID := miniAppChat(); chatID != 0 {
+					sendMessageWithMarkup(token, chatID, "Fresh address, tap to open:", purgeKeyboard(address))
+				}
 			}()
 		}
 	}

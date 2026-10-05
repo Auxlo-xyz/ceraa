@@ -43,3 +43,26 @@ func TestPurgeKeyboardCarriesAWebApp(t *testing.T) {
 		t.Errorf("label = %v", button["text"])
 	}
 }
+
+// A republished address is only useful if the push is a tap-time link. The menu
+// button is exactly the cached surface this whole mechanism exists to route
+// around, so a republication that only moved the button would fix nothing.
+func TestRepublishSendsAnInlineLink(t *testing.T) {
+	miniappMu.Lock()
+	previous := miniappChat
+	miniappChat = 0
+	miniappMu.Unlock()
+	t.Cleanup(func() {
+		miniappMu.Lock()
+		miniappChat = previous
+		miniappMu.Unlock()
+	})
+	noteMiniAppChat(4242)
+	if got := miniAppChat(); got != 4242 {
+		t.Errorf("miniAppChat = %d, want 4242", got)
+	}
+	noteMiniAppChat(0)
+	if got := miniAppChat(); got != 0 {
+		t.Errorf("miniAppChat = %d, want 0 after being cleared", got)
+	}
+}
