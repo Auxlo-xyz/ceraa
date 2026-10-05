@@ -3494,32 +3494,6 @@
                   </div>
                 </div>
                 </div>
-
-                {/* Totals & Title Model Summary */}
-                <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--rule)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-                    <span className="t-mono">DAILY RUN / TOOL / ERROR LEDGER</span>
-                    <span className="t-mono tnum">
-                      <AnimatedNumber value={totals.runs} /> RUNS · <AnimatedNumber value={totals.tools} /> TOOLS ·{" "}
-                      <span style={{ color: totals.errors > 0 ? "var(--fault)" : "var(--ink-2)" }}>
-                        <AnimatedNumber value={totals.errors} /> ERR
-                      </span>
-                    </span>
-                  </div>
-                  <div className="t-body" style={{ marginTop: 6 }}>
-                    Spend sums verified run costs only.
-                    {!activeSession.pricingUsable && (
-                      <span style={{ color: "var(--accent)", fontWeight: 600 }}>
-                        {" "}· Note: Active session uses an estimated rate (PricingUsable=false).
-                      </span>
-                    )}
-                    {totals.hasEstimate && (
-                      <span style={{ color: "var(--accent)", fontWeight: 600 }}>
-                        {" "}· Totals include estimates.
-                      </span>
-                    )}
-                  </div>
-                </div>
               </section>
             </main>
           )}
