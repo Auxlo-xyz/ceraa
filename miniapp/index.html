@@ -976,6 +976,35 @@
         if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
         return n + " B";
       }
+      // Credential probe, run before React and Babel even load. The full
+      // dashboard takes seconds to boot (CDN scripts, JSX compile, a dozen API
+      // calls), and without credentials every one of those calls fails: the
+      // page would render an empty dashboard first and the locked screen
+      // second. One cheap status call decides up front; denied renders a
+      // static splash now, which React replaces with the identical screen
+      // when it boots.
+      function lockedSplash() {
+        var root = document.getElementById("root");
+        if (!root) return;
+        root.innerHTML =
+          '<div style="max-width:460px;margin:12vh auto 0;text-align:center;padding:0 24px;">' +
+          '<div class="t-mono" style="letter-spacing:0.2em;">CERAA · PRIVATE</div>' +
+          '<div class="t-display" style="margin-top:12px;">This dashboard is locked</div>' +
+          '<div class="t-body" style="margin-top:12px;">It only opens from the Ceraa Telegram bot.</div>' +
+          '</div>';
+      }
+      try {
+        var headers = {};
+        var data = initData();
+        if (data) headers["Authorization"] = "tma " + data;
+        fetch("/api/status", { headers: headers }).then(function (res) {
+          if (res.status === 401 || res.status === 403) {
+            window.__CERAA_DENIED = true;
+            lockedSplash();
+          }
+          return null;
+        }).catch(function () {});
+      } catch (e) {}
       return { initData: initData, call: call, relTime: relTime, fmtK: fmtK, fmtBytes: fmtBytes };
     })();
   </script>
@@ -1258,8 +1287,12 @@
       const [apiError, setApiError] = useState(null);
       // denied replaces the whole dashboard: without Telegram credentials every
       // section would be empty, and an empty dashboard with an error bar reads
-      // as broken rather than locked.
-      const [denied, setDenied] = useState(false);
+      // as broken rather than locked. window.__CERAA_DENIED is set by the
+      // credential probe ahead of React; when it is set the load is skipped
+      // entirely rather than fired and failed.
+      const [denied, setDenied] = useState(
+        typeof window !== "undefined" && window.__CERAA_DENIED === true
+      );
       const [webSessionId, setWebSessionId] = useState("web");
       const [envWorkspaceRoot, setEnvWorkspaceRoot] = useState("");
       const [forbiddenSourceTreePrefix, setForbiddenSourceTreePrefix] = useState("/workspace/development/ceraa");
@@ -1869,6 +1902,7 @@
       }
 
       useEffect(() => {
+        if (denied) return;
         refreshAll();
         const timer = setInterval(() => { refreshStatus().catch(() => {}); }, 20000);
         return () => clearInterval(timer);
