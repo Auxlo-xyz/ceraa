@@ -491,7 +491,7 @@ func TestToolActivityPreservesCommandDetailOnCompletion(t *testing.T) {
 	renderer := &runRenderer{messageID: 1}
 	renderer.tool("run-1", "🔄 "+toolNameToken("bash")+">_ Run command · find /workspace -name config.json")
 	renderer.tool("run-1", "✅ "+toolNameToken("bash")+">_ Run command completed")
-	want := "\u26a1 bash find /workspace -name config.json"
+	want := "<b>bash</b> find /workspace -name config.json"
 	if got := formatToolActivity(renderer.tools); got != want {
 		t.Fatalf("tool activity = %q, want %q", got, want)
 	}
@@ -805,7 +805,7 @@ func TestEveryThoughtBlockAndToolCallGetsItsOwnMessage(t *testing.T) {
 		switch {
 		case strings.Contains(text, thoughtHeader):
 			thoughts++
-		case strings.HasPrefix(text, "\u26a1 bash"):
+		case strings.HasPrefix(text, "<b>bash</b>"):
 			tools++
 			key := strings.Join(strings.Fields(text)[1:], " ")
 			toolLines[key]++

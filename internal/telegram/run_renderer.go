@@ -1571,7 +1571,7 @@ func parseToolActivity(value string) (toolActivity, bool) {
 //
 // The bullet, the tick and the middle dot are all gone, and with them the line
 // that reads "• ✓ > Run command · cd /workspace". The same call renders as
-// "⚡ bash cd /workspace", which is the tool rather than the harness's
+// "<b>bash</b> cd /workspace", which is the tool rather than the harness's
 // sentence about it, and that is what a reader scanning the message is looking
 // for. Entries are separated by a blank line for the same reason: one call per
 // paragraph, so a long command does not run into the line under it.
@@ -1587,6 +1587,9 @@ func formatToolActivity(tools []toolActivity) string {
 			name = tool.label
 		}
 		line := toolIcon(name) + " " + name
+		if boldWordTool(name) {
+			line = "<b>" + name + "</b>"
+		}
 		if tool.detail != "" {
 			line += " " + tool.detail
 		}
@@ -1596,6 +1599,19 @@ func formatToolActivity(tools []toolActivity) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+// boldWordTools are the working tools: shell, browser, media, search, fetch
+// and patch. They render as a bold word with no glyph, the way the Thought
+// header does, because they are the verbs of a run rather than its nouns.
+// Everything else keeps its mark.
+func boldWordTool(name string) bool {
+	switch name {
+	case "bash", "browser", "view_image", "send_media", "grep", "fts_search",
+		"webfetch", "websearch", "apply_patch":
+		return true
+	}
+	return false
 }
 
 // toolIcon is the per-tool glyph, so a call reads as a mark plus a name rather
