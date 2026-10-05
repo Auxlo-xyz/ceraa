@@ -1612,7 +1612,8 @@ func formatToolActivity(tools []toolActivity) string {
 func boldWordTool(name string) bool {
 	switch name {
 	case "bash", "browser", "view_image", "send_media", "grep", "fts_search",
-		"webfetch", "websearch", "apply_patch":
+		"webfetch", "websearch", "apply_patch", "skill_propose", "script",
+		"skill_use", "run_command_with_secret", "list_secrets":
 		return true
 	}
 	return false
