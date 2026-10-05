@@ -2870,6 +2870,7 @@
               )}
               {/* COLUMN 1: 9. STATUS AND CONTROL + QUICK RUN LEVERS */}
               <section className="col col-left">
+                <div className="card">
                 <div className="hero-band">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>LIVE RUNS · QUEUE {botStatus.promptQueueDepth}</div>
@@ -2896,6 +2897,7 @@
                       <div className="t-body">Idle. Runs start from Telegram.</div>
                     )}
                   </div>
+                </div>
                 </div>
 
                 {/* Active Run & Bot Control Rows */}
@@ -3308,6 +3310,7 @@
 
               {/* COLUMN 3: 8. STATS (Spend, Interactive Token Chart 1d/7d/30d/All, Cache Hit Dials) */}
               <section className="col col-right">
+                <div className="card">
                 <div className="hero-band">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>
@@ -3325,6 +3328,7 @@
                       <AnimatedNumber value={chartBuckets.hitRate} suffix="% CACHE HIT" />
                     </div>
                   </div>
+                </div>
                 </div>
 
                 {/* Stylish Token Consumption Chart with 1d, 7d, 30d, and All Time Views */}
@@ -3400,6 +3404,7 @@
                 </div>
 
                 {/* Selected Session Token Split (Animated when switching sessions) */}
+                <div className="card" style={{ marginTop: 12 }}>
                 <div className="sec-head">
                   <h2 className="t-sec">Session Token Split</h2>
                   <span className="t-mono">{activeSession.title}</span>
@@ -3434,6 +3439,7 @@
                     </div>
                     <div className="t-body">TTL creation tokens</div>
                   </div>
+                </div>
                 </div>
 
                 {/* Totals & Title Model Summary */}
