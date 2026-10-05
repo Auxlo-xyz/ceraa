@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
 	"syscall"
@@ -92,6 +93,33 @@ func sendRestartNotice(token string) {
 		return
 	}
 	send(token, chatID, "Back online. Restart complete.")
+}
+
+// restartShutdown stops the process the way a SIGTERM would. A variable
+// rather than a direct call so tests can observe the signal path without
+// cancelling the shared shutdown context the whole package reads.
+var restartShutdown = func() { stopSignals() }
+
+var restartWatchOnce sync.Once
+
+// WatchRestartSignal arms the same self-exec restart when the process
+// receives SIGUSR1. This is the CLI half: `ceraa restart` signals the running
+// daemon instead of stopping and starting it, so both surfaces funnel into
+// one shutdown path and one exec. SIGUSR1 rather than SIGHUP because a
+// hangup must never reboot the bot; USR1 carries no such baggage.
+func WatchRestartSignal() {
+	restartWatchOnce.Do(func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGUSR1)
+		go func() {
+			for range sig {
+				// Chat zero means no Telegram notice: the CLI reports the
+				// outcome itself, and takeRestartNotice rejects zero anyway.
+				armRestart(0)
+				restartShutdown()
+			}
+		}()
+	})
 }
 
 // ExecSelf replaces the running process with a fresh instance of the same

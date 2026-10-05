@@ -641,6 +641,9 @@ func Run() error {
 	// Released when Run returns, so a second Run in the same process is not
 	// permanently wedged by a context that is already cancelled.
 	defer stopSignals()
+	// The CLI restart path: SIGUSR1 funnels into the same arm-and-shutdown
+	// sequence /restart uses, so one shutdown path serves both surfaces.
+	WatchRestartSignal()
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
 		return fmt.Errorf("load config: %w", cfgErr)

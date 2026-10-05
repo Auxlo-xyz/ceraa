@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -80,6 +81,14 @@ var stopCmd = &cobra.Command{
 	},
 }
 
+var restartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Restart the running Ceraa service in place",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runRestart()
+	},
+}
+
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure Ceraa interactively",
@@ -134,6 +143,75 @@ func runStop() error {
 		fmt.Printf("Ceraa did not exit within %s; killed (pid %d).\n", stopGrace, rec.PID)
 	}
 	return termErr
+}
+
+// restartWait is how long `ceraa restart` waits for the daemon to come back
+// before it stops waiting and says so. Long enough for the poll loop to
+// notice the shutdown, run its deferred teardown and exec a new image;
+// the long poll is the worst-case latency, and it is interruptible.
+const restartWait = 30 * time.Second
+
+// runRestart signals the running daemon to restart itself rather than
+// stopping and starting it. The signal funnels into the same arm-and-exec
+// path /restart uses, so there is one shutdown sequence, not two. An exec
+// keeps the daemon's own environment, which a stop followed by a start from
+// this shell would not: the caller may not even hold the daemon's env file.
+func runRestart() error {
+	path := procfile.Path(paths.DataDir())
+	rec, err := procfile.Read(path)
+	if os.IsNotExist(err) {
+		fmt.Println("Ceraa is not running (no pid file). Start it with ceraa start.")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read pid file: %w", err)
+	}
+	// Same stale-slot clearing as runStop: a record left by a daemon that died
+	// without running its cleanup must not block, and must not be signalled.
+	matches, matchErr := procfile.Matches(rec)
+	if matchErr != nil || !matches {
+		if rmErr := procfile.Remove(path); rmErr != nil {
+			return rmErr
+		}
+		fmt.Printf("Ceraa is not running; cleared stale pid file for %d.\n", rec.PID)
+		return nil
+	}
+	mark, markErr := os.Stat(path)
+	if markErr != nil {
+		return fmt.Errorf("stat pid file: %w", markErr)
+	}
+	if err := syscall.Kill(rec.PID, syscall.SIGUSR1); err != nil {
+		return fmt.Errorf("signal daemon (pid %d): %w", rec.PID, err)
+	}
+	fmt.Printf("Restart signalled (pid %d); waiting for it to come back...\n", rec.PID)
+	if err := waitForPidRewrite(path, mark.ModTime(), restartWait); err != nil {
+		alive, _, _ := procfile.Probe(rec.PID)
+		if !alive {
+			return fmt.Errorf("daemon exited without restarting; start it with ceraa start")
+		}
+		return fmt.Errorf("daemon did not come back within %s; it may still be shutting down", restartWait)
+	}
+	// The exec keeps the process, so the record must still match: a pid file
+	// that changed hands mid-restart belongs to someone else now.
+	if matches, matchErr := procfile.Matches(rec); matchErr != nil || !matches {
+		return fmt.Errorf("pid file changed hands during restart; check what holds it before starting anything")
+	}
+	fmt.Printf("Ceraa restarted (pid %d).\n", rec.PID)
+	return nil
+}
+
+// waitForPidRewrite waits until path exists with a modification time after
+// since. The old image removes the pid file in its shutdown defer and the new
+// image writes it on claim, so a newer file is the restart completing.
+func waitForPidRewrite(path string, since time.Time, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fi, err := os.Stat(path); err == nil && fi.ModTime().After(since) {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("no new pid file within %s", timeout)
 }
 
 var configCmd = &cobra.Command{
@@ -253,6 +331,7 @@ func registerSubcommands() {
 	attach(verCmd)
 	attach(startCmd)
 	attach(stopCmd)
+	attach(restartCmd)
 	attach(setupCmd)
 	attach(doctorCmd)
 	attach(configCmd)

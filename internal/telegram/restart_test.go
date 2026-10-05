@@ -2,7 +2,10 @@ package telegram
 
 import (
 	"os"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"ceraa/internal/telegram/menus"
 )
@@ -66,5 +69,36 @@ func TestRestartNoticeRejectsGarbage(t *testing.T) {
 		if _, ok := takeRestartNotice(); ok {
 			t.Errorf("notice %q accepted, want rejection", raw)
 		}
+	}
+}
+
+// The CLI restart signals the process rather than stopping and starting it,
+// so the signal must funnel into the same armed flag cmd/root.go execs on.
+// The shutdown itself is stubbed: cancelling the shared context here would
+// leak into every other test in the package.
+func TestRestartSignalArmsRestart(t *testing.T) {
+	t.Cleanup(func() {
+		restartState.Lock()
+		restartState.armed = false
+		restartState.chatID = 0
+		restartState.Unlock()
+		os.Unsetenv(restartNoticeEnv)
+		restartShutdown = func() { stopSignals() }
+	})
+	var stopped atomic.Bool
+	restartShutdown = func() { stopped.Store(true) }
+	WatchRestartSignal()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatalf("signal self: %s", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for (!RestartRequested() || !stopped.Load()) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !RestartRequested() {
+		t.Fatal("SIGUSR1 did not arm the restart")
+	}
+	if !stopped.Load() {
+		t.Error("SIGUSR1 armed the restart but did not stop the process")
 	}
 }
