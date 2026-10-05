@@ -1571,8 +1571,8 @@ func parseToolActivity(value string) (toolActivity, bool) {
 // identifies it.
 //
 // The bullet, the tick and the middle dot are all gone, and with them the line
-// that reads "• ✓ > Run command · cd /workspace". Soraa Code renders the same
-// call as "💻 bash cd /workspace", which is the tool rather than the harness's
+// that reads "• ✓ > Run command · cd /workspace". The same call renders as
+// ">_ bash cd /workspace", which is the tool rather than the harness's
 // sentence about it, and that is what a reader scanning the message is looking
 // for. Entries are separated by a blank line for the same reason: one call per
 // paragraph, so a long command does not run into the line under it.
@@ -1592,42 +1592,50 @@ func formatToolActivity(tools []toolActivity) string {
 			line += " " + tool.detail
 		}
 		if tool.elapsed != "" {
-			line += " · 🕒 " + tool.elapsed
+			line += " · ◷ " + tool.elapsed
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n\n")
 }
 
-// toolIcon is Soraa Code's per-tool icon, so a call reads the same in both
-// bridges. An unknown tool gets a gear rather than nothing: an unlabelled line
-// is worse than a generic one.
+// toolIcon is the per-tool glyph, so a call reads as a mark plus a name rather
+// than a sentence: ">_ bash" instead of the harness's bullet about the tool.
+// Shell and file tools share ">_", search shares the lens, and edits share the
+// pencil: the glyph groups tools by family, which is what a reader scanning a
+// long trail actually wants. An unknown tool gets a plain gear rather than
+// nothing: an unlabelled line is worse than a generic one.
 func toolIcon(name string) string {
 	switch name {
 	case "read":
-		return "📖"
+		return ">_"
 	case "write":
-		return "✍️"
+		return "✍"
 	case "edit", "edit_line", "batch_edit_file":
-		return "✏️"
+		return "✎"
 	case "apply_patch":
 		return "🩹"
 	case "bash":
-		return "💻"
+		return ">_"
 	case "glob":
-		return "📁"
+		return ">_"
 	case "grep", "fts_search":
-		return "🔍"
+		return "⌕"
 	case "task":
-		return "🤖"
+		return "✦"
 	case "question":
-		return "❓"
+		// Bold: a bare question mark at text weight disappears next to tool
+		// names, and the renderer speaks HTML, so the weight is markup rather
+		// than a heavier glyph.
+		return "<b>?</b>"
 	case "todowrite":
-		return "📝"
+		return "✐"
 	case "webfetch":
-		return "🌐"
+		return "⌖"
+	case "compaction":
+		return "ϟ"
 	default:
-		return "⚙️"
+		return "⚙"
 	}
 }
 
