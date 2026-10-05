@@ -594,10 +594,9 @@ func (r *runRenderer) thoughtTextLocked() string {
 	return formatThought(r.thought, true)
 }
 
-// thoughtHeader is the line above the blockquote. Soraa Code writes
-// "💭 Thinking...", and a header is what tells the reader that the message below
-// it is reasoning rather than an answer, so the word alone is not enough.
-const thoughtHeader = "<b>💭 Thinking...</b>"
+// thoughtHeader is the line above the blockquote, and a header is what tells
+// the reader that the message below it is reasoning rather than an answer.
+const thoughtHeader = "<b>Thought</b>"
 
 func formatThought(value string, streaming bool) string {
 	value = strings.TrimSpace(value)
