@@ -795,6 +795,35 @@
       align-items: center;
       flex-wrap: wrap;
     }
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      flex: none;
+      border-radius: 8px;
+      background: var(--well);
+      border: 1px solid var(--rule);
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+    }
+    .icon-btn:hover {
+      border-color: var(--ink);
+    }
+    .icon-btn.danger {
+      color: var(--fault);
+    }
+    .icon-btn.danger:hover {
+      background: var(--fault);
+      border-color: var(--fault);
+      color: var(--ground);
+    }
+    .icon-btn svg {
+      width: 15px;
+      height: 15px;
+    }
     .mini-btn {
       font-family: var(--mono);
       font-size: 12px;
@@ -3077,10 +3106,7 @@
                 </div>
 
                 <div className="sec-head">
-                  <h2 className="t-sec">Session List</h2>
-                  <button className="action-link" onClick={() => setActiveTab("Context")}>
-                    Project roots & files/ →
-                  </button>
+                  <h2 className="t-sec">Sessions</h2>
                 </div>
 
                 <div className="hairline-list">
@@ -3148,17 +3174,23 @@
                           <div className="row-actions">
                             <button
                               type="button"
-                              className="mini-btn"
+                              className="icon-btn"
+                              aria-label={`Rename ${sess.title}`}
+                              title="Rename"
                               onClick={() => {
                                 setRenamingSessionId(sess.id);
                                 setRenameValue(sess.title);
                               }}
                             >
-                              Rename
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                              </svg>
                             </button>
                             <button
                               type="button"
-                              className="mini-btn danger"
+                              className="icon-btn danger"
+                              aria-label={`Delete ${sess.title}`}
+                              title="Delete"
                               onClick={async () => {
                                 if (sessions.length <= 1) return;
                                 try {
@@ -3169,7 +3201,10 @@
                                 }
                               }}
                             >
-                              Delete
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                              </svg>
                             </button>
                           </div>
                           <span
