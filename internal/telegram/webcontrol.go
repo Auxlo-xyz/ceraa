@@ -738,6 +738,12 @@ func webStats() (map[string]any, error) {
 	sort.Slice(endpointList, func(i, j int) bool {
 		return endpointList[i]["spend_usd"].(float64) > endpointList[j]["spend_usd"].(float64)
 	})
+	// Newest activity first, so the dashboard opens on the live session rather
+	// than whatever the filesystem listed first. Sessions without runs carry
+	// no timestamp and sink to the bottom, which is where dead sessions belong.
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i]["updated_at"].(string) > sessions[j]["updated_at"].(string)
+	})
 	// Per-run points for the token chart, newest last. The chart buckets them
 	// client-side by timeframe, so the backend reports instants and never
 	// invents a bucket shape the data does not have.
@@ -763,11 +769,11 @@ type endpointAggregate struct {
 
 func webSessionStats(sess *sessionstore.Session, endpoints map[string]*endpointAggregate) (map[string]any, []map[string]any) {
 	summary := map[string]any{
-		"id": sess.ID, "title": sess.DisplayTitle(),
+		"id": sess.ID, "title": sess.Title, "display_title": sess.DisplayTitle(),
 		"runs": 0, "tool_calls": len(sess.Operations), "errors": 0,
 		"input_tokens": 0, "output_tokens": 0,
 		"cache_read_tokens": 0, "cache_write_tokens": 0,
-		"spend_usd": 0.0, "has_estimate": false,
+		"spend_usd": 0.0, "has_estimate": false, "updated_at": "",
 	}
 	add := func(key string, n int) {
 		summary[key] = summary[key].(int) + n
@@ -820,6 +826,9 @@ func webSessionStats(sess *sessionstore.Session, endpoints map[string]*endpointA
 		}
 		if strings.TrimSpace(run.PricingModel) != "" {
 			agg.models[run.PricingModel] = true
+		}
+		if stamp := run.UpdatedAt; !stamp.IsZero() {
+			summary["updated_at"] = stamp.UTC().Format(time.RFC3339)
 		}
 	}
 	return summary, runPoints

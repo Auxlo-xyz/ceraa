@@ -1534,6 +1534,9 @@
       const [skillProposals, setSkillProposals] = useState([]);
 
       const [scheduledJobs, setScheduledJobs] = useState([]);
+      const [addingJob, setAddingJob] = useState(false);
+      const [newJobCron, setNewJobCron] = useState("0 9 * * *");
+      const [newJobTask, setNewJobTask] = useState("");
 
       const handleAddJob = async (e) => {
         e.preventDefault();
@@ -1710,7 +1713,7 @@
 
       function mapSessionStat(x, index) {
         return {
-          id: x.id, title: x.title || "Untitled session", active: index === 0,
+          id: x.id, title: x.display_title || x.title || "Untitled session", active: index === 0,
           runs: x.runs || 0, toolCalls: x.tool_calls || 0, errors: x.errors || 0,
           inputTok: x.input_tokens || 0, outputTok: x.output_tokens || 0,
           cacheReadTok: x.cache_read_tokens || 0, cacheWriteTok: x.cache_write_tokens || 0,
@@ -1778,7 +1781,7 @@
 
       async function refreshSchedules() {
         const body = await Api.call("/api/schedules");
-        setSchedules(((body && body.jobs) || []).map((j) => ({
+        setScheduledJobs(((body && body.jobs) || []).map((j) => ({
           id: j.id, cron: j.cron, task: j.task, session: j.session || ""
         })));
       }
