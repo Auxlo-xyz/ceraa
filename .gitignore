@@ -20,3 +20,8 @@ testdata-fuzz/
 # Scratch output from an agent run. Screenshots and generated files land here and
 # must never be tracked; landing.html was accidentally committed this way.
 /workspace/
+
+# User uploads over Telegram. Real documents from a real person, landing in
+# files/ by design; tracking them would push private material to GitHub on the
+# next git add -A, which the auto-push rule runs after every fix.
+files/
