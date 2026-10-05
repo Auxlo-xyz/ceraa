@@ -945,7 +945,11 @@
           return res.text().then(function (text) {
             var parsed = null;
             try { parsed = text ? JSON.parse(text) : null; } catch (e) {}
-            if (!res.ok) throw new Error(text || ("request failed " + res.status));
+            if (!res.ok) {
+              var err = new Error(text || ("request failed " + res.status));
+              err.status = res.status;
+              throw err;
+            }
             return parsed;
           });
         });
@@ -1252,6 +1256,10 @@
       const [tokenTimeframe, setTokenTimeframe] = useState("7d");
       const [meta, setMeta] = useState(null);
       const [apiError, setApiError] = useState(null);
+      // denied replaces the whole dashboard: without Telegram credentials every
+      // section would be empty, and an empty dashboard with an error bar reads
+      // as broken rather than locked.
+      const [denied, setDenied] = useState(false);
       const [webSessionId, setWebSessionId] = useState("web");
       const [envWorkspaceRoot, setEnvWorkspaceRoot] = useState("");
       const [forbiddenSourceTreePrefix, setForbiddenSourceTreePrefix] = useState("/workspace/development/ceraa");
@@ -1849,7 +1857,14 @@
         ];
         const results = await Promise.allSettled(steps.map((fn) => fn()));
         const failed = results.find((r) => r.status === "rejected");
-        if (failed) setApiError("Dashboard load incomplete: " + (failed.reason.message || failed.reason));
+        if (failed) {
+          const code = failed.reason && failed.reason.status;
+          if (code === 401 || code === 403) {
+            setDenied(true);
+            return;
+          }
+          setApiError("Dashboard load incomplete: " + (failed.reason.message || failed.reason));
+        }
         await loadFiles("files/");
       }
 
@@ -2018,6 +2033,29 @@
         } catch (err) {
           setApiError("Cancel failed: " + ((err && err.message) || err));
         }
+      }
+
+      // Locked replaces the whole dashboard: without Telegram credentials every
+      // section below would render empty, and an empty dashboard with an error
+      // bar reads as broken rather than locked.
+      if (denied) {
+        return (
+          <div className="shell">
+            <div style={{ maxWidth: 460, margin: "12vh auto 0", textAlign: "center", padding: "0 24px" }}>
+              <div className="t-mono" style={{ letterSpacing: "0.2em" }}>CERAA · PRIVATE</div>
+              <div className="t-display" style={{ marginTop: 12 }}>This dashboard is locked</div>
+              <div className="t-body" style={{ marginTop: 12 }}>
+                It only opens from the Ceraa Telegram bot. A bare link carries no credentials, so there is nothing to show — and nothing leaked in learning that.
+              </div>
+              <div style={{ marginTop: 20 }}>
+                <button type="button" className="btn-solid" onClick={() => window.location.reload()}>
+                  Retry
+                </button>
+              </div>
+              <div className="t-mono" style={{ marginTop: 16 }}>401 · NO TELEGRAM CREDENTIALS</div>
+            </div>
+          </div>
+        );
       }
 
       return (
@@ -2701,7 +2739,7 @@
                         ■ /STOP RUN
                       </button>
                     ) : (
-                      <div className="t-body">Idle. Send a prompt in Live Run below.</div>
+                      <div className="t-body">Idle. Runs start from Telegram.</div>
                     )}
                   </div>
                 </div>
