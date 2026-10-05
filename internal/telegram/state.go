@@ -41,6 +41,9 @@ type bridgeState struct {
 	Projects        map[string]string `json:"projects,omitempty"`
 	SessionProjects map[string]string `json:"session_projects,omitempty"`
 	AlwaysAllow     map[string]bool   `json:"always_allow,omitempty"`
+	// UpdateCheck persists the release-check preference. Nil means enabled, so
+	// an install that predates the setting behaves as it always did.
+	UpdateCheck *bool `json:"update_check,omitempty"`
 }
 
 var defaultState = loadBridgeState()
@@ -322,6 +325,22 @@ func (s *bridgeState) alwaysAllowed(toolName string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.AlwaysAllow[toolName]
+}
+
+// updateCheckEnabled reports whether the startup release check may run. The
+// environment override is consulted by the caller, not here: this answers
+// what the file says, and the caller layers the machine policy over it.
+func (s *bridgeState) updateCheckEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.UpdateCheck == nil || *s.UpdateCheck
+}
+
+func (s *bridgeState) setUpdateCheck(enabled bool) error {
+	s.mu.Lock()
+	s.UpdateCheck = &enabled
+	s.mu.Unlock()
+	return s.save()
 }
 
 // values reports the runtime model and agent mode.

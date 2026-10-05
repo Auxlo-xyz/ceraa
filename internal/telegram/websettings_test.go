@@ -73,3 +73,27 @@ func TestWebSettingsNeverCarriesACredential(t *testing.T) {
 		}
 	}
 }
+
+// The update check toggle persists through the settings surface, because a
+// switch that forgets on restart is decoration.
+func TestUpdateCheckTogglePersistsThroughSettings(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+
+	if !defaultState.updateCheckEnabled() {
+		t.Fatal("a fresh install must check for updates")
+	}
+	if err := applyWebSettings(map[string]any{"update_check": false}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if defaultState.updateCheckEnabled() {
+		t.Fatal("the toggle did not take effect")
+	}
+	reloaded := loadBridgeStateFromFile(defaultState.path)
+	if reloaded.updateCheckEnabled() {
+		t.Fatal("the toggle did not survive a reload")
+	}
+	if err := applyWebSettings(map[string]any{"update_check": "yes"}); err == nil {
+		t.Fatal("a non-bool update_check was accepted")
+	}
+}

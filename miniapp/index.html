@@ -1515,8 +1515,26 @@
       // A chat run cannot be stopped from here: the cancel route only reaches
       // this surface's own session, by design. The button enables only when
       // the active run is ours; otherwise it says where the stop lives.
+      // A chat run cannot be stopped from here: the cancel route only reaches
+      // this surface's own session, by design. The button enables only when
+      // the active run is ours; otherwise it says where the stop lives.
       const cancellableRun =
         botStatus.activeRun.active && botStatus.activeRun.sessionTitle === webSessionId;
+
+      const toggleUpdateCheck = async () => {
+        if (botStatus.updateCheckPin) return;
+        const next = !botStatus.updateCheckEnabled;
+        try {
+          await Api.call("/api/settings", "POST", { settings: { update_check: next } });
+          setBotStatus((prev) => ({
+            ...prev,
+            updateCheckEnabled: next,
+            updateStatus: next ? prev.updateStatus : "Automatic update check disabled"
+          }));
+        } catch (err) {
+          setApiError("Update check failed: " + (err.message || err));
+        }
+      };
 
       const handleStopActiveRun = async () => {
         if (!cancellableRun) return;
@@ -1908,7 +1926,8 @@
             : "Up to date",
           miniAppEndpoint: st.tunnel || "",
           tunnelState: st.tunnel ? "TLS TUNNEL UP" : "NO TUNNEL",
-          promptQueueDepth: st.queued_prompts || 0
+          promptQueueDepth: st.queued_prompts || 0,
+          updateCheckPin: !!st.update_check_pin
         });
         if (st.workspace) setEnvWorkspaceRoot(st.workspace);
       }
@@ -3005,7 +3024,7 @@
                     <div className="h-left">
                       <span className="dot" />
                       <div>
-                        <div className="t-row">Mini App Endpoint & Tunnel</div>
+                        <div className="t-row">Mini App Tunnel URL</div>
                         <div className="t-body">{botStatus.miniAppEndpoint}</div>
                       </div>
                     </div>
@@ -3020,16 +3039,23 @@
                       <div>
                         <div className="t-row">Version {botStatus.version}</div>
                         <div className="t-body">
-                          {botStatus.updateCheckEnabled
-                            ? botStatus.updateStatus
-                            : "Automatic update check disabled in config"}
+                          {botStatus.updateCheckPin
+                            ? "Pinned off by environment"
+                            : botStatus.updateCheckEnabled
+                              ? botStatus.updateStatus
+                              : "Automatic update check disabled"}
                         </div>
                       </div>
                     </div>
                     <div className="h-right">
-                      <span className="t-mono" style={{ color: botStatus.updateCheckEnabled ? "var(--accent)" : "var(--ink-3)" }}>
-                        {botStatus.updateCheckEnabled ? "ON" : "OFF"}
-                      </span>
+                      <div
+                        className={`switch ${botStatus.updateCheckEnabled ? "on" : ""}`}
+                        style={botStatus.updateCheckPin ? { opacity: 0.4 } : null}
+                        onClick={toggleUpdateCheck}
+                        role="switch"
+                        aria-checked={botStatus.updateCheckEnabled}
+                        title={botStatus.updateCheckPin ? "Pinned by environment" : "Toggle update check"}
+                      />
                     </div>
                   </div>
                 </div>

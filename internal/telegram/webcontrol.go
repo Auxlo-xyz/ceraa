@@ -1045,7 +1045,8 @@ func webStatus(tunnelAddr func() string) func() (map[string]any, error) {
 		return map[string]any{
 			"running":          true,
 			"version":          build.Version,
-			"update_check":     os.Getenv("CERAA_DISABLE_UPDATE_CHECK") == "",
+			"update_check":     updateCheckActive(),
+			"update_check_pin": os.Getenv("CERAA_DISABLE_UPDATE_CHECK") != "",
 			"update_available": updateChecked && update.Available,
 			"update_latest":    update.Latest,
 			"tunnel":           tunnelAddr(),

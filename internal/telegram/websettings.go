@@ -37,6 +37,7 @@ var webSettingKeys = map[string]string{
 	"agent":           "string",
 	"model":           "string",
 	"auto_compaction": "bool",
+	"update_check":    "bool",
 }
 
 // applyWebSettings changes what the next run uses.
@@ -64,7 +65,7 @@ func applyWebSettings(update map[string]any) error {
 		}
 	}
 
-	order := []string{"reasoning", "provider", "agent", "model", "auto_compaction"}
+	order := []string{"reasoning", "provider", "agent", "model", "auto_compaction", "update_check"}
 	for _, key := range order {
 		raw, ok := update[key]
 		if !ok {
@@ -89,6 +90,10 @@ func applyWebSettings(update map[string]any) error {
 			}
 		case "auto_compaction":
 			if err := defaultState.setAutoCompaction(raw.(bool)); err != nil {
+				return err
+			}
+		case "update_check":
+			if err := defaultState.setUpdateCheck(raw.(bool)); err != nil {
 				return err
 			}
 		}

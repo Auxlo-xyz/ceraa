@@ -32,6 +32,12 @@ func lastUpdateResult() (selfupdate.Status, bool) {
 	return lastUpdateCheck.status, lastUpdateCheck.checked
 }
 
+// updateCheckActive is what the dashboard shows: machine policy first, then
+// the persisted preference. Either one off means off.
+func updateCheckActive() bool {
+	return os.Getenv("CERAA_DISABLE_UPDATE_CHECK") == "" && defaultState.updateCheckEnabled()
+}
+
 // noteNewRelease logs when a newer release exists.
 //
 // Backgrounded and bounded, because the alternative is a startup that waits on
@@ -47,7 +53,7 @@ func lastUpdateResult() (selfupdate.Status, bool) {
 // CERAA_DISABLE_UPDATE_CHECK turns it off for a machine that must not make the
 // outbound call at all.
 func noteNewRelease() {
-	if os.Getenv("CERAA_DISABLE_UPDATE_CHECK") != "" {
+	if os.Getenv("CERAA_DISABLE_UPDATE_CHECK") != "" || !defaultState.updateCheckEnabled() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), updateCheckBudget)
