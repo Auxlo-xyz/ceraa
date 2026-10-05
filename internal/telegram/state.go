@@ -44,6 +44,13 @@ type bridgeState struct {
 	// UpdateCheck persists the release-check preference. Nil means enabled, so
 	// an install that predates the setting behaves as it always did.
 	UpdateCheck *bool `json:"update_check,omitempty"`
+
+	// NotifyChat is the chat a republished Mini App address is pushed to when
+	// nobody asked for one. Persisted because the push happens on the boot
+	// path, and a boot that had forgotten its chat would republish the button
+	// silently - which is the failure that leaves a phone tapping a dead
+	// hostname and reading it as the bot being down.
+	NotifyChat int64 `json:"notify_chat,omitempty"`
 }
 
 var defaultState = loadBridgeState()
@@ -339,6 +346,28 @@ func (s *bridgeState) updateCheckEnabled() bool {
 func (s *bridgeState) setUpdateCheck(enabled bool) error {
 	s.mu.Lock()
 	s.UpdateCheck = &enabled
+	s.mu.Unlock()
+	return s.save()
+}
+
+// notifyChat is the chat a republished Mini App address is pushed to.
+func (s *bridgeState) notifyChat() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.NotifyChat
+}
+
+// setNotifyChat records where an unrequested republish should be announced.
+// A value already stored is not rewritten: the save is a disk write on a path
+// every publish goes through, and a no-op write on every /web would be cost
+// paid for nothing.
+func (s *bridgeState) setNotifyChat(chatID int64) error {
+	s.mu.Lock()
+	if s.NotifyChat == chatID {
+		s.mu.Unlock()
+		return nil
+	}
+	s.NotifyChat = chatID
 	s.mu.Unlock()
 	return s.save()
 }

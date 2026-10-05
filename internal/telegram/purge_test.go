@@ -61,8 +61,11 @@ func TestRepublishSendsAnInlineLink(t *testing.T) {
 	if got := miniAppChat(); got != 4242 {
 		t.Errorf("miniAppChat = %d, want 4242", got)
 	}
+	// Zero is how "unknown" is spelled, so it must not overwrite a recorded
+	// chat. A boot that has not seen a message yet calls in with zero, and
+	// clearing the destination would silently disable every future push.
 	noteMiniAppChat(0)
-	if got := miniAppChat(); got != 0 {
-		t.Errorf("miniAppChat = %d, want 0 after being cleared", got)
+	if got := miniAppChat(); got != 4242 {
+		t.Errorf("miniAppChat = %d after a zero write, want the recorded 4242", got)
 	}
 }

@@ -156,16 +156,33 @@ func noteMiniAppPublished(origin string) {
 
 // noteMiniAppChat records the chat an address was published to, so a later
 // republication has somewhere to go without being asked.
+//
+// Persisted, because the republish that needs it usually happens on the boot
+// path - after a restart - and a boot that started from a blank state would
+// have nowhere to push. The write is best effort: losing the chat costs a
+// silent republish, which is no worse than having never recorded it.
 func noteMiniAppChat(chatID int64) {
+	if chatID == 0 {
+		return
+	}
 	miniappMu.Lock()
-	defer miniappMu.Unlock()
 	miniappChat = chatID
+	miniappMu.Unlock()
+	if err := defaultState.setNotifyChat(chatID); err != nil {
+		logger.Warn("Mini App notify chat not persisted: " + err.Error())
+	}
 }
 
+// miniAppChat is seeded from the persisted value at boot, so the in-memory
+// copy and the stored one cannot disagree about where a republish goes.
 func miniAppChat() int64 {
 	miniappMu.Lock()
-	defer miniappMu.Unlock()
-	return miniappChat
+	chatID := miniappChat
+	miniappMu.Unlock()
+	if chatID != 0 {
+		return chatID
+	}
+	return defaultState.notifyChat()
 }
 
 // miniAppWatchInterval is how often the tunnel is checked for having died.
