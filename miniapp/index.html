@@ -530,8 +530,9 @@
     .h-row.clickable {
       cursor: pointer;
     }
-    .h-row.clickable:hover,
-    .h-row:hover {
+    /* Hover answers only where a tap does something. Plain rows stay dead
+       still under the finger; a grey flash on a row with no action is noise. */
+    .h-row.clickable:hover {
       background: rgba(18, 17, 16, 0.024);
     }
     .h-row.active-row {
@@ -2976,7 +2977,7 @@
                 {/* Active Run & Bot Control Rows */}
                 <div className="card">
                 <div className="sec-head">
-                  <h2 className="t-sec">Status & Control</h2>
+                  <h2 className="t-sec">Status</h2>
                   <span className="t-mono" style={{ color: botStatus.activeRun.active ? "var(--accent)" : "var(--ink-2)" }}>
                     {botStatus.pollingState}
                   </span>
@@ -3026,7 +3027,9 @@
                       </div>
                     </div>
                     <div className="h-right">
-                      <div className={`switch ${botStatus.updateCheckEnabled ? "on" : ""}`} />
+                      <span className="t-mono" style={{ color: botStatus.updateCheckEnabled ? "var(--accent)" : "var(--ink-3)" }}>
+                        {botStatus.updateCheckEnabled ? "ON" : "OFF"}
+                      </span>
                     </div>
                   </div>
                 </div>
