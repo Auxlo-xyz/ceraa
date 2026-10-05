@@ -224,6 +224,22 @@
       align-items: center;
       gap: 10px;
     }
+    /* The provider label must never wrap: a two-line PROVID/ER squeezes the
+       select beside it. The label keeps its width, the select takes the rest
+       and ellipsizes a long "name (model)" instead of pushing the row wider. */
+    .provider-field {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .provider-field > span {
+      flex: none;
+      white-space: nowrap;
+    }
+    .provider-field select {
+      flex: 1 1 auto;
+      min-width: 0;
+      text-overflow: ellipsis;
+    }
 
     .input-clean {
       background: var(--well);
