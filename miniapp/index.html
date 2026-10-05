@@ -48,8 +48,10 @@
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
       min-height: 100vh;
-      overflow-x: hidden;
-      width: 100%;
+      /* No blue flash on tap: mobile WebKit paints its own highlight over
+         every tap, and the dashboard already answers taps with its own
+         pressed and selected states. */
+      -webkit-tap-highlight-color: transparent;
     }
 
     button, input, select {
