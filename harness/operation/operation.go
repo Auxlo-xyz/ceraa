@@ -786,6 +786,11 @@ func newSnapshotStore() (*snapshot.Store, error) {
 }
 
 func todoStoreDir() (string, error) {
+	// Session state lives outside the source tree, pinned by
+	// CERAA_SESSION_FILE in production. The fallback is for shell use.
+	if dir := envs.Get("SESSION_FILE"); dir != "" {
+		return dir, nil
+	}
 	return "sessions", nil
 }
 

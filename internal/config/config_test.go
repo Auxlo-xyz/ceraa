@@ -199,3 +199,22 @@ func TestTheDocumentedEnvSeedStillApplies(t *testing.T) {
 			cfg.LLM.URL, cfg.LLM.Model, cfg.LLM.APIKey)
 	}
 }
+
+// Session and workspace locations must be pinnable outside the source tree.
+// The bot is forbidden to write under the repo, so every CWD-relative runtime
+// directory needs an env overlay, or the default quietly puts live state back
+// among the source files.
+func TestSessionAndWorkspaceRootsArePinnableOutsideTheTree(t *testing.T) {
+	t.Setenv("CERAA_SESSION_FILE", "/workspace/ceraa/sessions")
+	t.Setenv("CERAA_WORKSPACE_ROOT", "/workspace/ceraa/workspace")
+
+	cfg := DefaultConfig()
+	applyEnv(cfg)
+
+	if cfg.SessionFile != "/workspace/ceraa/sessions" {
+		t.Errorf("SessionFile = %q, want the pinned data dir", cfg.SessionFile)
+	}
+	if cfg.WorkspaceRootPath() != "/workspace/ceraa/workspace" {
+		t.Errorf("WorkspaceRootPath() = %q, want the pinned data dir", cfg.WorkspaceRootPath())
+	}
+}

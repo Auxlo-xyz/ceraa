@@ -112,3 +112,16 @@ func TestInboxConcurrency(t *testing.T) {
 		t.Fatalf("expected exactly 1 goroutine to succeed recording update 9999, got %d", trueCount)
 	}
 }
+
+// The dedup journal must follow the session pin, or the inbox keeps writing
+// into the source tree after everything else moved out.
+func TestInboxDirFollowsTheSessionPin(t *testing.T) {
+	t.Setenv("CERAA_SESSION_FILE", "/workspace/ceraa/sessions")
+	if got := inboxDir(); got != "/workspace/ceraa/sessions" {
+		t.Fatalf("inboxDir() = %q, want the pinned data dir", got)
+	}
+	t.Setenv("CERAA_SESSION_FILE", "")
+	if got := inboxDir(); got != "sessions" {
+		t.Fatalf("inboxDir() = %q without a pin, want the shell fallback", got)
+	}
+}

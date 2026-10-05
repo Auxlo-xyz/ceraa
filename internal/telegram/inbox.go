@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"ceraa/internal/envs"
 )
 
 // Inbox provides thread-safe deduplication for Telegram updates.
@@ -51,10 +53,21 @@ func NewInbox(filePath string, maxEntries int) *Inbox {
 	return ib
 }
 
+// inboxDir resolves where the dedup journal lives. Split out so the
+// production pin is testable without touching the process-wide singleton.
+func inboxDir() string {
+	if dir := envs.Get("SESSION_FILE"); dir != "" {
+		return dir
+	}
+	return "sessions"
+}
+
 // GetDefaultInbox returns the singleton Inbox instance backed by sessions/inbox.json.
 func GetDefaultInbox() *Inbox {
 	defaultInboxOnce.Do(func() {
-		dir := "sessions"
+		// Session state lives outside the source tree, pinned by
+		// CERAA_SESSION_FILE in production. The fallback is for shell use.
+		dir := inboxDir()
 		_ = os.MkdirAll(dir, 0755)
 		defaultInbox = NewInbox(filepath.Join(dir, "inbox.json"), 5000)
 	})
