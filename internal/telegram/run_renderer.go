@@ -1572,7 +1572,7 @@ func parseToolActivity(value string) (toolActivity, bool) {
 //
 // The bullet, the tick and the middle dot are all gone, and with them the line
 // that reads "• ✓ > Run command · cd /workspace". The same call renders as
-// ">_ bash cd /workspace", which is the tool rather than the harness's
+// "⚡ bash cd /workspace", which is the tool rather than the harness's
 // sentence about it, and that is what a reader scanning the message is looking
 // for. Entries are separated by a blank line for the same reason: one call per
 // paragraph, so a long command does not run into the line under it.
@@ -1592,7 +1592,7 @@ func formatToolActivity(tools []toolActivity) string {
 			line += " " + tool.detail
 		}
 		if tool.elapsed != "" {
-			line += " · ◷ " + tool.elapsed
+			line += " · 🕐 " + tool.elapsed
 		}
 		lines = append(lines, line)
 	}
@@ -1600,42 +1600,36 @@ func formatToolActivity(tools []toolActivity) string {
 }
 
 // toolIcon is the per-tool glyph, so a call reads as a mark plus a name rather
-// than a sentence: ">_ bash" instead of the harness's bullet about the tool.
-// Shell and file tools share ">_", search shares the lens, and edits share the
-// pencil: the glyph groups tools by family, which is what a reader scanning a
-// long trail actually wants. An unknown tool gets a plain gear rather than
-// nothing: an unlabelled line is worse than a generic one.
+// than a sentence. An unknown tool gets a gear rather than nothing: an
+// unlabelled line is worse than a generic one.
 func toolIcon(name string) string {
 	switch name {
 	case "read":
-		return ">_"
+		return "📚"
 	case "write":
-		return "✍"
+		return "✏️"
 	case "edit", "edit_line", "batch_edit_file":
-		return "✎"
+		return "✏️"
 	case "apply_patch":
-		return "🩹"
+		return "🛠"
 	case "bash":
-		return ">_"
+		return "⚡"
 	case "glob":
-		return ">_"
+		return "📂"
 	case "grep", "fts_search":
-		return "⌕"
+		return "🔎"
 	case "task":
-		return "✦"
+		return "🎯"
 	case "question":
-		// Bold: a bare question mark at text weight disappears next to tool
-		// names, and the renderer speaks HTML, so the weight is markup rather
-		// than a heavier glyph.
-		return "<b>?</b>"
+		return "❓"
 	case "todowrite":
-		return "✐"
+		return "📌"
 	case "webfetch":
-		return "⌖"
+		return "🔍"
 	case "compaction":
-		return "ϟ"
+		return "⚡"
 	default:
-		return "⚙"
+		return "⚙️"
 	}
 }
 

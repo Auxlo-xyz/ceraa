@@ -409,7 +409,7 @@ func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	ids := make([]int, 0, len(byID))
 	for id, text := range byID {
 		ids = append(ids, id)
-		if strings.Contains(text, ">_ read") {
+		if strings.Contains(text, "\U0001F4DA read") {
 			trail = text
 			trailCount++
 			continue
@@ -420,7 +420,7 @@ func TestToolActivityGetsItsOwnMessage(t *testing.T) {
 	if trail == "" || trailCount != 1 {
 		t.Fatalf("the tool trail is not exactly one message of its own: ids=%v answer=%q", ids, answer)
 	}
-	if !strings.Contains(trail, ">_ read /workspace/ceraa") {
+	if !strings.Contains(trail, "\U0001F4DA read /workspace/ceraa") {
 		t.Fatalf("trail message = %q", trail)
 	}
 	if strings.Contains(trail, "\u23f3") {
@@ -479,7 +479,7 @@ func TestToolActivityKeepsOneLinePerCallAndEveryCall(t *testing.T) {
 	}
 	// The icon and the bare tool name are the line, so a reader can tell what
 	// ran without reading the harness's sentence about it.
-	if !strings.Contains(activity, ">_ read file-1") {
+	if !strings.Contains(activity, "\U0001F4DA read file-1") {
 		t.Fatalf("tool line is not icon plus tool name: %q", activity)
 	}
 	if strings.Contains(activity, "completed") {
@@ -491,7 +491,7 @@ func TestToolActivityPreservesCommandDetailOnCompletion(t *testing.T) {
 	renderer := &runRenderer{messageID: 1}
 	renderer.tool("run-1", "🔄 "+toolNameToken("bash")+">_ Run command · find /workspace -name config.json")
 	renderer.tool("run-1", "✅ "+toolNameToken("bash")+">_ Run command completed")
-	want := ">_ bash find /workspace -name config.json"
+	want := "\u26a1 bash find /workspace -name config.json"
 	if got := formatToolActivity(renderer.tools); got != want {
 		t.Fatalf("tool activity = %q, want %q", got, want)
 	}
@@ -582,7 +582,7 @@ func TestRunningToolEarnsADurationOnlyAfterTheThreshold(t *testing.T) {
 	if renderer.tickToolElapsed() {
 		t.Fatal("a call that had barely started showed a duration it had not earned")
 	}
-	if strings.Contains(formatToolActivity(renderer.tools), "\u25f7") {
+	if strings.Contains(formatToolActivity(renderer.tools), "\U0001F550") {
 		t.Fatalf("duration before the threshold: %q", formatToolActivity(renderer.tools))
 	}
 
@@ -590,7 +590,7 @@ func TestRunningToolEarnsADurationOnlyAfterTheThreshold(t *testing.T) {
 	if !renderer.tickToolElapsed() {
 		t.Fatal("crossing the threshold produced no duration")
 	}
-	if !strings.Contains(formatToolActivity(renderer.tools), "\u25f7") {
+	if !strings.Contains(formatToolActivity(renderer.tools), "\U0001F550") {
 		t.Fatalf("running line carries no duration: %q", formatToolActivity(renderer.tools))
 	}
 	// The displayed number is bucketed, so two looks inside one bucket render
@@ -650,7 +650,7 @@ func TestRunningToolTickerReachesThePreview(t *testing.T) {
 		mu.Lock()
 		found := false
 		for _, text := range seen {
-			if strings.Contains(text, "\u25f7") {
+			if strings.Contains(text, "\U0001F550") {
 				found = true
 			}
 		}
@@ -805,7 +805,7 @@ func TestEveryThoughtBlockAndToolCallGetsItsOwnMessage(t *testing.T) {
 		switch {
 		case strings.Contains(text, thoughtHeader):
 			thoughts++
-		case strings.HasPrefix(text, ">_ bash"):
+		case strings.HasPrefix(text, "\u26a1 bash"):
 			tools++
 			key := strings.Join(strings.Fields(text)[1:], " ")
 			toolLines[key]++
