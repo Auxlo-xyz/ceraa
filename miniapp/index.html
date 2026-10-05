@@ -147,7 +147,6 @@
       justify-content: space-between;
       gap: 20px;
       padding-bottom: 24px;
-      border-bottom: 2px solid var(--rule-strong);
       flex-wrap: wrap;
     }
 
@@ -553,6 +552,25 @@
       border: 1px solid var(--rule);
       border-radius: 16px;
       padding: 16px 18px;
+    }
+    /* Stacked cards breathe like the sections around them: a card directly
+       after a card gets the same gap the sections have always had. */
+    .card + .card {
+      margin-top: 12px;
+    }
+    /* Inside a card the frame is the separator, so the old horizontal rules
+       retire: no list top border, no row bottom borders, no grid outline.
+       Vertical cell dividers stay, they are structure rather than rules. */
+    .card .hairline-list {
+      border-top: none;
+    }
+    .card .h-row {
+      border-bottom: none;
+    }
+    .card .telem-grid {
+      border-top: none;
+      border-bottom: none;
+      margin-top: 12px;
     }
     .card-top {
       display: flex;
@@ -2960,7 +2978,7 @@
                 </div>
 
                 {/* Reasoning Effort Rotary Dial */}
-                <div className="card" style={{ marginTop: 12 }}>
+                <div className="card">
                 <div className="sec-head">
                   <h2 className="t-sec">Reasoning Effort</h2>
                   <button className="action-link" onClick={() => setActiveTab("Agents")}>
@@ -3404,7 +3422,7 @@
                 </div>
 
                 {/* Selected Session Token Split (Animated when switching sessions) */}
-                <div className="card" style={{ marginTop: 12 }}>
+                <div className="card">
                 <div className="sec-head">
                   <h2 className="t-sec">Session Token Split</h2>
                   <span className="t-mono">{activeSession.title}</span>
