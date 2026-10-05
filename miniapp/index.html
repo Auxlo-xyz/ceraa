@@ -553,6 +553,9 @@
       border-radius: 16px;
       padding: 16px 18px;
     }
+    .card.clickable {
+      cursor: pointer;
+    }
     /* Stacked cards breathe like the sections around them: a card directly
        after a card gets the same gap the sections have always had. */
     .card + .card {
@@ -3111,69 +3114,54 @@
                   <h2 className="t-sec">Sessions</h2>
                 </div>
 
-                <div className="hairline-list">
+                <div className="card-list">
                   {sessions.slice(shownSessionPage * 6, shownSessionPage * 6 + 6).map((sess) => {
                     const isSelected = sess.id === activeSession.id;
                     return (
                       <div
                         key={sess.id}
-                        className={`h-row stack-mobile clickable ${isSelected ? "active-row" : ""}`}
+                        className={`card clickable ${isSelected ? "active-row" : ""}`}
                         onClick={() => setSelectedSessionId(sess.id)}
                       >
-                        <div className="h-left">
-                          <span className={`dot ${sess.active ? "" : "done"}`} />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            {renamingSessionId === sess.id ? (
-                              <form
-                                onSubmit={async (e) => {
-                                  e.preventDefault();
-                                  if (renameValue.trim()) {
-                                    try {
-                                      await Api.call("/api/sessions/" + encodeURIComponent(sess.id), "POST", { title: renameValue.trim() });
-                                      await refreshStats();
-                                    } catch (err) {
-                                      setApiError("Rename failed: " + (err.message || err));
-                                    }
+                        <div className="card-top">
+                          <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                          </svg>
+                          {renamingSessionId === sess.id ? (
+                            <form
+                              onSubmit={async (e) => {
+                                e.preventDefault();
+                                if (renameValue.trim()) {
+                                  try {
+                                    await Api.call("/api/sessions/" + encodeURIComponent(sess.id), "POST", { title: renameValue.trim() });
+                                    await refreshStats();
+                                  } catch (err) {
+                                    setApiError("Rename failed: " + (err.message || err));
                                   }
-                                  setRenamingSessionId(null);
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
-                              >
-                                <input
-                                  className="input-clean"
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  autoFocus
-                                />
-                                <button type="submit" className="mini-btn">Save</button>
-                              </form>
-                            ) : (
-                              <>
-                                <div className="t-row">
-                                  {sess.title}
-                                  {sess.active && (
-                                    <span className="t-mono" style={{ color: "var(--accent)", marginLeft: 8 }}>
-                                      ● ACTIVE
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="t-body tnum" style={{ marginTop: 2 }}>
-                                  {sess.runs} runs · {sess.toolCalls} tools ·{" "}
-                                  {sess.errors > 0 ? (
-                                    <span style={{ color: "var(--fault)", fontWeight: 600 }}>{sess.errors} error</span>
-                                  ) : (
-                                    "0 errors"
-                                  )}{" "}
-                                  · In {(sess.inputTok / 1000).toFixed(1)}k / Out {(sess.outputTok / 1000).toFixed(1)}k / CacheR {(sess.cacheReadTok / 1000).toFixed(0)}k
-                                </div>
-                              </>
-                            )}
-                          </div>
+                                }
+                                setRenamingSessionId(null);
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}
+                            >
+                              <input
+                                className="input-clean"
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                autoFocus
+                                style={{ flex: 1 }}
+                              />
+                              <button type="submit" className="mini-btn">Save</button>
+                            </form>
+                          ) : (
+                            <span className="card-title">{sess.title}</span>
+                          )}
+                          {sess.active && renamingSessionId !== sess.id ? (
+                            <span className="card-pill hot">ACTIVE</span>
+                          ) : null}
                         </div>
-
-                        <div className="h-right" onClick={(e) => e.stopPropagation()}>
-                          <div className="row-actions">
+                        <div className="card-actions" style={{ justifyContent: "space-between", alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: "flex", gap: 8 }}>
                             <button
                               type="button"
                               className="icon-btn"
@@ -3211,7 +3199,7 @@
                           </div>
                           <span
                             className="t-mono tnum"
-                            style={{ color: sess.pricingUsable ? "var(--ink)" : "var(--accent)", minWidth: 68, textAlign: "right" }}
+                            style={{ color: sess.pricingUsable ? "var(--ink)" : "var(--accent)" }}
                             title={sess.pricingUsable ? "Verified pricing table rate" : "PricingUsable=false: Estimated spend"}
                           >
                             ${sess.spend.toFixed(2)}
