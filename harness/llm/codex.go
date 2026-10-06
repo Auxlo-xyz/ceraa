@@ -476,6 +476,7 @@ func (c *StreamingClient) readCodexStream(r io.Reader, onDelta func(ProviderResp
 	var order []int
 	var responseID, responseModel, finishReason string
 	var usage *UsageInfo
+	var usageRaw json.RawMessage
 	emitted := false
 	sawToolCall := false
 
@@ -554,6 +555,9 @@ func (c *StreamingClient) readCodexStream(r io.Reader, onDelta func(ProviderResp
 				if usage.TotalTokens == 0 {
 					usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 				}
+				if raw, err := json.Marshal(event.Response.Usage); err == nil {
+					usageRaw = raw
+				}
 			}
 			if event.Response.IncompleteDetails.Reason != "" {
 				finishReason = event.Response.IncompleteDetails.Reason
@@ -601,6 +605,7 @@ func (c *StreamingClient) readCodexStream(r io.Reader, onDelta func(ProviderResp
 			ResponseModel: responseModel,
 			ToolCalls:     finalCalls,
 			Usage:         usage,
+			UsageRaw:      usageRaw,
 		})
 	}
 	return nil

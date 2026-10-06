@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -58,13 +59,18 @@ func newRunAccounting(pricing llm.ModelMetadata, priced bool) *runAccounting {
 // The comparison is against the run's accumulated prompt count rather than this
 // single delta, because that is the quantity the provider's figure describes when
 // it is describing the right thing at all.
-func (a *runAccounting) Add(delta llm.UsageInfo, local llm.TokenBreakdown) {
+func (a *runAccounting) Add(delta llm.UsageInfo, local llm.TokenBreakdown, raw *json.RawMessage) {
 	// Per-request cache log. One line per model request, carrying the exact
 	// figures the provider reported for that request alone, because the run total
 	// cannot say *where* a prefix stops matching: 50% over a run is consistent
 	// with every request missing half its context and with half the requests
 	// missing all of it, and those need different fixes.
 	a.requests++
+	if traceCache && raw != nil {
+		// The provider's own usage object, verbatim. Everything else in this log
+		// is Ceraa's reading of it, and the reading is what is in question.
+		logger.Info(fmt.Sprintf("rawusage req=%d %s", a.requests, truncateRaw(string(*raw))))
+	}
 	if traceCache {
 		logger.Info(fmt.Sprintf(
 			"cache req=%d input=%d cached=%d hit=%.1f%% local_total=%d sys=%d tools=%d conv=%d toolout=%d reasoning=%d",
@@ -111,4 +117,13 @@ func (a *runAccounting) CacheReadRatio() float64 {
 // is what let the mistake survive a green suite in the first place.
 func countRequestBeforeUse(total *llm.TokenBreakdown, request llm.TokenBreakdown) {
 	total.Add(request)
+}
+
+// truncateRaw keeps a usage payload on one log line without silently cutting a
+// field off the end, where it would look like the provider had not sent it.
+func truncateRaw(s string) string {
+	if len(s) <= 700 {
+		return s
+	}
+	return s[:700] + "...TRUNCATED"
 }

@@ -259,6 +259,16 @@ type ProviderResponse struct {
 	ResponseModel    string
 	ReasoningDetails json.RawMessage
 	Usage            *UsageInfo
+	// UsageRaw is the provider's usage object exactly as it arrived.
+	//
+	// It exists because the parsed form cannot answer the question it was added
+	// for. Ceraa reads cached tokens from input_tokens_details.cached_tokens, the
+	// Responses API spelling; the Chat Completions spelling is
+	// prompt_tokens_details.cached_tokens. A provider that returns the other shape
+	// is reporting a perfectly good cache hit in a field we do not read, and the
+	// run records a confident zero. Only the raw object separates "no cache hit"
+	// from "hit reported somewhere else".
+	UsageRaw json.RawMessage
 }
 
 type UsageInfo struct {

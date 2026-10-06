@@ -26,7 +26,7 @@ func TestARunTotalIsNotPricedWhenTheProviderReportsARunningTotal(t *testing.T) {
 	acct := newRunAccounting(pricedMetadata(), true)
 
 	local := llm.TokenBreakdown{System: 517, Tools: 1197, User: 655, Conversation: 26010, ToolOutput: 83985, Reasoning: 11}
-	acct.Add(llm.UsageInfo{InputTokens: 47_513_540, OutputTokens: 65_176}, local)
+	acct.Add(llm.UsageInfo{InputTokens: 47_513_540, OutputTokens: 65_176}, local, nil)
 
 	if acct.Trust().Trusted {
 		t.Fatal("a 423x discrepancy was accepted")
@@ -44,7 +44,7 @@ func TestARunTotalIsNotPricedWhenTheProviderReportsARunningTotal(t *testing.T) {
 func TestUsageIsStillRecordedForAnUntrustworthyRun(t *testing.T) {
 	acct := newRunAccounting(pricedMetadata(), true)
 	local := llm.TokenBreakdown{ToolOutput: 100_000}
-	acct.Add(llm.UsageInfo{InputTokens: 50_000_000}, local)
+	acct.Add(llm.UsageInfo{InputTokens: 50_000_000}, local, nil)
 
 	if acct.Usage().InputTokens != 50_000_000 {
 		t.Errorf("the provider's claim was discarded: %d", acct.Usage().InputTokens)
@@ -59,7 +59,7 @@ func TestUsageIsStillRecordedForAnUntrustworthyRun(t *testing.T) {
 func TestAnAgreeingRunIsStillPriced(t *testing.T) {
 	acct := newRunAccounting(pricedMetadata(), true)
 	local := llm.TokenBreakdown{ToolOutput: 100_000}
-	acct.Add(llm.UsageInfo{InputTokens: 101_000, OutputTokens: 500}, local)
+	acct.Add(llm.UsageInfo{InputTokens: 101_000, OutputTokens: 500}, local, nil)
 
 	if !acct.Trust().Trusted {
 		t.Fatalf("an agreeing run was rejected: %s", acct.Trust().Note)
@@ -74,10 +74,10 @@ func TestAnAgreeingRunIsStillPriced(t *testing.T) {
 // and real money in one total.
 func TestAnUntrustworthyRunStaysUnpriced(t *testing.T) {
 	acct := newRunAccounting(pricedMetadata(), true)
-	acct.Add(llm.UsageInfo{InputTokens: 50_000_000}, llm.TokenBreakdown{ToolOutput: 100_000})
+	acct.Add(llm.UsageInfo{InputTokens: 50_000_000}, llm.TokenBreakdown{ToolOutput: 100_000}, nil)
 
 	// A later request that agrees on its own.
-	acct.Add(llm.UsageInfo{InputTokens: 1_000, OutputTokens: 10}, llm.TokenBreakdown{ToolOutput: 1_000})
+	acct.Add(llm.UsageInfo{InputTokens: 1_000, OutputTokens: 10}, llm.TokenBreakdown{ToolOutput: 1_000}, nil)
 
 	if acct.Cost().Known {
 		t.Errorf("cost resumed after an untrustworthy delta: %+v", acct.Cost())
@@ -88,7 +88,7 @@ func TestAnUntrustworthyRunStaysUnpriced(t *testing.T) {
 // to survive into the report.
 func TestMissingPricingIsDistinctFromUntrustedCounts(t *testing.T) {
 	unpriced := newRunAccounting(pricedMetadata(), false)
-	unpriced.Add(llm.UsageInfo{InputTokens: 100_000}, llm.TokenBreakdown{ToolOutput: 100_000})
+	unpriced.Add(llm.UsageInfo{InputTokens: 100_000}, llm.TokenBreakdown{ToolOutput: 100_000}, nil)
 	if !unpriced.Trust().Trusted {
 		t.Error("missing price data was reported as untrustworthy counts")
 	}
@@ -97,7 +97,7 @@ func TestMissingPricingIsDistinctFromUntrustedCounts(t *testing.T) {
 	}
 
 	untrusted := newRunAccounting(pricedMetadata(), true)
-	untrusted.Add(llm.UsageInfo{InputTokens: 100_000_000}, llm.TokenBreakdown{ToolOutput: 100_000})
+	untrusted.Add(llm.UsageInfo{InputTokens: 100_000_000}, llm.TokenBreakdown{ToolOutput: 100_000}, nil)
 	if untrusted.Trust().Trusted {
 		t.Error("bad counts were reported as trustworthy")
 	}
@@ -107,7 +107,7 @@ func TestMissingPricingIsDistinctFromUntrustedCounts(t *testing.T) {
 // recorded must be the counts, not the absent price.
 func TestUntrustworthyCountsWinOverAbsentPricing(t *testing.T) {
 	acct := newRunAccounting(pricedMetadata(), false)
-	acct.Add(llm.UsageInfo{InputTokens: 100_000_000}, llm.TokenBreakdown{ToolOutput: 100_000})
+	acct.Add(llm.UsageInfo{InputTokens: 100_000_000}, llm.TokenBreakdown{ToolOutput: 100_000}, nil)
 	if acct.Trust().Trusted {
 		t.Error("bad counts passed because pricing happened to be missing too")
 	}
@@ -119,12 +119,12 @@ func TestUntrustworthyCountsWinOverAbsentPricing(t *testing.T) {
 // untrusted, which would make the recorded usage depend on when the check ran.
 func TestUsageKeepsAccumulatingAfterARunGoesUntrusted(t *testing.T) {
 	acct := newRunAccounting(pricedMetadata(), true)
-	acct.Add(llm.UsageInfo{InputTokens: 50_000_000}, llm.TokenBreakdown{ToolOutput: 100_000})
+	acct.Add(llm.UsageInfo{InputTokens: 50_000_000}, llm.TokenBreakdown{ToolOutput: 100_000}, nil)
 	if acct.Trust().Trusted {
 		t.Fatal("setup: the run should be untrusted")
 	}
 
-	acct.Add(llm.UsageInfo{InputTokens: 60_000_000, OutputTokens: 42}, llm.TokenBreakdown{ToolOutput: 100_000})
+	acct.Add(llm.UsageInfo{InputTokens: 60_000_000, OutputTokens: 42}, llm.TokenBreakdown{ToolOutput: 100_000}, nil)
 
 	if got := acct.Usage().InputTokens; got != 110_000_000 {
 		t.Errorf("InputTokens = %d, want 110000000: usage stopped accumulating once the run went untrusted", got)

@@ -454,7 +454,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	}
 	if r.cfg.Compactor != nil {
 		r.cfg.Compactor.OnUsage = func(delta llm.UsageInfo) {
-			accounting.Add(delta, runBreakdown)
+			accounting.Add(delta, runBreakdown, nil)
 			runUsage, runCost, runTrust = accounting.Usage(), accounting.Cost(), accounting.Trust()
 			if r.cb.OnUsage != nil {
 				r.cb.OnUsage(runUsage, runTrust)
@@ -695,7 +695,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			}
 			if delta.Usage != nil {
 				usage.Add(*delta.Usage)
-				accounting.Add(*delta.Usage, runBreakdown)
+				accounting.Add(*delta.Usage, runBreakdown, &delta.UsageRaw)
 				runUsage, runCost, runTrust = accounting.Usage(), accounting.Cost(), accounting.Trust()
 				if r.cb.OnUsage != nil {
 					r.cb.OnUsage(runUsage, runTrust)
