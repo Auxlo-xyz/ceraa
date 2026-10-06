@@ -31,4 +31,11 @@ const (
 // reports, which is a development build rather than pretending to be a release.
 //
 // The value is a var, not a const, because -X can only set a string variable.
-var Version = "0.4.6-dev"
+//
+// It tracks the next unreleased minor, so a build from the tree reads as newer
+// than the tag it was cut from. Left at 0.4.6-dev after v0.6.0 shipped, every
+// dev build claimed to be three releases behind and the dashboard and the
+// Telegram status line both reported "Update available: v0.6.0" to somebody
+// already running the code that came after it. A -dev build sorts below its own
+// release, which is what makes the real v0.6.1 still announce itself.
+var Version = "0.6.1-dev"

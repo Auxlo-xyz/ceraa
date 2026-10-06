@@ -107,6 +107,15 @@
       color: var(--ink-2);
       word-break: break-word;
     }
+    /* A hostname has no spaces to break at, so it needs the wrapping spelled out.
+       word-break: break-word is the legacy spelling of this and is honoured
+       inconsistently; overflow-wrap: anywhere is the standard one, and "anywhere"
+       rather than "break-word" because the latter leaves the last line measured
+       before it wraps, which is what stranded a single trailing letter. */
+    .t-url {
+      overflow-wrap: anywhere;
+      word-break: normal;
+    }
     .t-mono {
       font-family: var(--mono);
       font-size: 12px;
@@ -1464,6 +1473,18 @@
         return "Use uppercase letters, digits, and underscores only (e.g. STRIPE_LIVE_KEY).";
       }
       return null;
+    }
+
+    // The tunnel hostname is shown without its scheme.
+//
+// A quick tunnel address is 45-odd characters and the status row is a narrow
+// column on a phone, so "https://" is eight characters of pure overhead that
+// pushed the hostname onto a third line and orphaned a trailing letter. The full
+// address stays on the element's title, so it is still one hover or long-press
+// away from being copied.
+    function displayTunnelURL(url) {
+      if (!url) return "";
+      return url.replace(/^https?:\/\//, "");
     }
 
     // BOARD TABS: one source for both navs.
@@ -3019,7 +3040,12 @@
                       <span className="dot" />
                       <div>
                         <div className="t-row">Mini App Tunnel URL</div>
-                        <div className="t-body">{botStatus.miniAppEndpoint}</div>
+                        <div
+                          className="t-body t-url"
+                          title={botStatus.miniAppEndpoint || undefined}
+                        >
+                          {displayTunnelURL(botStatus.miniAppEndpoint)}
+                        </div>
                       </div>
                     </div>
                     <div className="h-right">
