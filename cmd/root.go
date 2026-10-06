@@ -189,13 +189,21 @@ func runRestart() error {
 		if !alive {
 			return fmt.Errorf("daemon exited without restarting; start it with ceraa start")
 		}
-		// Alive with the pid file untouched means the signal was ignored: a
-		// daemon that predates the SIGUSR1 watcher never acts on it. It is
-		// not shutting down, so waiting longer would change nothing.
-		if fi, statErr := os.Stat(path); statErr == nil && !fi.ModTime().After(mark.ModTime()) {
-			return fmt.Errorf("daemon ignored the restart signal (it predates self-restart support); move it once with ceraa stop and ceraa start")
-		}
-		return fmt.Errorf("daemon did not come back within %s; it may still be shutting down", restartWait)
+		// What is observable from here is only that the restart did not complete
+		// in time. Whether the daemon ignored the signal or is still shutting
+		// down cannot be told apart from the outside: the pid file is only
+		// removed in the final deferred cleanup, so it is still there with its
+		// old timestamp while a shutdown is in progress, and the process is still
+		// alive. Those two facts were once reported as "the signal was ignored",
+		// which sent the reader looking for a binary too old to support restart
+		// while the daemon was in fact obeying and simply slow - a run in flight,
+		// browsers closing, the long poll unwinding.
+		//
+		// So the log carries the answer rather than the error. The daemon logs
+		// "Shutdown requested" the moment it acts on the signal, so that line is
+		// what distinguishes the two cases, and guessing here would only replace
+		// one wrong diagnosis with a more confident one.
+		return fmt.Errorf("daemon did not restart within %s (pid %d is alive); it may still be shutting down - check the log for \"Shutdown requested\", or run ceraa stop and ceraa start", restartWait, rec.PID)
 	}
 	// The exec keeps the process, so the record must still match: a pid file
 	// that changed hands mid-restart belongs to someone else now.

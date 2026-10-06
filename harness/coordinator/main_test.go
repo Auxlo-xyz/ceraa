@@ -8,6 +8,7 @@ import (
 
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
+	"ceraa/internal/testsupport"
 )
 
 // TestMain keeps this package's logs out of the live install.
@@ -18,17 +19,7 @@ import (
 // "Context budget recalibrated: ... model \"test\"" interleaved into it makes it
 // useless for the next diagnosis.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "ceraa-coordinator-test-")
-	if err != nil {
-		panic(err)
-	}
-	if err := os.Setenv("CERAA_HOME", dir); err != nil {
-		panic(err)
-	}
-	if err := os.Setenv("CERAA_LOG_FILE", filepath.Join(dir, "bridge.log")); err != nil {
-		panic(err)
-	}
-	os.Exit(m.Run())
+	testsupport.Main(m)
 }
 
 // Guards the guard: if the logger resolves outside the temporary directory, a
