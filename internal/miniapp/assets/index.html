@@ -708,6 +708,20 @@
       flex-direction: column;
       border-top: 1px solid var(--rule);
     }
+    /* A list outside a card. The dividers here separate rows *within* something,
+       and a list with no card around it has nothing to divide: its top rule read
+       as the bottom edge of the header card above it and its last row's rule read
+       as the top edge of the card below, so one stray element drew a line at both
+       ends of a gap.
+       Matched to the background rather than removed, because a dropped border
+       shifts everything above it by a pixel and these two lines are the only
+       thing separating those surfaces. */
+    .hairline-list.bare {
+      border-top-color: var(--ground);
+    }
+    .hairline-list.bare > .h-row:last-child {
+      border-bottom-color: var(--ground);
+    }
 
     .h-row {
       display: flex;
@@ -3849,7 +3863,7 @@
                 </div>
                 </div>
 
-                <div className="hairline-list">
+                <div className="hairline-list bare">
                   {endpointCacheStats.map((ep) => {
                     const radius = 16;
                     const circum = 2 * Math.PI * radius;

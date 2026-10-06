@@ -278,3 +278,34 @@ func TestOnlyTheTabHeroCardsDropTheRule(t *testing.T) {
 		t.Error("the flush variant does not remove the rule, so the four tab cards still draw it")
 	}
 }
+
+// A hairline-list that sits outside a card draws its top rule just under the
+// card above and its last row's rule just above the card below, so one stray
+// element put a line at both ends of the gap. The cache-dials list is that
+// element. The rules are matched to the background rather than dropped, because
+// removing them shifts everything above by a pixel.
+func TestOnlyTheUncardedHairlineListIsBare(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	markup := stripComments(string(page))
+	if got := strings.Count(markup, "hairline-list bare"); got != 1 {
+		t.Errorf("%d lists are marked bare, want exactly the 1 that sits outside a card", got)
+	}
+	css := pageCSS(t, page)
+	bare := cssSelector(t, css, ".hairline-list.bare")
+	if !strings.Contains(bare, "var(--ground)") {
+		t.Error("the bare list does not match its dividers to the background")
+	}
+	last := cssSelector(t, css, ".hairline-list.bare > .h-row:last-child")
+	if !strings.Contains(last, "var(--ground)") {
+		t.Error("the bare list still rules a line under its last row")
+	}
+	// Every other list is inside a card, where those rules are suppressed and the
+	// row dividers are what the reader relies on.
+	base := cssRule(t, css, "hairline-list")
+	if !strings.Contains(base, "border-top: 1px solid var(--rule)") {
+		t.Error("the base list lost its divider, which the in-card lists still need")
+	}
+}
