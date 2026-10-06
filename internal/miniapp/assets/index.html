@@ -656,6 +656,17 @@
       gap: 16px;
       flex-wrap: wrap;
     }
+    /* The rule belongs to a band that separates a header from a body below it.
+       On the four cards that open a tab it separated nothing: the band holds the
+       whole card, so the line ran across the card with content on only one side
+       of it and read as a stray rule. The card's own border already closes the
+       shape. So the band drops the rule, and the padding that existed to clear
+       it goes with it rather than leaving a gap where the line used to be. */
+    .hero-band.flush {
+      border-bottom: none;
+      padding-bottom: 4px;
+      min-height: 0;
+    }
 
     .hero-unit {
       font-size: 18px;
@@ -3349,7 +3360,7 @@
               {/* COLUMN 1: 9. STATUS AND CONTROL + QUICK RUN LEVERS */}
               <section className="col col-left">
                 <div className="card">
-                <div className="hero-band">
+                <div className="hero-band flush">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>LIVE RUNS · QUEUE {botStatus.promptQueueDepth}</div>
                     <div className="t-hero tnum">
@@ -3940,7 +3951,7 @@
               {/* COLUMN 1: WORKSPACE ROOT (ENV-PINNED) + PROJECT ROOTS + FILE BROWSER */}
               <section className="col col-left">
                 <div className="card">
-                <div className="hero-band">
+                <div className="hero-band flush">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>MOUNTED PROJECT ROOTS</div>
                     <div className="t-hero tnum">
@@ -4218,7 +4229,7 @@
               {/* COLUMN 1: 3. ALWAYSAIIOW TOOL PERMISSIONS */}
               <section className="col col-left">
                 <div className="card">
-                <div className="hero-band">
+                <div className="hero-band flush">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>ALWAYS-ALLOW LIST</div>
                     <div className="t-hero tnum">
@@ -4396,7 +4407,7 @@
               {/* COLUMN 1: 1. PROVIDER PROFILES, SUBSCRIPTION AUTH & MODEL CATALOG */}
               <section className="col col-left">
                 <div className="card">
-                <div className="hero-band">
+                <div className="hero-band flush">
                   <div>
                     <div className="t-mono" style={{ marginBottom: 8 }}>PROVIDER PROFILES</div>
                     <div className="t-hero tnum">

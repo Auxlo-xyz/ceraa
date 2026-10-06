@@ -151,6 +151,19 @@ func pageCSS(t *testing.T, page []byte) string {
 	return string(block[1])
 }
 
+// cssSelector returns the declaration body for a literal selector, so a
+// compound one like .hero-band.flush is matched as written rather than escaped
+// into something that cannot occur.
+func cssSelector(t *testing.T, css, selector string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(selector) + `\s*\{(.*?)\}`)
+	m := re.FindStringSubmatch(css)
+	if m == nil {
+		t.Fatalf("no rule for %s", selector)
+	}
+	return m[1]
+}
+
 // cssRule returns the declaration body for one class selector, following the
 // base rule rather than any responsive override, because the alignment and the
 // stacking are set on the base.
@@ -232,4 +245,36 @@ func stripComments(s string) string {
 		s = re.ReplaceAllString(s, "")
 	}
 	return s
+}
+
+// The band under a card header exists to separate a header from a body. On the
+// four cards that open a tab it separated nothing - the band holds the whole
+// card, so the rule ran across it with content on one side only - and it read as
+// a stray line. The eight bands that do divide a body keep it.
+func TestOnlyTheTabHeroCardsDropTheRule(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	markup := stripComments(string(page))
+
+	total := strings.Count(markup, `className="hero-band"`)
+	flush := strings.Count(markup, `className="hero-band flush"`)
+	// Four tabs: Overview, Context, Tools, Agents. Twelve bands exist in all.
+	if flush != 4 {
+		t.Errorf("%d bands are flush, want exactly the 4 that open a tab", flush)
+	}
+	if total+flush != 12 {
+		t.Errorf("found %d bands total (%d plain, %d flush), want 12; a card was added or lost", total, flush, total+flush)
+	}
+
+	css := pageCSS(t, page)
+	rule := cssRule(t, css, "hero-band")
+	if !strings.Contains(rule, "border-bottom: 1px") {
+		t.Error("the base band lost its rule, which the eight dividing bands still need")
+	}
+	flushed := cssSelector(t, css, ".hero-band.flush")
+	if !strings.Contains(flushed, "border-bottom: none") {
+		t.Error("the flush variant does not remove the rule, so the four tab cards still draw it")
+	}
 }
