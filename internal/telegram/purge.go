@@ -115,7 +115,7 @@ func purgeKeyboard(address string) map[string]any {
 	return map[string]any{
 		"inline_keyboard": [][]map[string]any{{
 			{
-				"text": "🌐 Open Ceraa",
+				"text": "Open Ceraa",
 				"web_app": map[string]any{
 					"url": address,
 				},

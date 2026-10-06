@@ -42,8 +42,14 @@ func TestPurgeKeyboardCarriesAWebApp(t *testing.T) {
 	if _, hasPlainURL := button["url"]; hasPlainURL {
 		t.Error("button carries a plain url, which Telegram caches like the menu button")
 	}
-	if !strings.Contains(button["text"].(string), "Open") {
+	label, _ := button["text"].(string)
+	if !strings.Contains(label, "Open") {
 		t.Errorf("label = %v", button["text"])
+	}
+	// Plain text, for the same reason as the menu button: it renders beside
+	// Telegram's own controls and a globe there is decoration, not information.
+	if strings.ContainsFunc(label, isEmoji) {
+		t.Errorf("the inline button label carries an emoji: %q", label)
 	}
 }
 
