@@ -1466,6 +1466,66 @@
       return null;
     }
 
+    // BOARD TABS: one source for both navs.
+    //
+    // The desktop dock and the mobile capsule each used to carry their own copy
+    // of these four entries, differing only in icon size. That is two places to
+    // edit for one icon change, and the pair drifts the first time someone
+    // changes one and forgets the other. The size is the only real difference,
+    // so it is a parameter.
+    //
+    // Context is layers rather than a bar chart: that tab leads with the
+    // workspace root, the project roots, the file browser and memory, so bars
+    // advertised a chart that is not there. Tools is a wrench rather than a
+    // bolt: everything on that tab is configuration - what is allowed, what is
+    // scheduled - and a bolt says speed and liveness, arguing against the
+    // content it labels.
+    function boardTabs(px) {
+      const s = { width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.1, strokeLinecap: "round", strokeLinejoin: "round" };
+      return [
+        {
+          id: "All",
+          label: "Overview (All)",
+          icon: (
+            <svg {...s}>
+              <path d="M3 10.5L12 3l9 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5v-9z" />
+              <path d="M9.5 21v-6.5h5V21" />
+            </svg>
+          )
+        },
+        {
+          id: "Context",
+          label: "Context, Roots & Memory",
+          icon: (
+            <svg {...s}>
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          )
+        },
+        {
+          id: "Tools",
+          label: "Tools, Permissions & Cron",
+          icon: (
+            <svg {...s}>
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+            </svg>
+          )
+        },
+        {
+          id: "Agents",
+          label: "Agents, Providers & Secrets",
+          icon: (
+            <svg {...s}>
+              <circle cx="12" cy="8.5" r="3.5" />
+              <path d="M6 19.5v-1.2A3.8 3.8 0 0 1 9.8 14.5h4.4a3.8 3.8 0 0 1 3.8 3.8v1.2" />
+            </svg>
+          )
+        }
+      ];
+    }
+
     function App() {
       // =======================================================================
       // NAVIGATION: 4 GROUNDED TABS (All, Context, Tools, Agents)
@@ -2821,50 +2881,9 @@
             </div>
 
             <div className="masthead-controls">
-              {/* Desktop Floating Capsule Icon Dock (Home, BarChart, Bolt, User) */}
+              {/* Desktop Floating Capsule Icon Dock */}
               <nav className="capsule-dock desktop-tabs" role="tablist" aria-label="Ceraa boards">
-                {[
-                  {
-                    id: "All",
-                    label: "Overview (All)",
-                    icon: (
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 10.5L12 3l9 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5v-9z" />
-                        <path d="M9.5 21v-6.5h5V21" />
-                      </svg>
-                    )
-                  },
-                  {
-                    id: "Context",
-                    label: "Context, Roots & Memory",
-                    icon: (
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="7" y1="19" x2="7" y2="13" />
-                        <line x1="12" y1="19" x2="12" y2="6" />
-                        <line x1="17" y1="19" x2="17" y2="10" />
-                      </svg>
-                    )
-                  },
-                  {
-                    id: "Tools",
-                    label: "Tools, Permissions & Cron",
-                    icon: (
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M13 3L5 14h6l-1 7 8-11h-6l1-7z" />
-                      </svg>
-                    )
-                  },
-                  {
-                    id: "Agents",
-                    label: "Agents, Providers & Secrets",
-                    icon: (
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="8.5" r="3.5" />
-                        <path d="M6 19.5v-1.2A3.8 3.8 0 0 1 9.8 14.5h4.4a3.8 3.8 0 0 1 3.8 3.8v1.2" />
-                      </svg>
-                    )
-                  }
-                ].map((item) => (
+                {boardTabs(22).map((item) => (
                   <button
                     key={item.id}
                     type="button"
@@ -2911,48 +2930,7 @@
           {/* Floating Capsule Icon Navbar for Mobile (<768px) */}
           <div className="mobile-capsule-wrapper">
             <nav className="capsule-dock" aria-label="Mobile board navigation">
-              {[
-                {
-                  id: "All",
-                  label: "Overview (All)",
-                  icon: (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 10.5L12 3l9 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5v-9z" />
-                      <path d="M9.5 21v-6.5h5V21" />
-                    </svg>
-                  )
-                },
-                {
-                  id: "Context",
-                  label: "Context, Roots & Memory",
-                  icon: (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="7" y1="19" x2="7" y2="13" />
-                      <line x1="12" y1="19" x2="12" y2="6" />
-                      <line x1="17" y1="19" x2="17" y2="10" />
-                    </svg>
-                  )
-                },
-                {
-                  id: "Tools",
-                  label: "Tools, Permissions & Cron",
-                  icon: (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M13 3L5 14h6l-1 7 8-11h-6l1-7z" />
-                    </svg>
-                  )
-                },
-                {
-                  id: "Agents",
-                  label: "Agents, Providers & Secrets",
-                  icon: (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="8.5" r="3.5" />
-                      <path d="M6 19.5v-1.2A3.8 3.8 0 0 1 9.8 14.5h4.4a3.8 3.8 0 0 1 3.8 3.8v1.2" />
-                    </svg>
-                  )
-                }
-              ].map((item) => (
+              {boardTabs(24).map((item) => (
                 <button
                   key={item.id}
                   type="button"
