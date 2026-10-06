@@ -8,7 +8,14 @@ import (
 // A rejected browser call used to name only the offending argument. The model
 // then retried the same shape until it concluded the browser tools were
 // unavailable, and told the user they were missing. The message has to carry a
-// recovery path.
+// recovery path, which means naming the action that does take the argument.
+//
+// The "open rejects a screenshot argument" case below used to be satisfied by a
+// fixed worked example at the end of the message, which happened to contain the
+// text "action=screenshot with full_page". It was green while the message named
+// no owner at all, so it looked like coverage of a recovery path that did not
+// exist. It asserts the real hint now, and the last case fails if any generic
+// example creeps back in to satisfy these by accident.
 func TestBrowserRejectionNamesWhatIsAccepted(t *testing.T) {
 	tool := &BrowserTool{}
 	cases := []struct {
@@ -19,12 +26,14 @@ func TestBrowserRejectionNamesWhatIsAccepted(t *testing.T) {
 		{
 			name: "open rejects an eval argument",
 			args: map[string]any{"action": "open", "url": "http://example.test", "script": "1"},
-			want: []string{"does not accept \"script\"", "accepts url, path, wait_ms", "one action"},
+			want: []string{"does not accept \"script\"", "accepts url, path, wait_ms", "one action",
+				"\"script\" belongs to action=eval"},
 		},
 		{
 			name: "open rejects a screenshot argument",
 			args: map[string]any{"action": "open", "url": "http://example.test", "full_page": true},
-			want: []string{"does not accept \"full_page\"", "one action", "action=screenshot with full_page"},
+			want: []string{"does not accept \"full_page\"", "one action",
+				"\"full_page\" belongs to action=screenshot"},
 		},
 		{
 			name: "click names its requirement",
@@ -55,6 +64,20 @@ func TestBrowserRejectionNamesWhatIsAccepted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A fixed worked example is what made the case above pass for the wrong reason.
+// It also does not help: the model had been shown a sequence and bundled
+// everything into one call anyway. Nothing generic goes in the message.
+func TestTheRejectionCarriesNoGenericWorkedExample(t *testing.T) {
+	_, err := (&BrowserTool{}).Translate(
+		map[string]any{"action": "open", "url": "http://example.test", "full_page": true})
+	if err == nil {
+		t.Fatal("expected the call to be rejected")
+	}
+	if strings.Contains(err.Error(), "for example") {
+		t.Errorf("message still carries a generic example:\n  %s", err)
 	}
 }
 

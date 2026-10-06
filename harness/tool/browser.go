@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,61 @@ var browserActionAlias = map[string]string{
 	"js": "eval",
 }
 
+// browserArgOwners is the reverse of browserArgSpec: for each argument, the
+// actions that accept it.
+//
+// Built rather than written out, so adding an action cannot leave this stale
+// and pointing the model at a call shape that no longer validates.
+var browserArgOwners = func() map[string][]string {
+	owners := make(map[string][]string)
+	for action, spec := range browserArgSpec {
+		for _, key := range append(append([]string{}, spec.required...), spec.optional...) {
+			owners[key] = append(owners[key], action)
+		}
+	}
+	// Sorted, because map iteration order would otherwise leak into the message
+	// and make the same mistake produce different advice on different runs.
+	for key := range owners {
+		sort.Strings(owners[key])
+	}
+	return owners
+}()
+
+// browserArgOwnerHint names the actions that do accept an argument the caller
+// put on the wrong one.
+//
+// The rejection already says what the chosen action accepts, and that was not
+// enough: the model retried the same call shape, concluded the tool was
+// unavailable, and told the user the browser was missing. It had nowhere to go,
+// because nothing said where `submit` goes. Naming the owner turns a dead end
+// into the next call, and stating that action's required arguments hands over a
+// shape that validates instead of one to guess at.
+func browserArgOwnerHint(arg string) string {
+	owners := browserArgOwners[arg]
+	if len(owners) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(owners))
+	for _, action := range owners {
+		// The offending argument is dropped from the list of what the owner
+		// needs. Repeating it back reads as though it were still the problem,
+		// and "action=click with selector" as advice about a misplaced selector
+		// is worse than no advice.
+		var needed []string
+		for _, key := range browserArgSpec[action].required {
+			if key != arg {
+				needed = append(needed, key)
+			}
+		}
+		if len(needed) > 0 {
+			parts = append(parts, fmt.Sprintf("action=%s with %s", action, strings.Join(needed, " and ")))
+			continue
+		}
+		parts = append(parts, "action="+action)
+	}
+	return fmt.Sprintf(" %q belongs to %s, as its own call.", arg, strings.Join(parts, " or "))
+}
+
 // describeBrowserArgs renders what an action accepts, for the rejection message.
 //
 // Naming only the offending argument left the model with no way to recover: it
@@ -170,8 +226,8 @@ func (b *BrowserTool) Translate(args map[string]any) (operation.Spec, error) {
 	for key := range args {
 		if !allowed[key] {
 			return operation.Spec{}, fmt.Errorf(
-				"browser action %q does not accept %q; %s. Each call performs exactly one action, so a sequence needs separate calls: for example action=open with url, then action=eval with script, then action=screenshot with full_page.",
-				action, key, describeBrowserArgs(spec))
+				"browser action %q does not accept %q; %s.%s Each call performs exactly one action, so a sequence needs separate calls.",
+				action, key, describeBrowserArgs(spec), browserArgOwnerHint(key))
 		}
 	}
 	translated := map[string]any{"action": action}
