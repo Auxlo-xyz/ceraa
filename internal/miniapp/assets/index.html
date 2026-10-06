@@ -260,6 +260,172 @@
       text-overflow: ellipsis;
     }
 
+    /* PROVIDER PICKER SHEET
+     *
+     * A native <select> cannot be styled, so it rendered as the one control on
+     * the page wearing the platform's chrome: a dark OS list on cream paper,
+     * with a two-line wrapped label and no indication of which entry was live.
+     * The sheet replaces it with the same information in this design system.
+     */
+    .pv-trigger {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: var(--well);
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      padding: 8px 10px 8px 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .pv-trigger:hover { background: var(--well-hover); }
+    .pv-trigger:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .pv-trigger-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pv-caret { flex: none; color: var(--ink-3); }
+
+    .psheet-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(18, 17, 16, 0.44);
+      z-index: 90;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      animation: psheet-fade 0.18s ease-out;
+    }
+    @keyframes psheet-fade {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .psheet {
+      width: 100%;
+      max-width: 560px;
+      max-height: 86vh;
+      overflow-y: auto;
+      background: var(--ground);
+      border: 1px solid var(--rule);
+      border-bottom: none;
+      border-radius: 18px 18px 0 0;
+      padding: 10px 16px calc(20px + env(safe-area-inset-bottom, 0px));
+      animation: psheet-rise 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      box-shadow: 0 -18px 48px rgba(18, 17, 16, 0.22);
+    }
+    @keyframes psheet-rise {
+      from { transform: translateY(14px); opacity: 0.6; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .psheet-grab {
+      width: 38px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--rule);
+      margin: 2px auto 12px;
+    }
+    .psheet-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--rule);
+      margin-bottom: 12px;
+    }
+    .psheet-title {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+    .psheet-list { display: flex; flex-direction: column; gap: 8px; }
+    .psheet-row {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: #FFFFFF;
+      border: 1px solid var(--rule);
+      border-radius: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, transform 0.08s ease;
+    }
+    .psheet-row:hover { border-color: var(--ink-3); }
+    .psheet-row:active { transform: scale(0.995); }
+    .psheet-row:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .psheet-row.is-active {
+      border-color: var(--accent);
+      background: #FFFDFC;
+    }
+    .psheet-row.is-busy { opacity: 0.6; cursor: progress; }
+    .psheet-rowtop {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+    .psheet-name {
+      font-family: var(--sf);
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--ink);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .psheet-active-tag {
+      flex: none;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: #FFF6F1;
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 2px 7px;
+    }
+    .psheet-check { flex: none; margin-left: auto; color: var(--accent); }
+    .psheet-model {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink-2);
+      overflow-wrap: anywhere;
+    }
+    .psheet-meta {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--ink-3);
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+    .psheet-empty {
+      font-family: var(--sf);
+      font-size: 14px;
+      color: var(--ink-3);
+      padding: 14px 2px;
+    }
+
     .input-clean {
       background: var(--well);
       padding: 8px 12px;
@@ -1547,11 +1713,131 @@
       ];
     }
 
+    // PROVIDER PICKER SHEET
+    //
+    // Replaces a native <select>, which cannot be styled and so rendered as the
+    // one control on the page wearing the platform's chrome. It also said less:
+    // two lines of name and model, with no way to see which entry was live and
+    // no endpoint, key or context budget anywhere in the choice.
+    //
+    // The sheet takes over the things a native control brings for free and has
+    // to be given back deliberately: Escape and a backdrop tap both close it,
+    // the page behind cannot scroll while it is up, focus moves into it and
+    // comes back on close, and it is announced as a dialog. It is also
+    // bottom-anchored, because the context is a Telegram WebApp on a phone.
+    function ProviderSheet({ open, profiles, activeId, busyId, onPick, onClose }) {
+      const panelRef = useRef(null);
+      const returnFocusRef = useRef(null);
+
+      useEffect(() => {
+        if (!open) return;
+        returnFocusRef.current = document.activeElement;
+        if (panelRef.current) panelRef.current.focus();
+        // The page behind a fixed overlay still scrolls on iOS unless it is
+        // locked, and a drag that starts inside the sheet can carry the whole
+        // document with it.
+        const previous = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        const onKey = (e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onClose();
+          }
+        };
+        document.addEventListener("keydown", onKey);
+        return () => {
+          document.body.style.overflow = previous;
+          document.removeEventListener("keydown", onKey);
+          const target = returnFocusRef.current;
+          if (target && typeof target.focus === "function") target.focus();
+        };
+      }, [open, onClose]);
+
+      if (!open) return null;
+
+      return (
+        <div
+          className="psheet-backdrop"
+          onClick={onClose}
+          role="presentation"
+        >
+          <div
+            className="psheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose provider"
+            tabIndex={-1}
+            ref={panelRef}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="psheet-grab" />
+            <div className="psheet-head">
+              <span className="psheet-title">Provider</span>
+              <span className="t-mono">{profiles.length} CONFIGURED</span>
+            </div>
+            <div className="psheet-list">
+              {profiles.length === 0 ? (
+                <div className="psheet-empty">
+                  No providers configured. Add one on the Agents tab.
+                </div>
+              ) : null}
+              {profiles.map((p) => {
+                const isActive = p.id === activeId;
+                const isBusy = busyId === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={
+                      "psheet-row" +
+                      (isActive ? " is-active" : "") +
+                      (isBusy ? " is-busy" : "")
+                    }
+                    aria-current={isActive ? "true" : undefined}
+                    disabled={isBusy}
+                    onClick={() => {
+                      // The active one is already the answer, so choosing it
+                      // closes without a pointless write to config.json.
+                      if (isActive) {
+                        onClose();
+                        return;
+                      }
+                      onPick(p.id);
+                    }}
+                  >
+                    <span className="psheet-rowtop">
+                      <span className="psheet-name">{p.name}</span>
+                      {isActive ? <span className="psheet-active-tag">ACTIVE</span> : null}
+                      {isActive ? (
+                        <svg className="psheet-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                      ) : null}
+                    </span>
+                    <span className="psheet-model">{p.model}</span>
+                    <span className="psheet-meta">
+                      {p.endpoint} · Key {p.apiKeyRef} · Ctx{" "}
+                      {Math.round((p.contextLimit || 0) / 1000)}k · Out {p.outputCap} · Cache{" "}
+                      {p.cacheMode || "—"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     function App() {
       // =======================================================================
       // NAVIGATION: 4 GROUNDED TABS (All, Context, Tools, Agents)
       // =======================================================================
       const [activeTab, setActiveTab] = useState("All");
+      // Provider sheet. open drives the overlay, busyId marks the row whose
+      // switch is in flight so a second tap cannot fire a second write.
+      const [providerSheetOpen, setProviderSheetOpen] = useState(false);
+      const [providerBusyId, setProviderBusyId] = useState(null);
       const [tokenTimeframe, setTokenTimeframe] = useState("7d");
       const [meta, setMeta] = useState(null);
       const [apiError, setApiError] = useState(null);
@@ -1656,6 +1942,16 @@
       );
 
       const [subscriptions, setSubscriptions] = useState([]);
+
+      // The trigger label. Derived from the memo above rather than recomputed,
+      // and written to survive a profile list that has not loaded yet: the
+      // trigger has to say something honest before the first fetch lands, and
+      // the memo already carries the same fallback for the profile card.
+      const activeProviderName = activeProfile
+        ? activeProfile.model
+          ? activeProfile.name + " (" + activeProfile.model + ")"
+          : activeProfile.name
+        : "Not configured";
 
       const [modelCatalog, setModelCatalog] = useState({
         sourceUrl: "",
@@ -2024,6 +2320,27 @@
           pricingUsable: !!p.pricing_usable
         })));
         if (body && body.active) setActiveProviderId(body.active);
+      }
+
+      // Switching provider from the sheet.
+      //
+      // The row is marked busy and the sheet closes only after the write lands,
+      // so the choice is never reported before it is real. A failure reopens
+      // nothing and says why: a sheet that closed on tap and then failed would
+      // leave the trigger showing the old provider with no explanation of why
+      // the tap did nothing.
+      async function pickProvider(id) {
+        if (providerBusyId) return;
+        setProviderBusyId(id);
+        try {
+          await Api.call("/api/providers", "POST", { active: id });
+          await refreshProviders();
+          setProviderSheetOpen(false);
+        } catch (err) {
+          setApiError("Switch provider failed: " + (err.message || err));
+        } finally {
+          setProviderBusyId(null);
+        }
       }
 
       async function refreshSubscriptions() {
@@ -2920,28 +3237,26 @@
                 ))}
               </nav>
 
-              {/* ActiveProvider Selector (backed by ActiveProvider in config.json) */}
+              {/* ActiveProvider: a sheet, not a native select. A <select> cannot be
+                  styled, so it was the one control here wearing the platform's own
+                  chrome, and it carried less: no endpoint, no key state, no way to
+                  see which entry was live. */}
               <div className="field-inline provider-field">
                 <span className="t-mono">PROVIDER</span>
-                <select
-                  value={activeProviderId}
-                  onChange={async (e) => {
-                    try {
-                      await Api.call("/api/providers", "POST", { active: e.target.value });
-                      await refreshProviders();
-                    } catch (err) {
-                      setApiError("Switch provider failed: " + (err.message || err));
-                    }
-                  }}
-                  className="input-clean"
-                  style={{ cursor: "pointer" }}
+                <button
+                  type="button"
+                  className="pv-trigger"
+                  onClick={() => setProviderSheetOpen(true)}
+                  aria-haspopup="dialog"
+                  aria-expanded={providerSheetOpen}
                 >
-                  {providerProfiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.model})
-                    </option>
-                  ))}
-                </select>
+                  <span className="pv-trigger-label">
+                    {activeProviderName || "Not configured"}
+                  </span>
+                  <svg className="pv-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
               </div>
 
 
@@ -4590,6 +4905,17 @@
               </section>
             </main>
           )}
+
+          {/* Rendered last and outside the page flow so no ancestor with a
+              transform or overflow can clip the overlay. */}
+          <ProviderSheet
+            open={providerSheetOpen}
+            profiles={providerProfiles}
+            activeId={activeProviderId}
+            busyId={providerBusyId}
+            onPick={pickProvider}
+            onClose={() => setProviderSheetOpen(false)}
+          />
         </div>
       );
     }
