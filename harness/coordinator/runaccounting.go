@@ -1,6 +1,12 @@
 package coordinator
 
-import "ceraa/harness/llm"
+import (
+	"fmt"
+	"os"
+
+	"ceraa/harness/llm"
+	"ceraa/internal/logger"
+)
 
 // runAccounting holds one run's token totals and decides what may be concluded
 // from them.
@@ -23,6 +29,20 @@ type runAccounting struct {
 	// priced reports whether pricing data is current, so an unpriced run is not
 	// confused with an untrustworthy one.
 	priced bool
+	// requests counts model requests, so the cache log can number them.
+	requests int
+}
+
+// traceCache is on by default because the question it answers - why the cache is
+// not being hit - cannot be answered from a run total, and costs one line per
+// request. Turn it off with CERAA_TRACE_CACHE=0.
+var traceCache = os.Getenv("CERAA_TRACE_CACHE") != "0"
+
+func ratio(cached, input int) float64 {
+	if input <= 0 {
+		return 0
+	}
+	return float64(cached) / float64(input) * 100
 }
 
 func newRunAccounting(pricing llm.ModelMetadata, priced bool) *runAccounting {
@@ -39,6 +59,19 @@ func newRunAccounting(pricing llm.ModelMetadata, priced bool) *runAccounting {
 // single delta, because that is the quantity the provider's figure describes when
 // it is describing the right thing at all.
 func (a *runAccounting) Add(delta llm.UsageInfo, local llm.TokenBreakdown) {
+	// Per-request cache log. One line per model request, carrying the exact
+	// figures the provider reported for that request alone, because the run total
+	// cannot say *where* a prefix stops matching: 50% over a run is consistent
+	// with every request missing half its context and with half the requests
+	// missing all of it, and those need different fixes.
+	a.requests++
+	if traceCache {
+		logger.Info(fmt.Sprintf(
+			"cache req=%d input=%d cached=%d hit=%.1f%% local_total=%d sys=%d tools=%d conv=%d toolout=%d reasoning=%d",
+			a.requests, delta.InputTokens, delta.CachedInputTokens,
+			ratio(delta.CachedInputTokens, delta.InputTokens),
+			local.System+local.Tools+local.User+local.Conversation+local.ToolOutput+local.Reasoning+local.Compaction+local.Other, local.System, local.Tools, local.Conversation, local.ToolOutput, local.Reasoning))
+	}
 	a.usage.Add(delta)
 	a.trust = llm.ReconcileUsage(a.usage, local)
 	if !a.trust.Trusted {
