@@ -67,11 +67,12 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 		NoSandbox(true).
 		Set("disable-dev-shm-usage").
 		Leakless(false).
+		Env(browserLaunchEnv()...).
 		Bin(binary)
 
 	controlURL, err := control.Launch()
 	if err != nil {
-		return nil, fmt.Errorf("launch %s: %w", binary, err)
+		return nil, fmt.Errorf("launch %s: %w%s", binary, err, browserLibraryHint(err))
 	}
 
 	// The launch context is only for starting up. Binding the browser to it would
@@ -89,6 +90,87 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 	// cannot stall a whole run.
 	page = page.Timeout(pageActionTimeout)
 	return &rodDriver{browser: browser, page: page}, nil
+}
+
+// browserSharedLibDirs are places a host may keep the shared libraries a
+// headless Chromium needs that a slim container image does not install, such as
+// libatk, which is what a browser without a desktop stack fails to load first.
+//
+// A child process inherits its parent's environment, so on a host that keeps
+// these off the system paths the browser only starts if the daemon was launched
+// with LD_LIBRARY_PATH already pointing at them. Nothing about that is visible
+// from the failure: every other signal is healthy and the error is a loader
+// complaint naming one .so file, with no hint that the library is present a
+// directory away. That is why this is resolved here rather than left to the
+// ambient environment, which is how it broke more than once.
+var browserSharedLibDirs = []string{
+	"/workspace/.local/chrome-libs/root/usr/lib/x86_64-linux-gnu",
+}
+
+// browserLaunchEnv is the environment the browser is launched with: this
+// process's, plus the library directories below. Passing it explicitly rather
+// than inheriting is what makes the browser's dependencies a property of the
+// code instead of a property of whoever typed the start command.
+//
+// Any inherited LD_LIBRARY_PATH is dropped rather than kept alongside. The
+// loader takes the first entry matching a name, so appending a second one puts
+// ours second and it is ignored, silently, which is the same invisible failure
+// this whole change exists to remove.
+func browserLaunchEnv() []string {
+	libs := browserLibraryPath()
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "LD_LIBRARY_PATH=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	if libs != "" {
+		env = append(env, "LD_LIBRARY_PATH="+libs)
+	}
+	return env
+}
+
+// browserLibraryPath builds LD_LIBRARY_PATH for the browser: whatever the
+// operator configured, then any known local directory that exists, then what
+// this process already had. Order matters, because the loader takes the first
+// directory that satisfies a name, so the configured path has to lead.
+func browserLibraryPath() string {
+	var dirs []string
+	seen := make(map[string]bool)
+	add := func(dir string) {
+		if dir == "" || seen[dir] {
+			return
+		}
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("CERAA_BROWSER_LD_LIBRARY_PATH")) {
+		add(dir)
+	}
+	for _, dir := range browserSharedLibDirs {
+		add(dir)
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("LD_LIBRARY_PATH")) {
+		add(dir)
+	}
+	return strings.Join(dirs, string(os.PathListSeparator))
+}
+
+// browserLibraryHint turns a loader failure into something actionable. The raw
+// error names a missing library and stops there, so an operator reads it as the
+// machine lacking the library rather than as the launch not being told where
+// they are.
+func browserLibraryHint(err error) string {
+	msg := err.Error()
+	if !strings.Contains(msg, "error while loading shared libraries") {
+		return ""
+	}
+	return " (the browser needs shared libraries this host does not install system-wide; " +
+		"set CERAA_BROWSER_LD_LIBRARY_PATH to the directory holding them)"
 }
 
 // resolveBrowserBinary returns a usable browser, preferring one already on the
