@@ -108,7 +108,7 @@ func TestTheProviderDialogIsCentredAndAboveTheNav(t *testing.T) {
 	}
 	css := pageCSS(t, page)
 
-	backdrop := cssRule(t, css, "psheet-backdrop")
+	backdrop := cssRule(t, css, "pick-backdrop")
 	if !strings.Contains(backdrop, "align-items: center") {
 		t.Error("the provider dialog is not vertically centred")
 	}
@@ -133,7 +133,7 @@ func TestTheProviderRowDetailsStack(t *testing.T) {
 		t.Fatalf("read the dashboard: %s", err)
 	}
 	css := pageCSS(t, page)
-	for _, sel := range []string{"psheet-model", "psheet-meta"} {
+	for _, sel := range []string{"pick-model", "pick-meta"} {
 		rule := cssRule(t, css, sel)
 		if !strings.Contains(rule, "display: block") {
 			t.Errorf(".%s is not display:block, so it sits inline and collides with its neighbours", sel)
@@ -197,4 +197,39 @@ func maxZIndex(css string, classes ...string) int {
 		}
 	}
 	return highest
+}
+
+// Every native select was the platform's own control in the middle of a page
+// that is otherwise entirely custom, and each one opened a dark OS list over
+// cream paper. The fix is the shared chooser, so the thing to hold is that no
+// <select> comes back.
+func TestTheDashboardHasNoNativeSelects(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	// The prose that explains the replacement still contains the word, so
+	// comments are stripped first. Without that the test matches its own
+	// explanation and reports a select that does not exist.
+	markup := stripComments(string(page))
+	element := regexp.MustCompile(`<select[\s>]`)
+	if loc := element.FindStringIndex(markup); loc != nil {
+		snippet := markup[loc[0]:]
+		if len(snippet) > 90 {
+			snippet = snippet[:90]
+		}
+		t.Errorf("a native select is back: %s", snippet)
+	}
+}
+
+// stripComments removes HTML and CSS/JS block comments, so a search for an
+// element cannot match the prose describing it.
+func stripComments(s string) string {
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`(?s)/\*.*?\*/`),
+		regexp.MustCompile(`(?s)<!--.*?-->`),
+	} {
+		s = re.ReplaceAllString(s, "")
+	}
+	return s
 }

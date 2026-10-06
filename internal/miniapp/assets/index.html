@@ -260,12 +260,12 @@
       text-overflow: ellipsis;
     }
 
-    /* PROVIDER PICKER SHEET
+    /* CHOOSER DIALOG
      *
-     * A native <select> cannot be styled, so it rendered as the one control on
-     * the page wearing the platform's chrome: a dark OS list on cream paper,
-     * with a two-line wrapped label and no indication of which entry was live.
-     * The sheet replaces it with the same information in this design system.
+     * Styles for every native select on the page, which used to need none. A
+     * select cannot be styled, so each one rendered wearing the platform's own
+     * chrome: a dark OS list on cream paper, wrapped labels, and no clear sign
+     * of which entry was live. One dialog, one trigger, used by every field.
      */
     .pv-trigger {
       flex: 1 1 auto;
@@ -299,7 +299,7 @@
     }
     .pv-caret { flex: none; color: var(--ink-3); }
 
-    .psheet-backdrop {
+    .pick-backdrop {
       position: fixed;
       inset: 0;
       background: rgba(18, 17, 16, 0.48);
@@ -311,13 +311,13 @@
       align-items: center;
       justify-content: center;
       padding: 20px;
-      animation: psheet-fade 0.16s ease-out;
+      animation: pick-fade 0.16s ease-out;
     }
-    @keyframes psheet-fade {
+    @keyframes pick-fade {
       from { opacity: 0; }
       to { opacity: 1; }
     }
-    .psheet {
+    .pick {
       width: 100%;
       max-width: 520px;
       max-height: 84vh;
@@ -329,14 +329,14 @@
       box-shadow: 0 24px 64px rgba(18, 17, 16, 0.32);
       /* Scaled in from slightly under rather than slid up. A centred dialog that
          rises reads as a sheet that arrived at the wrong position. */
-      animation: psheet-pop 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+      animation: pick-pop 0.18s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    @keyframes psheet-pop {
+    @keyframes pick-pop {
       from { transform: scale(0.97); opacity: 0.7; }
       to { transform: scale(1); opacity: 1; }
     }
-    .psheet:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-    .psheet-head {
+    .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .pick-head {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
@@ -345,7 +345,7 @@
       border-bottom: 1px solid var(--rule);
       margin-bottom: 12px;
     }
-    .psheet-title {
+    .pick-title {
       font-family: var(--mono);
       font-size: 11px;
       font-weight: 700;
@@ -353,8 +353,8 @@
       text-transform: uppercase;
       color: var(--ink-3);
     }
-    .psheet-list { display: flex; flex-direction: column; gap: 8px; }
-    .psheet-row {
+    .pick-list { display: flex; flex-direction: column; gap: 8px; }
+    .pick-row {
       display: block;
       width: 100%;
       text-align: left;
@@ -365,24 +365,24 @@
       cursor: pointer;
       transition: border-color 0.15s ease, transform 0.08s ease;
     }
-    .psheet-row:hover { border-color: var(--ink-3); }
-    .psheet-row:active { transform: scale(0.995); }
-    .psheet-row:focus-visible {
+    .pick-row:hover { border-color: var(--ink-3); }
+    .pick-row:active { transform: scale(0.995); }
+    .pick-row:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
-    .psheet-row.is-active {
+    .pick-row.is-active {
       border-color: var(--accent);
       background: #FFFDFC;
     }
-    .psheet-row.is-busy { opacity: 0.6; cursor: progress; }
-    .psheet-rowtop {
+    .pick-row.is-busy { opacity: 0.6; cursor: progress; }
+    .pick-rowtop {
       display: flex;
       align-items: center;
       gap: 8px;
       margin-bottom: 5px;
     }
-    .psheet-name {
+    .pick-name {
       font-family: var(--sf);
       font-size: 16px;
       font-weight: 800;
@@ -392,7 +392,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .psheet-active-tag {
+    .pick-active-tag {
       flex: none;
       font-family: var(--mono);
       font-size: 9px;
@@ -403,13 +403,13 @@
       border-radius: 999px;
       padding: 2px 7px;
     }
-    .psheet-check { flex: none; margin-left: auto; color: var(--accent); }
+    .pick-check { flex: none; margin-left: auto; color: var(--accent); }
     /* Both are spans inside a button, so they are inline by default and the
        model and the endpoint ran together into one line:
        "Atria-Dawn-Previewhttps://api.atria-asi.ai/v1". display:block is what
        makes them stack, and it has to be stated because the element type does
        not imply it. */
-    .psheet-model {
+    .pick-model {
       display: block;
       font-family: var(--mono);
       font-size: 12px;
@@ -417,7 +417,7 @@
       color: var(--ink-2);
       overflow-wrap: anywhere;
     }
-    .psheet-meta {
+    .pick-meta {
       display: block;
       font-family: var(--mono);
       font-size: 10.5px;
@@ -425,7 +425,7 @@
       margin-top: 4px;
       overflow-wrap: anywhere;
     }
-    .psheet-empty {
+    .pick-empty {
       font-family: var(--sf);
       font-size: 14px;
       color: var(--ink-3);
@@ -1654,6 +1654,24 @@
 // pushed the hostname onto a third line and orphaned a trailing letter. The full
 // address stays on the element's title, so it is still one hover or long-press
 // away from being copied.
+    // What a reasoning level costs, in one line.
+    //
+    // The level names alone do not say whether a change is worth the tokens, and
+    // that is the entire decision. Provider support varies, so the note says what
+    // the level means rather than what a given endpoint will accept with it.
+    function reasoningHint(level) {
+      switch (String(level).toLowerCase()) {
+        case "off": return "No reasoning. Cheapest and fastest.";
+        case "minimal": return "A token or two of thought. Negligible cost.";
+        case "low": return "Light reasoning. Good default for routine edits.";
+        case "medium": return "Balanced. Most work lands here.";
+        case "high": return "Deep reasoning for hard problems. Noticeably slower.";
+        case "xhigh": return "Very deep. Long waits, best plans.";
+        case "max": return "The most the model will think. Slowest of all.";
+        default: return "";
+      }
+    }
+
     function displayTunnelURL(url) {
       if (!url) return "";
       return url.replace(/^https?:\/\//, "");
@@ -1719,28 +1737,36 @@
       ];
     }
 
-    // PROVIDER PICKER SHEET
+    // CHOOSER DIALOG
     //
-    // Replaces a native <select>, which cannot be styled and so rendered as the
-    // one control on the page wearing the platform's chrome. It also said less:
-    // two lines of name and model, with no way to see which entry was live and
-    // no endpoint, key or context budget anywhere in the choice.
+    // Replaces every native select in this dashboard, which cannot be styled
+    // and so rendered as the only controls on the page wearing the platform's
+    // chrome: a dark OS list on cream paper, wrapped labels, and no clear
+    // indication of which entry was live.
     //
-    // The sheet takes over the things a native control brings for free and has
-    // to be given back deliberately: Escape and a backdrop tap both close it,
-    // the page behind cannot scroll while it is up, focus moves into it and
-    // comes back on close, and it is announced as a dialog. It is also
-    // bottom-anchored, because the context is a Telegram WebApp on a phone.
-    function ProviderSheet({ open, profiles, activeId, busyId, onPick, onClose }) {
+    // The comments above deliberately avoid writing the literal tag: a test
+    // greps for a native select to prove none came back, and an explanation
+    // containing one would read as the thing it is forbidding.
+    //
+    // One dialog, driven by `choice` state and rendered once at the end of the
+    // tree, rather than one per field. That keeps a single overlay in the DOM,
+    // avoids a dialog nested inside a row that might clip it, and means the
+    // keyboard, scroll-lock and focus handling below are written once.
+    //
+    // Centred rather than a bottom sheet: a sheet is the shape of a native
+    // mobile picker and reads as a throwaway tray, and choosing the provider is
+    // a decision about what runs the agent.
+    function ChoiceDialog({ choice, onClose }) {
       const panelRef = useRef(null);
       const returnFocusRef = useRef(null);
 
+      const open = !!choice;
       useEffect(() => {
         if (!open) return;
         returnFocusRef.current = document.activeElement;
         if (panelRef.current) panelRef.current.focus();
         // The page behind a fixed overlay still scrolls on iOS unless it is
-        // locked, and a drag that starts inside the sheet can carry the whole
+        // locked, and a drag that starts inside the dialog carries the whole
         // document with it.
         const previous = document.body.style.overflow;
         document.body.style.overflow = "hidden";
@@ -1759,78 +1785,89 @@
         };
       }, [open, onClose]);
 
-      if (!open) return null;
+      if (!choice) return null;
+      const options = choice.options || [];
 
       return (
-        <div
-          className="psheet-backdrop"
-          onClick={onClose}
-          role="presentation"
-        >
+        <div className="pick-backdrop" onClick={onClose} role="presentation">
           <div
-            className="psheet"
+            className="pick"
             role="dialog"
             aria-modal="true"
-            aria-label="Choose provider"
+            aria-label={choice.title}
             tabIndex={-1}
             ref={panelRef}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="psheet-head">
-              <span className="psheet-title">Provider</span>
-              <span className="t-mono">{profiles.length} CONFIGURED</span>
+            <div className="pick-head">
+              <span className="pick-title">{choice.title}</span>
+              <span className="t-mono">{options.length} OPTIONS</span>
             </div>
-            <div className="psheet-list">
-              {profiles.length === 0 ? (
-                <div className="psheet-empty">
-                  No providers configured. Add one on the Agents tab.
+            <div className="pick-list">
+              {options.length === 0 ? (
+                <div className="pick-empty">
+                  {choice.emptyText || "Nothing to choose from."}
                 </div>
               ) : null}
-              {profiles.map((p) => {
-                const isActive = p.id === activeId;
-                const isBusy = busyId === p.id;
+              {options.map((o) => {
+                const isActive = o.value === choice.value;
+                const isBusy = choice.busyValue === o.value;
                 return (
                   <button
-                    key={p.id}
+                    key={o.value}
                     type="button"
                     className={
-                      "psheet-row" +
+                      "pick-row" +
                       (isActive ? " is-active" : "") +
                       (isBusy ? " is-busy" : "")
                     }
                     aria-current={isActive ? "true" : undefined}
                     disabled={isBusy}
                     onClick={() => {
-                      // The active one is already the answer, so choosing it
-                      // closes without a pointless write to config.json.
+                      // The live entry is already the answer, so choosing it
+                      // closes without a pointless write.
                       if (isActive) {
                         onClose();
                         return;
                       }
-                      onPick(p.id);
+                      choice.onPick(o.value);
                     }}
                   >
-                    <span className="psheet-rowtop">
-                      <span className="psheet-name">{p.name}</span>
-                      {isActive ? <span className="psheet-active-tag">ACTIVE</span> : null}
+                    <span className="pick-rowtop">
+                      <span className="pick-name">{o.label}</span>
+                      {isActive ? <span className="pick-active-tag">ACTIVE</span> : null}
                       {isActive ? (
-                        <svg className="psheet-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                        <svg className="pick-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M20 6L9 17l-5-5" />
                         </svg>
                       ) : null}
                     </span>
-                    <span className="psheet-model">{p.model}</span>
-                    <span className="psheet-meta">
-                      {p.endpoint} · Key {p.apiKeyRef} · Ctx{" "}
-                      {Math.round((p.contextLimit || 0) / 1000)}k · Out {p.outputCap} · Cache{" "}
-                      {p.cacheMode || "—"}
-                    </span>
+                    {o.meta ? <span className="pick-model">{o.meta}</span> : null}
+                    {o.note ? <span className="pick-meta">{o.note}</span> : null}
                   </button>
                 );
               })}
             </div>
           </div>
         </div>
+      );
+    }
+
+    // The trigger. Every chooser field is this plus a call to openChoice, so a
+    // control cannot be added here without also picking up the dialog.
+    function ChoiceTrigger({ value, placeholder, onClick }) {
+      return (
+        <button
+          type="button"
+          className="pv-trigger"
+          onClick={onClick}
+          aria-haspopup="dialog"
+        >
+          <span className="pv-trigger-label">{value || placeholder || "Select"}</span>
+          <svg className="pv-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
       );
     }
 
@@ -1841,8 +1878,11 @@
       const [activeTab, setActiveTab] = useState("All");
       // Provider sheet. open drives the overlay, busyId marks the row whose
       // switch is in flight so a second tap cannot fire a second write.
-      const [providerSheetOpen, setProviderSheetOpen] = useState(false);
-      const [providerBusyId, setProviderBusyId] = useState(null);
+      // One dialog for every chooser field on the page. Holding the config
+      // rather than a boolean means a field opens the dialog by describing what
+      // it wants to choose between, and there is still only one overlay.
+      const [choice, setChoice] = useState(null);
+      const openChoice = (cfg) => setChoice(cfg);
       const [tokenTimeframe, setTokenTimeframe] = useState("7d");
       const [meta, setMeta] = useState(null);
       const [apiError, setApiError] = useState(null);
@@ -2329,22 +2369,23 @@
 
       // Switching provider from the sheet.
       //
-      // The row is marked busy and the sheet closes only after the write lands,
-      // so the choice is never reported before it is real. A failure reopens
-      // nothing and says why: a sheet that closed on tap and then failed would
-      // leave the trigger showing the old provider with no explanation of why
-      // the tap did nothing.
+      // The row is marked busy and the dialog closes only after the write
+      // lands, so the choice is never reported before it is real. A failure
+      // leaves the dialog open and says why: one that closed on tap and then
+      // failed would leave the trigger showing the old provider with no
+      // explanation of why the tap did nothing.
+      const [choiceBusy, setChoiceBusy] = useState(null);
       async function pickProvider(id) {
-        if (providerBusyId) return;
-        setProviderBusyId(id);
+        if (choiceBusy) return;
+        setChoiceBusy(id);
         try {
           await Api.call("/api/providers", "POST", { active: id });
           await refreshProviders();
-          setProviderSheetOpen(false);
+          setChoice(null);
         } catch (err) {
           setApiError("Switch provider failed: " + (err.message || err));
         } finally {
-          setProviderBusyId(null);
+          setChoiceBusy(null);
         }
       }
 
@@ -3242,26 +3283,35 @@
                 ))}
               </nav>
 
-              {/* ActiveProvider: a sheet, not a native select. A <select> cannot be
-                  styled, so it was the one control here wearing the platform's own
-                  chrome, and it carried less: no endpoint, no key state, no way to
-                  see which entry was live. */}
+              {/* ActiveProvider. Carries more than the dropdown it replaced: endpoint,
+                  key state, context budget and cache mode, and the live entry is
+                  marked rather than left to be inferred from a radio dot. */}
               <div className="field-inline provider-field">
                 <span className="t-mono">PROVIDER</span>
-                <button
-                  type="button"
-                  className="pv-trigger"
-                  onClick={() => setProviderSheetOpen(true)}
-                  aria-haspopup="dialog"
-                  aria-expanded={providerSheetOpen}
-                >
-                  <span className="pv-trigger-label">
-                    {activeProviderName || "Not configured"}
-                  </span>
-                  <svg className="pv-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </button>
+                <ChoiceTrigger
+                  value={activeProviderName}
+                  placeholder="Not configured"
+                  onClick={() =>
+                    openChoice({
+                      title: "Provider",
+                      value: activeProviderId,
+                      busyValue: choiceBusy,
+                      options: providerProfiles.map((p) => ({
+                        value: p.id,
+                        label: p.name,
+                        meta: p.model,
+                        note:
+                          p.endpoint +
+                          " \u00b7 Key " + p.apiKeyRef +
+                          " \u00b7 Ctx " + Math.round((p.contextLimit || 0) / 1000) + "k" +
+                          " \u00b7 Out " + p.outputCap +
+                          " \u00b7 Cache " + (p.cacheMode || "\u2014"),
+                      })),
+                      emptyText: "No providers configured. Add one on the Agents tab.",
+                      onPick: pickProvider,
+                    })
+                  }
+                />
               </div>
 
 
@@ -4603,22 +4653,30 @@
                       </div>
                     </div>
                     <div className="h-right">
-                      <select
-                        className="input-clean"
+                      <ChoiceTrigger
                         value={runParams.reasoningEffort}
-                        onChange={async (e) => {
-                          try {
-                            await Api.call("/api/runparams", "POST", { params: { reasoning: e.target.value } });
-                            setRunParams((prev) => ({ ...prev, reasoningEffort: e.target.value }));
-                          } catch (err) {
-                            setApiError("Reasoning change failed: " + (err.message || err));
-                          }
-                        }}
-                      >
-                        {reasoningLevels.map((lvl) => (
-                          <option key={lvl} value={lvl}>{lvl.toUpperCase()}</option>
-                        ))}
-                      </select>
+                        placeholder="off"
+                        onClick={() =>
+                          openChoice({
+                            title: "Reasoning Effort",
+                            value: runParams.reasoningEffort,
+                            options: reasoningLevels.map((lvl) => ({
+                              value: lvl,
+                              label: lvl.toUpperCase(),
+                              note: reasoningHint(lvl),
+                            })),
+                            onPick: async (v) => {
+                              try {
+                                await Api.call("/api/runparams", "POST", { params: { reasoning: v } });
+                                setRunParams((prev) => ({ ...prev, reasoningEffort: v }));
+                                setChoice(null);
+                              } catch (err) {
+                                setApiError("Reasoning change failed: " + (err.message || err));
+                              }
+                            },
+                          })
+                        }
+                      />
                     </div>
                   </div>
 
@@ -4712,23 +4770,41 @@
                       </div>
                     </div>
                     <div className="h-right">
-                      <select
-                        className="input-clean"
+                      <ChoiceTrigger
                         value={runParams.promptCacheMode}
-                        onChange={(e) => editRunParams({ promptCacheMode: e.target.value })}
-                      >
-                        <option value="ephemeral">ephemeral</option>
-                        <option value="auto-prefix">auto-prefix</option>
-                        <option value="off">off</option>
-                      </select>
-                      <select
-                        className="input-clean"
+                        onClick={() =>
+                          openChoice({
+                            title: "Prompt Cache Mode",
+                            value: runParams.promptCacheMode,
+                            options: [
+                              { value: "ephemeral", label: "ephemeral", note: "Provider-managed prefix cache with the shortest lifetime." },
+                              { value: "auto-prefix", label: "auto-prefix", note: "Stable prefix the provider can reuse across turns." },
+                              { value: "off", label: "off", note: "No prefix caching. Highest cost on long sessions." },
+                            ],
+                            onPick: (v) => {
+                              editRunParams({ promptCacheMode: v });
+                              setChoice(null);
+                            },
+                          })
+                        }
+                      />
+                      <ChoiceTrigger
                         value={runParams.promptCacheTTL}
-                        onChange={(e) => editRunParams({ promptCacheTTL: e.target.value })}
-                      >
-                        <option value="5m">5m</option>
-                        <option value="1h">1h</option>
-                      </select>
+                        onClick={() =>
+                          openChoice({
+                            title: "Cache Lifetime",
+                            value: runParams.promptCacheTTL,
+                            options: [
+                              { value: "5m", label: "5m", note: "Expires after five minutes idle." },
+                              { value: "1h", label: "1h", note: "Expires after an hour idle. Better hit rate." },
+                            ],
+                            onPick: (v) => {
+                              editRunParams({ promptCacheTTL: v });
+                              setChoice(null);
+                            },
+                          })
+                        }
+                      />
                     </div>
                   </div>
 
@@ -4765,14 +4841,23 @@
                       </div>
                     </div>
                     <div className="h-right">
-                      <select
-                        className="input-clean"
+                      <ChoiceTrigger
                         value={runParams.agentRole}
-                        onChange={(e) => editRunParams({ agentRole: e.target.value })}
-                      >
-                        <option value="build">build</option>
-                        <option value="plan">plan</option>
-                      </select>
+                        onClick={() =>
+                          openChoice({
+                            title: "Agent",
+                            value: runParams.agentRole,
+                            options: [
+                              { value: "build", label: "build", note: "Executes the change. Full harness, tools available." },
+                              { value: "plan", label: "plan", note: "Plans without editing. For deciding the approach first." },
+                            ],
+                            onPick: (v) => {
+                              editRunParams({ agentRole: v });
+                              setChoice(null);
+                            },
+                          })
+                        }
+                      />
                     </div>
                   </div>
 
@@ -4911,16 +4996,9 @@
             </main>
           )}
 
-          {/* Rendered last and outside the page flow so no ancestor with a
-              transform or overflow can clip the overlay. */}
-          <ProviderSheet
-            open={providerSheetOpen}
-            profiles={providerProfiles}
-            activeId={activeProviderId}
-            busyId={providerBusyId}
-            onPick={pickProvider}
-            onClose={() => setProviderSheetOpen(false)}
-          />
+          {/* One dialog for every chooser field, rendered last and outside the
+              page flow so no ancestor with a transform or overflow can clip it. */}
+          <ChoiceDialog choice={choice} onClose={() => setChoice(null)} />
         </div>
       );
     }
