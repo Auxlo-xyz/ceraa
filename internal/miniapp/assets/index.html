@@ -2133,6 +2133,22 @@
         loadFiles(fileScope);
       }, [fileScope]);
 
+      // A tab switch starts at the top of the new tab.
+      //
+      // Every tab here is one document, so the scroll offset belongs to the page
+      // rather than to the tab. Switching while scrolled to the bottom of one
+      // tab therefore landed at the bottom of the next, which reads as the new
+      // tab being mostly empty above rather than as a preserved scroll
+      // position. Instant rather than smooth on purpose: a smooth scroll
+      // animates the old tab's height while the new one is already mounted, so
+      // the tab visibly jumps before it settles.
+      //
+      // Both levels are listed because the session inspector swaps its content
+      // in the same document, so it carries the identical fault.
+      useEffect(() => {
+        window.scrollTo(0, 0);
+      }, [activeTab, sessionInspectorTab]);
+
       // Chart buckets: per-run instants grouped by timeframe. Sparse data
       // renders sparse bars rather than invented ones.
       const chartBuckets = useMemo(() => {
