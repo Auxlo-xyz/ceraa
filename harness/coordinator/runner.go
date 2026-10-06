@@ -306,9 +306,14 @@ func promptCacheKey(model llm.ProviderConfig) string {
 // Scoping to the session keeps a run's entries from colliding with anything
 // else while still reusing the prefix across every request inside that run,
 // which is where all of the saving is.
+//
+// The digests are kept short on purpose. OpenAI accepts at most 64 characters of
+// prompt_cache_key and silently ignores anything longer, so the endpoint digest
+// is truncated to fit alongside the session digest instead of being written in
+// full and then clamped at the wire.
 func sessionPromptCacheKey(model llm.ProviderConfig, sessionID string) string {
 	digest := sha256.Sum256([]byte(model.BaseURL + "\x00" + model.Model))
-	key := fmt.Sprintf("ceraa-%x", digest)
+	key := fmt.Sprintf("ceraa-%x", digest[:8])
 	if sessionID == "" {
 		return key
 	}

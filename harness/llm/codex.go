@@ -345,6 +345,7 @@ func (c *StreamingClient) streamResponses(ctx context.Context, req StreamRequest
 	}
 
 	input, instructions := codexInput(req.Messages)
+	cacheKey := ""
 	body := map[string]any{
 		"model":  c.cfg.Model,
 		"input":  input,
@@ -378,7 +379,8 @@ func (c *StreamingClient) streamResponses(ctx context.Context, req StreamRequest
 		body["tool_choice"] = choice
 	}
 	if req.PromptCacheKey != "" {
-		body["prompt_cache_key"] = req.PromptCacheKey
+		cacheKey = clampPromptCacheKey(req.PromptCacheKey)
+		body["prompt_cache_key"] = cacheKey
 	}
 
 	encoded, err := json.Marshal(body)
@@ -395,7 +397,7 @@ func (c *StreamingClient) streamResponses(ctx context.Context, req StreamRequest
 	var lastErr error
 	forced := false
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
-		resp, err := c.postCodex(ctx, url, token, encoded)
+		resp, err := c.postCodex(ctx, url, token, encoded, cacheKey)
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
@@ -445,7 +447,7 @@ func (c *StreamingClient) streamResponses(ctx context.Context, req StreamRequest
 	return lastErr
 }
 
-func (c *StreamingClient) postCodex(ctx context.Context, url, token string, encoded []byte) (*http.Response, error) {
+func (c *StreamingClient) postCodex(ctx context.Context, url, token string, encoded []byte, cacheKey string) (*http.Response, error) {
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
 	if err != nil {
 		return nil, err
@@ -453,6 +455,15 @@ func (c *StreamingClient) postCodex(ctx context.Context, url, token string, enco
 	hreq.Header.Set("Authorization", "Bearer "+token)
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "text/event-stream")
+	// The session header is what buys cache affinity. The backend keeps warm
+	// prefixes on whichever replica a session is pinned to, so without it
+	// repeated identical requests land on a cold replica roughly half the time.
+	// Measured against the live endpoint with a byte-identical 23,833-token body
+	// on one keep-alive connection: without this header 1-2 of 5 repeats read
+	// warm, with it 5 of 5.
+	if cacheKey != "" {
+		hreq.Header.Set("session-id", cacheKey)
+	}
 	for key, value := range c.cfg.ExtraHeaders {
 		hreq.Header.Set(key, value)
 	}

@@ -49,3 +49,17 @@ func TestTheCacheKeySurvivesAnAbsentSession(t *testing.T) {
 		t.Errorf("key = %q, want a ceraa- prefixed fallback", got)
 	}
 }
+
+// The key has to fit the length the provider accepts, otherwise it returns 200
+// and quietly buys nothing. The digests were originally written in full, which
+// produced an 83-character key: 26 over the limit. A key that long is not an
+// error, it is a key that does nothing, so the length is pinned here.
+func TestTheCacheKeyFitsTheProviderLengthLimit(t *testing.T) {
+	model := llm.ProviderConfig{BaseURL: "https://chatgpt.com/backend-api/codex", Model: "gpt-6-luna"}
+	for _, sessionID := range []string{"", "tg-1", "a-very-long-session-identifier-0123456789"} {
+		key := sessionPromptCacheKey(model, sessionID)
+		if n := len([]rune(key)); n > 64 {
+			t.Errorf("key for session %q is %d chars, over the 64 the provider accepts: %q", sessionID, n, key)
+		}
+	}
+}

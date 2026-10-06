@@ -765,6 +765,25 @@ func isPromptCacheKeyEndpoint(baseURL string) bool {
 	return strings.Contains(base, "openai.com") || isOpenRouterEndpoint(base)
 }
 
+// promptCacheKeyMaxLen is the longest prompt cache key OpenAI accepts. A longer
+// key is not an error, it is silently useless, so keys are clamped to fit.
+const promptCacheKeyMaxLen = 64
+
+// clampPromptCacheKey trims a cache key to the length the API accepts. The
+// coordinator's key is a prefix plus two hex digests and lands at 83
+// characters, well past the limit; over-length keys still return 200 but do
+// not buy reliable reuse.
+func clampPromptCacheKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	runes := []rune(key)
+	if len(runes) <= promptCacheKeyMaxLen {
+		return key
+	}
+	return string(runes[:promptCacheKeyMaxLen])
+}
+
 func promptCacheMode(cfg ProviderConfig) string {
 	mode := strings.ToLower(strings.TrimSpace(cfg.PromptCacheMode))
 	if mode == "" {
@@ -778,8 +797,9 @@ func addPromptCacheFields(body map[string]any, cfg ProviderConfig, req StreamReq
 	if mode == "off" || req.PromptCacheKey == "" {
 		return ""
 	}
+	key := clampPromptCacheKey(req.PromptCacheKey)
 	if isPromptCacheKeyEndpoint(cfg.BaseURL) || mode == "explicit" {
-		body["prompt_cache_key"] = req.PromptCacheKey
+		body["prompt_cache_key"] = key
 	}
 	if !isOpenRouterEndpoint(cfg.BaseURL) {
 		return ""

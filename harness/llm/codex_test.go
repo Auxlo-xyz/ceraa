@@ -83,6 +83,16 @@ func (c *codexServer) lastBody(t *testing.T) map[string]any {
 	return c.bodies[len(c.bodies)-1]
 }
 
+func (c *codexServer) lastHeader(t *testing.T) http.Header {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.headers) == 0 {
+		t.Fatal("no request reached the fake endpoint")
+	}
+	return c.headers[len(c.headers)-1]
+}
+
 func newCodexClient(t *testing.T, server *codexServer, tokens CodexTokenSource) *StreamingClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -545,5 +555,59 @@ func TestIsCodexModel(t *testing.T) {
 		if IsCodexModel(unknown) {
 			t.Errorf("IsCodexModel(%q) = true, but it is not in the allow-list", unknown)
 		}
+	}
+}
+
+// TestCodexSendsSessionHeaderForCacheAffinity pins the header that decides
+// whether a repeated prefix reads warm.
+//
+// The coordinator's key is a prefix plus two digests, which lands past the 64
+// characters the API accepts, so this also covers the clamp: the body and the
+// header must carry the same truncated value, or the session is pinned under a
+// key the request never sent.
+func TestCodexSendsSessionHeaderForCacheAffinity(t *testing.T) {
+	server := &codexServer{replies: []string{textStream}}
+	client := newCodexClient(t, server, &fakeCodexTokens{token: "tok"})
+
+	overlong := "ceraa-" + strings.Repeat("ab", 40) + "-" + strings.Repeat("cd", 6)
+	if len(overlong) <= promptCacheKeyMaxLen {
+		t.Fatalf("fixture is %d chars, needs to exceed the %d limit", len(overlong), promptCacheKeyMaxLen)
+	}
+
+	_, _, err := collect(t, client, StreamRequest{
+		Messages: []Item{
+			{Kind: "text", Role: RoleSystem, Text: "You are terse."},
+			{Kind: "text", Role: RoleUser, Text: "hi"},
+		},
+		PromptCacheKey: overlong,
+		SessionID:      "sess-1",
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	want := clampPromptCacheKey(overlong)
+	if got := server.lastHeader(t).Get("Session-Id"); got != want {
+		t.Errorf("session-id = %q, want the cache key %q", got, want)
+	}
+	if got := server.lastBody(t)["prompt_cache_key"]; got != want {
+		t.Errorf("prompt_cache_key = %v, want the same clamped value %q", got, want)
+	}
+}
+
+// A request with no cache key has no session to pin, so the header must be
+// absent rather than empty, which some proxies treat as a distinct session.
+func TestCodexOmitsSessionHeaderWithoutCacheKey(t *testing.T) {
+	server := &codexServer{replies: []string{textStream}}
+	client := newCodexClient(t, server, &fakeCodexTokens{token: "tok"})
+
+	_, _, err := collect(t, client, StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := server.lastHeader(t).Get("Session-Id"); got != "" {
+		t.Errorf("session-id = %q, want no header when there is no cache key", got)
 	}
 }
