@@ -36,8 +36,18 @@ func TestPromptCacheKeyIsSharedAcrossSessionsButSeparatesProvidersAndModels(t *t
 	otherModel := runner("session-a", "https://openrouter.ai/api/v1", "other")
 	otherHost := runner("session-a", "https://generativelanguage.googleapis.com/v1beta", "model")
 
-	if sessionA.promptCacheKey() != sessionB.promptCacheKey() {
-		t.Error("cache key varies by session; the shared prefix will be re-billed per session")
+	// This used to assert the opposite, and it was the bug. A key shared by every
+	// session puts all of them in one provider-side bucket, where a request can
+	// match a stale prefix left by an earlier run instead of its own. The measured
+	// symptom was the same 3584-token hit repeating across requests whose
+	// conversation had tripled. Reuse inside a run - which is where the saving
+	// actually is - comes from the key being stable there, which
+	// TestTheCacheKeyIsScopedToTheSession pins.
+	if sessionA.promptCacheKey() == sessionB.promptCacheKey() {
+		t.Error("two sessions share a cache key, so their prefixes collide provider-side")
+	}
+	if sessionA.promptCacheKey() != runner("session-a", "https://openrouter.ai/api/v1", "model").promptCacheKey() {
+		t.Error("cache key varies within one session, so nothing is ever reused")
 	}
 	if sessionA.promptCacheKey() == otherModel.promptCacheKey() {
 		t.Error("cache key does not separate models")

@@ -285,8 +285,39 @@ func (r *Runner) memoryContext() string {
 // Session identity is not lost: req.SessionID is sent separately, and OpenRouter's
 // session_id field prefers it over this value.
 func promptCacheKey(model llm.ProviderConfig) string {
+	return sessionPromptCacheKey(model, "")
+}
+
+// sessionPromptCacheKey namespaces the cache by session as well as by endpoint
+// and model.
+//
+// It was keyed on the endpoint and model alone, which is the same string for
+// every session and every run this install has ever made. The provider namespaces
+// its cache by that key, so all of them share one bucket, and a request is free
+// to match a stale prefix left by an earlier run instead of its own.
+//
+// That is not a hypothetical. A measured run showed the cache reporting the same
+// 3584-token hit on requests 1, 3, 5 and 7 while the conversation grew from 3876
+// to 13736 tokens, and then alternating 8704 and 14848 on later ones. A prefix
+// cache serving the current conversation climbs monotonically, because each
+// request re-sends everything the last one did. Repeating values are other
+// runs' entries, and the hit rate that follows is noise rather than a ceiling.
+//
+// Scoping to the session keeps a run's entries from colliding with anything
+// else while still reusing the prefix across every request inside that run,
+// which is where all of the saving is.
+func sessionPromptCacheKey(model llm.ProviderConfig, sessionID string) string {
 	digest := sha256.Sum256([]byte(model.BaseURL + "\x00" + model.Model))
-	return fmt.Sprintf("ceraa-%x", digest)
+	key := fmt.Sprintf("ceraa-%x", digest)
+	if sessionID == "" {
+		return key
+	}
+	return key + "-" + shortHash(sessionID)
+}
+
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", sum[:6])
 }
 
 func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runner {
@@ -647,7 +678,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			Reason:          r.cfg.Reasoning,
 			MaxTokens:       r.cfg.MaxOutputTokens,
 			ToolChoice:      requestToolChoice,
-			PromptCacheKey:  promptCacheKey(modelConfig),
+			PromptCacheKey:  sessionPromptCacheKey(modelConfig, r.cfg.SessionID),
 			SystemCacheSeam: r.systemCacheSeam(),
 			SessionID:       r.cfg.SessionID,
 		}
@@ -1224,9 +1255,11 @@ func (r *Runner) systemCacheSeam() int {
 	return stable
 }
 
-// promptCacheKey is the per-run accessor used by tests and diagnostics.
+// promptCacheKey is the per-run accessor used by tests and diagnostics. It
+// includes the session, because the request path does; a diagnostic that
+// disagreed with the wire would be worse than none.
 func (r *Runner) promptCacheKey() string {
-	return promptCacheKey(r.cfg.Model)
+	return sessionPromptCacheKey(r.cfg.Model, r.cfg.SessionID)
 }
 
 // modelIdentity names the model and provider serving this run, resolved once and
