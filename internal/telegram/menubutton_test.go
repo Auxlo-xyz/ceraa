@@ -26,7 +26,7 @@ func TestClearChatMenuButtonDropsTheWebApp(t *testing.T) {
 	telegramAPIBase = server.URL + "/bot"
 	defer func() { telegramAPIBase = oldBase }()
 
-	if err := clearChatMenuButton("t", "🌐 Web (starting)"); err != nil {
+	if err := clearChatMenuButton("t", "Web (starting)"); err != nil {
 		t.Fatalf("clear: %s", err)
 	}
 	var sent struct {
@@ -48,4 +48,35 @@ func TestClearChatMenuButtonDropsTheWebApp(t *testing.T) {
 	if !strings.Contains(sent.MenuButton.Text, "starting") {
 		t.Errorf("label %q does not say the surface is starting", sent.MenuButton.Text)
 	}
+	// No emoji. The button renders beside Telegram's own controls in a pill, and
+	// a globe there is decoration rather than information.
+	if strings.ContainsAny(sent.MenuButton.Text, "\U0001F300-\U0001FAFF\u2600-\u27BF") {
+		t.Errorf("the button label carries an emoji: %q", sent.MenuButton.Text)
+	}
+}
+
+// The published Web button label is plain text. A globe beside Telegram's own
+// controls reads as decoration, and every path that moves the button has to say
+// the same thing or it reintroduces it.
+func TestTheWebButtonLabelHasNoEmoji(t *testing.T) {
+	for _, label := range []string{"Web", "Web (starting)"} {
+		if strings.ContainsFunc(label, isEmoji) {
+			t.Errorf("button label %q carries an emoji", label)
+		}
+	}
+	if !strings.ContainsFunc("🌐 Web", isEmoji) {
+		t.Error("the emoji detector does not recognise a globe, so it cannot be trusted")
+	}
+}
+
+func isEmoji(r rune) bool {
+	switch {
+	case r >= 0x1F300 && r <= 0x1FAFF:
+		return true
+	case r >= 0x2600 && r <= 0x27BF:
+		return true
+	case r >= 0x1F000 && r <= 0x1F2FF:
+		return true
+	}
+	return false
 }

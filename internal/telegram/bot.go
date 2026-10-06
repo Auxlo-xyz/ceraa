@@ -249,7 +249,7 @@ func clearChatMenuButton(token string, text string) error {
 // function is what keeps them from disagreeing.
 func publishMiniAppAddress(token string, chatID int64, address string) {
 	send(token, chatID, "Mini App:\n"+address)
-	if err := setChatMenuButton(token, "🌐 Web", address); err != nil {
+	if err := setChatMenuButton(token, "Web", address); err != nil {
 		logger.Warn("Mini App menu button not updated: " + err.Error())
 		return
 	}
@@ -863,7 +863,7 @@ func Run() error {
 			// either way every second of it serves 1033. The button is taken
 			// back to a plain label first, so it is never wrong, only briefly
 			// incomplete.
-			if err := clearChatMenuButton(token, "🌐 Web (starting)"); err != nil {
+			if err := clearChatMenuButton(token, "Web (starting)"); err != nil {
 				logger.Warn("Mini App menu button not cleared: " + err.Error())
 			}
 			go func() {
@@ -873,7 +873,7 @@ func Run() error {
 					return
 				}
 				logger.Info("Mini App shared at " + address)
-				if err := setChatMenuButton(token, "🌐 Web", address); err != nil {
+				if err := setChatMenuButton(token, "Web", address); err != nil {
 					logger.Warn("Mini App menu button not updated: " + err.Error())
 					return
 				}

@@ -57,7 +57,7 @@ const purgeNotice = 20 * time.Second
 // a second link to compare against the first. The button is the surface the
 // address belongs on, so that is the only surface it moves.
 func republishMiniAppAddress(token string, srv *miniapp.Server, origin string) {
-	if err := setChatMenuButton(token, "🌐 Web", origin); err != nil {
+	if err := setChatMenuButton(token, "Web", origin); err != nil {
 		logger.Warn("Mini App republish: menu button not updated: " + err.Error())
 		return
 	}
