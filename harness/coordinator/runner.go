@@ -1841,14 +1841,204 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 	path := filepath.Join(dir, runID, r.safeResultName(operationID)+".txt")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
 		if err := os.WriteFile(path, []byte(output), 0o600); err == nil {
-			trimmed := fmt.Sprintf("%s\nTail:\n%s", offloadNotice(path, len(output)), tailWindow(output, limit))
+			trimmed := r.boundedView(output, limit, offloadNotice(path, len(output)))
 			recordToolOutput(len(output), len(trimmed))
 			return trimmed
 		}
 	}
-	trimmed := fmt.Sprintf("Large tool output (%d bytes); storage failed.\nTail:\n%s", len(output), tailWindow(output, limit))
+	trimmed := r.boundedView(output, limit, fmt.Sprintf("Large tool output (%d bytes); storage failed.", len(output)))
 	recordToolOutput(len(output), len(trimmed))
 	return trimmed
+}
+
+// boundedView builds what the model actually sees of an oversized result: a
+// shape line, a head, and the tail.
+//
+// The tail was deliberately left alone by two earlier attempts at adding a head,
+// and both are worth recording because this one is not a third try at either.
+// Halving the budget between the two ends covers the same fraction of the file
+// as the tail alone and weakens the end, which is the answer for log output.
+// Filling the whole cap reaches further but sent 2.9x the content and cost more
+// than collapsing repeated reads saves. Both took bytes from the tail.
+//
+// This one does not. At the shipped 12,000 cap the tail is 4,000 and the notice
+// is ~210, so 7,784 bytes were simply unused. The head is funded from that, the
+// tail keeps every byte it had, and the total still lands under the cap.
+//
+// What it is for is the case the tail cannot serve at all: a JSON array arrives
+// starting mid-object, so the model never sees the bracket, the first key, or
+// the schema. A line-1 error in a 4,000-line build log is likewise absent. Both
+// are answered by the first few hundred bytes.
+func (r *Runner) boundedView(output string, limit int, notice string) string {
+	head := headWindow(output, limit)
+	var b strings.Builder
+	b.WriteString(notice)
+	b.WriteString("\n")
+	b.WriteString(shapeLine(output))
+	if head != "" {
+		b.WriteString("\nHead:\n")
+		b.WriteString(head)
+	}
+	b.WriteString("\nTail:\n")
+	b.WriteString(tailWindow(output, limit))
+	return b.String()
+}
+
+// shapeLine describes a blob without quoting it.
+//
+// Size and line count alone leave the model unable to tell a JSON array from a
+// log, and it needs that to decide whether to grep the offloaded path or read
+// straight through. Keys are schema rather than content, so they are reported and
+// values are not: the line is about the shape of what was cut, not a preview of
+// what is in it. Bounded, because a shape that does not fit is not a summary.
+func shapeLine(output string) string {
+	var b strings.Builder
+	b.WriteString("Shape: ")
+	fmt.Fprintf(&b, "%s, %d lines", humanChars(len(output)), countLines(output))
+	if keys := topLevelKeys(output); len(keys) > 0 {
+		kind := "object"
+		if strings.HasPrefix(strings.TrimSpace(output), "[") {
+			kind = "array"
+		}
+		fmt.Fprintf(&b, ", JSON %s, keys: %s", kind, strings.Join(keys, ", "))
+	}
+	return b.String()
+}
+
+// topLevelKeys returns the first few field names of a JSON document, or nil when
+// it is not JSON.
+//
+// Scanned rather than unmarshalled: this runs on the hot path for every trimmed
+// result, and the point is to describe a blob that may be too large or malformed
+// to parse at all.
+//
+// The scan starts at the first object brace rather than at the first brace of any
+// kind, because the common shape is an array of objects - a lockfile, an API
+// response, a search result - where the keys that describe the schema are one
+// level deeper than the array. Scanning from depth 1 of the document itself found
+// nothing there and reported a JSON array as having no keys, which is the case
+// this line exists to describe.
+func topLevelKeys(output string) []string {
+	trimmed := strings.TrimLeft(output, " \t\r\n")
+	if trimmed == "" {
+		return nil
+	}
+	if c := trimmed[0]; c != '{' && c != '[' {
+		return nil
+	}
+	start := strings.IndexByte(trimmed, '{')
+	if start < 0 || start > 512 {
+		return nil
+	}
+	const want = 8
+	keys := make([]string, 0, want)
+	depth := 0
+	inString := false
+	escaped := false
+	expectKey := false
+	var current strings.Builder
+	for i := start; i < len(trimmed) && len(keys) < want; i++ {
+		if i-start > 4096 {
+			break
+		}
+		c := trimmed[i]
+		switch {
+		case escaped:
+			escaped = false
+		case c == '\\' && inString:
+			escaped = true
+		case c == '"':
+			inString = !inString
+			if !inString {
+				// Cleared on every closing quote, not only on one that turned out to
+				// be a key. Leaving a value behind made the next key concatenate onto
+				// it, so a document with "name":"c-0000" then "path" reported a field
+				// called c-0000path.
+				key := current.String()
+				current.Reset()
+				if expectKey {
+					expectKey = false
+					// Only a plausible field name is reported. Anything else is the
+					// value half of a pair, and calling it a key would be a lie.
+					if isFieldName(key) {
+						keys = append(keys, key)
+					}
+				}
+			}
+		case inString:
+			current.WriteByte(c)
+		case c == '{':
+			depth++
+			expectKey = depth == 1
+		case c == ',':
+			if depth == 1 {
+				expectKey = true
+			}
+		case c == '}':
+			depth--
+			if depth <= 0 {
+				return keys
+			}
+		}
+	}
+	return keys
+}
+
+func isFieldName(s string) bool {
+	if s == "" || len(s) > 40 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			n++
+		}
+	}
+	return n
+}
+
+// headWindow returns the opening bytes of a blob, funded from the cap the tail
+// was not already using.
+//
+// Sized as an eighth of the cap and not a share of the tail. Two earlier layouts
+// took bytes from the tail and were reverted with measurements: halving between
+// the ends weakens the end, which is the answer for log output, and filling the
+// cap sent 2.9x the content and cost more than collapsing repeated reads saves.
+// Reading a number that was already spare keeps the tail whole.
+func headWindow(output string, limit int) string {
+	used := len(offloadNotice("", len(output)))
+	budget := limit - (limit / 3) - used
+	n := budget / 6
+	if n < 256 {
+		n = 256
+	}
+	if n > 1600 {
+		n = 1600
+	}
+	if len(output) <= n*2 {
+		// Short enough that head and tail would overlap and read as the same
+		// lines twice.
+		return ""
+	}
+	cut := output[:n]
+	if i := strings.LastIndexByte(cut, '\n'); i > 0 {
+		cut = cut[:i+1]
+	}
+	return cut
 }
 
 // offloadNotice tells the model the content exists, where it is, and that the
