@@ -611,3 +611,22 @@ func TestCodexOmitsSessionHeaderWithoutCacheKey(t *testing.T) {
 		t.Errorf("session-id = %q, want no header when there is no cache key", got)
 	}
 }
+
+// The beta flag is what the endpoint's own experimental responses path expects,
+// and it measured as a strict improvement over eight growing-prefix turns, so it
+// is pinned here rather than left to drift.
+func TestCodexSendsResponsesBetaHeader(t *testing.T) {
+	server := &codexServer{replies: []string{textStream}}
+	client := newCodexClient(t, server, &fakeCodexTokens{token: "tok"})
+
+	_, _, err := collect(t, client, StreamRequest{
+		Messages:       []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		PromptCacheKey: "thread-1",
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := server.lastHeader(t).Get("Openai-Beta"); got != "responses=experimental" {
+		t.Errorf("OpenAI-Beta = %q, want responses=experimental", got)
+	}
+}
