@@ -87,12 +87,19 @@ func takeRestartNotice() (int64, bool) {
 // sendRestartNotice reports back-online to the chat that asked for the
 // restart. Best effort: a restart that cannot reach Telegram is still a
 // restart, and must not fail the boot.
+//
+// The tip is the point. A restart mints a new quick-tunnel hostname and the
+// server republishes the button within seconds, but Telegram caches that button
+// per client and no API call evicts it, so the phone can keep opening the dead
+// address for a couple of minutes. Without the tip the only visible symptom is
+// a 1033 on a tap that looks like it should work, which reads as the bot being
+// broken rather than as a button that has not caught up yet.
 func sendRestartNotice(token string) {
 	chatID, ok := takeRestartNotice()
 	if !ok {
 		return
 	}
-	send(token, chatID, "Back online. Restart complete.")
+	send(token, chatID, "Back online. Restart complete.\n\nTip: Web takes about extra ~2 minutes to refresh, please wait.")
 }
 
 // restartShutdown stops the process the way a SIGTERM would. A variable
