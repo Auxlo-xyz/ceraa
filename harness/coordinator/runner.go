@@ -653,6 +653,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		countRequestBeforeUse(&runBreakdown, breakdown)
+		if traceCache {
+			logCachePrefix(step, request.Messages, request.Tools, breakdown)
+		}
 		// Kept per request rather than only summed into the run total. The sum
 		// sizes the problem; the list says which request created it, which is what
 		// makes an opportunity actionable instead of merely large.
@@ -2172,4 +2175,53 @@ func (r *Runner) budgetPoints() (soft, yieldAt, hardAt int) {
 		grace = 5
 	}
 	return soft, yieldAt, yieldAt + grace
+}
+
+// logCachePrefix fingerprints the request and reports the first element where it
+// differs from the previous one.
+//
+// A hit rate says how much was reused. It cannot say where the reuse stopped, and
+// those need different fixes: a break at element 0 is something rewriting the
+// system prompt, a break at the last element is the provider refusing to extend
+// its own cache. Guessing between those two produced one confident wrong answer
+// already, so the instrument reports the position instead.
+var lastCachePrefix string
+
+func logCachePrefix(step int, items []llm.Item, tools []llm.ToolDef, bd llm.TokenBreakdown) {
+	// The comparable prefix is everything up to and including the last message
+	// that is identical to the previous request. Tool definitions are hashed
+	// separately because they change on their own schedule.
+	var sb strings.Builder
+	for _, t := range tools {
+		sb.WriteString(t.Name)
+		sb.WriteString(t.Description)
+	}
+	toolSum := sha256.Sum256([]byte(sb.String()))
+	toolHash := fmt.Sprintf("%x", toolSum[:4])
+	roles := make([]string, 0, len(items))
+	for _, it := range items {
+		roles = append(roles, fmt.Sprintf("%s/%d", it.Kind, len(it.Text)+len(it.Output)+len(it.Args)))
+	}
+	cur := strings.Join(roles, ",")
+	diverged := "n/a"
+	if lastCachePrefix != "" {
+		diverged = "?"
+		a, b := strings.Split(lastCachePrefix, ","), strings.Split(cur, ",")
+		n := len(a)
+		if len(b) < n {
+			n = len(b)
+		}
+		for i := 0; i < n; i++ {
+			if a[i] != b[i] {
+				diverged = fmt.Sprintf("item%d", i)
+				break
+			}
+		}
+		if diverged == "?" {
+			diverged = fmt.Sprintf("none(first %d identical)", n)
+		}
+	}
+	lastCachePrefix = cur
+	logger.Info(fmt.Sprintf("pfx step=%d items=%d tools=%d toolhash=%s sys=%d conv=%d toolout=%d divergence=%s",
+		step, len(items), len(tools), toolHash, bd.System, bd.Conversation, bd.ToolOutput, diverged))
 }
