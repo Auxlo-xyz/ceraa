@@ -302,12 +302,16 @@
     .psheet-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(18, 17, 16, 0.44);
-      z-index: 90;
+      background: rgba(18, 17, 16, 0.48);
+      /* Above the floating capsule nav, which is z-index 300. At 90 the nav
+         drew over the dialog and covered the row being aimed at, which is the
+         one thing a nav must never do over the thing it navigates to. */
+      z-index: 320;
       display: flex;
-      align-items: flex-end;
+      align-items: center;
       justify-content: center;
-      animation: psheet-fade 0.18s ease-out;
+      padding: 20px;
+      animation: psheet-fade 0.16s ease-out;
     }
     @keyframes psheet-fade {
       from { opacity: 0; }
@@ -315,28 +319,23 @@
     }
     .psheet {
       width: 100%;
-      max-width: 560px;
-      max-height: 86vh;
+      max-width: 520px;
+      max-height: 84vh;
       overflow-y: auto;
       background: var(--ground);
-      border: 1px solid var(--rule);
-      border-bottom: none;
-      border-radius: 18px 18px 0 0;
-      padding: 10px 16px calc(20px + env(safe-area-inset-bottom, 0px));
-      animation: psheet-rise 0.22s cubic-bezier(0.22, 1, 0.36, 1);
-      box-shadow: 0 -18px 48px rgba(18, 17, 16, 0.22);
+      border: 1px solid var(--rule-strong);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 24px 64px rgba(18, 17, 16, 0.32);
+      /* Scaled in from slightly under rather than slid up. A centred dialog that
+         rises reads as a sheet that arrived at the wrong position. */
+      animation: psheet-pop 0.18s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    @keyframes psheet-rise {
-      from { transform: translateY(14px); opacity: 0.6; }
-      to { transform: translateY(0); opacity: 1; }
+    @keyframes psheet-pop {
+      from { transform: scale(0.97); opacity: 0.7; }
+      to { transform: scale(1); opacity: 1; }
     }
-    .psheet-grab {
-      width: 38px;
-      height: 4px;
-      border-radius: 999px;
-      background: var(--rule);
-      margin: 2px auto 12px;
-    }
+    .psheet:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .psheet-head {
       display: flex;
       align-items: baseline;
@@ -405,7 +404,13 @@
       padding: 2px 7px;
     }
     .psheet-check { flex: none; margin-left: auto; color: var(--accent); }
+    /* Both are spans inside a button, so they are inline by default and the
+       model and the endpoint ran together into one line:
+       "Atria-Dawn-Previewhttps://api.atria-asi.ai/v1". display:block is what
+       makes them stack, and it has to be stated because the element type does
+       not imply it. */
     .psheet-model {
+      display: block;
       font-family: var(--mono);
       font-size: 12px;
       font-weight: 600;
@@ -413,6 +418,7 @@
       overflow-wrap: anywhere;
     }
     .psheet-meta {
+      display: block;
       font-family: var(--mono);
       font-size: 10.5px;
       color: var(--ink-3);
@@ -1770,7 +1776,6 @@
             ref={panelRef}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="psheet-grab" />
             <div className="psheet-head">
               <span className="psheet-title">Provider</span>
               <span className="t-mono">{profiles.length} CONFIGURED</span>

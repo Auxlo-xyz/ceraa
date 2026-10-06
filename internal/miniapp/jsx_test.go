@@ -96,3 +96,105 @@ func findEsbuild() string {
 	}
 	return ""
 }
+
+// The provider dialog regressed twice in ways only a screenshot caught: the
+// panel was anchored to the bottom, and the floating nav drew over it because
+// the backdrop sat below the nav's z-index. Both are CSS facts, so they are
+// asserted here rather than left to be re-found by eye.
+func TestTheProviderDialogIsCentredAndAboveTheNav(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	css := pageCSS(t, page)
+
+	backdrop := cssRule(t, css, "psheet-backdrop")
+	if !strings.Contains(backdrop, "align-items: center") {
+		t.Error("the provider dialog is not vertically centred")
+	}
+	backdropZ := atoi(cssValue(backdrop, "z-index"))
+	// Highest, not first: the nav's z-index is declared in a media query, so the
+	// base rule does not carry it and reading only that compares against nothing.
+	navZ := maxZIndex(css, "mobile-capsule-wrapper", "capsule-dock")
+	if backdropZ == 0 || navZ == 0 {
+		t.Fatalf("cannot compare z-index: backdrop %d, nav %d", backdropZ, navZ)
+	}
+	if backdropZ <= navZ {
+		t.Errorf("the dialog is z-index %d, not above the nav's %d, so the nav draws over it", backdropZ, navZ)
+	}
+}
+
+// The model and the endpoint ran together as one line because both are spans
+// inside a button, so they are inline unless display:block is stated. The
+// element type does not imply it, which is why this has to be asserted.
+func TestTheProviderRowDetailsStack(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	css := pageCSS(t, page)
+	for _, sel := range []string{"psheet-model", "psheet-meta"} {
+		rule := cssRule(t, css, sel)
+		if !strings.Contains(rule, "display: block") {
+			t.Errorf(".%s is not display:block, so it sits inline and collides with its neighbours", sel)
+		}
+	}
+}
+
+// pageCSS returns the dashboard's first stylesheet.
+func pageCSS(t *testing.T, page []byte) string {
+	t.Helper()
+	block := regexp.MustCompile(`(?s)<style[^>]*>(.*?)</style>`).FindSubmatch(page)
+	if block == nil {
+		t.Fatal("the dashboard has no stylesheet")
+	}
+	return string(block[1])
+}
+
+// cssRule returns the declaration body for one class selector, following the
+// base rule rather than any responsive override, because the alignment and the
+// stacking are set on the base.
+func cssRule(t *testing.T, css, class string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?s)\.` + regexp.QuoteMeta(class) + `\s*\{(.*?)\}`)
+	m := re.FindStringSubmatch(css)
+	if m == nil {
+		t.Fatalf("no rule for .%s", class)
+	}
+	return m[1]
+}
+
+func cssValue(rule, property string) string {
+	re := regexp.MustCompile(property + `\s*:\s*([^;]+)`)
+	m := re.FindStringSubmatch(rule)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return n
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+// maxZIndex is the largest z-index declared for any rule naming the class, so a
+// value set inside a media query is compared rather than missed.
+func maxZIndex(css string, classes ...string) int {
+	highest := 0
+	for _, class := range classes {
+		re := regexp.MustCompile(`(?s)\.(?:` + regexp.QuoteMeta(class) + `)\s*\{([^}]*)\}`)
+		for _, m := range re.FindAllStringSubmatch(css, -1) {
+			if z := atoi(cssValue(m[1], "z-index")); z > highest {
+				highest = z
+			}
+		}
+	}
+	return highest
+}
