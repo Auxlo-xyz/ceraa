@@ -1014,7 +1014,10 @@ func (r *Runner) toolDefs() []llm.ToolDef {
 	if r.reg == nil {
 		return nil
 	}
-	items := r.reg.All()
+	// Offered, not All. A tool kept registered so old history can still execute
+	// it must not appear in the catalogue, because showing the model both shapes
+	// teaches it the one that caused the problem.
+	items := r.reg.Offered()
 	definitions := make([]llm.ToolDef, 0, len(items))
 	for _, item := range items {
 		definitions = append(definitions, llm.ToolDef{Name: item.Name(), Description: item.Description(), Parameters: item.Schema()})
@@ -1076,12 +1079,14 @@ func normalizeDispatcherMessages(items []llm.Item) []llm.Item {
 		switch items[i].Kind {
 		case "tool_call":
 			items[i] = normalizeLegacyRunToolCall(items[i])
+			items[i] = splitLegacyBrowserCall(items[i])
 			if items[i].Name != "" {
 				callNames[items[i].CallID] = items[i].Name
 			}
 		case "tool_calls":
 			for j := range items[i].ToolCalls {
 				items[i].ToolCalls[j] = normalizeLegacyRunToolCallRef(items[i].ToolCalls[j])
+				items[i].ToolCalls[j] = splitLegacyBrowserCallRef(items[i].ToolCalls[j])
 				if items[i].ToolCalls[j].Name != "" {
 					callNames[items[i].ToolCalls[j].ID] = items[i].ToolCalls[j].Name
 				}
@@ -2262,4 +2267,68 @@ func logCachePrefix(step int, items []llm.Item, tools []llm.ToolDef, bd llm.Toke
 	lastCachePrefix = cur
 	logger.Info(fmt.Sprintf("pfx step=%d items=%d tools=%d toolhash=%s sys=%d conv=%d toolout=%d divergence=%s",
 		step, len(items), len(tools), toolHash, bd.System, bd.Conversation, bd.ToolOutput, diverged))
+}
+
+// splitLegacyBrowserCall rewrites a recorded combined-browser call into the
+// per-action tool that replaced it.
+//
+// The split exists because the model kept bundling arguments belonging to
+// different actions into one call, and the strongest thing that can be done
+// about that is to stop offering a schema where the bundling is expressible.
+// Sessions recorded before the split still contain `browser` calls, and those
+// stay in the history of a long conversation. Left alone they teach the model
+// the shape that caused the problem, so the history is rewritten to the new
+// names on the way out.
+//
+// Only the name and the action change. The arguments are already what the
+// per-action tool would have been given, minus the action itself, which is the
+// tool's whole identity now.
+func splitLegacyBrowserCall(item llm.Item) llm.Item {
+	if item.Name != "browser" {
+		return item
+	}
+	action, args := takeBrowserAction(item.Args)
+	if action == "" {
+		return item
+	}
+	item.Name = "browser_" + action
+	item.Args = args
+	return item
+}
+
+func splitLegacyBrowserCallRef(call llm.ToolCall) llm.ToolCall {
+	if call.Name != "browser" {
+		return call
+	}
+	action, args := takeBrowserAction(call.Args)
+	if action == "" {
+		return call
+	}
+	call.Name = "browser_" + action
+	call.Args = args
+	return call
+}
+
+// takeBrowserAction lifts the action out of a combined browser argument object
+// and returns the rest. An unparseable object, or one without an action, comes
+// back untouched so the call is left exactly as recorded rather than
+// half-rewritten.
+func takeBrowserAction(raw string) (string, string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", raw
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return "", raw
+	}
+	action, ok := args["action"].(string)
+	if !ok || action == "" {
+		return "", raw
+	}
+	delete(args, "action")
+	rest, err := json.Marshal(args)
+	if err != nil {
+		return "", raw
+	}
+	return action, string(rest)
 }

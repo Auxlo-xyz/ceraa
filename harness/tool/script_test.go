@@ -323,7 +323,11 @@ func TestScriptFanOutWithPromiseAll(t *testing.T) {
 func TestScriptDescriptionNamesItsContract(t *testing.T) {
 	h := newScriptHarness(t)
 	description := h.tool.Description()
-	for _, want := range []string{"async function", "tools.NAME", "Tools exposed: probe"} {
+	// The exposed list is asserted on the name being present rather than on the
+	// label in front of it. The wording of that label was trimmed once to keep the
+	// definition inside its size budget, and pinning it here would mean the budget
+	// and this test could only ever be satisfied together.
+	for _, want := range []string{"async function", "tools.NAME", "Tools", "probe"} {
 		if !strings.Contains(description, want) {
 			t.Errorf("description is missing %q", want)
 		}

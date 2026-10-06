@@ -78,10 +78,9 @@ func (s *ScriptTool) Name() string { return "script" }
 func (s *ScriptTool) Description() string {
 	return "Run JavaScript and return its result as one value. code is the body " +
 		"of an async function, so await and Promise.all work. tools.NAME(args) " +
-		"takes the same arguments as NAME's own schema and resolves to that " +
-		"tool's result text; a call that fails throws, and the thrown message " +
-		"says what to change. A tool that needs your approval cannot be called " +
-		"from a script. Tools exposed: " + s.exposedNames() + "."
+		"takes NAME's own arguments and resolves to its result text; a call that " +
+		"fails throws, and the message says what to change. A tool needing your " +
+		"approval cannot be called from a script. Tools: " + s.exposedNames() + "."
 }
 
 func (s *ScriptTool) Schema() map[string]any {
@@ -177,18 +176,58 @@ func (s *ScriptTool) RunContext(ctx context.Context, spec operation.Spec) (strin
 }
 
 // exposedNames lists the tools the script can reach, sorted by the registry.
+//
+// A family of tools that differs only by a suffix is written once in brace form.
+// Splitting the browser into one tool per action added nine names here, which
+// pushed the script description past its size budget on its own. The suffix list
+// is kept rather than elided, because `browser_{...}` would tell the model
+// nothing it could call.
 func (s *ScriptTool) exposedNames() string {
 	if s.Reg == nil {
 		return ""
 	}
 	var names []string
-	for _, t := range s.Reg.All() {
+	familyEmitted := map[string]bool{}
+	for _, t := range s.Reg.Offered() {
 		if scriptExcluded[t.Name()] {
 			continue
 		}
-		names = append(names, t.Name())
+		family, ok := exposedFamily(t.Name())
+		if !ok {
+			names = append(names, t.Name())
+			continue
+		}
+		if familyEmitted[family] {
+			continue
+		}
+		familyEmitted[family] = true
+		names = append(names, family+"_{"+strings.Join(exposedFamilySuffixes(s.Reg, family), ",")+"}")
 	}
 	return strings.Join(names, ", ")
+}
+
+// exposedFamily is the shared prefix of a group of tools called the same way,
+// or "" when the name belongs to no group.
+func exposedFamily(name string) (string, bool) {
+	const prefix = "browser_"
+	if !strings.HasPrefix(name, prefix) || name == prefix {
+		return "", false
+	}
+	return "browser", true
+}
+
+func exposedFamilySuffixes(reg *Registry, family string) []string {
+	prefix := family + "_"
+	var suffixes []string
+	for _, t := range reg.Offered() {
+		if scriptExcluded[t.Name()] {
+			continue
+		}
+		if strings.HasPrefix(t.Name(), prefix) && len(t.Name()) > len(prefix) {
+			suffixes = append(suffixes, strings.TrimPrefix(t.Name(), prefix))
+		}
+	}
+	return suffixes
 }
 
 // exposeTools publishes one host function per sibling tool.
@@ -199,7 +238,10 @@ func (s *ScriptTool) exposedNames() string {
 func (s *ScriptTool) exposeTools(rt *goja.Runtime, ctx context.Context) error {
 	tools := rt.NewObject()
 	var attached int
-	for _, sibling := range s.Reg.All() {
+	// Offered, not All, so the surface a script can reach is exactly the one the
+	// model was told about. A hidden tool reachable from a script would be a tool
+	// the model uses without having been offered it.
+	for _, sibling := range s.Reg.Offered() {
 		if scriptExcluded[sibling.Name()] {
 			continue
 		}

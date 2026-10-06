@@ -656,15 +656,17 @@ func TestInProcessToolIsOfferedAndDispatched(t *testing.T) {
 	opMgr := operation.NewWithBuffer(&toolRunner{reg: registry}, 8)
 	runner := &Runner{reg: registry, store: store, opMgr: opMgr, cfg: RunnerConfig{SessionID: "inproc"}}
 
-	// The model must be able to see it, or it can never be chosen.
-	offered := false
+	// The model must be able to see it, or it can never be chosen. It is now one
+	// tool per action rather than a combined one with an action argument.
+	offered := map[string]bool{}
 	for _, def := range runner.toolDefs() {
-		if def.Name == "browser" {
-			offered = true
-		}
+		offered[def.Name] = true
 	}
-	if !offered {
-		t.Fatal("browser must be offered to the model")
+	if !offered["browser_open"] {
+		t.Fatal("browser_open must be offered to the model")
+	}
+	if offered["browser"] {
+		t.Error("the combined browser is still offered, so the model is taught both shapes")
 	}
 
 	sess := &sessionstore.Session{ID: "inproc", Version: 2}

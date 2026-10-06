@@ -39,10 +39,19 @@ type MutationKeyer interface {
 // Registry holds available tools.
 type Registry struct {
 	tools map[string]Tool
+	// hidden names tools that still execute but are not offered to the model.
+	//
+	// This exists for the tool a set of narrow ones replaced. Sessions recorded
+	// before the split still contain calls to it, and those calls have to run
+	// when the history is replayed, but showing the model both shapes teaches it
+	// the shape that was the problem. Get resolves hidden tools, All includes
+	// them for internal consumers, and only the catalogue the model reads leaves
+	// them out.
+	hidden map[string]bool
 }
 
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]Tool)}
+	return &Registry{tools: make(map[string]Tool), hidden: make(map[string]bool)}
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
@@ -52,6 +61,13 @@ func (r *Registry) Get(name string) (Tool, bool) {
 
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
+	delete(r.hidden, t.Name())
+}
+
+// RegisterHidden makes a tool executable without offering it to the model.
+func (r *Registry) RegisterHidden(t Tool) {
+	r.tools[t.Name()] = t
+	r.hidden[t.Name()] = true
 }
 
 // Remove drops a tool by name, reporting whether it was there.
@@ -65,6 +81,7 @@ func (r *Registry) Remove(name string) bool {
 		return false
 	}
 	delete(r.tools, name)
+	delete(r.hidden, name)
 	return true
 }
 
@@ -74,6 +91,23 @@ func (r *Registry) All() []Tool {
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out
+}
+
+// Offered is the catalogue the model is shown: every tool except the hidden
+// ones. All is unchanged and still returns everything, because the script tool
+// and the inventories walk it and have no reason to know a tool was ever hidden.
+func (r *Registry) Offered() []Tool {
+	all := r.All()
+	if len(r.hidden) == 0 {
+		return all
+	}
+	out := make([]Tool, 0, len(all))
+	for _, t := range all {
+		if !r.hidden[t.Name()] {
+			out = append(out, t)
+		}
+	}
 	return out
 }
 
@@ -395,7 +429,18 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	r.Register(&ViewImageTool{})
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
-	r.Register(NewBrowserTool())
+	//
+	// Registered hidden. The model is offered one tool per action instead, because
+	// it kept bundling arguments belonging to different actions into one call and
+	// this is the only tool of the twenty-one that was not a single verb with a
+	// single set of properties. It stays registered and executable because
+	// sessions recorded before the split still call it, and hiding it from the
+	// catalogue is what stops the model being taught both shapes.
+	browser := NewBrowserTool()
+	r.RegisterHidden(browser)
+	for _, actionTool := range BrowserActionTools(browser) {
+		r.Register(actionTool)
+	}
 	// Registered without a factory and attached later by whoever knows how to build a
 	// runner: the tool layer cannot import the coordinator, which imports this one.
 	r.Register(NewTaskTool())
