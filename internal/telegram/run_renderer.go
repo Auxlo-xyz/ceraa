@@ -1605,15 +1605,39 @@ func formatToolActivity(tools []toolActivity) string {
 	return strings.Join(lines, "\n\n")
 }
 
-// boldWordTools are the working tools: shell, browser, media, search, fetch
-// and patch. They render as a bold word with no glyph, the way the Thought
-// header does, because they are the verbs of a run rather than its nouns.
-// Everything else keeps its mark.
+// boldWordTool reports whether a tool renders as a bold word with no glyph,
+// which is how the verbs of a run are marked against its nouns.
+//
+// Grouped by family rather than listed flat, because the earlier flat list was
+// internally inconsistent and that is the only thing worth being careful about
+// here. File mutation was split: apply_patch was bold while write, edit,
+// edit_line and batch_edit_file were not, so a run that edited five files showed
+// five glyph lines and one bold line and the reader could not tell which tool
+// did the work. Search was split the same way, with grep and fts_search bold and
+// glob not.
+//
+// Bold stays selective on purpose. It takes 19 of the registered tools to cover
+// these, so the weight is real, and widening it further dilutes the signal until
+// bold means nothing. The line drawn here is whether a tool acts: it changes
+// something outside the conversation or goes looking for it. Reading a known path,
+// asking the user a question, and the goal, todo and compaction bookkeeping are
+// not that, and they keep their marks.
 func boldWordTool(name string) bool {
 	switch name {
-	case "bash", "browser", "view_image", "send_media", "grep", "fts_search",
-		"webfetch", "websearch", "apply_patch", "skill_propose", "script",
-		"skill_use", "run_command_with_secret", "list_secrets":
+	// Shell and the tools that drive a browser.
+	case "bash", "script", "browser", "run_command_with_secret":
+		return true
+	// File mutation, every route into it.
+	case "write", "edit", "edit_line", "batch_edit_file", "apply_patch":
+		return true
+	// Search, every route into it.
+	case "grep", "fts_search", "glob":
+		return true
+	// Outbound: fetching, searching, sending, and looking at what came back.
+	case "webfetch", "websearch", "send_media", "view_image":
+		return true
+	// Skills and the secret inventory: the agent reaching for its own capability.
+	case "skill_use", "skill_propose", "list_secrets":
 		return true
 	}
 	return false
