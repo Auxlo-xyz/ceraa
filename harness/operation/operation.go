@@ -123,6 +123,13 @@ type ResultEvent struct {
 	// Images are paths the operation wants attached to this result, for a read
 	// that landed on an image file.
 	Images []string
+	// LinesAdded and LinesRemoved are the line-level effect of a file mutation.
+	// They are counted from the before and after content the mutation already
+	// held, so they cost nothing to produce, and they are carried separately
+	// from Output because Output is prose for a human and these are numbers the
+	// renderer formats. Zero for anything that did not change a file.
+	LinesAdded   int `json:"lines_added,omitempty"`
+	LinesRemoved int `json:"lines_removed,omitempty"`
 }
 
 // ToolRunner allows tools to be executed by the operation manager.
@@ -449,17 +456,27 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			} else {
 				result.Output = fmt.Sprintf("applied %d changes to %s", len(edits), filepath.Base(p))
 				result.Status = StatusCompleted
+				delta := countLineDelta(content, updated)
+				result.LinesAdded, result.LinesRemoved = delta.added, delta.removed
 			}
 		case "write":
 			p, _ := op.Spec.Args["path"].(string)
 			workDir, _ := op.Spec.Args["workdir"].(string)
 			p = operationPath(p, workDir)
 			c, _ := op.Spec.Args["content"].(string)
+			// The previous content is read inside the lock, not before it, so the
+			// delta describes the file this write actually replaced rather than
+			// whatever was there when the call was queued. A missing file is the
+			// normal case for a create and is not an error.
+			var previous string
 			err := withMutationLock(p, func() error {
 				if d := filepath.Dir(p); d != "" {
 					if err := os.MkdirAll(d, 0o755); err != nil {
 						return err
 					}
+				}
+				if existing, readErr := os.ReadFile(p); readErr == nil {
+					previous = string(existing)
 				}
 				if snapStore, snapshotErr := newSnapshotStore(); snapshotErr == nil {
 					_, _ = snapStore.Capture(p)
@@ -472,6 +489,8 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			} else {
 				result.Status = StatusCompleted
 				result.Output = "written"
+				delta := countLineDelta(previous, c)
+				result.LinesAdded, result.LinesRemoved = delta.added, delta.removed
 			}
 		case "edit_line", "edit":
 			// "edit" is the type stored by sessions from before the tool was
@@ -481,6 +500,9 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			p = operationPath(p, workDir)
 			oldText, _ := op.Spec.Args["old_text"].(string)
 			newText, _ := op.Spec.Args["new_text"].(string)
+			// Hoisted out of the lock because the line count is only known once
+			// the edit has resolved, and the resolution happens inside it.
+			var beforeContent, afterContent string
 			err := withMutationLock(p, func() error {
 				if d := filepath.Dir(p); d != "" {
 					if err := os.MkdirAll(d, 0o755); err != nil {
@@ -494,6 +516,7 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 				content := string(data)
 				match := locate(content, oldText)
 				offset, reason := match.resolve(content, editFileLabel(p), oldText, occurrenceArg(op.Spec.Args))
+				beforeContent = content
 				if reason != "" {
 					return errors.New(reason)
 				}
@@ -504,7 +527,11 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 				// occurrence replaces the one that was asked for instead of
 				// whichever happens to be first.
 				updated := content[:offset] + newText + content[offset+len(oldText):]
-				return os.WriteFile(p, []byte(updated), 0o644)
+				if err := os.WriteFile(p, []byte(updated), 0o644); err != nil {
+					return err
+				}
+				afterContent = updated
+				return nil
 			})
 			if err != nil {
 				result.Error = err.Error()
@@ -512,6 +539,8 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			} else {
 				result.Status = StatusCompleted
 				result.Output = "edited"
+				delta := countLineDelta(beforeContent, afterContent)
+				result.LinesAdded, result.LinesRemoved = delta.added, delta.removed
 			}
 		case "todowrite":
 			// Maps to soraacode session/todo.ts TodoWrite

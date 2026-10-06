@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ceraa/harness/operation"
 )
 
 func TestEditTransportUsesOneFinalMessage(t *testing.T) {
@@ -1125,5 +1127,109 @@ func TestTheFinalAnswerLandsOnTheMessageThatStreamedIt(t *testing.T) {
 	}
 	if holders != 1 {
 		t.Errorf("the final answer appears in %d messages, want 1: created=%v edits=%v", holders, created, edits)
+	}
+}
+
+// A finished edit reports how many lines it moved, next to the path the counts
+// describe. This is the whole point of the feature, so it is asserted on the
+// rendered line rather than on the parsed fields.
+func TestRenderedToolLineCarriesTheLineCount(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tool    string
+		detail  string
+		added   int
+		removed int
+		want    string
+	}{
+		{
+			name: "additions only", tool: "edit", detail: "/w/AGENTS.md",
+			added: 58, want: "(+58)",
+		},
+		{
+			name: "additions and removals", tool: "edit", detail: "/w/AGENTS.md",
+			added: 51, removed: 3, want: "(+51 -3)",
+		},
+		{
+			name: "removals only", tool: "edit", detail: "/w/AGENTS.md",
+			removed: 4, want: "(+0 -4)",
+		},
+		{
+			name: "no change stays silent", tool: "edit", detail: "/w/AGENTS.md",
+			want: "",
+		},
+		{
+			name: "a write counts too", tool: "write", detail: "/w/new.go",
+			added: 120, want: "(+120)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := "🔄 " + toolNameToken(tc.tool) + "Edit file · " + tc.detail
+			done := "✅ " + toolNameToken(tc.tool) + "Edit file completed"
+			if got := formatLineDelta(operation.ResultEvent{
+				LinesAdded: tc.added, LinesRemoved: tc.removed,
+			}); got != tc.want {
+				t.Fatalf("formatLineDelta = %q, want %q", got, tc.want)
+			}
+			if tc.want != "" {
+				done += " " + lineDeltaTokenPrefix + " " + tc.want
+			}
+
+			activity, ok := parseToolActivity(line)
+			if !ok {
+				t.Fatal("start line did not parse")
+			}
+			if activity.detail != tc.detail {
+				t.Errorf("start detail = %q, want %q", activity.detail, tc.detail)
+			}
+
+			finished, ok := parseToolActivity(done)
+			if !ok {
+				t.Fatal("done line did not parse")
+			}
+			// The counts must not have been mistaken for the path, which is what
+			// happens if the token is not pulled off before the detail split.
+			if finished.detail != "" {
+				t.Errorf("done line detail = %q, want empty so the start path survives", finished.detail)
+			}
+			if finished.counts != tc.want {
+				t.Errorf("counts = %q, want %q", finished.counts, tc.want)
+			}
+
+			rendered := formatToolActivity([]toolActivity{{
+				name:    finished.name,
+				status:  finished.status,
+				detail:  activity.detail,
+				counts:  finished.counts,
+				label:   finished.label,
+				elapsed: "",
+			}})
+			if tc.want == "" {
+				if strings.Contains(rendered, "(+") {
+					t.Errorf("rendered line announces a change that did not happen: %q", rendered)
+				}
+				return
+			}
+			if !strings.Contains(rendered, tc.detail+" "+tc.want) {
+				t.Errorf("rendered line = %q, want it to end with %q", rendered, tc.detail+" "+tc.want)
+			}
+		})
+	}
+}
+
+// The counts must reach the trail even when the completion line is the only
+// thing seen for the call, which is what happens when a tool finishes before the
+// running line is ever rendered.
+func TestLineCountSurvivesWhenDetailWasNeverSet(t *testing.T) {
+	done := "✅ " + toolNameToken("edit") + "Edit file completed " + lineDeltaTokenPrefix + " (+7 -1)"
+	activity, ok := parseToolActivity(done)
+	if !ok {
+		t.Fatal("done line did not parse")
+	}
+	if activity.counts != "(+7 -1)" {
+		t.Errorf("counts = %q, want (+7 -1)", activity.counts)
+	}
+	if activity.label != "Edit file" {
+		t.Errorf("label = %q, want the counts kept out of it", activity.label)
 	}
 }

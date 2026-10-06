@@ -26,6 +26,10 @@ type toolActivity struct {
 	status string
 	label  string
 	detail string
+	// counts is the finished mutation's line count, formatted, and empty for
+	// everything that did not change a file. It arrives on the completion line
+	// rather than the start line, so it is only present once the call is done.
+	counts string
 	// startedAt is when this call first appeared. A tool that blocks without
 	// printing anything emits no events at all, so elapsed time has to be read
 	// off a clock rather than off the event stream.
@@ -789,6 +793,9 @@ func (r *runRenderer) tool(callID, value string) {
 		if activity.detail != "" {
 			entry.detail = activity.detail
 		}
+		if activity.counts != "" {
+			entry.counts = activity.counts
+		}
 		// The elapsed time shown on a running line is frozen when the call ends.
 		// A call that never crossed the threshold has nothing on screen to freeze,
 		// and stays as it was, which is how a fast call reads as fast.
@@ -1502,6 +1509,30 @@ func toolNameToken(name string) string {
 // toolNameTokenPrefix opens the tool name inside an event line.
 const toolNameTokenPrefix = "·tool·"
 
+// lineDeltaTokenPrefix carries the line count of a finished mutation through
+// the event line.
+//
+// It exists for the same reason as the tool name token: the renderer is handed
+// one line of text per event and nothing else, so the counts have to travel
+// inside it. The label cannot carry them, because the rendered word is the tool
+// name rather than the label, so anything appended to the label is never shown.
+const lineDeltaTokenPrefix = "·Δ·"
+
+// formatLineDelta renders a mutation's line counts as they appear on the
+// trail: additions alone when nothing came out, and both when something did.
+//
+// A mutation that changed nothing reports nothing rather than (+0 -0), because a
+// no-op that announces a change trains the reader to distrust the number.
+func formatLineDelta(result operation.ResultEvent) string {
+	if result.LinesAdded == 0 && result.LinesRemoved == 0 {
+		return ""
+	}
+	if result.LinesRemoved == 0 {
+		return fmt.Sprintf("(+%d)", result.LinesAdded)
+	}
+	return fmt.Sprintf("(+%d -%d)", result.LinesAdded, result.LinesRemoved)
+}
+
 func toolDisplayName(name string) string {
 	switch name {
 	case "read":
@@ -1551,6 +1582,14 @@ func parseToolActivity(value string) (toolActivity, bool) {
 				body = tail
 			}
 		}
+		// Pulled off the end before the label and detail are split, because the
+		// detail split takes the first " · " and would otherwise claim the
+		// counts as the detail.
+		counts := ""
+		if at := strings.LastIndex(body, lineDeltaTokenPrefix+" "); at >= 0 {
+			counts = strings.TrimSpace(body[at+len(lineDeltaTokenPrefix)+1:])
+			body = strings.TrimSpace(body[:at])
+		}
 		detail := ""
 		if separator := strings.Index(body, " · "); separator >= 0 {
 			detail = strings.TrimSpace(body[separator+3:])
@@ -1561,7 +1600,7 @@ func parseToolActivity(value string) (toolActivity, bool) {
 			body = strings.TrimSpace(strings.TrimSuffix(body, " failed"))
 			body = strings.TrimSpace(strings.TrimSuffix(body, " cancelled"))
 		}
-		return toolActivity{name: name, status: item.status, label: body, detail: detail}, true
+		return toolActivity{name: name, status: item.status, label: body, detail: detail, counts: counts}, true
 	}
 	return toolActivity{}, false
 }
@@ -1596,6 +1635,11 @@ func formatToolActivity(tools []toolActivity) string {
 		}
 		if tool.detail != "" {
 			line += " " + tool.detail
+		}
+		// After the path, because that is what the count describes, and before
+		// the clock, so the two are not read as one number.
+		if tool.counts != "" {
+			line += " " + tool.counts
 		}
 		if tool.elapsed != "" {
 			line += " · 🕐 " + tool.elapsed

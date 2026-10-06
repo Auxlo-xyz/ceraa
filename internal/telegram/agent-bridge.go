@@ -261,7 +261,15 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 					"status": string(result.Status), "outcome": toolResultLabel(result),
 				}})
 				if onTool != nil {
-					onTool(callID, fmt.Sprintf("%s %s%s %s", status, toolNameToken(name), label, toolResultLabel(result)))
+					// The counts ride at the end of the line and are pulled off by
+					// parseToolActivity. They go here rather than into the label
+					// because the rendered word is the tool name, so a label
+					// suffix would be parsed and then never shown.
+					counts := ""
+					if delta := formatLineDelta(result); delta != "" {
+						counts = " " + lineDeltaTokenPrefix + " " + delta
+					}
+					onTool(callID, fmt.Sprintf("%s %s%s %s%s", status, toolNameToken(name), label, toolResultLabel(result), counts))
 				}
 			},
 			OnRetry: func(err error, attempt int, delay time.Duration) {
