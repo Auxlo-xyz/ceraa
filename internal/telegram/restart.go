@@ -92,11 +92,6 @@ func sendRestartNotice(token string) {
 	if !ok {
 		return
 	}
-	// Recorded before the tunnel is published, which happens a few seconds
-	// later on the boot path. Without this a restart has no chat to push a
-	// fresh address to, because the address is minted after this notice and
-	// nothing else has recorded one yet.
-	noteMiniAppChat(chatID)
 	send(token, chatID, "Back online. Restart complete.")
 }
 

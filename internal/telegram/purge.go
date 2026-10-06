@@ -42,17 +42,26 @@ const purgeNotice = 20 * time.Second
 // inline link is pushed to the chat, which is resolved when tapped. The user is
 // never asked to run anything, and never told about the churn unless they look
 // at the log.
+// republishMiniAppAddress moves the button to a new address, quietly.
+//
+// This is the automatic half. A quick tunnel's hostname changes on every boot
+// and whenever the client dies, but Telegram caches the button per client, so a
+// phone can keep opening a dead URL for a while after the server has published
+// the new one. There is no API to evict that cache and no way to shorten it from
+// here, so the only honest thing left is to keep the button correct and stay
+// quiet.
+//
+// It stays quiet on purpose. Announcing each move put a message in the chat on
+// every restart and every repaired tunnel, and a chat that gets told about a
+// URL it did not ask for reads as noise: the owner asked for a restart, not for
+// a second link to compare against the first. The button is the surface the
+// address belongs on, so that is the only surface it moves.
 func republishMiniAppAddress(token string, srv *miniapp.Server, origin string) {
 	if err := setChatMenuButton(token, "🌐 Web", origin); err != nil {
 		logger.Warn("Mini App republish: menu button not updated: " + err.Error())
 		return
 	}
 	noteMiniAppPublished(origin)
-	chatID := miniAppChat()
-	if chatID != 0 {
-		// Inline, not the menu button: this one is fetched when tapped.
-		sendMessageWithMarkup(token, chatID, "Fresh address, tap to open:", purgeKeyboard(origin))
-	}
 	logger.Info("Mini App republished at " + origin)
 }
 

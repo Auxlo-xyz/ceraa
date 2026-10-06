@@ -1,6 +1,9 @@
 package telegram
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -44,42 +47,34 @@ func TestPurgeKeyboardCarriesAWebApp(t *testing.T) {
 	}
 }
 
-// A republished address is only useful if the push is a tap-time link. The menu
-// button is exactly the cached surface this whole mechanism exists to route
-// around, so a republication that only moved the button would fix nothing.
-func TestRepublishSendsAnInlineLink(t *testing.T) {
-	// The storage half is stubbed rather than redirected: bridge-state.json is
-	// loaded once at package init, so CERAA_HOME cannot move it, and a test
-	// that really saved would persist its own chat id into the running bot's
-	// state. The next boot would then push a link at "chat not found".
-	previousPersist := persistNotifyChat
-	var persisted []int64
-	persistNotifyChat = func(chatID int64) error {
-		persisted = append(persisted, chatID)
-		return nil
+// An automatic republish must not send a chat message.
+//
+// It used to, and the owner was right to object: a restart asked for a restart,
+// not for a second link to compare against the first. The button is the surface
+// the address belongs on, so it is the only thing allowed to move.
+func TestAutomaticRepublishSendsNoMessage(t *testing.T) {
+	var messages, menuCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			messages++
+		case strings.HasSuffix(r.URL.Path, "/setChatMenuButton"):
+			menuCalls++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"ok":true,"result":true}`)
+	}))
+	defer server.Close()
+	previousBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	t.Cleanup(func() { telegramAPIBase = previousBase })
+
+	republishMiniAppAddress("t", nil, "https://fresh.trycloudflare.com")
+
+	if menuCalls != 1 {
+		t.Errorf("menu button set %d time(s), want 1", menuCalls)
 	}
-	miniappMu.Lock()
-	previous := miniappChat
-	miniappChat = 0
-	miniappMu.Unlock()
-	t.Cleanup(func() {
-		persistNotifyChat = previousPersist
-		miniappMu.Lock()
-		miniappChat = previous
-		miniappMu.Unlock()
-	})
-	noteMiniAppChat(4242)
-	if got := miniAppChat(); got != 4242 {
-		t.Errorf("miniAppChat = %d, want 4242", got)
-	}
-	// Zero is how "unknown" is spelled, so it must not overwrite a recorded
-	// chat. A boot that has not seen a message yet calls in with zero, and
-	// clearing the destination would silently disable every future push.
-	noteMiniAppChat(0)
-	if got := miniAppChat(); got != 4242 {
-		t.Errorf("miniAppChat = %d after a zero write, want the recorded 4242", got)
-	}
-	if len(persisted) != 1 || persisted[0] != 4242 {
-		t.Errorf("persisted = %v, want exactly [4242]: a zero write must not be stored", persisted)
+	if messages != 0 {
+		t.Errorf("automatic republish sent %d chat message(s), want none", messages)
 	}
 }
