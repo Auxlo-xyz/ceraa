@@ -22,7 +22,6 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/internal/envs"
 	"ceraa/internal/logger"
-	"ceraa/internal/paths"
 	"ceraa/internal/secret"
 )
 
@@ -566,59 +565,68 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	s.serveAsset(w, r, name)
 }
 
-// serveAsset resolves name the way the system prompt is resolved: the data
-// directory first, then the working directory, then beside the executable.
+// serveAsset sends the copy inside the binary.
 //
-// Nothing is embedded. The invariant build.sh states is that there is no
-// go:embed in the tree, and a UI meant to be edited without rebuilding is the
-// worst possible place to break it.
+// The binary is authoritative on purpose. It used to lose to a file in the data
+// directory, which made the page an unversioned override with no marker: a
+// stale copy sat there unnoticed and every fix lost an argument with it. That
+// was not hypothetical. A rebuilt binary was restarted with a corrected shell
+// and kept serving the old page from disk, because the disk copy outranked the
+// binary and nothing said so. The fix looked applied, the button stayed broken,
+// and the evidence pointed the wrong way.
+//
+// An override is still possible, deliberately and visibly: CERAA_MINIAPP_ASSET_DIR
+// names a directory to serve from instead. It has to be spelled out, it is logged
+// at startup, and nothing else on the machine can shadow the shipped page.
 //
 // Editable without a rebuild and cacheable are opposites, so this says not to
 // cache. ServeFile otherwise sends Last-Modified and answers 304 from
 // If-Modified-Since, and a WebView holding that chain can go on rendering an
-// older revision indefinitely — which looks exactly like a fix that did not
-// work, because the file on disk is correct and the phone disagrees.
+// older revision indefinitely, which looks exactly like a fix that did not work.
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name string) {
-	full, ok := resolveAsset(name)
-	if !ok {
-		// The embedded copy is the floor: a run whose staging step was skipped
-		// used to serve a bare 404 through a healthy tunnel, which read as
-		// "Web didn't load" with no log line explaining it.
-		if data, contentType, found := embeddedAsset(name); found {
-			w.Header().Set("Cache-Control", "no-store, must-revalidate")
-			w.Header().Set("Content-Type", contentType)
-			w.Write(data)
-			return
-		}
+	if path, ok := overrideAsset(name); ok {
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		http.ServeFile(w, r, path)
+		return
+	}
+	data, contentType, found := embeddedAsset(name)
+	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store, must-revalidate")
-	http.ServeFile(w, r, full)
+	w.Header().Set("Content-Type", contentType)
+	w.Write(data)
 }
 
-// resolveAsset finds a shipped file, preferring a copy in the data directory so
-// an operator can override what the install provided.
-func resolveAsset(name string) (string, bool) {
+// overrideAsset returns a file from the directory CERAA_MINIAPP_ASSET_DIR names,
+// and nothing else. An unset variable means no override, which is the default and
+// the only posture an installed copy should be in.
+//
+// The gate is the variable, not the existence of a file. Any file on disk that
+// happens to sit at a conventional path would otherwise be able to replace the
+// page a user is shown, which is an unversioned content override discovered by
+// whoever happens to write the file first.
+func overrideAsset(name string) (string, bool) {
+	dir := strings.TrimSpace(os.Getenv("CERAA_MINIAPP_ASSET_DIR"))
+	if dir == "" {
+		return "", false
+	}
 	if filepath.IsAbs(name) || strings.Contains(name, "..") {
 		return "", false
 	}
-	candidates := []string{
-		filepath.Join(paths.DataDir(), "miniapp", name),
-		filepath.Join("miniapp", name),
+	path := filepath.Join(dir, name)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return "", false
 	}
-	if exe, err := os.Executable(); err == nil {
-		if dir, err := filepath.EvalSymlinks(filepath.Dir(exe)); err == nil {
-			candidates = append(candidates, filepath.Join(dir, "miniapp", name))
-		}
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
-		}
-	}
-	return "", false
+	return path, true
 }
+
+// AssetOverrideDir is the directory the Mini App is served from when it is not
+// the embedded copy, or "". Logged once at startup, because an override nobody
+// knows about is indistinguishable from a bug.
+func AssetOverrideDir() string { return strings.TrimSpace(os.Getenv("CERAA_MINIAPP_ASSET_DIR")) }
 
 // handleSessions lists what is on disk, most recently used first.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {

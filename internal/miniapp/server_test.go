@@ -367,12 +367,13 @@ func TestUnknownSessionIsNotFound(t *testing.T) {
 	}
 }
 
-// TestResolveAssetRefusesNamesOutsideTheDirectory pins the gate directly,
+// TestOverrideAssetRefusesNamesOutsideTheDirectory pins the gate directly,
 // because a route test cannot reach a path the mux has already cleaned.
-func TestResolveAssetRefusesNamesOutsideTheDirectory(t *testing.T) {
+func TestOverrideAssetRefusesNamesOutsideTheDirectory(t *testing.T) {
+	t.Setenv("CERAA_MINIAPP_ASSET_DIR", t.TempDir())
 	for _, name := range []string{"../secret", "a/../../secret", "..", "/etc/passwd"} {
-		if _, ok := resolveAsset(name); ok {
-			t.Errorf("resolveAsset(%q) accepted a name outside the directory", name)
+		if _, ok := overrideAsset(name); ok {
+			t.Errorf("overrideAsset(%q) accepted a name outside the directory", name)
 		}
 	}
 }
@@ -498,18 +499,36 @@ func TestMissingInitDataIsDistinguishedInLog(t *testing.T) {
 	}
 }
 
-// TestIndexIsServedFromDisk covers the one asset the page is, resolved the way
-// the system prompt is: a copy in the data directory wins, and nothing is
-// embedded to fall back on.
-func TestIndexIsServedFromDisk(t *testing.T) {
+// A single binary install gets the page from inside the binary. That is the
+// case a user downloading one file hits, and it used to depend on a staging step
+// having run beside the executable.
+func TestIndexComesFromTheBinaryAlone(t *testing.T) {
+	t.Setenv("CERAA_HOME", t.TempDir())
+	t.Setenv("CERAA_MINIAPP_ASSET_DIR", "")
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	got := do(t, server.Handler(), http.MethodGet, "/?initData="+url.QueryEscape(initData), "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("index = %d, want 200 from the embedded asset", got.Code)
+	}
+	if !strings.Contains(got.Body.String(), "CERAA") {
+		t.Fatalf("index body = %q, want the embedded page", got.Body.String())
+	}
+}
+
+// This is the bug that made a fix look like it had not worked. A rebuilt binary
+// was restarted with a corrected shell and kept serving the older page from the
+// data directory, because that copy outranked the binary and nothing logged it.
+// A file left on disk must not be able to replace the page a user is shown.
+func TestAStaleFileOnDiskCannotReplaceTheShippedPage(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("CERAA_HOME", dataDir)
+	t.Setenv("CERAA_MINIAPP_ASSET_DIR", "")
 	page := filepath.Join(dataDir, "miniapp", "index.html")
 	if err := os.MkdirAll(filepath.Dir(page), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const body = "<!doctype html><title>Ceraa</title>"
-	if err := os.WriteFile(page, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(page, []byte("<!doctype html><title>OLD</title>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -519,21 +538,52 @@ func TestIndexIsServedFromDisk(t *testing.T) {
 	if got.Code != http.StatusOK {
 		t.Fatalf("index = %d, want 200", got.Code)
 	}
-	if !strings.Contains(got.Body.String(), "Ceraa") {
-		t.Fatalf("index body = %q, want the page from disk", got.Body.String())
+	if strings.Contains(got.Body.String(), "OLD") {
+		t.Fatal("a stale file in the data directory overrode the page shipped in the binary")
+	}
+	if !strings.Contains(got.Body.String(), "CERAA") {
+		t.Fatalf("index body = %q, want the embedded page", got.Body.String())
 	}
 }
 
-// TestIndexSurvivesMissingAssets pins the floor: a binary installed without
-// its staged assets still answers, from the embedded copy, rather than 404ing
-// behind a healthy tunnel and reading as "Web didn't load".
-func TestIndexSurvivesMissingAssets(t *testing.T) {
+// The override still exists, for anyone deliberately editing the page, but it has
+// to be asked for by name.
+func TestAnExplicitAssetDirIsTheOnlyOverride(t *testing.T) {
+	dir := t.TempDir()
+	page := filepath.Join(dir, "index.html")
+	if err := os.WriteFile(page, []byte("<!doctype html><title>OVERRIDE</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CERAA_HOME", t.TempDir())
+	t.Setenv("CERAA_MINIAPP_ASSET_DIR", dir)
 	server, _, _ := newFixture(t, testUser)
 	initData := initDataFor(t, testToken, testUser, 0)
 	got := do(t, server.Handler(), http.MethodGet, "/?initData="+url.QueryEscape(initData), "")
 	if got.Code != http.StatusOK {
-		t.Fatalf("index = %d, want 200 from the embedded asset when staging is absent", got.Code)
+		t.Fatalf("index = %d, want 200", got.Code)
+	}
+	if !strings.Contains(got.Body.String(), "OVERRIDE") {
+		t.Fatalf("index body = %q, want the override the operator named", got.Body.String())
+	}
+}
+
+// And an override that is named but empty is not silently the shipped page: it
+// has to say so, or a typo in the path looks like a working install.
+func TestAnOverrideDirThatHasNoPageFallsBackAndIsVisible(t *testing.T) {
+	empty := t.TempDir()
+	t.Setenv("CERAA_HOME", t.TempDir())
+	t.Setenv("CERAA_MINIAPP_ASSET_DIR", empty)
+	if got := AssetOverrideDir(); got != empty {
+		t.Fatalf("AssetOverrideDir() = %q, want the directory it was given", got)
+	}
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	got := do(t, server.Handler(), http.MethodGet, "/?initData="+url.QueryEscape(initData), "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("index = %d, want 200 from the embedded asset", got.Code)
+	}
+	if !strings.Contains(got.Body.String(), "CERAA") {
+		t.Fatalf("index body = %q, want the embedded page when the override is empty", got.Body.String())
 	}
 }
 

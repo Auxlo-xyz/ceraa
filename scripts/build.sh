@@ -61,11 +61,14 @@ for doc in LICENSE NOTICE; do
   cp -f "$doc" bin/"$doc"
 done
 
-# The Mini App page is read from disk at runtime for the same reason the prompt
-# is: it must be editable without a rebuild, and there must be no go:embed.
-# It ships beside the binary so a single-binary install still has one. The
-# mascot is fetched by that page as /mascot.svg, so it ships with it or the
-# header renders an empty state box on a single-binary install.
+# The Mini App page and mascot are embedded in the binary (see
+# internal/miniapp/assets.go), so a single-file install serves the dashboard
+# with nothing else on disk. They are still copied out beside the binary so the
+# tree has something to read and edit, and so CERAA_MINIAPP_ASSET_DIR can be
+# pointed at bin/miniapp if you want the page served from disk while editing it.
+# Serving it from disk is opt-in through that variable and nowhere else: a copy
+# left at a conventional path used to silently outrank the binary, so a rebuilt
+# binary kept serving a stale page and a fix looked like it had not worked.
 mkdir -p bin/miniapp
 cp -f internal/miniapp/assets/index.html bin/miniapp/index.html
 cp -f internal/miniapp/assets/mascot.svg bin/miniapp/mascot.svg

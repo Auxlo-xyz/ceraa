@@ -53,12 +53,14 @@ done
 echo "release: staging prompt/system.txt"
 cp -f prompt/system.txt dist/system.txt
 
-# The Mini App page, staged for the same reason: served from disk, never
-# embedded, so the UI can be edited without shipping a binary. It is flat here
-# the way system.txt is, because a release asset cannot contain a slash, and
-# install.sh puts it back under miniapp/ beside the binary, which is the third
-# place resolveAsset looks for it. Checksummed for the same reason the prompt is:
-# a release asset nobody verifies is a release asset nobody checked.
+# The Mini App page. Unlike the prompt it is embedded in the binary, so a
+# single-file install serves it with nothing else present: the page used to be
+# read from disk, which meant an install that skipped staging answered a 404
+# through a healthy tunnel. It is still published as a flat asset (a release
+# asset cannot contain a slash) so it can be inspected, checksummed, and dropped
+# into CERAA_MINIAPP_ASSET_DIR by anyone who genuinely wants to edit the page.
+# Checksummed for the same reason the prompt is: an asset nobody verifies is an
+# asset nobody checked.
 echo "release: staging miniapp-index.html"
 cp -f internal/miniapp/assets/index.html dist/miniapp-index.html
 
