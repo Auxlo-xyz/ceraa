@@ -1,18 +1,29 @@
+# Sample systemd unit, for hosts that have systemd. Not the run path on a host
+# without one — use scripts/ceraa-supervisor.sh watch there instead.
+#
+# Every path below must be edited to match the host before installing. They are
+# the defaults from the runtime layout described in README.md, not a working
+# configuration on any particular machine. The three that were previously wrong
+# and are worth checking first:
+#
+#   ExecStart        must point at the deployed binary
+#   EnvironmentFile  must exist, be chmod 600, and hold the bot token
+#   StandardOutput   a log under /tmp is wiped on a recycled host
 [Unit]
 Description=Ceraa Telegram Bot
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/workspace/ceraa
+WorkingDirectory=/workspace/ceraa/runtime
 Environment=CERAA_WORKSPACE_ROOT=/workspace/ceraa/workspace
-# Secrets live in /etc/ceraa/ceraa.env (chmod 600). See ceraa.env.example.
+# Secrets live in an env file owned by root and mode 600. See ceraa.env.example.
 EnvironmentFile=/etc/ceraa/ceraa.env
-ExecStart=/workspace/ceraa/bin/ceraa start
+ExecStart=/workspace/ceraa/runtime/bin/ceraa start
 Restart=always
 RestartSec=10
-StandardOutput=append:/tmp/ceraa-service.log
-StandardError=append:/tmp/ceraa-service.log
+StandardOutput=append:/workspace/ceraa/runtime/ceraa.log
+StandardError=append:/workspace/ceraa/runtime/ceraa.log
 
 [Install]
 WantedBy=multi-user.target
