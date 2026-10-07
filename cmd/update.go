@@ -35,9 +35,9 @@ is run once to confirm it starts and reports the version the tag names before
 anything is renamed over your copy. A candidate that fails either check costs
 you nothing.
 
-A service that is already running keeps executing the version it started with,
-because the operating system still holds the old file open. Stop it afterwards
-to switch; update prints the pid when there is one.
+A service that is already running keeps executing the build it started with,
+because the operating system still holds that file open. Restart it afterwards
+to switch, and update prints the pid and the command when there is one.
 
 Use --check to ask without changing anything.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -95,9 +95,34 @@ func applyUpdate(out io.Writer, ctx context.Context, tag, from string) error {
 		fmt.Fprintf(out, "Refreshed %s\n", result.Prompt)
 	}
 	if pid, ok := runningServicePID(); ok {
-		fmt.Fprintf(out, "\nA Ceraa service is running (pid %d) and still holds the old version open.\nRun `ceraa stop`, then start it again to run %s.\n", pid, strings.TrimPrefix(result.Tag, "v"))
+		fmt.Fprintln(out, runningServiceNotice(pid, result.Tag))
 	}
 	return nil
+}
+
+// runningServiceNotice tells the operator how to switch a running daemon onto
+// the build that was just installed.
+//
+// It says `restart`, not `stop`. A rename over a running executable leaves that
+// process holding an unlinked inode and /proc/<pid>/exe showing "(deleted)",
+// which reads like the binary is gone and invites a stop/start. It is not:
+// os.Executable strips that suffix, so the path still names a file, and it names
+// the NEW file. Restart execs it, so the daemon switches in place and keeps its
+// pid. Stop/start reaches the same place after a gap long enough for the
+// supervisor to notice, which is a needless outage on a host whose watcher
+// polls rather than gets notified.
+func runningServiceNotice(pid int, tag string) string {
+	return fmt.Sprintf(
+		"A Ceraa service is running (pid %d) on the previous build.\n"+
+			"Run `ceraa restart` to switch it to %s in place.\n"+
+			"\n"+
+			"If you have looked at /proc/%d/exe or run lsof and seen the binary marked\n"+
+			"\"(deleted)\", that is expected and it is not the path failing: the rename\n"+
+			"unlinked the file the old process is still holding, and the path now holds\n"+
+			"the new build. Restart execs that path, so the pid is kept and there is no\n"+
+			"gap. Stopping and starting also works, but leaves the bot down until the\n"+
+			"supervisor notices.",
+		pid, strings.TrimPrefix(tag, "v"), pid)
 }
 
 // runningServicePID reports a bridge started by `ceraa start`, if one is alive.
