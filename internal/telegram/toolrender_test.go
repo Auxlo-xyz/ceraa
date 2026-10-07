@@ -90,3 +90,69 @@ func TestTheToolNameStillTravelsInTheEventString(t *testing.T) {
 	}
 	var _ tool.Tool // the registry type, so this test tracks the real package
 }
+
+func TestBrowserMediaAndSecretsToolsShowTheirCompletionStatus(t *testing.T) {
+	for _, name := range []string{
+		"browser", "browser_open", "browser_open_file", "browser_click", "browser_close", "view_image", "send_media", "list_secrets",
+	} {
+		for _, outcome := range []struct {
+			prefix string
+			mark   string
+		}{
+			{prefix: "✅", mark: "✓"},
+			{prefix: "⚠️", mark: "✕"},
+		} {
+			t.Run(name+outcome.mark, func(t *testing.T) {
+				renderer := &runRenderer{messageID: 1}
+				label := toolDisplayName(name)
+				renderer.tool("call-1", "🔄 "+toolNameToken(name)+label+" · target")
+				wantName := strings.ReplaceAll(name, "_", " ")
+				if boldWordTool(name) {
+					wantName = "<b>" + wantName + "</b>"
+				}
+				if got, want := formatToolActivity(renderer.tools), "… "+wantName+" target"; got != want {
+					t.Fatalf("running tool = %q, want %q", got, want)
+				}
+				result := " completed"
+				if outcome.mark == "✕" {
+					result = " failed"
+				}
+				renderer.tool("call-1", outcome.prefix+" "+toolNameToken(name)+label+result)
+				if got, want := formatToolActivity(renderer.tools), outcome.mark+" "+wantName+" target"; got != want {
+					t.Errorf("finished tool = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestListSecretsKeepsBoldTextAndSpacing(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   string
+	}{
+		{status: "🔄", want: "… <b>list secrets</b> target"},
+		{status: "✓", want: "✓ <b>list secrets</b> target"},
+		{status: "⚠", want: "✕ <b>list secrets</b> target"},
+	} {
+		got := formatToolActivity([]toolActivity{{name: "list_secrets", status: tc.status, detail: "target"}})
+		if got != tc.want {
+			t.Errorf("status %q rendered %q, want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestOtherToolMarksAreUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "read", want: "📚 read"},
+		{name: "bash", want: "<b>bash</b>"},
+		{name: "unknown_tool", want: "⚙️ unknown tool"},
+	} {
+		if got := formatToolActivity([]toolActivity{{name: tc.name, status: "✓"}}); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

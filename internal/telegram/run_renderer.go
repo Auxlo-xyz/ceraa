@@ -1629,9 +1629,21 @@ func formatToolActivity(tools []toolActivity) string {
 		// media. The icon and the bolding key off the raw name, so only the
 		// displayed word changes.
 		display := strings.ReplaceAll(name, "_", " ")
-		line := toolIcon(name) + " " + display
+		line := display
 		if boldWordTool(name) {
 			line = "<b>" + display + "</b>"
+		} else if !statusMarkedTool(name) {
+			line = toolIcon(name) + " " + line
+		}
+		if statusMarkedTool(name) {
+			mark := "…"
+			switch tool.status {
+			case "✓":
+				mark = "✓"
+			case "⚠":
+				mark = "✕"
+			}
+			line = mark + " " + line
 		}
 		if tool.detail != "" {
 			line += " " + tool.detail
@@ -1666,6 +1678,10 @@ func formatToolActivity(tools []toolActivity) string {
 // something outside the conversation or goes looking for it. Reading a known path,
 // asking the user a question, and the goal, todo and compaction bookkeeping are
 // not that, and they keep their marks.
+func statusMarkedTool(name string) bool {
+	return name == "browser" || strings.HasPrefix(name, "browser_") || name == "view_image" || name == "send_media" || name == "list_secrets"
+}
+
 func boldWordTool(name string) bool {
 	switch name {
 	// Shell and the tools that drive a browser.
