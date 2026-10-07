@@ -22,12 +22,22 @@ const (
 // FallbackContextWindow is the budget used when neither the profile nor the
 // catalog states a window.
 //
-// Deliberately conservative rather than matching the largest window seen in
-// practice. Over-budgeting a model that cannot take it produces a hard provider
-// error and a lost turn; under-budgeting one that can merely wastes headroom. The
-// two failures are not symmetric, so the default resolves toward the survivable
-// one.
-const FallbackContextWindow = 128000
+// 200k, because that is what the providers in use actually take, and matching
+// them costs a conversation that can use the room. It was 128k, chosen on the
+// opposite argument: over-budgeting a model that cannot take it produces a hard
+// provider error and a lost turn, while under-budgeting one that can merely
+// wastes headroom, and the two failures are not symmetric. That reasoning is
+// still correct and this value still trades against it, deliberately: the floor
+// now assumes a 200k window for a model that may advertise less, so a small
+// window reached with no catalog to consult is the case that gets the hard error
+// instead of a cheap early compaction.
+//
+// That trade is worth taking because the floor is rarely the operative number.
+// A profile that states a limit overrides it (ResolveContextWindow checks it
+// first), and the catalog supplies the model's real window once it has been
+// refreshed, so this only decides the answer while both are silent. Raising it
+// further would make the common case optimistic rather than merely generous.
+const FallbackContextWindow = 200000
 
 // ResolveContextWindow picks the effective context limit for a model.
 //

@@ -62,3 +62,28 @@ func TestContextWindowDecisionStringCarriesProvenance(t *testing.T) {
 		}
 	}
 }
+
+// The floor is a product decision, not an implementation detail, so it is pinned
+// by value rather than left to the constant it is. Every other test here compares
+// against FallbackContextWindow, which means they all keep passing if the floor
+// moves - so a silent change from 200k back to a conservative 128k would look
+// like a clean run, and the conversation budget would shrink by a third with
+// nothing reporting it.
+//
+// The floor assumes a 200k window for a model that may advertise less, which is
+// the trade the constant's comment names. What must remain true whatever the
+// value is: it is a real budget rather than zero, and the compactor's absolute
+// reserve still fits inside it.
+func TestTheContextWindowFloorIsTwoHundredThousand(t *testing.T) {
+	if FallbackContextWindow != 200000 {
+		t.Fatalf("FallbackContextWindow = %d, want 200000", FallbackContextWindow)
+	}
+	got, source := ResolveContextWindow(0, ModelMetadata{})
+	if got != 200000 || source != ContextFromDefault {
+		t.Errorf("ResolveContextWindow with nothing stated = %d/%s, want 200000/%s", got, source, ContextFromDefault)
+	}
+	// Still a window with room in it, not a figure that fills its own budget.
+	if got <= 0 {
+		t.Error("the floor resolved to zero, which is the failure this constant exists to prevent")
+	}
+}
