@@ -15,7 +15,7 @@
   <style>
     /* =========================================================================
      * CERAA FOLIO DESIGN SYSTEM (Daylight Architectural / Swiss Broadsheet)
-     * Exact warm paper palette with a cool blue accent (#026FB6)
+     * Exact warm paper palette with a cool blue accent (#2AA6F2)
      * Fluid responsive 6-step typographic hierarchy + zero horizontal overflow
      * ========================================================================= */
     :root {
@@ -31,7 +31,7 @@
       --ink-3: #6B665E;        /* Muted taupe index */
       --rule: #D8D3C8;         /* 1px architectural hairline */
       --rule-strong: #121110;  /* Primary structural rule */
-      --accent: #026FB6;       /* Azure, darkened for text on paper (4.83:1) */
+      --accent: #2AA6F2;       /* Azure, 50/50 mix of #25A8FD and #30A3E6 */
       --fault: #A81E14;        /* Semantic fault crimson */
     }
 
@@ -478,7 +478,7 @@
       color: var(--ink);
     }
     .capsule-nav-item.active {
-      background: rgba(2, 111, 182, 0.12);
+      background: rgba(42, 166, 242, 0.12);
       color: var(--accent);
     }
     .capsule-nav-item:active {
@@ -742,7 +742,7 @@
       background: rgba(18, 17, 16, 0.024);
     }
     .h-row.active-row {
-      background: rgba(2, 111, 182, 0.055);
+      background: rgba(42, 166, 242, 0.055);
     }
 
     /* Resource cards: icon plus title plus status pill, a description line,
@@ -1205,10 +1205,10 @@
 
     @keyframes pulseHalo {
       0%, 100% {
-        box-shadow: 0 0 0 0 rgba(2, 111, 182, 0.45);
+        box-shadow: 0 0 0 0 rgba(42, 166, 242, 0.45);
       }
       50% {
-        box-shadow: 0 0 0 5px rgba(2, 111, 182, 0);
+        box-shadow: 0 0 0 5px rgba(42, 166, 242, 0);
       }
     }
 
@@ -1517,7 +1517,7 @@
 
           <div className="token-chart-legend">
             <span className="legend-item">
-              <span className="legend-swatch" style={{ background: "#026FB6" }} />
+              <span className="legend-swatch" style={{ background: "#2AA6F2" }} />
               Cache Read
             </span>
             <span className="legend-item">
@@ -1576,7 +1576,7 @@
                         width={barW}
                         height={Math.max(2, hCache)}
                         rx="2"
-                        fill="#026FB6"
+                        fill="#2AA6F2"
                       />
                       <rect
                         className="chart-bar-rect"
@@ -1606,7 +1606,7 @@
                       fontSize="10"
                       fontFamily="JetBrains Mono"
                       fontWeight={isActive ? "700" : "600"}
-                      fill={isActive ? "#026FB6" : "#6B665E"}
+                      fill={isActive ? "#2AA6F2" : "#6B665E"}
                     >
                       {p.label}
                     </text>
@@ -3473,7 +3473,7 @@ contextLimit: p.context_limit || 0,
                         y1="34"
                         x2="40"
                         y2="18"
-                        stroke="#026FB6"
+                        stroke="#2AA6F2"
                         strokeWidth="2.5"
                         strokeLinecap="round"
                         style={{
@@ -3836,7 +3836,7 @@ contextLimit: p.context_limit || 0,
                               cy="21"
                               r={radius}
                               fill="none"
-                              stroke={ep.hitRate > 0 ? "#026FB6" : "#6B665E"}
+                              stroke={ep.hitRate > 0 ? "#2AA6F2" : "#6B665E"}
                               strokeWidth="4"
                               strokeDasharray={circum}
                               strokeDashoffset={offset}
