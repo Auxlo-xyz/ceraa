@@ -23,13 +23,13 @@
       --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
       --serif: "Newsreader", Georgia, serif;
 
-      --ground: #FAF8F4;       /* Warm museum paper */
-      --well: #ECE8DF;         /* Recessed control well */
-      --well-hover: #E3DEC3;
+      --ground: #FFFFFF;       /* Stark white page */
+      --well: #F1F1F1;         /* Recessed control well */
+      --well-hover: #E6E6E6;
       --ink: #121110;          /* Deep carbon ink */
-      --ink-2: #524E46;        /* Secondary warm umber */
-      --ink-3: #6B665E;        /* Muted taupe index */
-      --rule: #D8D3C8;         /* 1px architectural hairline */
+      --ink-2: #595959;        /* Secondary neutral grey */
+      --ink-3: #757575;        /* Muted neutral grey */
+      --rule: #E1E1E1;         /* 1px architectural hairline */
       --rule-strong: #121110;  /* Primary structural rule */
       --accent: #2AA6F2;       /* Azure, 50/50 mix of #25A8FD and #30A3E6 */
       --fault: #A81E14;        /* Semantic fault crimson */
@@ -755,7 +755,7 @@
       gap: 12px;
     }
     .card {
-      background: #FFFDF9;
+      background: #F1F1F1;
       border: 1px solid var(--rule);
       border-radius: 16px;
       padding: 16px 18px;
@@ -1540,7 +1540,7 @@
                   y1={padT + plotH * ratio}
                   x2={W}
                   y2={padT + plotH * ratio}
-                  stroke="#D8D3C8"
+                  stroke="#E1E1E1"
                   strokeDasharray="3 3"
                 />
               ))}
@@ -1606,7 +1606,7 @@
                       fontSize="10"
                       fontFamily="JetBrains Mono"
                       fontWeight={isActive ? "700" : "600"}
-                      fill={isActive ? "#2AA6F2" : "#6B665E"}
+                      fill={isActive ? "#2AA6F2" : "#757575"}
                     >
                       {p.label}
                     </text>
@@ -3465,8 +3465,8 @@ contextLimit: p.context_limit || 0,
                     style={{ cursor: "pointer", flex: "none" }}
                   >
                     <svg width="78" height="68" viewBox="0 0 78 68">
-                      <circle cx="40" cy="34" r="26" fill="#ECE8DF" stroke="#D8D3C8" strokeWidth="1.5" />
-                      <circle cx="40" cy="34" r="20" fill="none" stroke="#6B665E" strokeWidth="3" strokeDasharray="2 5" />
+                      <circle cx="40" cy="34" r="26" fill="#F1F1F1" stroke="#E1E1E1" strokeWidth="1.5" />
+                      <circle cx="40" cy="34" r="20" fill="none" stroke="#757575" strokeWidth="3" strokeDasharray="2 5" />
                       <line
                         className="rotary-needle"
                         x1="40"
@@ -3829,14 +3829,14 @@ contextLimit: p.context_limit || 0,
                       <div key={ep.endpoint} className="h-row">
                         <div className="h-left" style={{ alignItems: "center" }}>
                           <svg width="44" height="44" viewBox="0 0 42 42" style={{ flex: "none" }}>
-                            <circle cx="21" cy="21" r={radius} fill="none" stroke="#ECE8DF" strokeWidth="4" />
+                            <circle cx="21" cy="21" r={radius} fill="none" stroke="#DEDEDE" strokeWidth="4" />
                             <circle
                               className="gauge-ring"
                               cx="21"
                               cy="21"
                               r={radius}
                               fill="none"
-                              stroke={ep.hitRate > 0 ? "#2AA6F2" : "#6B665E"}
+                              stroke={ep.hitRate > 0 ? "#2AA6F2" : "#757575"}
                               strokeWidth="4"
                               strokeDasharray={circum}
                               strokeDashoffset={offset}
