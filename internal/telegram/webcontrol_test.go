@@ -366,14 +366,66 @@ func TestCompactingASessionThatDoesNotExistIsAnError(t *testing.T) {
 	}
 }
 
-// The dashboard rendered the context window straight from the configured value,
-// and config.DefaultConfig deliberately leaves that value unset so the runner can
-// ask the model catalog. The raw read therefore said the window was zero, and
-// zero divided by a thousand rendered as "0k tok" - a budget the agent never uses,
-// stated as though it were one. The configured value still has to be reported
-// raw, because that is the row the operator edits; the effective one is what may
-// be displayed.
+// The dashboard rendered the context window straight from cfg.LLM.ContextLimit,
+// and that is the wrong block as well as the wrong value. An active provider
+// profile states its own limit and mergeProfile folds it onto the base, so the
+// limit in force is the profile's while the base block still reads zero. Reading
+// the base reported the 128k floor for a provider that says 200k: a plausible
+// wrong number, which is worse than the obvious "0k tok" this replaced.
+//
+// The configured base is still reported raw, because that is the row the operator
+// edits. What may be displayed is the effective one.
 func TestTheDashboardReportsAContextLimitTheRunnerWouldActuallyUse(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+
+	// The reported case: a provider profile that states a window, selected, with
+	// the base block left unset.
+	store := config.NewStoreAt(filepath.Join(dir, "config.json"))
+	err := store.Update(func(cfg *config.Config) error {
+		cfg.ActiveProvider = "codex"
+		cfg.ProviderProfiles = map[string]config.ProviderProfile{
+			"codex": {ContextLimit: 200000, Model: "gpt-6-luna"},
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed an active provider profile: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.LLM.ContextLimit != 0 {
+		t.Fatalf("the fixture needs the base block unset, got %d", cfg.LLM.ContextLimit)
+	}
+	if got := cfg.ActiveLLM().ContextLimit; got != 200000 {
+		t.Fatalf("the merged view should carry the profile's limit, got %d", got)
+	}
+
+	params := webRunParams()
+	configured, _ := params["context_limit"].(int)
+	effective, _ := params["context_limit_effective"].(int)
+	source, _ := params["context_limit_source"].(string)
+
+	if configured != 0 {
+		t.Errorf("configured context_limit = %d, want the raw base 0 so the row stays editable", configured)
+	}
+	if effective != 200000 {
+		t.Errorf("effective context limit = %d, want the profile's 200000; reporting the floor here is a plausible wrong number", effective)
+	}
+	if source != string(llm.ContextFromProfile) {
+		t.Errorf("context limit source = %q, want %q", source, llm.ContextFromProfile)
+	}
+}
+
+// With no profile and no configured limit the runner falls back rather than
+// running on zero, and the dashboard has to say the floor was used rather than
+// leave a bare number that looks measured.
+func TestTheDashboardNamesTheContextLimitFloorWhenNothingStates(t *testing.T) {
 	restore := stubBothState(t)
 	defer restore()
 	t.Setenv("CERAA_HOME", t.TempDir())
@@ -383,13 +435,8 @@ func TestTheDashboardReportsAContextLimitTheRunnerWouldActuallyUse(t *testing.T)
 	}
 
 	params := webRunParams()
-	configured, _ := params["context_limit"].(int)
 	effective, _ := params["context_limit_effective"].(int)
 	source, _ := params["context_limit_source"].(string)
-
-	if configured != 0 {
-		t.Errorf("configured context_limit = %d, want the raw unset 0 so the row stays editable", configured)
-	}
 	if effective != llm.FallbackContextWindow {
 		t.Errorf("effective context limit = %d, want the fallback %d; a zero here is what put 0k on the screen",
 			effective, llm.FallbackContextWindow)
@@ -398,8 +445,8 @@ func TestTheDashboardReportsAContextLimitTheRunnerWouldActuallyUse(t *testing.T)
 		t.Errorf("context limit source = %q, want %q", source, llm.ContextFromDefault)
 	}
 
-	// A configured limit is a decision somebody made, so it must win outright and
-	// not be second-guessed by the resolver the display shares.
+	// A limit configured on the base is a decision somebody made, so it must win
+	// outright rather than be second-guessed by the resolver the display shares.
 	if err := webSetRunParams(map[string]any{"context_limit": float64(200000)}); err != nil {
 		t.Fatalf("set context_limit: %v", err)
 	}

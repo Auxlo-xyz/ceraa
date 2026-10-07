@@ -375,13 +375,17 @@ func TestTheContextWindowIsNotReadRawFromConfig(t *testing.T) {
 	if !strings.Contains(markup, "function contextLimitNote(") {
 		t.Fatal("the context window has no provenance note, so a resolved value is indistinguishable from a configured one")
 	}
-	for _, source := range []string{`"profile"`, `"catalog"`} {
-		if !strings.Contains(markup, "case "+source+": return \"Auto") {
-			t.Errorf("the context note does not cover the %s source", source)
+	// The note switches on the source rather than on whether the base is zero,
+	// because with a profile active the base is zero while the profile states a
+	// limit outright. So all three sources have to be named, and none of them may
+	// claim to be automatic: a profile limit is a decision somebody made.
+	for _, source := range []string{`case "profile":`, `case "catalog":`, "default:"} {
+		if !strings.Contains(markup, source) {
+			t.Errorf("the context note has no %s branch, so a limit from that source is unexplained", source)
 		}
 	}
-	if !strings.Contains(markup, `default: return "Auto`) {
-		t.Error("the context note has no fallback branch, so the common case says nothing about the floor it used")
+	if strings.Contains(markup, `case "profile": return "Auto`) {
+		t.Error("the profile branch calls a stated limit automatic; a profile states its window deliberately")
 	}
 	// The configured value stays reported, because it is the row the operator
 	// edits. Losing it would make the limit read-only while looking editable.

@@ -334,23 +334,30 @@ func webRunParams() map[string]any {
 		"auto_compaction": auto,
 	}
 	if cfg != nil {
-		// context_limit is reported raw so the row stays editable, but it is
-		// deliberately unset by default - config.DefaultConfig leaves it zero so
-		// the runner asks the model catalog instead - and a zero rendered raw is a
-		// budget the agent never uses. So the effective limit is resolved here with
-		// the runner's own resolver and reported beside the configured one with its
-		// provenance. Reusing llm.ResolveContextWindow is the point: a second
-		// resolution rule in the dashboard is one that can disagree with the runner
-		// about what the limit is, which is the number being read.
+		// context_limit is reported raw so the row stays editable, but it is the
+		// *base* block and it is deliberately unset by default - config.DefaultConfig
+		// leaves it zero so the runner asks the model catalog. Reading that raw value
+		// reported a window the agent never uses, and dividing it by a thousand
+		// printed "0k tok".
+		//
+		// It also read the wrong block entirely when a provider profile is active.
+		// mergeProfile folds the profile's limit onto the base, and ActiveLLM is
+		// that merged view, so the limit in force is 200k from the profile while
+		// cfg.LLM.ContextLimit alone still says zero. Resolving against the base
+		// would have reported the 128k floor for a provider that states 200k, which
+		// is a different kind of wrong: a plausible number rather than an obvious
+		// one. Reusing llm.ResolveContextWindow keeps the dashboard on the runner's
+		// resolution rule rather than a second one that can disagree with it.
 		//
 		// No catalog metadata is passed, so this is the limit in force before the
 		// first calibration. The source label is what keeps that honest: "default"
 		// says the floor was used, not that the model advertises 128k.
-		effective, source := llm.ResolveContextWindow(cfg.LLM.ContextLimit, llm.ModelMetadata{})
+		active := cfg.ActiveLLM()
+		effective, source := llm.ResolveContextWindow(active.ContextLimit, llm.ModelMetadata{})
 		out["context_limit"] = cfg.LLM.ContextLimit
 		out["context_limit_effective"] = effective
 		out["context_limit_source"] = string(source)
-		out["max_output_tokens"] = cfg.LLM.MaxOutputTokens
+		out["max_output_tokens"] = active.MaxOutputTokens
 		out["max_tool_result_chars"] = cfg.MaxToolResultChars
 		out["max_concurrent_tools"] = cfg.MaxConcurrentTools
 		out["prompt_cache_mode"] = cfg.LLM.PromptCacheMode

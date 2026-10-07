@@ -1685,16 +1685,25 @@
     // that is the entire decision. Provider support varies, so the note says what
     // the level means rather than what a given endpoint will accept with it.
     // Says where the number above came from, because the configured limit and the
-    // limit in force are different values and only one of them is what the agent
-    // will use. A configured zero is the normal case, not a broken one: config
-    // leaves it unset so the runner asks the model catalog, and printing that raw
-    // as "0k tok" stated the window was zero when it is not.
+    // limit in force are different values and only one is what the agent will use.
+    // A configured zero is the normal case, not a broken one: config leaves it
+    // unset so the runner asks the model catalog, and printing that raw as "0k
+    // tok" stated the window was zero when it is not.
+    //
+    // Branching on the source rather than on whether the base is zero matters:
+    // with a provider profile active the base is zero while the profile states a
+    // limit outright, and calling that "automatic" would describe a decision
+    // somebody actually made as though nobody had.
     function contextLimitNote(p) {
-      if (p.contextLimit > 0) return "Ceiling before compaction";
       switch (p.contextLimitSource) {
-        case "profile": return "Auto · provider profile";
-        case "catalog": return "Auto · from model catalog";
-        default: return "Auto · fallback floor, catalog silent";
+        case "profile":
+          return p.contextLimit > 0
+            ? "Ceiling before compaction"
+            : "Set by the active provider profile";
+        case "catalog":
+          return "From the model catalog";
+        default:
+          return "Fallback floor · catalog silent";
       }
     }
 
@@ -4660,7 +4669,7 @@ contextLimit: p.context_limit || 0,
                     <div className="h-left">
                       <div>
                         <div className="t-row">🧮 Context Limit (Tokens)</div>
-                        <div className="t-body">0 = automatic, taken from the model</div>
+                        <div className="t-body">Default ceiling · an active provider profile overrides this</div>
                       </div>
                     </div>
                     <div className="h-right">
