@@ -413,3 +413,48 @@ func TestTheIdleRunRowSaysItOnceAndShortly(t *testing.T) {
 		t.Errorf("%d copies of \"No active run\", want 2: the row label and the idle step placeholder", got)
 	}
 }
+
+// A token readout said "25637k", which is 25.6 million. The unit was hardcoded as
+// a "k" suffix, so a large total rendered as five digits the reader has to divide
+// before they can judge the bar beside it.
+//
+// The boundaries matter and are easy to get wrong by a factor of a thousand: the
+// chart readout holds tokens ALREADY divided into thousands, while fmtK holds raw
+// tokens. Both must agree, so both are asserted against the same rule, and the
+// readout's extra multiply is the thing that would silently break it.
+func TestTokenCountsScaleToMillionsAndBillions(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	markup := stripComments(string(page))
+
+	for _, want := range []string{"function scaleTokens(", "function formatScaled("} {
+		if !strings.Contains(markup, want) {
+			t.Fatalf("the token scaling helper %q is gone", want)
+		}
+	}
+	// Thresholds, in raw tokens: a billion is B, a million is M, a thousand is k.
+	for _, want := range []string{"v >= 1e9", "v >= 1e6", "v >= 1e3"} {
+		if !strings.Contains(markup, want) {
+			t.Errorf("scaleTokens has no %q branch, so a large count still renders with a k suffix", want)
+		}
+	}
+	// fmtK takes raw tokens and must not divide by a thousand itself any more.
+	if strings.Contains(markup, `(n / 1000).toFixed`) {
+		t.Error("fmtK still formats in thousands by hand, so it and the chart readout can disagree")
+	}
+	// The readout holds thousands, so it must lift them before scaling. Without
+	// this multiply, 25637 would scale as 25637 raw (i.e. "25.6k") instead of
+	// 25.6 million - the same unreadable number wearing a different letter.
+	if !strings.Contains(markup, "scaleTokens(animated * 1000)") {
+		t.Error("the readout passes thousands to scaleTokens without lifting them to raw tokens")
+	}
+	// No call site may hardcode the unit any more.
+	if got := strings.Count(markup, `suffix="k"`); got != 0 {
+		t.Errorf("%d readouts still hardcode a k suffix, so they cannot scale", got)
+	}
+	if got := strings.Count(markup, "autoScale />"); got != 3 {
+		t.Errorf("%d readouts opt into scaling, want 3 (total, cache read, in/out)", got)
+	}
+}

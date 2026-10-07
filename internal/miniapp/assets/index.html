@@ -1309,6 +1309,31 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <script>
+    // Token counts scale to the largest unit that keeps them readable: a billion
+    // is "B", a million "M", a thousand "k", and anything smaller stays a bare
+    // number. Defined out here rather than inside the CeraaApi closure because
+    // two scopes need it - fmtK holds RAW tokens, and the chart readout holds
+    // tokens already divided by a thousand - and one rule has to serve both or
+    // they will disagree.
+    //
+    // This exists because "25637k" is unreadable. It is 25.6 million, and a reader
+    // has to divide in their head before they can judge the bar beside it.
+    function scaleTokens(raw) {
+      const v = Math.abs(Number(raw) || 0);
+      if (v >= 1e9) return { value: v / 1e9, suffix: "B" };
+      if (v >= 1e6) return { value: v / 1e6, suffix: "M" };
+      if (v >= 1e3) return { value: v / 1e3, suffix: "k" };
+      return { value: v, suffix: "" };
+    }
+
+    // One decimal, but only where it carries information: a round billion prints
+    // "1B", not "1.0B". A fixed decimal pads the common cases with a zero that
+    // means nothing.
+    function formatScaled(v) {
+      const rounded = Math.round(v * 10) / 10;
+      return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+    }
+
     window.CeraaApi = (function () {
       function initData() {
         try {
@@ -1361,9 +1386,8 @@
         return Math.round(hours / 24) + "d ago";
       }
       function fmtK(n) {
-        n = Number(n) || 0;
-        if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
-        return String(n);
+        const unit = scaleTokens(n);
+        return formatScaled(unit.value) + unit.suffix;
       }
       function fmtBytes(n) {
         n = Number(n) || 0;
@@ -1445,10 +1469,15 @@
       return val;
     }
 
-    function AnimatedNumber({ value, decimals = 0, prefix = "", suffix = "", padStart = 0, locale = false }) {
+        function AnimatedNumber({ value, decimals = 0, prefix = "", suffix = "", padStart = 0, locale = false, autoScale = false }) {
       const animated = useAnimatedNumber(value);
       let formatted;
-      if (decimals > 0) {
+      if (autoScale) {
+        // The chart holds thousands; scaleTokens wants raw tokens.
+        const unit = scaleTokens(animated * 1000);
+        formatted = formatScaled(unit.value);
+        suffix = unit.suffix;
+      } else if (decimals > 0) {
         formatted = animated.toFixed(decimals);
       } else {
         const rounded = Math.round(animated);
@@ -1633,14 +1662,14 @@
             <span className="t-mono tnum">
               TOTAL:{" "}
               <strong style={{ color: "var(--ink)" }}>
-                <AnimatedNumber value={activeTotalK} suffix="k" />
+                <AnimatedNumber value={activeTotalK} autoScale />
               </strong>
             </span>
             <span className="t-mono tnum" style={{ color: "var(--accent)" }}>
-              CACHE R: <AnimatedNumber value={activePoint.cacheRead} suffix="k" />
+              CACHE R: <AnimatedNumber value={activePoint.cacheRead} autoScale />
             </span>
             <span className="t-mono tnum">
-              IN/OUT: <AnimatedNumber value={activePoint.input + activePoint.output} suffix="k" />
+              IN/OUT: <AnimatedNumber value={activePoint.input + activePoint.output} autoScale />
             </span>
           </div>
         </div>
