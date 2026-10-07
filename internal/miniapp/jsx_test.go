@@ -324,17 +324,18 @@ func opensACardAbove(lines []string, index int) bool {
 
 // A hairline-list that sits outside a card draws its top rule just under the
 // card above and its last row's rule just above the card below, so one stray
-// element put a line at both ends of the gap. The cache-dials list is that
-// element. The rules are matched to the background rather than dropped, because
-// removing them shifts everything above by a pixel.
+// element put a line at both ends of the gap. Three lists sit outside a card:
+// the cache dials, and the model-catalog and run-parameters lists, whose sections
+// are each followed by a card. The rules are matched to the background rather
+// than dropped, because removing them shifts everything above by a pixel.
 func TestOnlyTheUncardedHairlineListIsBare(t *testing.T) {
 	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
 	if err != nil {
 		t.Fatalf("read the dashboard: %s", err)
 	}
 	markup := stripComments(string(page))
-	if got := strings.Count(markup, "hairline-list bare"); got != 1 {
-		t.Errorf("%d lists are marked bare, want exactly the 1 that sits outside a card", got)
+	if got := strings.Count(markup, "hairline-list bare"); got != 3 {
+		t.Errorf("%d lists are marked bare, want the 3 that sit outside a card", got)
 	}
 	css := pageCSS(t, page)
 	bare := cssSelector(t, css, ".hairline-list.bare")
@@ -350,5 +351,61 @@ func TestOnlyTheUncardedHairlineListIsBare(t *testing.T) {
 	base := cssRule(t, css, "hairline-list")
 	if !strings.Contains(base, "border-top: 1px solid var(--rule)") {
 		t.Error("the base list lost its divider, which the in-card lists still need")
+	}
+}
+
+// The context window is deliberately left unset in config so the runner asks the
+// model catalog, and the dashboard divided that unset value by a thousand and
+// printed "0k tok". Nothing was broken except the claim: the agent's real budget
+// was the resolved one. So the display must read the resolved value, and must say
+// where it came from rather than implying the configured zero is the window.
+func TestTheContextWindowIsNotReadRawFromConfig(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	markup := stripComments(string(page))
+
+	if strings.Contains(markup, "runParams.contextLimit / 1000") {
+		t.Error("the context window is divided by the raw configured value, which is zero by default and printed as 0k tok")
+	}
+	if !strings.Contains(markup, "runParams.contextLimitEffective") {
+		t.Error("the context window is not read from the resolved limit the runner actually applies")
+	}
+	if !strings.Contains(markup, "function contextLimitNote(") {
+		t.Fatal("the context window has no provenance note, so a resolved value is indistinguishable from a configured one")
+	}
+	for _, source := range []string{`"profile"`, `"catalog"`} {
+		if !strings.Contains(markup, "case "+source+": return \"Auto") {
+			t.Errorf("the context note does not cover the %s source", source)
+		}
+	}
+	if !strings.Contains(markup, `default: return "Auto`) {
+		t.Error("the context note has no fallback branch, so the common case says nothing about the floor it used")
+	}
+	// The configured value stays reported, because it is the row the operator
+	// edits. Losing it would make the limit read-only while looking editable.
+	if !strings.Contains(markup, "contextLimit: p.context_limit") {
+		t.Error("the raw configured context_limit is no longer read, so the editable row lost its value")
+	}
+}
+
+// The idle Status row printed the same sentence twice: "No active run in flight"
+// as the row's own label and again as the placeholder step, so the card said one
+// thing in two voices with the extra half of the phrase filling the space. Both
+// are pinned because they are two strings in two places, and a copy edit that
+// fixes one and not the other is exactly the failure.
+func TestTheIdleRunRowSaysItOnceAndShortly(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
+	if err != nil {
+		t.Fatalf("read the dashboard: %s", err)
+	}
+	markup := stripComments(string(page))
+
+	if got := strings.Count(markup, `"No active run in flight"`); got != 0 {
+		t.Errorf("%d copies of the long idle wording remain; the row is meant to read \"No active run\"", got)
+	}
+	if got := strings.Count(markup, `"No active run"`); got != 2 {
+		t.Errorf("%d copies of \"No active run\", want 2: the row label and the idle step placeholder", got)
 	}
 }

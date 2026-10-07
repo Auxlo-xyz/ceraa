@@ -334,7 +334,22 @@ func webRunParams() map[string]any {
 		"auto_compaction": auto,
 	}
 	if cfg != nil {
+		// context_limit is reported raw so the row stays editable, but it is
+		// deliberately unset by default - config.DefaultConfig leaves it zero so
+		// the runner asks the model catalog instead - and a zero rendered raw is a
+		// budget the agent never uses. So the effective limit is resolved here with
+		// the runner's own resolver and reported beside the configured one with its
+		// provenance. Reusing llm.ResolveContextWindow is the point: a second
+		// resolution rule in the dashboard is one that can disagree with the runner
+		// about what the limit is, which is the number being read.
+		//
+		// No catalog metadata is passed, so this is the limit in force before the
+		// first calibration. The source label is what keeps that honest: "default"
+		// says the floor was used, not that the model advertises 128k.
+		effective, source := llm.ResolveContextWindow(cfg.LLM.ContextLimit, llm.ModelMetadata{})
 		out["context_limit"] = cfg.LLM.ContextLimit
+		out["context_limit_effective"] = effective
+		out["context_limit_source"] = string(source)
 		out["max_output_tokens"] = cfg.LLM.MaxOutputTokens
 		out["max_tool_result_chars"] = cfg.MaxToolResultChars
 		out["max_concurrent_tools"] = cfg.MaxConcurrentTools

@@ -1684,6 +1684,20 @@
     // The level names alone do not say whether a change is worth the tokens, and
     // that is the entire decision. Provider support varies, so the note says what
     // the level means rather than what a given endpoint will accept with it.
+    // Says where the number above came from, because the configured limit and the
+    // limit in force are different values and only one of them is what the agent
+    // will use. A configured zero is the normal case, not a broken one: config
+    // leaves it unset so the runner asks the model catalog, and printing that raw
+    // as "0k tok" stated the window was zero when it is not.
+    function contextLimitNote(p) {
+      if (p.contextLimit > 0) return "Ceiling before compaction";
+      switch (p.contextLimitSource) {
+        case "profile": return "Auto · provider profile";
+        case "catalog": return "Auto · from model catalog";
+        default: return "Auto · fallback floor, catalog silent";
+      }
+    }
+
     function reasoningHint(level) {
       switch (String(level).toLowerCase()) {
         case "off": return "No reasoning. Cheapest and fastest.";
@@ -2038,6 +2052,8 @@
       const [runParams, setRunParams] = useState({
         reasoningEffort: "medium",
         contextLimit: 0,
+        contextLimitEffective: 0,
+        contextLimitSource: "",
         maxOutputTokens: 0,
         maxToolResultChars: 0,
         maxConcurrentTools: 1,
@@ -2370,7 +2386,7 @@
           // of them. Without it the button would have to pick a chat by luck.
           activeRun: first
             ? { active: true, chat: first.chat || 0, sessionTitle: first.title || first.session || "", step: "session " + (first.session || ""), elapsed: "" }
-            : { active: false, chat: 0, sessionTitle: "", step: "No active run in flight", elapsed: "" },
+            : { active: false, chat: 0, sessionTitle: "", step: "No active run", elapsed: "" },
           version: st.version || "",
           updateCheckEnabled: st.update_check !== false,
           updateStatus: st.update_available
@@ -2443,7 +2459,9 @@
         const p = (body && body.params) || {};
         setRunParams({
           reasoningEffort: p.reasoning || "medium",
-          contextLimit: p.context_limit || 0,
+contextLimit: p.context_limit || 0,
+          contextLimitEffective: p.context_limit_effective || 0,
+          contextLimitSource: p.context_limit_source || "",
           maxOutputTokens: p.max_output_tokens || 0,
           maxToolResultChars: p.max_tool_result_chars || 0,
           maxConcurrentTools: p.max_concurrent_tools || 1,
@@ -3346,7 +3364,7 @@
                         <div className="t-row">
                           {botStatus.activeRun.active
                             ? `Running: ${botStatus.activeRun.sessionTitle}`
-                            : "No active run in flight"}
+                            : "No active run"}
                         </div>
                         <div className="t-body tnum">{botStatus.activeRun.step}</div>
                       </div>
@@ -3462,8 +3480,12 @@
                   <div className="telem-cell">
                     <div className="t-mono">🧮 CONTEXT LIMIT</div>
                     <div className="t-sec tnum" style={{ marginTop: 4 }}>
-                      <AnimatedNumber value={runParams.contextLimit / 1000} suffix="k tok" />
+                      <AnimatedNumber
+                        value={(runParams.contextLimitEffective || runParams.contextLimit) / 1000}
+                        suffix="k tok"
+                      />
                     </div>
+                    <div className="t-body">{contextLimitNote(runParams)}</div>
                     <div className="t-body">Max output <AnimatedNumber value={runParams.maxOutputTokens} locale /></div>
                   </div>
                   <div className="telem-cell">
@@ -4559,7 +4581,7 @@
                     ↻ Refresh now
                   </button>
                 </div>
-                <div className="hairline-list">
+                <div className="hairline-list bare">
                   <div className="h-row stack-mobile">
                     <div className="h-left">
                       <div>
@@ -4596,7 +4618,7 @@
                   <span className="t-mono">RUNTIME CONFIG</span>
                 </div>
 
-                <div className="hairline-list">
+                <div className="hairline-list bare">
                   {/* Reasoning Effort Selector */}
                   <div className="h-row">
                     <div className="h-left">
@@ -4638,7 +4660,7 @@
                     <div className="h-left">
                       <div>
                         <div className="t-row">🧮 Context Limit (Tokens)</div>
-                        <div className="t-body">Integer context window ceiling before compaction</div>
+                        <div className="t-body">0 = automatic, taken from the model</div>
                       </div>
                     </div>
                     <div className="h-right">

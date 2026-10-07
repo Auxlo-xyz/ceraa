@@ -365,3 +365,49 @@ func TestCompactingASessionThatDoesNotExistIsAnError(t *testing.T) {
 		t.Fatal("compacting a session that does not exist reported success")
 	}
 }
+
+// The dashboard rendered the context window straight from the configured value,
+// and config.DefaultConfig deliberately leaves that value unset so the runner can
+// ask the model catalog. The raw read therefore said the window was zero, and
+// zero divided by a thousand rendered as "0k tok" - a budget the agent never uses,
+// stated as though it were one. The configured value still has to be reported
+// raw, because that is the row the operator edits; the effective one is what may
+// be displayed.
+func TestTheDashboardReportsAContextLimitTheRunnerWouldActuallyUse(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+	t.Setenv("CERAA_HOME", t.TempDir())
+
+	if got, _ := config.Load(); got.LLM.ContextLimit != 0 {
+		t.Fatalf("the fixture assumes context_limit is unset by default, got %d", got.LLM.ContextLimit)
+	}
+
+	params := webRunParams()
+	configured, _ := params["context_limit"].(int)
+	effective, _ := params["context_limit_effective"].(int)
+	source, _ := params["context_limit_source"].(string)
+
+	if configured != 0 {
+		t.Errorf("configured context_limit = %d, want the raw unset 0 so the row stays editable", configured)
+	}
+	if effective != llm.FallbackContextWindow {
+		t.Errorf("effective context limit = %d, want the fallback %d; a zero here is what put 0k on the screen",
+			effective, llm.FallbackContextWindow)
+	}
+	if source != string(llm.ContextFromDefault) {
+		t.Errorf("context limit source = %q, want %q", source, llm.ContextFromDefault)
+	}
+
+	// A configured limit is a decision somebody made, so it must win outright and
+	// not be second-guessed by the resolver the display shares.
+	if err := webSetRunParams(map[string]any{"context_limit": float64(200000)}); err != nil {
+		t.Fatalf("set context_limit: %v", err)
+	}
+	params = webRunParams()
+	if effective, _ := params["context_limit_effective"].(int); effective != 200000 {
+		t.Errorf("effective context limit after configuring one = %d, want 200000", effective)
+	}
+	if source, _ := params["context_limit_source"].(string); source != string(llm.ContextFromProfile) {
+		t.Errorf("source after configuring a limit = %q, want %q", source, llm.ContextFromProfile)
+	}
+}
