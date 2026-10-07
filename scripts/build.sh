@@ -63,12 +63,16 @@ done
 
 # The Mini App page and mascot are embedded in the binary (see
 # internal/miniapp/assets.go), so a single-file install serves the dashboard
-# with nothing else on disk. They are still copied out beside the binary so the
-# tree has something to read and edit, and so CERAA_MINIAPP_ASSET_DIR can be
-# pointed at bin/miniapp if you want the page served from disk while editing it.
-# Serving it from disk is opt-in through that variable and nowhere else: a copy
-# left at a conventional path used to silently outrank the binary, so a rebuilt
-# binary kept serving a stale page and a fix looked like it had not worked.
+# with nothing else on disk. They are copied out beside the binary so the tree
+# has something to read and edit, but nothing serves them from there: the binary
+# is the only source of the page, and there is no variable that changes it.
+#
+# That was not always true, in two directions. A copy in the data directory and
+# then a directory named by an environment variable both outranked the binary,
+# which meant a rebuilt binary kept serving a stale page, a fix looked like it
+# had not worked, and no upgrade could replace what a user was seeing. Editing the
+# page now means rebuilding, which is the honest cost of a page that matches the
+# binary serving it.
 mkdir -p bin/miniapp
 cp -f internal/miniapp/assets/index.html bin/miniapp/index.html
 cp -f internal/miniapp/assets/mascot.svg bin/miniapp/mascot.svg

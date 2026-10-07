@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -575,20 +574,23 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 // binary and nothing said so. The fix looked applied, the button stayed broken,
 // and the evidence pointed the wrong way.
 //
-// An override is still possible, deliberately and visibly: CERAA_MINIAPP_ASSET_DIR
-// names a directory to serve from instead. It has to be spelled out, it is logged
-// at startup, and nothing else on the machine can shadow the shipped page.
+// There is no override, and there used to be one twice over. It was first a copy
+// in the data directory, then a directory named by an environment variable, and
+// both were ways for a file on disk to become the page a user is shown. A brief
+// opt-in variable was not enough of an answer: an installed copy has no business
+// serving different content than the binary it was installed from, and every
+// override is a versioned page nobody versioned.
+//
+// So the page is the binary, only. Editing it means rebuilding, which is the
+// honest cost of a page that has to match the binary that serves it. That is the
+// same rule the system prompt follows for its own reason, and the opposite rule
+// the old build script claimed it followed.
 //
 // Editable without a rebuild and cacheable are opposites, so this says not to
-// cache. ServeFile otherwise sends Last-Modified and answers 304 from
+// cache. Serving from disk sent Last-Modified and answered 304 from
 // If-Modified-Since, and a WebView holding that chain can go on rendering an
 // older revision indefinitely, which looks exactly like a fix that did not work.
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name string) {
-	if path, ok := overrideAsset(name); ok {
-		w.Header().Set("Cache-Control", "no-store, must-revalidate")
-		http.ServeFile(w, r, path)
-		return
-	}
 	data, contentType, found := embeddedAsset(name)
 	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -598,35 +600,6 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name string)
 	w.Header().Set("Content-Type", contentType)
 	w.Write(data)
 }
-
-// overrideAsset returns a file from the directory CERAA_MINIAPP_ASSET_DIR names,
-// and nothing else. An unset variable means no override, which is the default and
-// the only posture an installed copy should be in.
-//
-// The gate is the variable, not the existence of a file. Any file on disk that
-// happens to sit at a conventional path would otherwise be able to replace the
-// page a user is shown, which is an unversioned content override discovered by
-// whoever happens to write the file first.
-func overrideAsset(name string) (string, bool) {
-	dir := strings.TrimSpace(os.Getenv("CERAA_MINIAPP_ASSET_DIR"))
-	if dir == "" {
-		return "", false
-	}
-	if filepath.IsAbs(name) || strings.Contains(name, "..") {
-		return "", false
-	}
-	path := filepath.Join(dir, name)
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return "", false
-	}
-	return path, true
-}
-
-// AssetOverrideDir is the directory the Mini App is served from when it is not
-// the embedded copy, or "". Logged once at startup, because an override nobody
-// knows about is indistinguishable from a bug.
-func AssetOverrideDir() string { return strings.TrimSpace(os.Getenv("CERAA_MINIAPP_ASSET_DIR")) }
 
 // handleSessions lists what is on disk, most recently used first.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {

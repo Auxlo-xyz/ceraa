@@ -57,8 +57,10 @@ cp -f prompt/system.txt dist/system.txt
 # single-file install serves it with nothing else present: the page used to be
 # read from disk, which meant an install that skipped staging answered a 404
 # through a healthy tunnel. It is still published as a flat asset (a release
-# asset cannot contain a slash) so it can be inspected, checksummed, and dropped
-# into CERAA_MINIAPP_ASSET_DIR by anyone who genuinely wants to edit the page.
+# asset cannot contain a slash) so it can be inspected and checksummed. It is not
+# a way to change what an installed copy serves: the binary is the only source of
+# the page, and artifacts.yml checks this file against the one inside the binary
+# so the published copy cannot quietly disagree with what ships.
 # Checksummed for the same reason the prompt is: an asset nobody verifies is an
 # asset nobody checked.
 echo "release: staging miniapp-index.html"

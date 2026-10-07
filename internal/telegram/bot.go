@@ -840,13 +840,6 @@ func Run() error {
 		}
 	}()
 	if miniapp.Enabled() {
-		// Named once, at startup, so an override is never a mystery. The page
-		// normally comes out of the binary; a directory here replaces it, and an
-		// operator who did not set this should never see the surface serving
-		// something other than what was shipped.
-		if dir := miniapp.AssetOverrideDir(); dir != "" {
-			logger.Info("Mini App assets overridden from " + dir + " (the embedded page is otherwise served)")
-		}
 		srv, err := startMiniApp()
 		switch {
 		case err != nil:
