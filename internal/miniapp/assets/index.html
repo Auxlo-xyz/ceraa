@@ -3433,9 +3433,6 @@ contextLimit: p.context_limit || 0,
                 <div className="card">
                 <div className="sec-head">
                   <h2 className="t-sec">Reasoning Effort</h2>
-                  <button className="action-link" onClick={() => setActiveTab("Agents")}>
-                    All run parameters →
-                  </button>
                 </div>
 
                 <div
@@ -3487,7 +3484,7 @@ contextLimit: p.context_limit || 0,
 
                 <div className="telem-grid">
                   <div className="telem-cell">
-                    <div className="t-mono">🧮 CONTEXT LIMIT</div>
+                    <div className="t-mono">CONTEXT LIMIT</div>
                     <div className="t-sec tnum" style={{ marginTop: 4 }}>
                       <AnimatedNumber
                         value={(runParams.contextLimitEffective || runParams.contextLimit) / 1000}
@@ -3523,9 +3520,9 @@ contextLimit: p.context_limit || 0,
                   <div>
                     <div className="t-display">
                       <AnimatedNumber value={totals.runs} /> runs ·{" "}
-                      <em style={{ fontStyle: "italic", color: "var(--accent)" }}>
+                      <span>
                         <AnimatedNumber value={totals.tools} /> tool calls
-                      </em>
+                      </span>
                     </div>
                     <div className="t-body" style={{ marginTop: 4 }}>
                       Select a session to inspect its snapshots, todos, and token ledger
@@ -4660,11 +4657,11 @@ contextLimit: p.context_limit || 0,
                     </div>
                   </div>
 
-                  {/* 🧮 Context Limit */}
+                  {/* Context Limit */}
                   <div className="h-row">
                     <div className="h-left">
                       <div>
-                        <div className="t-row">🧮 Context Limit (Tokens)</div>
+                        <div className="t-row">Context Limit (Tokens)</div>
                         <div className="t-body">Default ceiling · an active provider profile overrides this</div>
                       </div>
                     </div>
