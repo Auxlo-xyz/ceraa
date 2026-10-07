@@ -370,7 +370,7 @@ func TestCompactingASessionThatDoesNotExistIsAnError(t *testing.T) {
 // and that is the wrong block as well as the wrong value. An active provider
 // profile states its own limit and mergeProfile folds it onto the base, so the
 // limit in force is the profile's while the base block still reads zero. Reading
-// the base reported the 128k floor for a provider that says 200k: a plausible
+// the base reported the fallback for a provider that says 200k: a plausible
 // wrong number, which is worse than the obvious "0k tok" this replaced.
 //
 // The configured base is still reported raw, because that is the row the operator

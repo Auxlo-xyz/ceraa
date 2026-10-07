@@ -66,7 +66,7 @@ func TestContextWindowDecisionStringCarriesProvenance(t *testing.T) {
 // The floor is a product decision, not an implementation detail, so it is pinned
 // by value rather than left to the constant it is. Every other test here compares
 // against FallbackContextWindow, which means they all keep passing if the floor
-// moves - so a silent change from 200k back to a conservative 128k would look
+// moves - so a silent change away from 200k would look
 // like a clean run, and the conversation budget would shrink by a third with
 // nothing reporting it.
 //

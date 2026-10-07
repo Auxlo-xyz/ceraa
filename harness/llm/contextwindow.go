@@ -19,24 +19,23 @@ const (
 	ContextFromDefault ContextWindowSource = "default"
 )
 
-// FallbackContextWindow is the budget used when neither the profile nor the
-// catalog states a window.
+// FallbackContextWindow is the budget used when neither the provider profile nor
+// the model catalog states a window.
 //
-// 200k, because that is what the providers in use actually take, and matching
-// them costs a conversation that can use the room. It was 128k, chosen on the
-// opposite argument: over-budgeting a model that cannot take it produces a hard
-// provider error and a lost turn, while under-budgeting one that can merely
-// wastes headroom, and the two failures are not symmetric. That reasoning is
-// still correct and this value still trades against it, deliberately: the floor
-// now assumes a 200k window for a model that may advertise less, so a small
-// window reached with no catalog to consult is the case that gets the hard error
-// instead of a cheap early compaction.
+// 200k, which is what a served model takes rather than a cautious guess: there
+// is nothing to protect against by assuming less, because a model that cannot
+// take 200k is not one these providers field. So this is a default and not a
+// floor in the older sense of a number held below the real window on purpose.
+// It is also rarely the number that decides a run - a profile that states a
+// limit overrides it, and the catalog supplies the model's real window as soon
+// as it has been refreshed.
 //
-// That trade is worth taking because the floor is rarely the operative number.
-// A profile that states a limit overrides it (ResolveContextWindow checks it
-// first), and the catalog supplies the model's real window once it has been
-// refreshed, so this only decides the answer while both are silent. Raising it
-// further would make the common case optimistic rather than merely generous.
+// It is kept rather than deleted because four callers need a budget at the moment
+// nothing has stated one: the context builder with no explicit limit, the
+// compactor's own default, the runner's answer before its first calibration, and
+// the command display. A zero is not a safe substitute for any of them -
+// BuildWithLimit(0) skips trimming entirely, so the provider would be handed an
+// unbounded prompt, and compactAt reports zero, so compaction would never fire.
 const FallbackContextWindow = 200000
 
 // ResolveContextWindow picks the effective context limit for a model.

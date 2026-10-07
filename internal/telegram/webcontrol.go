@@ -344,14 +344,14 @@ func webRunParams() map[string]any {
 		// mergeProfile folds the profile's limit onto the base, and ActiveLLM is
 		// that merged view, so the limit in force is 200k from the profile while
 		// cfg.LLM.ContextLimit alone still says zero. Resolving against the base
-		// would have reported the 128k floor for a provider that states 200k, which
+		// would have reported the fallback for a provider that states 200k, which
 		// is a different kind of wrong: a plausible number rather than an obvious
 		// one. Reusing llm.ResolveContextWindow keeps the dashboard on the runner's
 		// resolution rule rather than a second one that can disagree with it.
 		//
 		// No catalog metadata is passed, so this is the limit in force before the
 		// first calibration. The source label is what keeps that honest: "default"
-		// says the floor was used, not that the model advertises 128k.
+		// says the default was used, not that the model advertises that number.
 		active := cfg.ActiveLLM()
 		effective, source := llm.ResolveContextWindow(active.ContextLimit, llm.ModelMetadata{})
 		out["context_limit"] = cfg.LLM.ContextLimit
