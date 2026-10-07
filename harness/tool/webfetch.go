@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/harness/netguard"
 	"ceraa/harness/operation"
 )
 
@@ -73,9 +74,16 @@ func (w *WebFetchTool) RunContext(ctx context.Context, spec operation.Spec) (str
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return "", fmt.Errorf("URL must use http:// or https://")
 	}
+	// Refused here so the model gets a message naming the address rather than a
+	// connection error. netguard.Transport enforces it again at connect time,
+	// because a name can answer differently between this check and the dial.
+	if err := netguard.CheckURL(ctx, url); err != nil {
+		return "", err
+	}
 
 	client := &http.Client{
-		Timeout: time.Duration(timeout) * time.Second,
+		Timeout:   time.Duration(timeout) * time.Second,
+		Transport: netguard.Transport(),
 	}
 
 	// First attempt: browser user agent

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"ceraa/harness/netguard"
 	"ceraa/harness/operation"
 	"ceraa/internal/paths"
 )
@@ -305,8 +306,32 @@ func validateBrowserArg(action, key string, value any) error {
 	return nil
 }
 
-// validateBrowserURL keeps the browser to the web. A file:// or javascript: URL
-// would let a page read this host's filesystem, which is well beyond browsing.
+// validateBrowserURL keeps the browser to the web, and off this machine.
+//
+// Two separate restrictions, and the second one used to be missing. A file:// or
+// javascript: URL would let a page read this host's filesystem, which is well
+// beyond browsing. A public URL is the other half: nothing stopped the browser
+// being pointed at 169.254.169.254, where cloud instance credentials live, or
+// at 127.0.0.1, where the Mini App, the model catalog cache and the bridge all
+// listen. An agent that reads a hostile page gets to follow whatever address it
+// finds.
+//
+// Checking only the scheme is therefore not enough on its own, and the browser
+// is the easiest way in because needsPermission deliberately exempts it. The
+// refusal names the address so the model can say something useful about it.
+//
+// What this check does NOT cover, stated plainly rather than implied: navigation
+// happens inside Chromium over CDP, so netguard's dialer guard is not in the
+// path here the way it is for webfetch. That leaves two gaps a reader should know
+// about rather than assume away. A page that navigates itself — location.href,
+// a redirect chain, a form post — is not re-checked, because this function sees
+// the URL the model asked for and not the ones the page reaches afterwards. And
+// browser_eval runs in the page, so script there can fetch any origin it likes.
+// Closing both means intercepting inside Chromium, which is a larger change
+// than this guard and is not attempted here.
+//
+// Localhost is genuinely useful work, so CERAA_ALLOW_PRIVATE_NET reopens it
+// deliberately and says so in the log.
 func validateBrowserURL(raw string) error {
 	if raw == "" {
 		return errors.New("url is required")
@@ -315,7 +340,7 @@ func validateBrowserURL(raw string) error {
 	if !strings.HasPrefix(lowered, "http://") && !strings.HasPrefix(lowered, "https://") {
 		return errors.New("url must start with http:// or https://")
 	}
-	return nil
+	return netguard.CheckURL(context.Background(), raw)
 }
 
 func (b *BrowserTool) TranslateResult(op operation.Operation) string {
