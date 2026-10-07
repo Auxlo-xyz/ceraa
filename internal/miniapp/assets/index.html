@@ -1919,7 +1919,6 @@
       const [denied, setDenied] = useState(
         typeof window !== "undefined" && window.__CERAA_DENIED === true
       );
-      const [webSessionId, setWebSessionId] = useState("web");
       const [envWorkspaceRoot, setEnvWorkspaceRoot] = useState("");
       const [forbiddenSourceTreePrefix, setForbiddenSourceTreePrefix] = useState("/workspace/development/ceraa");
       const [toolInventory, setToolInventory] = useState([]);
@@ -1927,11 +1926,12 @@
       const [snapshots, setSnapshots] = useState([]);
       const [inspect, setInspect] = useState({});
       const [chartPoints, setChartPoints] = useState([]);
-      const [promptText, setPromptText] = useState("");
-      const [runBusy, setRunBusy] = useState(false);
-      const [runFeed, setRunFeed] = useState([]);
-      const [pendingCards, setPendingCards] = useState([]);
-      const [cardAnswers, setCardAnswers] = useState({});
+      // No web chat. There was a prompt composer, an event poller and permission
+      // cards here for a run this surface never starts, wired to routes the page
+      // does not serve ("/prompt", "/events" as JSON). Nothing rendered them, so
+      // they were dead weight claiming a capability. Runs start in Telegram and
+      // the dashboard observes them; if web chat is ever wanted it needs a real
+      // runner behind it, not an orphaned client.
 
       // =======================================================================
       // 9. STATUS AND CONTROL (Bot status, /stop, version, Mini App tunnel, queue)
@@ -1940,7 +1940,7 @@
         running: true,
         pollingState: "Connecting…",
         runCount: 0,
-        activeRun: { active: false, sessionTitle: "", step: "", elapsed: "" },
+        activeRun: { active: false, chat: 0, sessionTitle: "", step: "", elapsed: "" },
         version: "",
         updateCheckEnabled: true,
         updateStatus: "",
@@ -1949,14 +1949,14 @@
         promptQueueDepth: 0
       });
 
-      // A chat run cannot be stopped from here: the cancel route only reaches
-      // this surface's own session, by design. The button enables only when
-      // the active run is ours; otherwise it says where the stop lives.
-      // A chat run cannot be stopped from here: the cancel route only reaches
-      // this surface's own session, by design. The button enables only when
-      // the active run is ours; otherwise it says where the stop lives.
-      const cancellableRun =
-        botStatus.activeRun.active && botStatus.activeRun.sessionTitle === webSessionId;
+      // The Stop button stops the run the page is displaying, which is a Telegram
+      // chat's run. It used to be gated on the active run belonging to this
+      // surface's own session, a session nothing ever runs in, so the button was
+      // permanently disabled and its title pointed at /stop instead. That is the
+      // one case where a control is worse than no control: it looks like a button
+      // and refuses.
+      const cancellableRun = !!(botStatus.activeRun && botStatus.activeRun.active);
+      const stopTargetChat = botStatus.activeRun ? botStatus.activeRun.chat : 0;
 
       const toggleUpdateCheck = async () => {
         if (botStatus.updateCheckPin) return;
@@ -1974,16 +1974,19 @@
       };
 
       const handleStopActiveRun = async () => {
-        if (!cancellableRun) return;
+        if (!cancellableRun || !stopTargetChat) return;
         try {
-          await Api.call("/api/sessions/" + webSessionId + "/cancel", "POST");
+          await Api.call("/api/stop", "POST", { chat: stopTargetChat });
           setBotStatus((prev) => ({
             ...prev,
-            activeRun: { active: false, sessionTitle: "", step: "Halted from the dashboard", elapsed: "" }
+            activeRun: { active: false, sessionTitle: "", chat: 0, step: "Halted from the dashboard", elapsed: "" }
           }));
         } catch (err) {
           setApiError("Stop failed: " + (err.message || err));
         }
+        // The status poll is what decides the truth about whether a run is still
+        // there, so it gets the say rather than this optimistic local edit.
+        await refreshStatus();
       };
 
       // =======================================================================
@@ -2355,7 +2358,6 @@
         const st = (body && body.status) || {};
         const runs = st.active_runs || [];
         const first = runs[0] || null;
-        setWebSessionId(st.session || "web");
         // The hero counts live runs, not queued prompts: a big 0 beside the
         // word RUNNING is a contradiction, and it was showing exactly that.
         // Queue depth rides underneath as its own line.
@@ -2363,9 +2365,12 @@
           running: st.running !== false,
           pollingState: "Long-polling (OK)",
           runCount: runs.length,
+          // The chat id travels with the run because it is what a stop is addressed to:
+          // one user can have a run in more than one chat, and the card shows one
+          // of them. Without it the button would have to pick a chat by luck.
           activeRun: first
-            ? { active: true, sessionTitle: first.title || first.session || "", step: "session " + (first.session || ""), elapsed: "" }
-            : { active: false, sessionTitle: "", step: "No active run in flight", elapsed: "" },
+            ? { active: true, chat: first.chat || 0, sessionTitle: first.title || first.session || "", step: "session " + (first.session || ""), elapsed: "" }
+            : { active: false, chat: 0, sessionTitle: "", step: "No active run in flight", elapsed: "" },
           version: st.version || "",
           updateCheckEnabled: st.update_check !== false,
           updateStatus: st.update_available
@@ -2586,8 +2591,28 @@
       useEffect(() => {
         if (denied) return;
         refreshAll();
-        const timer = setInterval(() => { refreshStatus().catch(() => {}); }, 20000);
-        return () => clearInterval(timer);
+        // Status on a short tick, because it is the only thing that moves while
+        // a run is in flight: the run count, the active run and the queue depth
+        // all change second to second.
+        const statusTimer = setInterval(() => { refreshStatus().catch(() => {}); }, 20000);
+        // Everything else on a slow tick. Sessions, memories, skills, schedules,
+        // secrets and the tool inventory are written by Telegram, so a dashboard
+        // left open showed a stale copy of all of them until it was reloaded.
+        // Not in the fast tick because providers and catalog are network reads
+        // with their own timeouts and would dominate it.
+        const dataTimer = setInterval(() => {
+          refreshStats().catch(() => {});
+          refreshMemories().catch(() => {});
+          refreshSkills().catch(() => {});
+          refreshSchedules().catch(() => {});
+          refreshSecrets().catch(() => {});
+          refreshProjects().catch(() => {});
+          refreshMeta().catch(() => {});
+        }, 60000);
+        return () => {
+          clearInterval(statusTimer);
+          clearInterval(dataTimer);
+        };
       }, []);
 
       useEffect(() => {
@@ -2667,105 +2692,6 @@
           label: { "1d": "Last 24 Hours", "7d": "Last 7 Days", "30d": "Last 30 Days", "All": "All Time" }[tokenTimeframe] || "Last 24 Hours"
         };
       }, [chartPoints, tokenTimeframe]);
-
-      // =======================================================================
-      // LIVE RUN: prompt composer, event stream, permission and question cards.
-      // POST /prompt starts the turn (202, busy is 409); the reply arrives on
-      // GET /events, polled with the initData query form because the first
-      // request is a navigation that cannot carry a header the page has not
-      // loaded yet. Every later call uses the Authorization header instead.
-      // =======================================================================
-      async function sendPrompt(e) {
-        e.preventDefault();
-        const text = promptText.trim();
-        if (!text || runBusy) return;
-        setPromptText("");
-        setRunBusy(true);
-        setRunFeed([]);
-        setPendingCards([]);
-        try {
-          await Api.call("/prompt", "POST", { text });
-        } catch (err) {
-          setRunFeed([{ seq: -1, kind: "error", text: String((err && err.message) || err) }]);
-          setRunBusy(false);
-          return;
-        }
-        pollEvents(0);
-      }
-
-      async function pollEvents(seq) {
-        try {
-          const res = await Api.call(
-            "/events?initData=" + encodeURIComponent(Api.initData()) + "&after=" + seq + "&wait=15000"
-          );
-          let next = seq;
-          const feed = [];
-          const cards = [];
-          for (const item of ((res && res.events) || [])) {
-            next = item.seq;
-            const ev = item.event || {};
-            const d = ev.data || {};
-            if (ev.type === "permission" || ev.type === "question") {
-              cards.push({
-                seq: item.seq, type: ev.type,
-                requestId: d.request_id || d.requestId || "",
-                text: d.text || d.message || d.prompt || "",
-                detail: d.tool || d.command || ""
-              });
-            } else if (ev.type === "complete") {
-              feed.push({ seq: item.seq, kind: "done", text: "Run complete." });
-            } else if (ev.type === "error") {
-              feed.push({ seq: item.seq, kind: "error", text: d.message || d.text || "Run failed." });
-            } else if (ev.type === "thinking" || ev.type === "content") {
-              const t = d.text || d.delta || d.message || "";
-              if (t) feed.push({ seq: item.seq, kind: "stream", text: t });
-            } else {
-              const t = d.text || d.message || "";
-              feed.push({ seq: item.seq, kind: "info", text: ev.type + (t ? ": " + t : "") });
-            }
-          }
-          if (feed.length) setRunFeed((prev) => [...prev, ...feed]);
-          if (cards.length) setPendingCards((prev) => [...prev, ...cards]);
-          if (res && res.stale) {
-            setRunFeed((prev) => [...prev, { seq: -1, kind: "error", text: "Stream gap: the buffer moved on. Re-open for full history." }]);
-            setRunBusy(false);
-            refreshStatus();
-            return;
-          }
-          if (feed.some((f) => f.kind === "done" || f.kind === "error")) {
-            setRunBusy(false);
-            refreshStatus();
-            refreshStats();
-            return;
-          }
-          pollEvents(next);
-        } catch (err) {
-          setRunFeed((prev) => [...prev, { seq: -1, kind: "error", text: "Stream interrupted: " + ((err && err.message) || err) }]);
-          setRunBusy(false);
-        }
-      }
-
-      async function answerCard(card, decision, answerText) {
-        try {
-          if (card.type === "permission") {
-            // The vocabulary the manager accepts: allowOnce, allowAlways, deny.
-            await Api.call("/api/permission", "POST", { request_id: card.requestId, decision });
-          } else {
-            await Api.call("/api/answer", "POST", { request_id: card.requestId, answer: answerText || "" });
-          }
-          setPendingCards((prev) => prev.filter((c) => c.seq !== card.seq));
-        } catch (err) {
-          setApiError("Decision failed: " + ((err && err.message) || err));
-        }
-      }
-
-      async function cancelWebRun() {
-        try {
-          await Api.call("/api/sessions/" + webSessionId + "/cancel", "POST");
-        } catch (err) {
-          setApiError("Cancel failed: " + ((err && err.message) || err));
-        }
-      }
 
       // Locked replaces the whole dashboard: without Telegram credentials every
       // section below would render empty, and an empty dashboard with an error
@@ -3391,10 +3317,10 @@
                         type="button"
                         className="mini-btn stop-btn"
                         onClick={handleStopActiveRun}
-                        disabled={!cancellableRun}
-                        title={cancellableRun ? "Halt this surface's run" : "Chat runs stop from /stop in Telegram"}
+                        disabled={!stopTargetChat}
+                        title="Halt the run on this card"
                       >
-                        ■ /STOP RUN
+                        ■ STOP RUN
                       </button>
                     ) : (
                       <div className="t-body">Idle. Runs start from Telegram.</div>

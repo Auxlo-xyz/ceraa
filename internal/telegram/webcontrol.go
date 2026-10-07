@@ -11,6 +11,7 @@ import (
 
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
+	"ceraa/harness/permission"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -74,6 +75,7 @@ func webControl(cfg *miniapp.Config, tunnelAddr func() string) {
 	cfg.DeleteSession = webDeleteSession
 	cfg.Projects = webProjects
 	cfg.SetProject = webSetProject
+	cfg.StopActiveRun = stopActiveRun
 }
 
 func webMeta() map[string]any {
@@ -192,7 +194,16 @@ func webSaveProvider(id string, profile map[string]any) error {
 	if id == "default" {
 		return fmt.Errorf("the default provider is edited through run parameters, not profiles")
 	}
+	// Start from what is already stored, not from a zero value. The form carries
+	// six of the ten profile fields, so building the replacement from the body
+	// alone silently reset the four the page cannot see: the cache TTL, the
+	// subscription it draws its key from, and the Hermes provider. Editing a
+	// model in the dashboard used to unbind those. Only fields the body
+	// actually carries are overwritten below.
 	stored := config.ProviderProfile{}
+	if existing, ok := providers.profiles()[id]; ok {
+		stored = existing
+	}
 	if raw, ok := profile["endpoint"].(string); ok {
 		stored.URL = strings.TrimSpace(raw)
 	}
@@ -463,7 +474,19 @@ func webSetToolAllowed(name string, allowed bool) error {
 	if _, ok := registry.Get(name); !ok {
 		return fmt.Errorf("no tool named %q", name)
 	}
-	return defaultState.setAlwaysAllow(name, allowed)
+	// The running manager is seeded from state once, at startup (bot.go). A
+	// toggle that only persisted would report success and change nothing until
+	// the next restart, which is the difference between a permission and a
+	// stored intention. The Telegram toggle updates both; this one has to as well.
+	if err := defaultState.setAlwaysAllow(name, allowed); err != nil {
+		return err
+	}
+	if allowed {
+		permission.Default.AllowAlways(name)
+	} else {
+		permission.Default.ClearAlways(name)
+	}
+	return nil
 }
 
 // webSecretLengths lists user secrets with lengths, never values. The lengths
@@ -540,9 +563,16 @@ func webTriggerCompaction(sessionID string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Load answers an unknown id with an empty session, so "not found" has to be
+	// asked about separately. Without this the button reports "nothing to
+	// compact" for a session that never existed, which is a wrong answer rather
+	// than an honest one.
+	if !store.Exists(sessionID) {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
 	sess, err := store.Load(sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, fmt.Errorf("load session %s: %w", sessionID, err)
 	}
 	tokens := 0
 	for _, message := range sess.Messages {
@@ -554,6 +584,17 @@ func webTriggerCompaction(sessionID string) (map[string]any, error) {
 	compacted, err := compactor.Compact(ctx, sess)
 	if err != nil {
 		return nil, err
+	}
+	// Compact rewrites the transcript in memory. Persisting it is what makes the
+	// button a compaction rather than a preview: without this write the summary
+	// is discarded when the request ends and the next run re-reads the full
+	// history the operator just paid to compact. The in-run path saves for the
+	// same reason (runner.go), so this mirrors it rather than inventing a second
+	// rule.
+	if compacted {
+		if err := store.Save(sess); err != nil {
+			return nil, fmt.Errorf("save compacted session %s: %w", sessionID, err)
+		}
 	}
 	return map[string]any{
 		"session":         sessionID,
@@ -1104,13 +1145,34 @@ func webProjects() (map[string]any, error) {
 		}
 	}
 	sort.Strings(entries)
+	// The current root is the one mounted for this surface, which is what
+	// webSetProject writes. Reading the Telegram chat's selection instead made
+	// the marker name a root the dashboard had not chosen.
+	defaultState.mu.RLock()
+	current := defaultState.SessionProjects[miniapp.WebSessionID]
+	defaultState.mu.RUnlock()
 	return map[string]any{
 		"workspace": root,
-		"current":   defaultState.project(defaultState.allowedUserID()),
+		"current":   current,
 		"entries":   entries,
 	}, nil
 }
 
+// webSetProject mounts a project root for this surface's own session.
+//
+// It used to write under the authorised user's chat id, which set the Telegram
+// chat's project rather than the dashboard's, and then read it back under the
+// same key. That made the picker select a project the web session never used and
+// the CURRENT marker name a root the surface was not running in. Keying both
+// sides on the web session makes the control mean what the page says it does,
+// and leaves the Telegram chat's own project selection alone.
 func webSetProject(root string) error {
-	return defaultState.setProject(defaultState.allowedUserID(), root)
+	abs, err := validateWorkspaceProject(root)
+	if err != nil {
+		return err
+	}
+	defaultState.mu.Lock()
+	defaultState.SessionProjects[miniapp.WebSessionID] = abs
+	defaultState.mu.Unlock()
+	return defaultState.save()
 }

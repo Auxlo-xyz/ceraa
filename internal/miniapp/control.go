@@ -669,3 +669,39 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 	}
 	s.handleProjects(w, r)
 }
+
+// handleStop cancels the run the status endpoint is currently reporting.
+//
+// The chat id is taken from the request because the surface serves exactly one
+// authorised user, and that user can be in more than one chat. Stopping "the
+// user" would pick a run by luck of map order; stopping the chat the button was
+// rendered for stops the run the operator is looking at. That is the whole
+// point of the control, and the reason this route exists rather than reusing the
+// session-scoped cancel, which only ever reaches this surface's own (never
+// started) session.
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.StopActiveRun == nil {
+		http.Error(w, "runs cannot be stopped from this surface", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Chat int64 `json:"chat"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil {
+		http.Error(w, "expected a JSON object", http.StatusBadRequest)
+		return
+	}
+	if body.Chat == 0 {
+		http.Error(w, "no chat named", http.StatusBadRequest)
+		return
+	}
+	stopped, sessionID := s.cfg.StopActiveRun(body.Chat)
+	if !stopped {
+		// 409 rather than a success. A stop that found nothing has not stopped
+		// anything, and returning 200 would let the button report a halt that
+		// did not happen.
+		http.Error(w, "no active run to cancel", http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"cancelled": true, "session": sessionID})
+}

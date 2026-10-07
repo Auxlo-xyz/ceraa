@@ -83,6 +83,7 @@ func controlFixture(t *testing.T) *Server {
 		return map[string]any{"workspace": "/w", "current": "/w/a", "entries": []string{"a"}}, nil
 	}
 	cfg.SetProject = func(root string) error { return nil }
+	cfg.StopActiveRun = func(chatID int64) (bool, string) { return true, "ses-live" }
 	return New(cfg)
 }
 
@@ -151,6 +152,7 @@ func TestControlWritesRoundTrip(t *testing.T) {
 		{http.MethodPost, "/api/todos", `{"session":"s","content":"t","status":"completed"}`},
 		{http.MethodPost, "/api/todos", `{"session":"s","content":"t","status":"bogus"}`},
 		{http.MethodPost, "/api/projects", `{"root":"/w/a"}`},
+		{http.MethodPost, "/api/stop", `{"chat":42}`},
 	}
 	for _, c := range cases {
 		rec := sendJSON(t, server.Handler(), c.method, c.target, initData, c.payload)
@@ -180,5 +182,67 @@ func TestControlWithoutWiringReportsItself(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("GET %s = %d, want 503 without wiring", target, rec.Code)
 		}
+	}
+}
+
+// Stop must reach the run the status card is showing, which means the chat id
+// from the request has to be the one handed to the bot's canceller. One user
+// can have a run in more than one chat, so a route that stopped "the user"
+// would stop whichever run the map happened to hold.
+func TestStopTargetsTheRunOnTheNamedChat(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	var asked int64
+	server.cfg.StopActiveRun = func(chatID int64) (bool, string) {
+		asked = chatID
+		return true, "ses-live"
+	}
+	rec := sendJSON(t, server.Handler(), http.MethodPost, "/api/stop", initData, `{"chat":4242}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/stop = %d: %s", rec.Code, rec.Body.String())
+	}
+	if asked != 4242 {
+		t.Fatalf("the bot was asked to stop chat %d, want 4242", asked)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["session"] != "ses-live" {
+		t.Fatalf("session = %v, want the run it stopped named back", body["session"])
+	}
+}
+
+// A stop that found nothing must not read as a halt. This is the bug the button
+// used to hide by staying disabled forever.
+func TestStopWithNoRunIsAConflictNotASuccess(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	server.cfg.StopActiveRun = func(chatID int64) (bool, string) { return false, "" }
+	rec := sendJSON(t, server.Handler(), http.MethodPost, "/api/stop", initData, `{"chat":42}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stopping nothing = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A stop with no chat named cannot be acted on, and guessing one would stop a
+// run the operator is not looking at.
+func TestStopNeedsAChat(t *testing.T) {
+	server := controlFixture(t)
+	initData := initDataFor(t, testToken, testUser, 0)
+	for _, payload := range []string{`{}`, `{"chat":0}`} {
+		rec := sendJSON(t, server.Handler(), http.MethodPost, "/api/stop", initData, payload)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("stop %s = %d, want 400: %s", payload, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestStopWithoutWiringReportsItself(t *testing.T) {
+	server, _, _ := newFixture(t, testUser)
+	initData := initDataFor(t, testToken, testUser, 0)
+	rec := sendJSON(t, server.Handler(), http.MethodPost, "/api/stop", initData, `{"chat":42}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /api/stop without wiring = %d, want 503", rec.Code)
 	}
 }

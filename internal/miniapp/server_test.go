@@ -1119,14 +1119,18 @@ func TestTheShippedScriptIsWhole(t *testing.T) {
 	}
 	page := string(raw)
 
+	// The surface observes runs started in Telegram rather than starting its
+	// own, so the list is what a control here acts on: "/api/stop" halts the run
+	// on the card, "/api/sessions" lists conversations, "/api/secrets" is the
+	// settings surface. The old assertions named "/prompt" and the "/events"
+	// poller, which pinned a web-chat client this page never rendered.
 	for _, want := range []string{
-		"attach();",         // wiring happens
-		"})();",             // and the block it lives in is closed
-		"/prompt",           // sending a task
-		"/events?initData=", // streaming
-		"/api/permission",   // answering a permission
-		"/api/sessions",     // the session list
-		"/api/secrets",      // and the settings surface
+		"attach();",       // wiring happens
+		"})();",           // and the block it lives in is closed
+		"/api/stop",       // stopping the run it is displaying
+		"/api/sessions",   // the session list
+		"/api/secrets",    // and the settings surface
+		"/api/compaction", // the one control that writes to a session
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the shipped shell no longer contains %q; the script is not whole and the "+

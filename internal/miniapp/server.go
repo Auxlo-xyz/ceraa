@@ -156,6 +156,11 @@ type Config struct {
 	DeleteSession     func(id string) error
 	Projects          func() (map[string]any, error)
 	SetProject        func(root string) error
+	// StopActiveRun cancels the run the status endpoint is currently reporting.
+	// It takes the chat id rather than a session id because that is the key a
+	// live run is held under, and returns whether one was found so the button
+	// can say "nothing to stop" instead of claiming a success that did nothing.
+	StopActiveRun func(chatID int64) (bool, string)
 }
 
 // Server is the loopbound HTTP surface. One per process, started once and shut
@@ -251,6 +256,7 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("POST /api/todos", s.handleSetTodo)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("POST /api/projects", s.handleSetProject)
+	mux.HandleFunc("POST /api/stop", s.handleStop)
 	mux.HandleFunc("POST /api/sessions/{id}", s.handleRenameSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
