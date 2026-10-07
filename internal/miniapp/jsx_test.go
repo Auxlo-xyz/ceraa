@@ -247,11 +247,21 @@ func stripComments(s string) string {
 	return s
 }
 
-// The band under a card header exists to separate a header from a body. On the
-// four cards that open a tab it separated nothing - the band holds the whole
-// card, so the rule ran across it with content on one side only - and it read as
-// a stray line. The eight bands that do divide a body keep it.
-func TestOnlyTheTabHeroCardsDropTheRule(t *testing.T) {
+// The band under a card header exists to separate a header from a body. A band
+// that holds the whole card separates nothing, so the rule runs across the card
+// with content on one side only and reads as a stray line; those bands are flush
+// and the card's own border closes the shape. A band that does divide a body
+// keeps its rule.
+//
+// Six bands hold a whole card and are flush: the four that open a tab (Overview,
+// Context, Tools, Agents) plus the reasoning-effort lever and the secret store,
+// which were bare section bands until they were given the tab-card layout.
+//
+// The flush count alone would not catch the dangerous half of this rule, so the
+// card membership is checked too. flush on a band that is NOT inside a card is a
+// section header that lost both its rule and its card, and it looks like nothing
+// is wrong.
+func TestABandThatHoldsTheWholeCardDropsTheRule(t *testing.T) {
 	page, err := os.ReadFile(filepath.Join("assets", "index.html"))
 	if err != nil {
 		t.Fatalf("read the dashboard: %s", err)
@@ -260,23 +270,56 @@ func TestOnlyTheTabHeroCardsDropTheRule(t *testing.T) {
 
 	total := strings.Count(markup, `className="hero-band"`)
 	flush := strings.Count(markup, `className="hero-band flush"`)
-	// Four tabs: Overview, Context, Tools, Agents. Twelve bands exist in all.
-	if flush != 4 {
-		t.Errorf("%d bands are flush, want exactly the 4 that open a tab", flush)
+	// Twelve bands exist across the four tabs: six hold a whole card, six divide
+	// a body beneath them.
+	if flush != 6 {
+		t.Errorf("%d bands are flush, want the 6 that hold a whole card", flush)
 	}
 	if total+flush != 12 {
 		t.Errorf("found %d bands total (%d plain, %d flush), want 12; a card was added or lost", total, flush, total+flush)
 	}
 
+	lines := strings.Split(markup, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, `className="hero-band flush"`) {
+			continue
+		}
+		if !opensACardAbove(lines, i) {
+			t.Errorf("line %d flushes the band but no card opens above it; a section header would lose both its rule and its card", i+1)
+		}
+	}
+
 	css := pageCSS(t, page)
 	rule := cssRule(t, css, "hero-band")
 	if !strings.Contains(rule, "border-bottom: 1px") {
-		t.Error("the base band lost its rule, which the eight dividing bands still need")
+		t.Error("the base band lost its rule, which the six dividing bands still need")
 	}
 	flushed := cssSelector(t, css, ".hero-band.flush")
 	if !strings.Contains(flushed, "border-bottom: none") {
-		t.Error("the flush variant does not remove the rule, so the four tab cards still draw it")
+		t.Error("the flush variant does not remove the rule, so the six whole-card bands still draw it")
 	}
+}
+
+// opensACardAbove reports whether line index sits inside a card, which is the
+// band being the card's first child. It looks back a few non-blank lines for the
+// card's opening div and stops at any closing div in between, so it survives
+// reindentation without being fooled by a sibling card that has already closed.
+func opensACardAbove(lines []string, index int) bool {
+	seen := 0
+	for i := index - 1; i >= 0 && seen < 3; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		seen++
+		if strings.Contains(line, `className="card"`) && strings.HasPrefix(line, "<div") {
+			return true
+		}
+		if strings.HasPrefix(line, "</") {
+			return false
+		}
+	}
+	return false
 }
 
 // A hairline-list that sits outside a card draws its top rule just under the
