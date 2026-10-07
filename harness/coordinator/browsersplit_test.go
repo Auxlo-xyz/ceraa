@@ -51,6 +51,46 @@ func TestRecordedBrowserCallsBecomeTheActionTools(t *testing.T) {
 }
 
 // A batch carries its calls in one item, so both shapes have to be handled.
+func TestRecordedLocalFileOpenUsesBrowserOpenFile(t *testing.T) {
+	items := []llm.Item{
+		{Kind: "tool_call", CallID: "f1", Name: "browser", Args: `{"action":"open","path":"/tmp/page.html","wait_ms":500}`},
+		{Kind: "text", Role: llm.RoleTool, CallID: "f1", Text: "opened"},
+		{Kind: "tool_calls", ToolCalls: []llm.ToolCall{
+			{ID: "f2", Name: "browser", Args: `{"action":"open","path":"/tmp/second.html"}`},
+		}},
+	}
+	got := normalizeDispatcherMessages(items)
+	if got[0].Name != "browser_open_file" || got[1].Name != "browser_open_file" || got[2].ToolCalls[0].Name != "browser_open_file" {
+		t.Fatalf("old file opens were not mapped to browser_open_file: %+v", got)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(got[0].Args), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args["path"] != "/tmp/page.html" || args["wait_ms"] != float64(500) {
+		t.Fatalf("old file-open arguments changed: %v", args)
+	}
+	if _, hasAction := args["action"]; hasAction {
+		t.Fatalf("old action was not removed: %v", args)
+	}
+}
+
+func TestInvalidRecordedBrowserOpensStayUnchanged(t *testing.T) {
+	for _, raw := range []string{
+		`{"action":"open"}`,
+		`{"action":"open","url":""}`,
+		`{"action":"open","url":"https://example.com","path":"/tmp/page.html"}`,
+		`{"action":"open","url":"https://example.com","script":"1"}`,
+		`{"action":"unknown","url":"https://example.com"}`,
+	} {
+		items := []llm.Item{{Kind: "tool_call", CallID: "bad", Name: "browser", Args: raw}}
+		got := normalizeDispatcherMessages(items)
+		if got[0].Name != "browser" || got[0].Args != raw {
+			t.Errorf("invalid call %q became %q with %q", raw, got[0].Name, got[0].Args)
+		}
+	}
+}
+
 func TestRecordedBrowserCallsInABatchAreSplitToo(t *testing.T) {
 	items := []llm.Item{{
 		Kind: "tool_calls",
@@ -125,6 +165,7 @@ func TestEveryRewrittenBrowserNameIsAToolTheModelIsOffered(t *testing.T) {
 		{Kind: "tool_call", CallID: "c7", Name: "browser", Args: `{"action":"eval","script":"1"}`},
 		{Kind: "tool_call", CallID: "c8", Name: "browser", Args: `{"action":"status"}`},
 		{Kind: "tool_call", CallID: "c9", Name: "browser", Args: `{"action":"close"}`},
+		{Kind: "tool_call", CallID: "c10", Name: "browser", Args: `{"action":"open","path":"/tmp/page.html"}`},
 	}
 	for _, item := range normalizeDispatcherMessages(items) {
 		if !offered[item.Name] {

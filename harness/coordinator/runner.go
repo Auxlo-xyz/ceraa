@@ -2322,7 +2322,28 @@ func takeBrowserAction(raw string) (string, string) {
 		return "", raw
 	}
 	action, ok := args["action"].(string)
-	if !ok || action == "" {
+	if !ok {
+		return "", raw
+	}
+	switch action {
+	case "open":
+		url, hasURL := args["url"].(string)
+		path, hasPath := args["path"].(string)
+		if hasURL == hasPath || (hasURL && strings.TrimSpace(url) == "") || (hasPath && strings.TrimSpace(path) == "") {
+			return "", raw
+		}
+		target := "url"
+		if hasPath {
+			target = "path"
+			action = "open_file"
+		}
+		for key := range args {
+			if key != "action" && key != target && key != "wait_ms" {
+				return "", raw
+			}
+		}
+	case "click", "close", "eval", "html", "screenshot", "status", "text", "type":
+	default:
 		return "", raw
 	}
 	delete(args, "action")

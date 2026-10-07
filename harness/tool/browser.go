@@ -91,12 +91,21 @@ func (b *BrowserTool) Schema() map[string]any {
 	}
 }
 
-// browserArgSpec documents the arguments each action accepts, so a call with a
-// meaningless argument is reported as a mistake rather than silently ignored.
-var browserArgSpec = map[string]struct {
+// browserArgRules is one action's accepted arguments.
+//
+// Named rather than anonymous so a per-action tool can declare its own set. The
+// combined tool needs either url or path, which cannot be written down as a list,
+// so browser_open takes a required url and browser_open_file takes a required
+// path. Two tools, two required arguments, and no schema that a call with
+// nothing in it can satisfy.
+type browserArgRules struct {
 	required []string
 	optional []string
-}{
+}
+
+// browserArgSpec documents the arguments each action accepts, so a call with a
+// meaningless argument is reported as a mistake rather than silently ignored.
+var browserArgSpec = map[string]browserArgRules{
 	"open":       {required: []string{}, optional: []string{"url", "path", "wait_ms"}},
 	"screenshot": {optional: []string{"path", "selector", "full_page", "wait_ms"}},
 	"text":       {optional: []string{"selector", "wait_ms"}},

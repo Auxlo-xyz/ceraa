@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"ceraa/harness/operation"
 )
@@ -48,10 +49,39 @@ var browserArgDefs = map[string]browserArgDef{
 	"wait_ms":   {"integer", "Milliseconds to wait after the action, for pages that render late."},
 }
 
-// browserActionDef is one tool: the action it performs and what it acts on.
+// browserActionDef is one tool: the action it performs, the name it is called,
+// and the arguments it accepts.
+//
+// tool and action are separate because they are not always the same. The
+// combined browser opens a page from either a web address or a local file, and
+// "either of two" cannot be written down as a required list, so the model was
+// handed a schema where nothing was mandatory and an empty call was well formed.
+// Two tools, each with one required argument, is the same lesson as the split
+// itself: a choice belongs in the tool's identity, not inside its schema.
 type browserActionDef struct {
-	action      string
+	action string
+	// tool is the name suffix. Empty means the action's own name.
+	tool string
+	// rules overrides the action's arguments for this tool when it takes a
+	// different set. Empty means use browserArgSpec for the action.
+	rules       *browserArgRules
 	description string
+}
+
+// toolSuffix is the name this tool is called by.
+func (d browserActionDef) toolSuffix() string {
+	if d.tool != "" {
+		return d.tool
+	}
+	return d.action
+}
+
+// argRules is the argument set this tool accepts.
+func (d browserActionDef) argRules() browserArgRules {
+	if d.rules != nil {
+		return *d.rules
+	}
+	return browserArgSpec[d.action]
 }
 
 // The descriptions say what each tool is and nothing about when to reach for
@@ -60,8 +90,17 @@ type browserActionDef struct {
 // model reads it as a rule rather than as a footnote on one of nine schemas.
 var browserActionDefs = []browserActionDef{
 	{
-		action:      "open",
-		description: "Load a page into the browser, from a web address or a local file. Replaces whatever page was open. Takes a url or a path, not both.",
+		action: "open",
+		rules:  &browserArgRules{required: []string{"url"}, optional: []string{"wait_ms"}},
+		description: "Load a web page into the browser from its address. " +
+			"Replaces whatever page was open.",
+	},
+	{
+		action: "open",
+		tool:   "open_file",
+		rules:  &browserArgRules{required: []string{"path"}, optional: []string{"wait_ms"}},
+		description: "Load a local file into the browser, which is what renders HTML you have just written. " +
+			"Replaces whatever page was open.",
 	},
 	{
 		action:      "text",
@@ -103,19 +142,16 @@ var browserActionDefs = []browserActionDef{
 // a page opened by browser_open is the page browser_click acts on, which is the
 // entire reason the actions are a sequence rather than independent tools.
 type BrowserActionTool struct {
-	base   *BrowserTool
-	action string
+	base *BrowserTool
+	def  browserActionDef
 }
 
-func (t *BrowserActionTool) Name() string { return "browser_" + t.action }
+func (t *BrowserActionTool) Name() string { return "browser_" + t.def.toolSuffix() }
 
-func (t *BrowserActionTool) Description() string { return browserActionDescription(t.action) }
+func (t *BrowserActionTool) Description() string { return t.def.description }
 
 func (t *BrowserActionTool) Schema() map[string]any {
-	spec, ok := browserArgSpec[t.action]
-	if !ok {
-		return map[string]any{"type": "object", "properties": map[string]any{}}
-	}
+	spec := t.def.argRules()
 	properties := map[string]any{}
 	for _, key := range append(append([]string{}, spec.required...), spec.optional...) {
 		def, known := browserArgDefs[key]
@@ -131,23 +167,82 @@ func (t *BrowserActionTool) Schema() map[string]any {
 	return schema
 }
 
-// Translate pins the action and defers everything else to the combined tool, so
-// the argument spec, the URL check, the "exactly one of url or path" rule and
-// the rejection wording are the same code they always were. Nothing about
-// validation is restated here, because restating it is how two copies drift.
+// Translate pins the action and defers the per-argument work to the combined
+// tool, so the URL check and the shape checks are the same code they always were.
+//
+// The argument set is checked here, against this tool's own rules, because the
+// combined tool's rules are wider than this tool's. browser_open takes a url and
+// browser_open_file takes a path; deferring that would let either tool accept the
+// other's argument, which is the same class of mistake as the bundling this split
+// removed.
 func (t *BrowserActionTool) Translate(args map[string]any) (operation.Spec, error) {
+	rules := t.def.argRules()
+	allowed := map[string]bool{}
+	for _, key := range append(append([]string{}, rules.required...), rules.optional...) {
+		allowed[key] = true
+	}
 	merged := make(map[string]any, len(args)+1)
-	merged["action"] = t.action
+	merged["action"] = t.def.action
 	for key, value := range args {
 		if key == "action" {
 			// A model that names an action anyway has guessed, and the guess is
 			// more useful as a rejection than as something quietly overridden.
 			return operation.Spec{}, fmt.Errorf(
-				"%s is a single-action tool and takes no \"action\" argument; drop it", t.Name())
+				"%s is a single-action tool and takes no %q argument; drop it", t.Name(), "action")
+		}
+		if !allowed[key] {
+			return operation.Spec{}, fmt.Errorf("%s does not accept %q; %s.%s",
+				t.Name(), key, describeBrowserArgs(rules), t.def.siblingHint(key))
 		}
 		merged[key] = value
 	}
+	var missing []string
+	for _, key := range rules.required {
+		if _, present := merged[key]; !present {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return operation.Spec{}, fmt.Errorf("%s requires %s", t.Name(), strings.Join(missing, " and "))
+	}
 	return t.base.Translate(merged)
+}
+
+// siblingHint names the tool that does take an argument this one refuses, so a
+// crossed argument is one step from working rather than a dead end.
+//
+// Siblings of the same action are preferred. `path` belongs to browser_open_file
+// and also to browser_screenshot, so counting every owner finds two and gives up,
+// but in the context of opening a page there is only one sensible answer. Only
+// when the action does not narrow it does it fall back to naming the tool when
+// there is exactly one home, because an ambiguous hint is worse than none.
+func (d browserActionDef) siblingHint(key string) string {
+	var sameAction, elsewhere []string
+	for _, other := range browserActionDefs {
+		if other.action == d.action && other.tool == d.tool {
+			continue
+		}
+		rules := other.argRules()
+		for _, accepted := range append(append([]string{}, rules.required...), rules.optional...) {
+			if accepted != key {
+				continue
+			}
+			name := "browser_" + other.toolSuffix()
+			if other.action == d.action {
+				sameAction = append(sameAction, name)
+			} else {
+				elsewhere = append(elsewhere, name)
+			}
+			break
+		}
+	}
+	if len(sameAction) == 1 {
+		return fmt.Sprintf(" %q belongs to %s", key, sameAction[0])
+	}
+	if len(sameAction) == 0 && len(elsewhere) == 1 {
+		return fmt.Sprintf(" %q belongs to %s", key, elsewhere[0])
+	}
+	return ""
 }
 
 func (t *BrowserActionTool) TranslateResult(op operation.Operation) string {
@@ -166,22 +261,11 @@ func (t *BrowserActionTool) RunContext(ctx context.Context, spec operation.Spec)
 // and a batch is a pipeline the model expects in order.
 func (t *BrowserActionTool) Sequential() bool { return true }
 
-func browserActionDescription(action string) string {
-	for _, def := range browserActionDefs {
-		if def.action == action {
-			return def.description
-		}
-	}
-	return "Drive the browser."
-}
-
-// BrowserActionTools returns the per-action tools over one shared browser.
-//
 // BrowserActionTools returns the per-action tools over one shared browser.
 func BrowserActionTools(base *BrowserTool) []Tool {
 	tools := make([]Tool, 0, len(browserActionDefs))
 	for _, def := range browserActionDefs {
-		tools = append(tools, &BrowserActionTool{base: base, action: def.action})
+		tools = append(tools, &BrowserActionTool{base: base, def: def})
 	}
 	return tools
 }

@@ -76,7 +76,7 @@ func (s *ScriptTool) Name() string { return "script" }
 // guidance belongs in the prompt's toolrules section; TestDescriptionsCarryNoUsageGuidance
 // pins that split.
 func (s *ScriptTool) Description() string {
-	return "Run JavaScript and return its result as one value. code is the body " +
+	return "Run JavaScript and return a value. code is the body " +
 		"of an async function, so await and Promise.all work. tools.NAME(args) " +
 		"takes NAME's own arguments and resolves to its result text; a call that " +
 		"fails throws, and the message says what to change. A tool needing your " +

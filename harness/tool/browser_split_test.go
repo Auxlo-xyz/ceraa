@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,12 +60,13 @@ func TestTheCombinedBrowserIsNotOfferedButStillRuns(t *testing.T) {
 func TestOpenCannotCarryAnArgumentFromAnotherAction(t *testing.T) {
 	open := toolList(DefaultRegistry().Offered()).mustFind(t, "browser_open")
 	properties := open.Schema()["properties"].(map[string]any)
-	for _, absent := range []string{"selector", "submit", "text", "script", "full_page"} {
+	// path moved to browser_open_file, and the rest were never this tool's.
+	for _, absent := range []string{"selector", "submit", "text", "script", "full_page", "path"} {
 		if _, present := properties[absent]; present {
 			t.Errorf("browser_open still advertises %q, which is how the bundling was expressible", absent)
 		}
 	}
-	for _, present := range []string{"url", "path", "wait_ms"} {
+	for _, present := range []string{"url", "wait_ms"} {
 		if _, ok := properties[present]; !ok {
 			t.Errorf("browser_open is missing %q", present)
 		}
@@ -73,7 +76,8 @@ func TestOpenCannotCarryAnArgumentFromAnotherAction(t *testing.T) {
 func TestEachSplitToolCarriesOnlyItsOwnArguments(t *testing.T) {
 	reg := DefaultRegistry()
 	cases := map[string][]string{
-		"browser_open":       {"url", "path", "wait_ms"},
+		"browser_open":       {"url", "wait_ms"},
+		"browser_open_file":  {"path", "wait_ms"},
 		"browser_click":      {"selector", "wait_ms"},
 		"browser_type":       {"selector", "text", "submit", "wait_ms"},
 		"browser_screenshot": {"path", "selector", "full_page", "wait_ms"},
@@ -119,10 +123,22 @@ func TestRequiredArgumentsSurviveTheSplit(t *testing.T) {
 			t.Errorf("%s required = %v, want %v", name, required, want)
 		}
 	}
-	// open needs a target but takes either of two, so a required list would be
-	// wrong; the rule is enforced on translation instead.
-	if _, declared := toolList(reg.Offered()).mustFind(t, "browser_open").Schema()["required"]; declared {
-		t.Error("browser_open declares required arguments, but either url or path is enough")
+	// open used to be exempt here, on the reasoning that either url or path is
+	// enough so a required list would be wrong. That is what left the schema with
+	// nothing mandatory and made an empty call well formed. It is split in two
+	// now, so both declare their target.
+	for name, want := range map[string][]string{
+		"browser_open":      {"url"},
+		"browser_open_file": {"path"},
+	} {
+		required, ok := toolList(reg.Offered()).mustFind(t, name).Schema()["required"].([]string)
+		if !ok {
+			t.Errorf("%s declares no required argument", name)
+			continue
+		}
+		if strings.Join(required, ",") != strings.Join(want, ",") {
+			t.Errorf("%s required = %v, want %v", name, required, want)
+		}
 	}
 }
 
@@ -206,8 +222,8 @@ func TestThePromptTeachesTheBrowserSequence(t *testing.T) {
 			names = append(names, tool.Name())
 		}
 	}
-	if len(names) != 9 {
-		t.Fatalf("browser tools = %v, want nine", names)
+	if len(names) != 10 {
+		t.Fatalf("browser tools = %v, want ten", names)
 	}
 	// TestPromptNamesEveryRegisteredTool already covers naming, so this covers the
 	// part it cannot: that the split, and the shared page, are stated.
@@ -256,4 +272,99 @@ func toolSliceFind(tools []Tool, name string) (Tool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// This is the gap that made browser_open callable with nothing in it. The
+// combined tool needs either a url or a path, which cannot be written as a
+// required list, so the split's first version left open's schema with no
+// required argument at all. A call with no arguments was then well formed and
+// only failed at runtime, which the model hit by passing neither.
+func TestOpeningIsTwoToolsWithARequiredTarget(t *testing.T) {
+	offered := toolList(DefaultRegistry().Offered())
+	for name, required := range map[string]string{
+		"browser_open":      "url",
+		"browser_open_file": "path",
+	} {
+		schema := offered.mustFind(t, name).Schema()
+		got, ok := schema["required"].([]string)
+		if !ok {
+			t.Errorf("%s declares no required argument, so a call with nothing in it is well formed", name)
+			continue
+		}
+		if len(got) != 1 || got[0] != required {
+			t.Errorf("%s required = %v, want [%s]", name, got, required)
+		}
+		// And the other target must not be accepted, or the two tools are one
+		// tool with two spellings.
+		properties := schema["properties"].(map[string]any)
+		other := "path"
+		if required == "path" {
+			other = "url"
+		}
+		if _, present := properties[other]; present {
+			t.Errorf("%s still advertises %q, which belongs to the other open tool", name, other)
+		}
+	}
+}
+
+// The empty call the model actually made.
+func TestOpeningWithNothingIsRejectedWithWhatIsNeeded(t *testing.T) {
+	for _, name := range []string{"browser_open", "browser_open_file"} {
+		_, err := toolList(DefaultRegistry().Offered()).mustFind(t, name).Translate(map[string]any{})
+		if err == nil {
+			t.Errorf("%s accepted a call with no arguments", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "requires") {
+			t.Errorf("%s said %q, want it to say what is required", name, err)
+		}
+	}
+}
+
+// A crossed argument has exactly one other home, so the refusal names it.
+func TestACrossedTargetNamesTheToolThatTakesIt(t *testing.T) {
+	offered := toolList(DefaultRegistry().Offered())
+	_, err := offered.mustFind(t, "browser_open").Translate(map[string]any{"path": "/tmp/x.html"})
+	if err == nil {
+		t.Fatal("browser_open accepted a path")
+	}
+	if !strings.Contains(err.Error(), `"path" belongs to browser_open_file`) {
+		t.Errorf("message = %q, want it to name the tool that takes a path", err)
+	}
+	_, err = offered.mustFind(t, "browser_open_file").Translate(map[string]any{"url": "https://example.com"})
+	if err == nil {
+		t.Fatal("browser_open_file accepted a url")
+	}
+	if !strings.Contains(err.Error(), `"url" belongs to browser_open`) {
+		t.Errorf("message = %q, want it to name the tool that takes a url", err)
+	}
+}
+
+// The two must still land on the same action, or they are not two spellings of
+// one thing.
+func TestBothOpenToolsReachTheSameAction(t *testing.T) {
+	// A real file: the target is resolved during translation, so a path that
+	// does not exist fails before the action is ever reached.
+	page := filepath.Join(t.TempDir(), "page.html")
+	if err := os.WriteFile(page, []byte("<html><body>ok</body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	offered := toolList(DefaultRegistry().Offered())
+	web, err := offered.mustFind(t, "browser_open").Translate(map[string]any{"url": "https://example.com"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if web.Type != "browser" || web.Args["action"] != "open" || web.Args["url"] != "https://example.com" {
+		t.Errorf("web spec = %+v, want the browser open action and URL", web)
+	}
+	spec, err := offered.mustFind(t, "browser_open_file").Translate(map[string]any{"path": page})
+	if err != nil {
+		t.Fatalf("open_file: %v", err)
+	}
+	if spec.Type != "browser" || spec.Args["action"] != "open" {
+		t.Errorf("spec = %+v, want the browser open action", spec)
+	}
+	if _, present := spec.Args["url"]; present {
+		t.Error("open_file invented a url")
+	}
 }
