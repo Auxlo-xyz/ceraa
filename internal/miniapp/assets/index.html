@@ -4457,7 +4457,6 @@ contextLimit: p.context_limit || 0,
 
                 <div className="sec-head">
                   <h2 className="t-sec">Configured Profiles</h2>
-                  <span className="t-mono">WITH CONFIRM DELETE</span>
                 </div>
 
                 <div className="card-list">
@@ -4476,9 +4475,6 @@ contextLimit: p.context_limit || 0,
                           {isAct ? <span className="card-pill hot">ACTIVE</span> : null}
                         </div>
                         <div className="card-desc">{prof.model} · {prof.endpoint}</div>
-                        <div className="card-meta">
-                          Key: {prof.apiKeyRef} · Effort: {prof.reasoning || "default"} · Ctx: {(prof.contextLimit / 1000).toFixed(0)}k · Out: {prof.outputCap} · Cache: {prof.cacheMode || "—"}
-                        </div>
                         <div className="card-actions">
                           {!isAct ? (
                             <button
