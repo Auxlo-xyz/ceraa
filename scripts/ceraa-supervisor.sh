@@ -23,15 +23,35 @@ set -uo pipefail
 # Repo root is the parent of scripts/, so the defaults follow a checkout.
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-export CERAA_HOME="${CERAA_HOME:-$REPO_ROOT/../.config/ceraa}"
+# RUNTIME_DIR is the one variable that decides the layout: the deployed binary,
+# the launcher, both logs and the lock all live under it. Deriving the rest from a
+# single root is what stops this file accumulating one override per path, and it
+# is what lets a host be relocated by setting one variable rather than six.
+#
+# The defaults are relative to the checkout because this file must not be welded
+# to one machine. A checkout at <home>/src/ceraa resolves here to
+# <home>/ceraa/runtime.
+RUNTIME_DIR="${RUNTIME_DIR:-$REPO_ROOT/../../ceraa/runtime}"
+# The data home is two levels up from the runtime, which is what makes
+# CERAA_HOME land beside the runtime rather than inside it.
+DATA_HOME="${DATA_HOME:-$(cd "$RUNTIME_DIR/../.." && pwd)}"
+
+export CERAA_HOME="${CERAA_HOME:-$DATA_HOME/.config/ceraa}"
 PIDFILE="${PIDFILE:-$CERAA_HOME/ceraa.pid}"
-LOG="${LOG:-/tmp/ceraa.log}"
-SUPERVISOR_LOG="${SUPERVISOR_LOG:-/tmp/ceraa.log.supervisor}"
-BIN="${BIN:-$REPO_ROOT/bin/ceraa}"
-# The launcher exports TELEGRAM_BOT_TOKEN, so it is deliberately NOT tracked by
+BIN="${BIN:-$RUNTIME_DIR/bin/ceraa}"
+
+# The launcher supplies TELEGRAM_BOT_TOKEN, so it is deliberately NOT tracked by
 # git and must not be. It lives outside the repo for that reason.
-LAUNCHER="${LAUNCHER:-$REPO_ROOT/../run_ceraa.sh}"
-LOCKFILE="${LOCKFILE:-/tmp/ceraa-supervisor.lock}"
+LAUNCHER="${LAUNCHER:-$RUNTIME_DIR/run_ceraa.sh}"
+
+# The log, the supervisor's own log and the lock are all under RUNTIME_DIR rather
+# than /tmp, which is where they used to point. /tmp has been wiped on this host
+# repeatedly, and a supervisor whose logs and lock vanish with it is worse than
+# none: the lock release looks like a second watcher being allowed to start, and
+# the log history goes with the crash it was supposed to explain.
+LOG="${LOG:-$RUNTIME_DIR/ceraa.log}"
+SUPERVISOR_LOG="${SUPERVISOR_LOG:-$RUNTIME_DIR/supervisor.log}"
+LOCKFILE="${LOCKFILE:-$RUNTIME_DIR/supervisor.lock}"
 
 # Long enough that a slow start is not mistaken for a crash, and short enough that
 # a dead bot is noticed promptly.
