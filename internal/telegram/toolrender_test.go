@@ -91,9 +91,9 @@ func TestTheToolNameStillTravelsInTheEventString(t *testing.T) {
 	var _ tool.Tool // the registry type, so this test tracks the real package
 }
 
-func TestBrowserMediaAndSecretsToolsShowTheirCompletionStatus(t *testing.T) {
+func TestBrowserMediaSecretsAndCommandsShowTheirCompletionStatus(t *testing.T) {
 	for _, name := range []string{
-		"browser", "browser_open", "browser_open_file", "browser_click", "browser_close", "view_image", "send_media", "list_secrets",
+		"browser", "browser_open", "browser_open_file", "browser_click", "browser_close", "view_image", "send_media", "list_secrets", "run_command_with_secret",
 	} {
 		for _, outcome := range []struct {
 			prefix string
@@ -126,18 +126,21 @@ func TestBrowserMediaAndSecretsToolsShowTheirCompletionStatus(t *testing.T) {
 	}
 }
 
-func TestListSecretsKeepsBoldTextAndSpacing(t *testing.T) {
-	for _, tc := range []struct {
-		status string
-		want   string
-	}{
-		{status: "🔄", want: "… <b>list secrets</b> target"},
-		{status: "✓", want: "✓ <b>list secrets</b> target"},
-		{status: "⚠", want: "✕ <b>list secrets</b> target"},
-	} {
-		got := formatToolActivity([]toolActivity{{name: "list_secrets", status: tc.status, detail: "target"}})
-		if got != tc.want {
-			t.Errorf("status %q rendered %q, want %q", tc.status, got, tc.want)
+func TestStatusMarkedToolsKeepBoldTextAndSpacing(t *testing.T) {
+	for _, name := range []string{"list_secrets", "run_command_with_secret"} {
+		for _, tc := range []struct {
+			status string
+			mark   string
+		}{
+			{status: "🔄", mark: "…"},
+			{status: "✓", mark: "✓"},
+			{status: "⚠", mark: "✕"},
+		} {
+			got := formatToolActivity([]toolActivity{{name: name, status: tc.status, detail: "target"}})
+			want := tc.mark + " <b>" + strings.ReplaceAll(name, "_", " ") + "</b> target"
+			if got != want {
+				t.Errorf("%s status %q rendered %q, want %q", name, tc.status, got, want)
+			}
 		}
 	}
 }

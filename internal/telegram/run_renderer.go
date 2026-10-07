@@ -1679,7 +1679,7 @@ func formatToolActivity(tools []toolActivity) string {
 // asking the user a question, and the goal, todo and compaction bookkeeping are
 // not that, and they keep their marks.
 func statusMarkedTool(name string) bool {
-	return name == "browser" || strings.HasPrefix(name, "browser_") || name == "view_image" || name == "send_media" || name == "list_secrets"
+	return name == "browser" || strings.HasPrefix(name, "browser_") || name == "view_image" || name == "send_media" || name == "list_secrets" || name == "run_command_with_secret"
 }
 
 func boldWordTool(name string) bool {
