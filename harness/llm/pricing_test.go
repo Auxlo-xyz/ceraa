@@ -18,7 +18,7 @@ func TestCatalogClientRefreshesOncePerDay(t *testing.T) {
 		payload := catalogResponse{Data: []catalogModel{{
 			ID:            "test/model",
 			Name:          "Test Model",
-			ContextWindow: 128000,
+			ContextWindow: 200000,
 			MaxTokens:     4096,
 			Pricing: ModelPricing{
 				Input:  TokenPrice{Base: price},

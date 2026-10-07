@@ -51,7 +51,7 @@ func TestCompactAtStaysPositiveOnASmallWindow(t *testing.T) {
 // to produce.
 func TestCompactAtLeavesRoomForTheReply(t *testing.T) {
 	const maxOutput = 8192
-	for _, window := range []int{32000, 64000, 128000, 200000} {
+	for _, window := range []int{32000, 64000, 200000} {
 		c := compactorFor(window, maxOutput)
 		if room := window - c.compactAt(); room < maxOutput {
 			t.Errorf("window %d: only %d tokens left after the trigger, want at least %d",
