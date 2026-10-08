@@ -1742,8 +1742,6 @@ func toolIcon(name string) string {
 		return "🔑"
 	case "send_media":
 		return "📤"
-	case "memory":
-		return "💭"
 	case "skill_propose":
 		return "💡"
 	case "skill_use":

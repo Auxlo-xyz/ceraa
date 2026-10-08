@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/skills"
 )
@@ -406,10 +405,10 @@ func occurrenceFromAny(value any) int {
 
 // DefaultRegistry returns a registry with all built-in tools.
 func DefaultRegistry() *Registry {
-	return DefaultRegistryWithStores(nil, nil)
+	return DefaultRegistryWithStores(nil)
 }
 
-func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Store) *Registry {
+func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	r := NewRegistry()
 	r.Register(&BashTool{})
 	r.Register(&ReadTool{})
@@ -463,9 +462,6 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 		r.Register(script)
 		script.Reg = r
 	}
-	if memoryStore != nil {
-		r.Register(&MemoryTool{Store: memoryStore})
-	}
 	if skillStore != nil {
 		r.Register(&SkillProposalTool{Store: skillStore})
 		// The catalogue names these skills; this is how the model reaches the
@@ -488,15 +484,16 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 // wording would leave the model told a skill exists and unable to ask for it,
 // which is worse than not listing it. So the store is threaded through every
 // branch and only the proposer is withdrawn.
-func DefaultRegistryForUser(user string, memoryStore *memory.Store, skillStore *skills.Store) *Registry {
+//
+// The agent has no memory tool. The store is written by the extractor after a
+// run and read back as the sidekick, so a live write from the agent would be a
+// second writer to a store one background job owns.
+func DefaultRegistryForUser(user string, skillStore *skills.Store) *Registry {
 	lower := strings.ToLower(user)
-	memoryEnabled := strings.Contains(lower, "remember") || strings.Contains(lower, "memory") || strings.Contains(lower, "preference")
 	skillEnabled := strings.Contains(lower, "wrong") || strings.Contains(lower, "incorrect") || strings.Contains(lower, "not right") || strings.Contains(lower, "feedback") || strings.Contains(lower, "skill")
 	registry := DefaultRegistry()
-	if memoryEnabled {
-		registry = DefaultRegistryWithStores(memoryStore, skillStore)
-	} else if skillStore != nil {
-		registry = DefaultRegistryWithStores(nil, skillStore)
+	if skillStore != nil {
+		registry = DefaultRegistryWithStores(skillStore)
 	}
 	if !skillEnabled {
 		registry.Remove(SkillProposalName)

@@ -182,7 +182,7 @@ func (s *Session) build() error {
 	liveMemory := memory.Live(memoryStore, "cli", s.session, filepath.Join(s.workDir, memory.DefaultMemoryFile), 4000)
 	skillContext, _ := skillStore.CatalogContext(2000)
 
-	registry := tool.DefaultRegistryForUser("cli", memoryStore, skillStore)
+	registry := tool.DefaultRegistryForUser("cli", skillStore)
 	// The CLI has a provider too, so a media call works the same way it does in
 	// Telegram.
 	attachVision(registry, resolveModel)

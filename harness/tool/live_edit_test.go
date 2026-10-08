@@ -47,7 +47,7 @@ func TestLiveTheModelReachesForBatchEditFile(t *testing.T) {
 
 	// input_schema, not parameters: the endpoint reads the Messages shape and
 	// answers "function parameters is empty" for the chat one.
-	reg := DefaultRegistryForUser("x", nil, nil)
+	reg := DefaultRegistryForUser("x", nil)
 	var defs []map[string]any
 	for _, tl := range reg.All() {
 		defs = append(defs, map[string]any{

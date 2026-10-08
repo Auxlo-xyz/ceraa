@@ -140,7 +140,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// what was asked for.
 	logger.Info(fmt.Sprintf("agent run: provider=%s model=%s reasoning=%q native_gemini=%v host=%s",
 		providerID, providerConfig.Model, string(reasoning), llm.UsesGeminiNative(providerConfig.Model, providerConfig.URL), providerConfig.URL))
-	registry := telegramRegistry(cfg, user, memoryStore, skillStore)
+	registry := telegramRegistry(cfg, user, skillStore)
 	// Subagents are attached here, where a run knows its provider, its project and
 	// its stores. Without this the task tool is registered and answers every call
 	// with "no factory is attached", which is the same failure the browser tool had:
@@ -154,7 +154,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		providerCfg:     providerConfig,
 		reasoning:       reasoning,
 		parentPrompt:    prompt.System,
-		memoryStore:     memoryStore,
 		skillStore:      skillStore,
 		evaluationStore: evaluationStore,
 		store:           store,
@@ -313,8 +312,8 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 // chat the user is already in. Resolving it here rather than threading it
 // through the run means there is exactly one place that decides where output
 // goes.
-func telegramRegistry(cfg *config.Config, user string, memoryStore *memory.Store, skillStore *skills.Store) *tool.Registry {
-	registry := tool.DefaultRegistryForUser(user, memoryStore, skillStore)
+func telegramRegistry(cfg *config.Config, user string, skillStore *skills.Store) *tool.Registry {
+	registry := tool.DefaultRegistryForUser(user, skillStore)
 	token := cfg.Telegram.BotToken
 	if token == "" {
 		token = os.Getenv("TELEGRAM_BOT_TOKEN")

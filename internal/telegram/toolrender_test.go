@@ -39,7 +39,7 @@ func TestQueriesAndBookkeepingKeepTheirMarks(t *testing.T) {
 	for _, name := range []string{
 		"read", "question", "todowrite",
 		"create_goal", "get_goal", "update_goal",
-		"memory", "compaction", "task",
+		"compaction", "task",
 	} {
 		if boldWordTool(name) {
 			t.Errorf("%q is bold, which is the mark for an action, not a query", name)
@@ -67,7 +67,7 @@ func TestEveryRegisteredToolHasAClass(t *testing.T) {
 		"run_command_with_secret", "list_secrets", "webfetch", "view_image",
 		"browser", "task", "fts_search", "question", "todowrite",
 		"create_goal", "get_goal", "update_goal", "websearch", "script",
-		"memory", "skill_propose", "skill_use", "send_media",
+		"skill_propose", "skill_use", "send_media",
 		"glob", "grep", "apply_patch", "compaction",
 	}
 	for _, name := range registered {

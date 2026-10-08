@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -213,14 +212,14 @@ func TestTranslateResultIsTheOutput(t *testing.T) {
 
 // The tool is registered only when there is a store to serve it from.
 func TestTheToolIsRegisteredOnlyWithAStore(t *testing.T) {
-	if _, ok := tool.DefaultRegistryForUser("x", nil, nil).Get("skill_use"); ok {
+	if _, ok := tool.DefaultRegistryForUser("x", nil).Get("skill_use"); ok {
 		t.Error("skill_use is offered with no store behind it")
 	}
 	store, err := skills.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := tool.DefaultRegistryForUser("x", nil, store).Get("skill_use"); !ok {
+	if _, ok := tool.DefaultRegistryForUser("x", store).Get("skill_use"); !ok {
 		t.Error("skill_use is missing from a registry that has a store")
 	}
 }
@@ -233,35 +232,29 @@ func TestTheGateWithdrawsTheProposerAndNotTheReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A real memory store, because the branch that changed is the memory one and
-	// a nil store would leave the memory tool absent for reasons that have
-	// nothing to do with the gate.
-	memoryStore, err := memory.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	cases := []struct {
-		user            string
-		wantPropose     bool
-		wantSkillUse    bool
-		wantMemoryOffer bool
+		user         string
+		wantPropose  bool
+		wantSkillUse bool
 	}{
-		{"cli", false, true, false},
-		{"that is wrong", true, true, false},
-		{"remember this", false, true, true},
-		{"remember this, it is wrong", true, true, true},
+		{"cli", false, true},
+		{"that is wrong", true, true},
+		{"remember this", false, true},
+		{"remember this, it is wrong", true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.user, func(t *testing.T) {
-			registry := tool.DefaultRegistryForUser(tc.user, memoryStore, store)
+			registry := tool.DefaultRegistryForUser(tc.user, store)
 			if _, ok := registry.Get(tool.SkillProposalName); ok != tc.wantPropose {
 				t.Errorf("%s: skill_propose offered = %v, want %v", tc.user, ok, tc.wantPropose)
 			}
 			if _, ok := registry.Get("skill_use"); ok != tc.wantSkillUse {
 				t.Errorf("%s: skill_use offered = %v, want %v", tc.user, ok, tc.wantSkillUse)
 			}
-			if _, ok := registry.Get("memory"); ok != tc.wantMemoryOffer {
-				t.Errorf("%s: memory offered = %v, want %v", tc.user, ok, tc.wantMemoryOffer)
+			// The agent never writes the store: the extractor owns writes and the
+			// sidekick owns reads, so the tool is gone rather than gated.
+			if _, ok := registry.Get("memory"); ok {
+				t.Errorf("%s: memory is offered, but the agent must not write the store", tc.user)
 			}
 		})
 	}

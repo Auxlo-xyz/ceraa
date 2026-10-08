@@ -22,7 +22,7 @@ func readPrompt(t *testing.T) string {
 func TestPromptNamesEveryRegisteredTool(t *testing.T) {
 	prompt := readPrompt(t)
 	var missing []string
-	for _, tool := range DefaultRegistryForUser("x", nil, nil).All() {
+	for _, tool := range DefaultRegistryForUser("x", nil).All() {
 		if !strings.Contains(prompt, tool.Name()) {
 			missing = append(missing, tool.Name())
 		}
@@ -49,7 +49,7 @@ func TestDescriptionsCarryNoUsageGuidance(t *testing.T) {
 		"rather than", "ask free-form when", "instead of asking",
 		"e.g. session persistence", "beyond knowledge cutoff",
 	}
-	for _, tool := range DefaultRegistryForUser("x", nil, nil).All() {
+	for _, tool := range DefaultRegistryForUser("x", nil).All() {
 		description := tool.Description()
 		lower := strings.ToLower(description)
 		for _, phrase := range phrases {
@@ -63,7 +63,7 @@ func TestDescriptionsCarryNoUsageGuidance(t *testing.T) {
 
 // The behavioural facts a schema cannot express must survive the trim.
 func TestDescriptionsKeepBehaviourFacts(t *testing.T) {
-	reg := DefaultRegistryForUser("x", nil, nil)
+	reg := DefaultRegistryForUser("x", nil)
 	for _, tool := range reg.All() {
 		switch tool.Name() {
 		case "browser":

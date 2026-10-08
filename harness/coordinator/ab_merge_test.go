@@ -103,8 +103,8 @@ type abVariant struct {
 }
 
 func abVariants() []abVariant {
-	both := tool.DefaultRegistryForUser("x", nil, nil)
-	merged := tool.DefaultRegistryForUser("x", nil, nil)
+	both := tool.DefaultRegistryForUser("x", nil)
+	merged := tool.DefaultRegistryForUser("x", nil)
 	// The whole proposal in one line: delete the duplicate definition.
 	merged.Remove("edit_line")
 	return []abVariant{

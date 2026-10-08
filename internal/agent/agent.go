@@ -220,7 +220,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		}
 	}
 	compactor.ResolveModel = resolveModel
-	registry := tool.DefaultRegistryForUser(user, memoryStore, skillStore)
+	registry := tool.DefaultRegistryForUser(user, skillStore)
 	// The CLI has a provider too, so a media view works the same way there.
 	attachVisionToRegistry(registry, resolveModel)
 	runner := coordinator.New(coordinator.RunnerConfig{

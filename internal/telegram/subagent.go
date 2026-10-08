@@ -11,7 +11,6 @@ import (
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -61,7 +60,6 @@ type subagentFactory struct {
 	providerCfg   config.LLMProvider
 	reasoning     llm.ReasonLevel
 	parentPrompt  string
-	memoryStore   *memory.Store
 	skillStore    *skills.Store
 	// Rendered once, from the parent's project and session, so a child inherits the
 	// same memory and skills the agent that spawned it had.
@@ -165,7 +163,7 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		defer cancel()
 	}
 
-	registry := telegramRegistry(f.cfg, f.user, f.memoryStore, f.skillStore)
+	registry := telegramRegistry(f.cfg, f.user, f.skillStore)
 	// Two guards against nesting, not one: Translate refuses a nested call, and the
 	// tool is not in the child's registry at all. A guard that only exists in one
 	// place is a guard that a crafted call walks around.

@@ -12,7 +12,7 @@ import (
 // 19 calls before anyone noticed, because nothing checks that a registered tool is
 // reachable. So assert the wiring, not just the tool.
 func TestSubagentsAreAttachedToTheRegistry(t *testing.T) {
-	registry := tool.DefaultRegistryForUser("u", nil, nil)
+	registry := tool.DefaultRegistryForUser("u", nil)
 	task, ok := registry.Get("task")
 	if !ok {
 		t.Fatal("the task tool is not registered")
@@ -36,7 +36,7 @@ func TestSubagentsAreAttachedToTheRegistry(t *testing.T) {
 // A child must not be able to delegate. Translate refuses a nested call, and the
 // registry must also not offer the tool, so a crafted call has nothing to reach.
 func TestChildRegistryHasNoTaskTool(t *testing.T) {
-	registry := tool.DefaultRegistryForUser("u", nil, nil)
+	registry := tool.DefaultRegistryForUser("u", nil)
 	if _, ok := registry.Get("task"); !ok {
 		t.Fatal("precondition: the parent should have the task tool")
 	}

@@ -99,7 +99,7 @@ func webMeta() map[string]any {
 			"half_life_days": entry.HalfLife,
 		})
 	}
-	registry := tool.DefaultRegistryWithStores(nil, nil)
+	registry := tool.DefaultRegistryWithStores(nil)
 	inventory := registry.All()
 	toolIDs := make([]string, 0, len(inventory))
 	for _, t := range inventory {
@@ -483,7 +483,7 @@ func webTools() ([]string, []miniapp.ToolEntry, error) {
 	}
 	defaultState.mu.RUnlock()
 	sort.Strings(allowed)
-	registry := tool.DefaultRegistryWithStores(nil, nil)
+	registry := tool.DefaultRegistryWithStores(nil)
 	inventory := []miniapp.ToolEntry{}
 	for _, t := range registry.All() {
 		inventory = append(inventory, miniapp.ToolEntry{Name: t.Name(), Description: t.Description()})
@@ -496,7 +496,7 @@ func webSetToolAllowed(name string, allowed bool) error {
 	if name == "" {
 		return fmt.Errorf("tool name is empty")
 	}
-	registry := tool.DefaultRegistryWithStores(nil, nil)
+	registry := tool.DefaultRegistryWithStores(nil)
 	if _, ok := registry.Get(name); !ok {
 		return fmt.Errorf("no tool named %q", name)
 	}

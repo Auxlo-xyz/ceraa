@@ -162,7 +162,7 @@ func TestTheOverrideReopensLoopbackForBothTools(t *testing.T) {
 // call. The guard is only real if the tool that carries it still runs.
 func TestTheGuardedToolsStillTranslateAndExecute(t *testing.T) {
 	t.Setenv(netguard.AllowPrivateEnv, "")
-	registry := DefaultRegistryWithStores(nil, nil)
+	registry := DefaultRegistryWithStores(nil)
 	for _, name := range []string{"webfetch", "browser_open"} {
 		if _, ok := registry.Get(name); !ok {
 			t.Errorf("%s is not registered", name)
