@@ -37,12 +37,7 @@
   html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
-    background:
-      radial-gradient(72% 640px at 26% 0%, rgba(42, 166, 242, 0.13), transparent 70%),
-      radial-gradient(56% 520px at 84% 0%, rgba(42, 166, 242, 0.08), transparent 72%),
-      var(--ground);
-    background-repeat: no-repeat;
-    background-attachment: fixed;
+    background: var(--ground);
     color: var(--ink);
     font-family: var(--sf);
     font-size: 17px;
@@ -87,7 +82,40 @@
   .btn.ghost:hover { background: var(--well); opacity: 1; }
 
   /* ---------- hero ---------- */
-  .hero { padding: 84px 0 68px; }
+  .hero { padding: 0 0 68px; }
+
+  /* sky band behind the header block; full bleed, image sits on the
+     cloud line so the headline always lands on open blue */
+  .sky {
+    position: relative; isolation: isolate;
+    min-height: clamp(330px, 46vh, 470px);
+    display: flex; align-items: center;
+    overflow: hidden;
+    background: #1E6FB8;
+  }
+  .sky picture, .sky img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .sky img { object-fit: cover; object-position: center 78%; }
+  .sky-scrim {
+    position: absolute; inset: 0; pointer-events: none;
+    background:
+      linear-gradient(100deg, rgba(9, 34, 62, 0.34) 0%, rgba(9, 34, 62, 0.15) 54%, rgba(9, 34, 62, 0.10) 100%),
+      linear-gradient(180deg, rgba(9, 34, 62, 0.26) 0%, rgba(9, 34, 62, 0.12) 46%, rgba(9, 34, 62, 0.20) 100%);
+  }
+  .sky-inner { position: relative; padding: 76px 24px 64px; }
+  .on-sky { color: #FFFFFF; }
+  h1.on-sky { text-shadow: 0 2px 30px rgba(6, 26, 48, 0.42), 0 1px 3px rgba(6, 26, 48, 0.30); }
+  .eyebrow.on-sky {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.34);
+    color: #FFFFFF;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .btn.on-sky-solid { background: #FFFFFF; color: var(--ink); border-color: #FFFFFF; }
+  .btn.on-sky-ghost { background: rgba(255, 255, 255, 0.10); color: #FFFFFF; border-color: rgba(255, 255, 255, 0.72); }
+  .btn.on-sky-ghost:hover { background: rgba(255, 255, 255, 0.20); opacity: 1; }
+  .sky-inner .cta-row { margin-top: 30px; }
+  .hero .lede { margin-top: 46px; }
   .eyebrow {
     display: inline-flex; align-items: center; gap: 9px;
     font-family: var(--mono); font-size: 12.5px; letter-spacing: .01em;
@@ -204,7 +232,7 @@
     body { font-size: 16px; }
     .nav-links { display: none; }
     .nav-cta { margin-left: auto; }
-    .hero { padding: 56px 0 48px; }
+    .hero { padding: 0 0 48px; }
     section { padding: 56px 0; }
     ul.durable li { flex-direction: column; gap: 4px; }
     ul.durable .k { width: auto; }
@@ -236,18 +264,27 @@
 
 <main>
   <section class="hero" style="border-top:0">
+    <div class="sky">
+      <picture>
+        <source media="(max-width: 767px)" srcset="/assets/sky-mobile.webp">
+        <img src="/assets/sky-desktop.webp" alt="" width="1672" height="941" fetchpriority="high" decoding="async">
+      </picture>
+      <div class="sky-scrim" aria-hidden="true"></div>
+      <div class="wrap sky-inner">
+        <span class="eyebrow on-sky"><span class="dot"></span>async Go coding agent</span>
+        <h1 class="on-sky">Work outlives the terminal.</h1>
+        <div class="cta-row">
+          <a class="btn on-sky-solid" href="#commands">Install and run</a>
+          <a class="btn ghost on-sky-ghost" href="https://github.com/emperormk01/ceraa" rel="noopener">Read the source</a>
+        </div>
+      </div>
+    </div>
     <div class="wrap">
-      <span class="eyebrow"><span class="dot"></span>async Go coding agent</span>
-      <h1>Work outlives the terminal.</h1>
       <p class="lede">
         Ceraa runs your coding agent as a durable service with a Telegram bridge.
         Sessions, model steps, tool operations and recovery checkpoints are written
         as JSON, so closing the laptop does not end the run.
       </p>
-      <div class="cta-row">
-        <a class="btn" href="#commands">Install and run</a>
-        <a class="btn ghost" href="https://github.com/emperormk01/ceraa" rel="noopener">Read the source</a>
-      </div>
 
       <div class="term">
         <div class="term-bar">
