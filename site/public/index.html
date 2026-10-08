@@ -107,9 +107,9 @@
   .btn.on-sky-solid { background: #FFFFFF; color: var(--ink); border-color: #FFFFFF; }
   .btn.on-sky-ghost { background: rgba(255, 255, 255, 0.10); color: #FFFFFF; border-color: rgba(255, 255, 255, 0.72); }
   .btn.on-sky-ghost:hover { background: rgba(255, 255, 255, 0.20); opacity: 1; }
-  .sky-inner .cta-row { margin-top: 30px; }
+  .sky-inner .cta-row { margin-top: 22px; }
   .lede.on-sky {
-    margin-top: 30px; max-width: 50ch; color: rgba(255, 255, 255, 0.94);
+    margin-top: 22px; max-width: 50ch; color: rgba(255, 255, 255, 0.94);
     text-shadow: 0 1px 18px rgba(6, 26, 48, 0.34);
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
@@ -219,11 +219,13 @@
     .g2 { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 767px) {
-    /* the portrait crop is 780x1690. Locking the band to that ratio lets
-       object-fit cover show the whole photograph instead of half of it. */
-    .sky { min-height: 0; aspect-ratio: 780 / 1690; }
-    .sky img { object-position: center; }
-    .sky-inner { padding: 54px 24px 46px; }
+    /* Halved the dead space the headline was floating in. The band is now
+       shorter than the portrait source, so cover trims the lower sky; the
+       crop is anchored high so the slice kept is the deep blue the white
+       headline needs, and the cloud line still reads at the base. */
+    .sky { min-height: 0; aspect-ratio: 780 / 1150; }
+    .sky img { object-position: center 22%; }
+    .sky-inner { padding: 34px 24px 30px; }
   }
   @media (max-width: 720px) {
     body { font-size: 16px; }
