@@ -1412,6 +1412,47 @@ func TestMessagesRequestHeadersDshStyle(t *testing.T) {
 	}
 }
 
+// The OAuth style: a Claude account grant authenticates as Bearer plus the
+// Claude Code beta pair, and x-api-key must stay off the request. Observed
+// against a stub like the dsh test, since body assertions cannot see headers.
+func TestMessagesRequestHeadersClaudeOAuthStyle(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model:             "claude-sonnet-4-5",
+			BaseURL:           srv.URL,
+			AnthropicNative:   true,
+			MessagesAuthStyle: MessagesAuthClaudeOAuth,
+			AnthropicTokens:   stubTokens{token: "sk-ant-oat-TEST"},
+			MaxRetries:        0,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages:  []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		MaxTokens: 16,
+	}, func(ProviderResponse) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got.Get("Authorization") != "Bearer sk-ant-oat-TEST" {
+		t.Errorf("Authorization = %q, want the Bearer grant", got.Get("Authorization"))
+	}
+	if beta := got.Get("anthropic-beta"); !strings.Contains(beta, "oauth-2025-04-20") || !strings.Contains(beta, "claude-code-20250219") {
+		t.Errorf("anthropic-beta = %q, want the OAuth identity pair", beta)
+	}
+	if got.Get("x-api-key") != "" {
+		t.Errorf("an x-api-key header was also sent: %q", got.Get("x-api-key"))
+	}
+}
+
 // A thinking turn must survive the round trip byte-identical: the next request
 // repeats exactly what the model sent, signature included, with thinking first.
 // Dropping the blocks is the request a strict endpoint refuses with "thinking

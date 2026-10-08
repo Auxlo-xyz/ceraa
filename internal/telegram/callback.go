@@ -508,6 +508,8 @@ func handleCallback(token string, q *callbackQuery) {
 				selectOpenCodeProvider(token, chatID)
 			case "deepseek":
 				selectDeepSeekProvider(token, chatID)
+			case "claude":
+				selectClaudeProvider(token, chatID)
 			}
 		case providerRouteModels:
 			label := menus.SubscriptionLabel(providerID)

@@ -20,6 +20,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
@@ -516,6 +517,15 @@ func resolveProviderModel(ctx context.Context, provider config.LLMProvider) (llm
 		modelConfig.MessagesAuthStyle = llm.DeepSeekMessagesAuth
 		modelConfig.AnthropicNative = true
 		modelConfig.AnthropicTokens = deepseekauth.NewTokenSource()
+		return modelConfig, nil
+	case "claude":
+		if !claudeauth.SignedIn() {
+			return llm.ProviderConfig{}, fmt.Errorf("Claude account is not signed in: sign in from the provider menu first")
+		}
+		modelConfig.BaseURL = llm.ClaudeBaseURL
+		modelConfig.MessagesAuthStyle = llm.ClaudeMessagesAuth
+		modelConfig.AnthropicNative = true
+		modelConfig.AnthropicTokens = claudeauth.NewTokenSource()
 		return modelConfig, nil
 	case "xai":
 		credential, err := xaiauth.Resolve(ctx, nil)

@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription, DeepSeekSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription, DeepSeekSubscription, ClaudeSubscription:
 		return true
 	default:
 		return false
@@ -493,6 +493,59 @@ func DeepSeekContextWindow(model string) int {
 	return 0
 }
 
+// ClaudeSubscription identifies a Claude account profile: a Pro/Max OAuth
+// grant from a browser sign-in, served by the native Messages API with the
+// Bearer plus Claude Code beta header style.
+const ClaudeSubscription = "claude"
+
+// ClaudeBaseURL is the account inference endpoint: the native Anthropic
+// Messages API. The grant is accepted only here.
+const ClaudeBaseURL = "https://api.anthropic.com"
+
+// ClaudeMessagesAuth is the header style ClaudeBaseURL authenticates an
+// account grant with: Bearer plus the OAuth beta pair, not x-api-key.
+const ClaudeMessagesAuth = MessagesAuthClaudeOAuth
+
+// DefaultClaudeModel is the model selected when Claude is chosen without
+// one. Sonnet is the agent workhorse: opus for the turns that earn it.
+const DefaultClaudeModel = "claude-sonnet-4-5"
+
+// ClaudeModels lists the model ids an account grant may serve. Bare family
+// names resolve server-side on OAuth. Whether the endpoint accepts each id
+// on the wire is unverified pending a live probe: if it rejects one the
+// picker still offers it, which is the failure to revisit.
+var ClaudeModels = []string{
+	"claude-opus-4-1",
+	"claude-sonnet-4-5",
+	"claude-haiku-4-5",
+	"claude-opus-4-0",
+	"claude-sonnet-4-0",
+	"claude-3-5-sonnet-latest",
+	"claude-3-5-haiku-latest",
+}
+
+// IsClaudeModel reports whether the account endpoint serves a model id.
+// Same shape as IsDeepSeekModel so every activation path asks the question
+// the same way, rather than one path inheriting and another forcing.
+func IsClaudeModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range ClaudeModels {
+		if trimmed == strings.ToLower(known) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClaudeContextWindow returns a model's context window, or 0 when unknown.
+// Unknown ids get zero rather than a guess.
+func ClaudeContextWindow(model string) int {
+	if IsClaudeModel(model) {
+		return 200000
+	}
+	return 0
+}
+
 // QoderModels are the models Qoder's own CLI reports for an account, established by
 // running qodercli --list-models against a signed-in session rather than by
 // guessing from another provider's catalogue.
@@ -628,6 +681,8 @@ func SubscriptionModels(subscription string) []string {
 		return append([]string(nil), MiniMaxModels...)
 	case DeepSeekSubscription:
 		return append([]string(nil), DeepSeekModels...)
+	case ClaudeSubscription:
+		return append([]string(nil), ClaudeModels...)
 	case ClineSubscription:
 		out := make([]string, 0, len(ClineModels))
 		for _, model := range ClineModels {
@@ -672,6 +727,8 @@ func DefaultModelFor(subscription string) string {
 		return DefaultMiniMaxModel
 	case DeepSeekSubscription:
 		return DefaultDeepSeekModel
+	case ClaudeSubscription:
+		return DefaultClaudeModel
 	case ClineSubscription:
 		return DefaultClineModel
 	case OpenCodeSubscription:

@@ -23,6 +23,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
@@ -507,6 +508,17 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			model.MessagesAuthStyle = llm.DeepSeekMessagesAuth
 			model.AnthropicNative = true
 			model.AnthropicTokens = deepseekauth.NewTokenSource()
+			return model, nil
+		case "claude":
+			if !claudeauth.SignedIn() {
+				return llm.ProviderConfig{}, fmt.Errorf("Claude account is not signed in: sign in from the provider menu first")
+			}
+			// Native endpoint, Bearer plus the OAuth beta pair. The grant is
+			// accepted only at the inference origin.
+			model.BaseURL = llm.ClaudeBaseURL
+			model.MessagesAuthStyle = llm.ClaudeMessagesAuth
+			model.AnthropicNative = true
+			model.AnthropicTokens = claudeauth.NewTokenSource()
 			return model, nil
 		case "cline":
 			credential, err := clineauth.Resolve(ctx, nil)

@@ -19,6 +19,7 @@ import (
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
 	"ceraa/internal/build"
+	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
@@ -273,6 +274,7 @@ func webSubscriptions() ([]miniapp.SubscriptionEntry, error) {
 		{ID: "cline", Label: "Cline", SignedIn: clineauth.SignedIn(), Active: active == llm.ClineSubscription},
 		{ID: "opencode", Label: "OpenCode Zen", SignedIn: opencodeauth.SignedIn(), Active: active == llm.OpenCodeSubscription},
 		{ID: "deepseek", Label: "DeepSeek", SignedIn: deepseekauth.SignedIn(), Active: active == llm.DeepSeekSubscription},
+		{ID: "claude", Label: "Claude", SignedIn: claudeauth.SignedIn(), Active: active == llm.ClaudeSubscription},
 	}
 	return entries, nil
 }

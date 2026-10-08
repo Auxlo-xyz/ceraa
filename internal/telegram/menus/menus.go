@@ -8,6 +8,7 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
@@ -208,11 +209,13 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionAuthMenu("OpenCode Zen", opencodeauth.SignedIn(), selection().ActiveProvider == llm.OpenCodeSubscription, "provider:opencode", true)
 	case "deepseek":
 		return subscriptionMenu("DeepSeek", "🐋", deepseekauth.SignedIn(), selection().ActiveProvider == llm.DeepSeekSubscription, "provider:deepseek")
+	case "claude":
+		return subscriptionMenu("Claude", "🟠", claudeauth.SignedIn(), selection().ActiveProvider == llm.ClaudeSubscription, "provider:claude")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
-		"opencode:models", "deepseek:models",
+		"opencode:models", "deepseek:models", "claude:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
 		"provider:cline:models", "provider:codex:models", "provider:opencode:models",
-		"provider:deepseek:models":
+		"provider:deepseek:models", "provider:claude:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -421,6 +424,18 @@ func ProviderMenu() map[string]any {
 		deepseekLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": deepseekLabel, "callback_data": "provider:deepseek"}})
+	// Claude is a row for the same reason: a subscription profile cannot
+	// appear as a profile row until it exists.
+	claudeLabel := "🟠 Claude Account"
+	switch {
+	case active == llm.ClaudeSubscription:
+		claudeLabel = "✅ " + claudeLabel
+	case claudeauth.SignedIn():
+		claudeLabel += " · switch to it"
+	default:
+		claudeLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": claudeLabel, "callback_data": "provider:claude"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -1043,7 +1058,7 @@ func Hub() map[string]any {
 		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
-		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(),
+		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1130,6 +1145,18 @@ func deepseekHubLabel() string {
 		return "🐋 DeepSeek · signed in"
 	default:
 		return "🐋 DeepSeek · sign in"
+	}
+}
+
+// claudeHubLabel names the Claude entry by state.
+func claudeHubLabel() string {
+	switch {
+	case claudeauth.SignedIn() && selection().ActiveProvider == llm.ClaudeSubscription:
+		return "🟠 Claude · active"
+	case claudeauth.SignedIn():
+		return "🟠 Claude · signed in"
+	default:
+		return "🟠 Claude · sign in"
 	}
 }
 
@@ -1320,6 +1347,8 @@ func subscriptionForProvider(providerID string) string {
 		return llm.OpenCodeSubscription
 	case "deepseek":
 		return llm.DeepSeekSubscription
+	case "claude":
+		return llm.ClaudeSubscription
 	default:
 		return ""
 	}
@@ -1339,6 +1368,10 @@ func subscriptionLabel(providerID string) string {
 		return "Cline"
 	case "opencode":
 		return "OpenCode Zen"
+	case "deepseek":
+		return "DeepSeek"
+	case "claude":
+		return "Claude"
 	default:
 		return providerID
 	}

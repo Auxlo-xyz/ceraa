@@ -1054,6 +1054,11 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			send(token, chatID, "✅ "+draft.ID+" is configured. Choose another control or send a task.")
 			return true
 		case "code":
+			// The Claude browser-login paste-back goes to its own stage
+			// handler; the DeepSeek path below must not see it.
+			if draft.ID == llm.ClaudeSubscription {
+				return handleClaudeCodeStage(token, chatID, text)
+			}
 			// The DeepSeek browser-login paste-back. The text is an
 			// authorization code, not a task, and it belongs to the flow that
 			// is waiting for this chat — never to a flow from another chat.

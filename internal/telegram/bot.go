@@ -8,6 +8,7 @@ import (
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/tool"
+	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
@@ -2468,6 +2469,182 @@ func activateDeepSeekProvider(token string, chatID int64) {
 	}
 	logger.Info("deepseek activate: provider=" + defaultState.provider() + " model=" + model)
 	deepseekNotify(token, chatID, "✅ DeepSeek provider activated with model "+model+". Send a task to use it.", nil)
+}
+
+// claudeFlowOwner records which chat started a login and what it wanted.
+type claudeFlowOwner struct {
+	chatID        int64
+	activate      bool
+	activeAtStart string
+	flow          *claudeauth.Flow
+}
+
+var claudeFlows sync.Map
+
+func trackClaudeFlow(chatID int64, owner claudeFlowOwner) {
+	claudeFlows.Store(chatID, owner)
+}
+
+func claudeFlowOwnerOf(chatID int64) (claudeFlowOwner, bool) {
+	value, ok := claudeFlows.Load(chatID)
+	if !ok {
+		return claudeFlowOwner{}, false
+	}
+	owner, ok := value.(claudeFlowOwner)
+	return owner, ok
+}
+
+func clearClaudeFlow(chatID int64) { claudeFlows.Delete(chatID) }
+
+// claudeNotify posts a Claude outcome to a chat. Indirected so a test can
+// intercept it; production sends through the bot token.
+var claudeNotify = func(token string, chatID int64, text string, kb map[string]any) {
+	sendHTML(token, chatID, text, kb)
+}
+
+// claudeExchange trades a pasted code for the grant triple. Indirected so
+// the paste-back stage is provable without reaching the live platform; the
+// trade itself is covered in the auth package.
+var claudeExchange = func(ctx context.Context, flow *claudeauth.Flow, pasted string) error {
+	return claudeauth.NewManager(claudeauth.Endpoints{}).Exchange(ctx, flow, pasted)
+}
+
+// selectClaudeProvider is the Claude entry point, mirroring the other
+// subscription providers.
+//
+// A stored credential switches provider immediately; otherwise a browser
+// login starts. Reaching Claude from the provider menu asks to use it, so
+// the flow is tracked with activate set and the pasted code switches
+// provider on its own once exchanged.
+func selectClaudeProvider(token string, chatID int64) {
+	claudeEntryPoint(token, chatID)
+}
+
+// claudeEntryPoint is the real entry point, indirected so a test can assert
+// the provider menu routes provider:claude here without starting a login.
+var claudeEntryPoint = func(token string, chatID int64) {
+	signedIn := claudeauth.SignedIn()
+	logger.Info("claude entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
+		activateClaudeProvider(token, chatID)
+		return
+	}
+	startClaudeLogin(token, chatID)
+}
+
+// claudeStartLoginFlow builds the browser attempt. Indirected so the entry
+// path is provable without network; the URL is built locally and the
+// attempt itself is covered in the auth package.
+var claudeStartLoginFlow = func() (*claudeauth.Flow, error) {
+	return claudeauth.NewManager(claudeauth.Endpoints{}).Start()
+}
+
+// startClaudeLogin begins a browser login, whether or not a credential
+// exists. Reachable only from an explicit request: silently re-activating
+// on "sign in again" would make re-authentication unreachable.
+func startClaudeLogin(token string, chatID int64) {
+	activeAtStart := defaultState.provider()
+	flow, err := claudeStartLoginFlow()
+	if err != nil {
+		claudeNotify(token, chatID, "Failed to start Claude login: "+err.Error(), nil)
+		return
+	}
+	trackClaudeFlow(chatID, claudeFlowOwner{
+		chatID: chatID, activate: true, activeAtStart: activeAtStart, flow: flow,
+	})
+	pendingProvider.Store(chatID, providerDraft{ID: llm.ClaudeSubscription, Stage: "code"})
+	claudeNotify(token, chatID,
+		"Sign in to Claude to use it. Open the link, approve with your Pro/Max account, then paste the code back here — or type cancel.\n\n"+
+			"🔐 Claude Account Login\n\n1. Open: "+flow.AuthorizeURL+"\n2. Approve, then copy the code shown (it may look like <code>code#state</code>)\n3. Paste it here and it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": flow.AuthorizeURL}},
+		}})
+}
+
+// claudeModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the subscription serves, so a
+// model left over from another provider cannot produce a profile the
+// endpoint rejects. Same rule as every other activation path: the model
+// follows the provider from one source of truth, never pinned by whichever
+// provider was active before.
+func claudeModelForAccount() string {
+	current, _ := defaultState.values()
+	if llm.IsClaudeModel(current) {
+		return current
+	}
+	return llm.DefaultClaudeModel
+}
+
+func activateClaudeProvider(token string, chatID int64) {
+	model, err := guardModel("claude", claudeModelForAccount())
+	if err != nil {
+		logger.Warn("Claude activate: " + err.Error())
+		claudeNotify(token, chatID, "Claude activation failed: "+err.Error(), nil)
+		return
+	}
+	profile := config.ProviderProfile{
+		URL:             llm.ClaudeBaseURL,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.ClaudeSubscription,
+	}
+	if err := defaultState.setProviderProfile("claude", profile); err != nil {
+		logger.Warn("claude activate: profile save failed: " + err.Error())
+		claudeNotify(token, chatID, "Claude profile save failed: "+err.Error(), nil)
+		return
+	}
+	if err := defaultState.setProvider("claude"); err != nil {
+		logger.Warn("claude activate: provider set failed: " + err.Error())
+		claudeNotify(token, chatID, "Claude provider activation failed: "+err.Error(), nil)
+		return
+	}
+	logger.Info("claude activate: provider=" + defaultState.provider() + " model=" + model)
+	claudeNotify(token, chatID, "✅ Claude provider activated with model "+model+". Send a task to use it.", nil)
+}
+
+// handleClaudeCodeStage serves the Claude paste-back: the text is an
+// authorization code, not a task, and it belongs to the flow waiting for
+// this chat. Returns true always: a code-stage text is consumed here.
+func handleClaudeCodeStage(token string, chatID int64, text string) bool {
+	if strings.EqualFold(strings.TrimSpace(text), "cancel") {
+		pendingProvider.Delete(chatID)
+		clearClaudeFlow(chatID)
+		claudeNotify(token, chatID, "Claude login cancelled. Nothing was saved.", nil)
+		return true
+	}
+	owner, ok := claudeFlowOwnerOf(chatID)
+	if !ok || owner.flow == nil {
+		pendingProvider.Delete(chatID)
+		claudeNotify(token, chatID, "No Claude login is waiting for a code. Start one from the provider menu first.", nil)
+		return true
+	}
+	if err := claudeExchange(context.Background(), owner.flow, text); err != nil {
+		pendingProvider.Delete(chatID)
+		clearClaudeFlow(chatID)
+		if claudeauth.ErrorCode(err) == claudeauth.CodeExpired {
+			claudeNotify(token, chatID, "❌ That authorization window lapsed before the code was spent. Start the login again from the provider menu.", nil)
+			return true
+		}
+		if claudeauth.ReloginRequired(err) {
+			claudeNotify(token, chatID, "❌ The account grant is spent and cannot refresh. Sign in again from the provider menu.", nil)
+			return true
+		}
+		logger.Warn("claude exchange failed: " + err.Error())
+		claudeNotify(token, chatID, "❌ Claude sign-in did not complete: "+err.Error()+"\n\nNothing was saved. Start over from the provider menu.", nil)
+		return true
+	}
+	pendingProvider.Delete(chatID)
+	clearClaudeFlow(chatID)
+	if flowActivationStillWanted("Claude", owner.activate, owner.activeAtStart) {
+		activateClaudeProvider(token, chatID)
+		return true
+	}
+	claudeNotify(token, chatID, "✅ Claude sign-in completed. The credential is stored and ready.\n\n"+
+		flowNotActiveReason("Claude", owner.activate), nil)
+	return true
 }
 
 // minimaxModelForAccount picks the model to activate.

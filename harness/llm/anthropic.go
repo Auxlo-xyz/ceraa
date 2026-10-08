@@ -65,6 +65,17 @@ const MessagesAuthBearer = "bearer"
 // itself still comes from the auth package, never from this file.
 const MessagesAuthDsh = "dsh"
 
+// MessagesAuthClaudeOAuth is the MessagesAuthStyle for a Claude account
+// grant: Authorization: Bearer plus the Claude Code beta headers, on the
+// native endpoint. Same ownership rule as MessagesAuthDsh. The beta pair is
+// what marks the token as an OAuth identity rather than a console key.
+const MessagesAuthClaudeOAuth = "claude-oauth"
+
+// ClaudeOAuthBetaHeaders is the anthropic-beta value for an OAuth identity.
+// Mirrors claudeauth.OAuthBetaHeaders so a reader finds the wire shape from
+// either side; the transport is the side that sends it.
+const ClaudeOAuthBetaHeaders = "claude-code-20250219, oauth-2025-04-20"
+
 func anthropicMessagesURL(base string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.HasSuffix(trimmed, "/messages") {
@@ -765,6 +776,9 @@ func (c *StreamingClient) postAnthropic(ctx context.Context, endpoint, token str
 		request.Header.Set("Authorization", "Bearer "+token)
 	case strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthDsh):
 		request.Header.Set("x-dsh-auth-token", token)
+	case strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthClaudeOAuth):
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("anthropic-beta", ClaudeOAuthBetaHeaders)
 	default:
 		request.Header.Set("x-api-key", token)
 	}
