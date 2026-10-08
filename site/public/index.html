@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ceraa - async Go coding agent with a durable Telegram bridge</title>
+<meta name="description" content="Ceraa is an async-first Go coding agent with a durable Telegram bridge. Sessions, model steps and tool operations are persisted as JSON, so closing the terminal does not end the work.">
+<meta property="og:title" content="Ceraa - async Go coding agent with a durable Telegram bridge">
+<meta property="og:description" content="Work outlives the terminal. Ceraa runs your coding agent as a durable service with a Telegram bridge.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://ceraa.auxlo.xyz">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ground: #FFFFFF;
+    --well: #F1F1F1;
+    --well-hover: #E6E6E6;
+    --ink: #121110;
+    --rule: #E1E1E1;
+    --rule-strong: #121110;
+    --accent: #2AA6F2;
+    --fault: #FF0000;
+    --sf: "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif: "Newsreader", Georgia, serif;
+    --r-pill: 999px;
+    --r-card: 16px;
+    --r-input: 10px;
+    --ease: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sf);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  img { max-width: 100%; height: auto; display: block; }
+  a { color: inherit; }
+
+  .wrap { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- nav ---------- */
+  header.nav {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: saturate(1.6) blur(14px);
+    -webkit-backdrop-filter: saturate(1.6) blur(14px);
+    border-bottom: 1px solid var(--rule);
+  }
+  .nav-in { display: flex; align-items: center; gap: 20px; height: 66px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; letter-spacing: -0.02em; font-size: 19px; }
+  .brand img { width: 30px; height: 30px; border-radius: 8px; }
+  .nav-links { display: flex; align-items: center; gap: 26px; margin-left: auto; }
+  .nav-links a {
+    text-decoration: none; font-size: 15px; color: #55534F;
+    padding: 6px 0; border-bottom: 1px solid transparent;
+    transition: color .2s var(--ease), border-color .2s var(--ease);
+  }
+  .nav-links a:hover { color: var(--ink); border-bottom-color: var(--ink); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--sf); font-size: 15px; font-weight: 500;
+    padding: 9px 16px; border-radius: var(--r-pill);
+    border: 1px solid var(--rule-strong); background: var(--ink); color: var(--ground);
+    text-decoration: none; cursor: pointer;
+    transition: transform .2s var(--ease), opacity .2s var(--ease);
+  }
+  .btn:hover { transform: translateY(-1px); opacity: .9; }
+  .btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule-strong); }
+  .btn.ghost:hover { background: var(--well); opacity: 1; }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 84px 0 68px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: .01em;
+    padding: 7px 14px 7px 10px; border-radius: var(--r-pill);
+    background: var(--well); border: 1px solid var(--rule);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+  h1 {
+    font-size: clamp(40px, 7.4vw, 76px); line-height: 1.02;
+    letter-spacing: -0.035em; font-weight: 600;
+    margin: 26px 0 0; max-width: 15ch;
+  }
+  .lede {
+    font-family: var(--serif); font-size: clamp(19px, 2.1vw, 23px);
+    line-height: 1.5; color: #3B3A37; max-width: 54ch; margin: 22px 0 0;
+  }
+  .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+
+  /* ---------- terminal ---------- */
+  .term {
+    margin-top: 46px; border: 1px solid var(--rule); border-radius: var(--r-card);
+    overflow: hidden; background: var(--ground);
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 11px 14px; border-bottom: 1px solid var(--rule); background: var(--well);
+  }
+  .term-bar .t { font-family: var(--mono); font-size: 12.5px; color: #6B6963; }
+  .term-bar .sp { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; }
+  .term pre {
+    margin: 0; padding: 20px 22px; overflow-x: auto;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.85;
+  }
+  .term .c { color: #8A8880; }
+  .term .p { color: #121110; font-weight: 500; }
+  .term .ok { color: var(--accent); }
+
+  /* ---------- sections ---------- */
+  section { padding: 74px 0; border-top: 1px solid var(--rule); }
+  .sec-head { max-width: 62ch; margin-bottom: 40px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .09em;
+    text-transform: uppercase; color: #6B6963; margin: 0 0 14px;
+  }
+  h2 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.1; letter-spacing: -0.03em; font-weight: 600; margin: 0; }
+  .sec-head p { font-family: var(--serif); font-size: 19px; color: #3B3A37; margin: 14px 0 0; }
+
+  .grid { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--r-card); overflow: hidden; }
+  .card { background: var(--ground); padding: 26px 24px 28px; }
+  .card h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; }
+  .card p { margin: 0; color: #55534F; font-size: 15.5px; line-height: 1.62; }
+  .card code, .inline-code {
+    font-family: var(--mono); font-size: .88em;
+    background: var(--well); border: 1px solid var(--rule);
+    padding: 1px 5px; border-radius: 5px;
+  }
+
+  .two { display: grid; gap: 44px; grid-template-columns: 1fr; align-items: start; }
+
+  /* durable list */
+  ul.durable { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+  ul.durable li {
+    display: flex; gap: 16px; padding: 18px 4px; border-bottom: 1px solid var(--rule);
+  }
+  ul.durable .k {
+    font-family: var(--mono); font-size: 12.5px; color: var(--accent);
+    flex: none; width: 12ch; padding-top: 3px;
+  }
+  ul.durable .t { font-weight: 500; }
+  ul.durable .d { color: #55534F; font-size: 15.5px; margin-top: 2px; }
+
+  /* commands */
+  table.cmd { width: 100%; border-collapse: collapse; font-size: 15px; }
+  table.cmd th {
+    text-align: left; font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
+    text-transform: uppercase; color: #6B6963; font-weight: 500;
+    padding: 0 16px 12px 4px; border-bottom: 1px solid var(--rule);
+  }
+  table.cmd td { padding: 15px 16px 15px 4px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  table.cmd td:first-child { white-space: nowrap; width: 1%; }
+  table.cmd td:last-child { color: #55534F; }
+
+  .note {
+    margin-top: 26px; padding: 18px 20px; border-radius: var(--r-card);
+    background: var(--well); border: 1px solid var(--rule);
+    font-size: 15.5px; color: #3B3A37;
+  }
+  .note b { font-weight: 600; }
+
+  /* ---------- cta ---------- */
+  .closer { text-align: center; padding: 96px 0; }
+  .closer p { font-family: var(--serif); font-size: 20px; color: #3B3A37; margin: 0 auto 28px; max-width: 46ch; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--rule); padding: 34px 0 46px; }
+  .foot { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+  .foot .links { display: flex; gap: 20px; margin-left: auto; flex-wrap: wrap; }
+  .foot a { color: #55534F; text-decoration: none; font-size: 14.5px; }
+  .foot a:hover { color: var(--ink); }
+  .foot small { color: #8A8880; font-size: 13.5px; }
+
+  @media (min-width: 860px) {
+    .two { grid-template-columns: 1fr 1fr; gap: 60px; }
+    .g2 { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 720px) {
+    body { font-size: 16px; }
+    .nav-links { display: none; }
+    .hero { padding: 56px 0 48px; }
+    section { padding: 56px 0; }
+    ul.durable li { flex-direction: column; gap: 4px; }
+    ul.durable .k { width: auto; }
+    .foot .links { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/">
+      <img src="/assets/ceraa-mark.svg" alt="" width="30" height="30">
+      <span>Ceraa</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#engine">Engine</a>
+      <a href="#durable">Durability</a>
+      <a href="#commands">Commands</a>
+      <a href="https://github.com/emperormk01/ceraa" rel="noopener">Source</a>
+    </nav>
+    <a class="btn" href="#commands">Get started</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero" style="border-top:0">
+    <div class="wrap">
+      <span class="eyebrow"><span class="dot"></span>async Go coding agent</span>
+      <h1>Work outlives the terminal.</h1>
+      <p class="lede">
+        Ceraa runs your coding agent as a durable service with a Telegram bridge.
+        Sessions, model steps, tool operations and recovery checkpoints are written
+        as JSON, so closing the laptop does not end the run.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="#commands">Install and run</a>
+        <a class="btn ghost" href="https://github.com/emperormk01/ceraa" rel="noopener">Read the source</a>
+      </div>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="t">ceraa</span>
+          <span class="sp"><span class="dot"></span><span class="t">service running</span></span>
+        </div>
+<pre><span class="c">$</span> <span class="p">ceraa setup</span>      <span class="c"># asks only for the Telegram bot token</span>
+<span class="c">$</span> <span class="p">ceraa doctor</span>    <span class="c"># config, provider, Telegram, workspace, storage</span>
+<span class="c">$</span> <span class="p">ceraa start</span>     <span class="c"># durable service, foreground</span>
+<span class="c">$</span> <span class="p">./bin/ceraa ask</span> <span class="t">"list files in ."</span>
+
+<span class="c"># terminal closed. session, steps and tool</span>
+<span class="c"># results stay on disk. resume from Telegram</span>
+<span class="c"># or from ./bin/ceraa chat, same engine.</span>
+<span class="ok">✔</span> <span class="t">step 7/12 durable</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="engine">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="kicker">Engine</p>
+        <h2>One engine, two surfaces.</h2>
+        <p>
+          The CLI and the Telegram bridge are not two products sharing a protocol.
+          They call the same runner, so a session started in a terminal can be
+          continued from a phone and finished back at the shell.
+        </p>
+      </div>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Shared agent engine</h3>
+          <p>CLI and Telegram both run <span class="inline-code">harness/coordinator.Runner</span>. One implementation, one set of semantics, no drift between surfaces.</p>
+        </div>
+        <div class="card">
+          <h3>Native tool definitions</h3>
+          <p>The model sees one terse contract per registered tool. Usage guidance lives in the system prompt instead of the descriptions, so the schema stays small.</p>
+        </div>
+        <div class="card">
+          <h3>Concurrent tools</h3>
+          <p>Tool calls from a single model response run concurrently, with cancellation, permissions and durable result records for each one.</p>
+        </div>
+        <div class="card">
+          <h3>Telegram bridge</h3>
+          <p>Long polling, a strict user and chat allowlist, inline keyboards, callback controls, a persistent Menu button, and a Mini App served on loopback.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="durable">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="kicker">Durability</p>
+        <h2>What survives a disconnect.</h2>
+        <p>Durability is the product. Everything below is persisted, not held in memory and lost when the process ends.</p>
+      </div>
+      <ul class="durable">
+        <li>
+          <span class="k">sessions</span>
+          <span><span class="t">Persisted as JSON.</span><span class="d">A session is a file, not a live socket. It can be reopened later by any surface.</span></span>
+        </li>
+        <li>
+          <span class="k">model steps</span>
+          <span><span class="t">Every step recorded.</span><span class="d">Each model turn is written, so a resumed run knows exactly where it stopped.</span></span>
+        </li>
+        <li>
+          <span class="k">tool operations</span>
+          <span><span class="t">Results are durable too.</span><span class="d">Concurrent tool calls keep durable result records, so completed work is never repeated on resume.</span></span>
+        </li>
+        <li>
+          <span class="k">checkpoints</span>
+          <span><span class="t">Recovery points.</span><span class="d">Checkpoints mark recoverable boundaries across a crash, a restart or a moved machine.</span></span>
+        </li>
+        <li>
+          <span class="k">scheduled jobs</span>
+          <span><span class="t">Durable scheduling.</span><span class="d">Scheduled jobs persist alongside sessions rather than living in a cron entry.</span></span>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="kicker">Behaviour</p>
+        <h2>Built to be checked, not trusted.</h2>
+      </div>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Adaptive workflows</h3>
+          <p>Compact project memory, approval-based skill proposals and evaluation baselines. Nothing is adopted without you approving it.</p>
+        </div>
+        <div class="card">
+          <h3>Cost visibility</h3>
+          <p>Usage is tracked by input, output, cached input, cache writes, reasoning and total tokens. OpenRouter pricing is refreshed daily, and stale prices are never used silently.</p>
+        </div>
+        <div class="card">
+          <h3>Doctor</h3>
+          <p><span class="inline-code">ceraa doctor</span> checks configuration, provider reachability, Telegram connectivity, workspace access and writable storage before you rely on any of it.</p>
+        </div>
+        <div class="card">
+          <h3>Single daemon</h3>
+          <p>A second <span class="inline-code">start</span> is refused, not queued. The daemon records its pid, process group and start time before its first poll, so two daemons cannot fight over one Telegram offset.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="commands">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="kicker">Commands</p>
+        <h2>The whole surface.</h2>
+      </div>
+      <table class="cmd">
+        <thead>
+          <tr><th>command</th><th>what it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>ceraa setup</code></td><td>Asks only for the Telegram bot token.</td></tr>
+          <tr><td><code>ceraa doctor</code></td><td>Checks configuration, provider reachability, Telegram connectivity, workspace access and writable storage.</td></tr>
+          <tr><td><code>ceraa start</code></td><td>Runs the Telegram service in the foreground. Refuses if one is already running.</td></tr>
+          <tr><td><code>ceraa stop</code></td><td>Stops a running service with an 8s grace, then clears a stale pid file.</td></tr>
+          <tr><td><code>ceraa restart</code></td><td>Restarts in place. The daemon execs a new image of itself, so its pid and environment are preserved.</td></tr>
+          <tr><td><code>ceraa version</code></td><td>Prints the version and the licence notice.</td></tr>
+          <tr><td><code>ceraa chat</code></td><td>Opens an interactive terminal session.</td></tr>
+          <tr><td><code>ceraa ask</code></td><td>Runs a single instruction, for example <code>ceraa ask "list files in ."</code>.</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        <b>There is no default provider.</b> Ceraa ships with no provider URL, model or key and picks none on your behalf.
+        On first run it asks which provider to use and stores that per provider.
+        <code>CERAA_API_URL</code>, <code>CERAA_MODEL</code> and <code>CERAA_API_KEY</code> can pre-seed one from the environment instead.
+      </div>
+    </div>
+  </section>
+
+  <section class="closer" style="border-top:1px solid var(--rule)">
+    <div class="wrap">
+      <img src="/assets/ceraa-mark.svg" alt="" width="56" height="56" style="margin:0 auto 24px;border-radius:14px">
+      <p>Close the laptop. The agent keeps working.</p>
+      <div class="cta-row" style="justify-content:center">
+        <a class="btn" href="https://github.com/emperormk01/ceraa" rel="noopener">Get Ceraa</a>
+        <a class="btn ghost" href="#commands">Read the commands</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <small>Ceraa, built by Emperor M.K</small>
+    <div class="links">
+      <a href="https://github.com/emperormk01/ceraa" rel="noopener">GitHub</a>
+      <a href="#engine">Engine</a>
+      <a href="#durable">Durability</a>
+      <a href="#commands">Commands</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
