@@ -19,7 +19,7 @@ func TestEveryToolFamilyIsWhollyBoldOrWhollyNot(t *testing.T) {
 	}{
 		{"file mutation", []string{"write", "edit", "edit_line", "batch_edit_file", "apply_patch"}},
 		{"search", []string{"grep", "glob"}},
-		{"shell", []string{"bash", "script", "run_command_with_secret"}},
+		{"shell", []string{"bash", "run_command_with_secret"}},
 		{"browser", []string{"browser"}},
 		{"outbound", []string{"webfetch", "websearch", "send_media", "view_image"}},
 		{"skills and secrets", []string{"skill_use", "skill_propose", "list_secrets"}},
@@ -66,7 +66,7 @@ func TestEveryRegisteredToolHasAClass(t *testing.T) {
 		"bash", "read", "write", "edit", "edit_line", "batch_edit_file",
 		"run_command_with_secret", "list_secrets", "webfetch", "view_image",
 		"browser", "task", "fts_search", "question", "todowrite",
-		"create_goal", "get_goal", "update_goal", "websearch", "script",
+		"create_goal", "get_goal", "update_goal", "websearch",
 		"skill_propose", "skill_use", "send_media",
 		"glob", "grep", "apply_patch", "compaction",
 	}

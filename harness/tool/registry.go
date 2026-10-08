@@ -453,15 +453,6 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	}
 	r.Register(NewWebSearchTool(apiKey, provider))
 
-	// Registered with a live reference to its own registry, because the tool's
-	// description lists the siblings it can reach and a description is built on
-	// demand. The dispatcher is attached later by whoever builds the operation
-	// manager; the tool layer cannot reach it.
-	if !strings.EqualFold(envs.Get("SCRIPT"), "off") {
-		script := &ScriptTool{}
-		r.Register(script)
-		script.Reg = r
-	}
 	if skillStore != nil {
 		r.Register(&SkillProposalTool{Store: skillStore})
 		// The catalogue names these skills; this is how the model reaches the

@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -706,14 +704,6 @@ func TestInProcessToolIsOfferedAndDispatched(t *testing.T) {
 // A per-tool budget is what catches this. The total-size test above passed while
 // both edit definitions carried a 92-character description for occurrence that
 // nobody read, because the aggregate still had headroom.
-// scriptDefinitionBudget is set just above the script definition's current 842
-// bytes, for the ratchet reason stated below. It is worth watching because the
-// description ends with the list of tools the script can reach, and that list is
-// the part that grows the next time a tool is added. 842 is 7 percent of the
-// 10985 bytes every tool definition costs each turn, which is the size of the
-// claim being made.
-const scriptDefinitionBudget = 860
-
 func TestEditToolDefinitionsStaySmall(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "s"}}
 	budgets := map[string]int{
@@ -721,7 +711,6 @@ func TestEditToolDefinitionsStaySmall(t *testing.T) {
 		// next description that grows, and never fires on its own.
 		"batch_edit_file": 780,
 		"edit_line":       650,
-		"script":          scriptDefinitionBudget,
 	}
 	for _, def := range runner.toolDefs() {
 		budget, watched := budgets[def.Name]
@@ -992,12 +981,6 @@ func TestTheSystemPromptStaysSmall(t *testing.T) {
 	// session used three times in one task. That is a trade, so the number it was
 	// raised to is written down here rather than just moved.
 	//
-	// Raised from 7100 on the same terms: a registered tool has to be named here
-	// or TestPromptNamesEveryRegisteredTool fails, and the script rule is 231
-	// bytes of when-to-reach-for-it that the tool's own description cannot carry,
-	// because a description is a contract and guidance belongs in this section.
-	// Cutting an existing rule to pay for it would have been a worse trade than
-	// recording the raise, so the size it was raised to is written down.
 	const budget = 7400
 	if len(raw) > budget {
 		t.Errorf("prompt/system.txt is %d bytes, over the %d budget; cut something before adding",
@@ -1085,182 +1068,5 @@ func TestARunWithNoRequestsHasAnEmptySplit(t *testing.T) {
 	}
 	if len(got.Runs[0].RequestBreakdown) != 0 {
 		t.Errorf("a run with no requests recorded %d entries", len(got.Runs[0].RequestBreakdown))
-	}
-}
-
-// A script reaches its siblings through the operation manager, which only this
-// construction knows about. Miss the attach and the tool is offered to the model
-// and then fails on every call with "not wired", which is the same shape of
-// failure as a tool the executor did not know the type of.
-func TestNewWiresTheScriptTool(t *testing.T) {
-	reg := tool.DefaultRegistry()
-	raw, registered := reg.Get("script")
-	if !registered {
-		t.Skip("script is not registered; CERAA_SCRIPT=off")
-	}
-	script, isScript := raw.(*tool.ScriptTool)
-	if !isScript {
-		t.Fatalf("script is registered as %T", raw)
-	}
-	runner := New(RunnerConfig{SessionID: "wired", SystemPrompt: "s"}, nil, reg)
-	_ = runner
-	if script.Dispatch == nil {
-		t.Fatal("script has no dispatcher, so every call would fail with 'not wired'")
-	}
-	if script.Scope["session_id"] != "wired" {
-		t.Errorf("session_id = %v, a nested call would land in the wrong session", script.Scope["session_id"])
-	}
-	if script.Scope["goal_dir"] == "" {
-		t.Error("goal_dir is missing, so a nested goal call would not find its state")
-	}
-	if script.RequiresApproval == nil {
-		t.Fatal("script has no approval predicate, so a nested write would skip the gate")
-	}
-}
-
-// The gate has to be the coordinator's own, not a copy of its rules. A copy is
-// what would let the two drift until a tool the user was never asked about runs
-// from inside a script.
-func TestScriptApprovalGateIsTheCoordinators(t *testing.T) {
-	asked := false
-	reg := tool.DefaultRegistry()
-	runner := New(RunnerConfig{
-		SessionID: "gate", SystemPrompt: "s",
-		NeedsAuthorization: func(name string, _ map[string]any) bool { return name == "write" },
-		AuthorizeTool: func(context.Context, string, string, map[string]any) (bool, error) {
-			asked = true
-			return true, nil
-		},
-	}, nil, reg)
-	_ = runner
-	raw, ok := reg.Get("script")
-	if !ok {
-		t.Skip("script is not registered; CERAA_SCRIPT=off")
-	}
-	script := raw.(*tool.ScriptTool)
-	if !script.RequiresApproval("write", map[string]any{"path": "/x"}) {
-		t.Error("write is not refused inside a script, so the prompt never appears")
-	}
-	if script.RequiresApproval("read", map[string]any{"path": "/x"}) {
-		t.Error("read is refused inside a script for no reason")
-	}
-	if asked {
-		t.Error("building a runner asked for permission; the gate belongs to a call")
-	}
-}
-
-// With no approval system configured at all, a script must behave exactly as a
-// direct call does rather than inventing a gate of its own.
-func TestScriptHasNoApprovalGateWithoutAConfiguredOne(t *testing.T) {
-	reg := tool.DefaultRegistry()
-	New(RunnerConfig{SessionID: "nogate", SystemPrompt: "s"}, nil, reg)
-	raw, ok := reg.Get("script")
-	if !ok {
-		t.Skip("script is not registered; CERAA_SCRIPT=off")
-	}
-	if raw.(*tool.ScriptTool).RequiresApproval("write", map[string]any{"path": "/x"}) {
-		t.Error("script invented a gate when none was configured")
-	}
-}
-
-// The tool has to be in the request, not only in the registry. A tool that is
-// registered but never sent is invisible to the model, which reads as the model
-// refusing to use a feature rather than never having seen it.
-func TestScriptIsOfferedToTheModel(t *testing.T) {
-	reg := tool.DefaultRegistry()
-	if _, registered := reg.Get("script"); !registered {
-		t.Skip("script is not registered; CERAA_SCRIPT=off")
-	}
-	runner := &Runner{reg: reg, cfg: RunnerConfig{SystemPrompt: "s"}}
-	found := false
-	for _, def := range runner.toolDefs() {
-		if def.Name == "script" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("script is registered but not offered in the tool definitions")
-	}
-}
-
-// The whole chain has to hold: the definition is offered, the arguments are
-// translated, the code runs, a nested read executes, and one value comes back
-// into the next request. This is the path a mis-wired script fails on, and it
-// fails silently from the outside: the model gets an error string and reports a
-// tool that does not work.
-func TestCoordinatorRunsAScriptCallEndToEnd(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "answer.txt")
-	if err := os.WriteFile(target, []byte("the answer is 42\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	code := `const r = await tools.read({path: ` + strconv.Quote(target) + `}); return r.trim();`
-	arguments, err := json.Marshal(map[string]any{"code": code})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var requests atomic.Int32
-	var secondRequest string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		body, _ := io.ReadAll(r.Body)
-		var payload map[string]any
-		if requests.Add(1) == 1 {
-			payload = map[string]any{
-				"choices": []any{map[string]any{
-					"delta": map[string]any{
-						"tool_calls": []any{map[string]any{
-							"index":    0,
-							"id":       "script-call",
-							"function": map[string]any{"name": "script", "arguments": string(arguments)},
-						}},
-					},
-				}},
-			}
-		} else {
-			secondRequest = string(body)
-			payload = map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "done"}}}}
-		}
-		encoded, _ := json.Marshal(payload)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	}))
-	defer server.Close()
-	t.Setenv("CERAA_API_URL", server.URL)
-	t.Setenv("CERAA_API_KEY", "test")
-	t.Setenv("CERAA_MODEL", "test")
-
-	store, err := sessionstore.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ib, err := inbox.New(context.Background(), nil, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ib.Stop()
-
-	done := make(chan string, 1)
-	if err := RunAsync(context.Background(), Config{
-		SessionID: "script-e2e", SystemPrompt: "test", ModelCatalogURL: "http://127.0.0.1:1",
-	}, store, tool.DefaultRegistry(), nil, ib, Callbacks{
-		OnDone: func(answer string) { done <- answer },
-	}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case answer := <-done:
-		if answer != "done" {
-			t.Fatalf("answer = %q", answer)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("coordinator did not finish the script run")
-	}
-	if requests.Load() != 2 {
-		t.Fatalf("requests = %d, want the script call and the follow-up", requests.Load())
-	}
-	if !strings.Contains(secondRequest, "the answer is 42") {
-		t.Fatalf("the nested read never reached the model; second request was %s", secondRequest)
 	}
 }

@@ -1681,7 +1681,7 @@ func statusMarkedTool(name string) bool {
 func boldWordTool(name string) bool {
 	switch name {
 	// Shell and the tools that drive a browser.
-	case "bash", "script", "browser", "run_command_with_secret":
+	case "bash", "browser", "run_command_with_secret":
 		return true
 	// File mutation, every route into it.
 	case "write", "edit", "edit_line", "batch_edit_file", "apply_patch":
@@ -1746,8 +1746,6 @@ func toolIcon(name string) string {
 		return "💡"
 	case "skill_use":
 		return "🛠️"
-	case "script":
-		return "📜"
 	case "compaction":
 		return "⚡"
 	default:
