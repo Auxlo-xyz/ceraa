@@ -104,23 +104,13 @@
   .sky-inner { position: relative; padding: 76px 24px 64px; }
   .on-sky { color: #FFFFFF; }
   h1.on-sky { text-shadow: 0 2px 30px rgba(6, 26, 48, 0.42), 0 1px 3px rgba(6, 26, 48, 0.30); }
-  .eyebrow.on-sky {
-    background: rgba(255, 255, 255, 0.16);
-    border-color: rgba(255, 255, 255, 0.34);
-    color: #FFFFFF;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-  }
   .btn.on-sky-solid { background: #FFFFFF; color: var(--ink); border-color: #FFFFFF; }
   .btn.on-sky-ghost { background: rgba(255, 255, 255, 0.10); color: #FFFFFF; border-color: rgba(255, 255, 255, 0.72); }
   .btn.on-sky-ghost:hover { background: rgba(255, 255, 255, 0.20); opacity: 1; }
   .sky-inner .cta-row { margin-top: 30px; }
-  .hero .lede { margin-top: 46px; }
-  .eyebrow {
-    display: inline-flex; align-items: center; gap: 9px;
-    font-family: var(--mono); font-size: 12.5px; letter-spacing: .01em;
-    padding: 7px 14px 7px 10px; border-radius: var(--r-pill);
-    background: var(--well); border: 1px solid var(--rule);
+  .lede.on-sky {
+    margin-top: 30px; max-width: 50ch; color: rgba(255, 255, 255, 0.94);
+    text-shadow: 0 1px 18px rgba(6, 26, 48, 0.34);
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   h1 {
@@ -278,20 +268,19 @@
       </picture>
       <div class="sky-scrim" aria-hidden="true"></div>
       <div class="wrap sky-inner">
-        <span class="eyebrow on-sky"><span class="dot"></span>async Go coding agent</span>
         <h1 class="on-sky">Work outlives the terminal.</h1>
         <div class="cta-row">
           <a class="btn on-sky-solid" href="#commands">Install and run</a>
           <a class="btn ghost on-sky-ghost" href="https://github.com/emperormk01/ceraa" rel="noopener">Read the source</a>
         </div>
+        <p class="lede on-sky">
+          Ceraa runs your coding agent as a durable service with a Telegram bridge.
+          Sessions, model steps, tool operations and recovery checkpoints are written
+          as JSON, so closing the laptop does not end the run.
+        </p>
       </div>
     </div>
     <div class="wrap">
-      <p class="lede">
-        Ceraa runs your coding agent as a durable service with a Telegram bridge.
-        Sessions, model steps, tool operations and recovery checkpoints are written
-        as JSON, so closing the laptop does not end the run.
-      </p>
 
       <div class="term">
         <div class="term-bar">
