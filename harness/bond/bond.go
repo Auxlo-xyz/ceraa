@@ -157,6 +157,16 @@ Write the BOND document now, filling every field you can support.`
 // old one, and both lose information.
 const mergeInstruction = `Reconcile the documents above into one BOND. Prefer the fresh extraction where they disagree about current state, keep durable information that only the earlier documents have, and drop anything no longer supported by any of them.`
 
+// running serialises extractions. Without it two compactions in quick
+// succession both read the same window and the second commit silently
+// discards the first, which looks like the bond losing a round.
+var running sync.Mutex
+
+// extractBudget bounds the detached work. It exists because the goroutine is
+// the only thing keeping this alive, and an unbounded call would outlive every
+// run that ever triggered it.
+const extractBudget = 5 * time.Minute
+
 // History is how many documents the merge pass sees. Two is a working value,
 // not a derivation: the probe showed a merge of one prior and one fresh
 // reading preserved durable fields verbatim, advanced Mind state, and promoted
@@ -391,6 +401,9 @@ func MakeLearner(main llm.ProviderConfig, bondPath string) (func(context.Context
 	}
 	st := NewStore(bondPath)
 	return func(ctx context.Context, sessionID string, discarded []sessionstore.Message, summary string) {
+		// Read everything the hook needs before returning. ctx is the run's
+		// context and it is cancelled the moment that run finishes, so a
+		// goroutine touching it later would be cancelled mid-extraction.
 		one := contextFrom(summary, discarded)
 		if one == "" {
 			return
@@ -399,20 +412,34 @@ func MakeLearner(main llm.ProviderConfig, bondPath string) (func(context.Context
 		if err != nil {
 			prior = nil
 		}
-		content, err := Extract(ctx, cfg, prior, one)
-		if err != nil {
-			logger.Warn("bond extraction: " + err.Error())
-			return
-		}
-		if content == "" {
-			// The model acknowledged the prompt instead of answering it, or
-			// returned prose. Keeping the previous bond is the safe direction:
-			// the file is better than the prompt and better than an overwrite.
-			logger.Warn("bond extraction produced no document; keeping the existing bond")
-			return
-		}
-		if err := Commit(bondPath, st, Document{At: time.Now(), Session: sessionID, Content: content}); err != nil {
-			logger.Warn("bond commit: " + err.Error())
-		}
+		// The hook runs inline in the compaction that produced this checkpoint,
+		// and that compaction is inside the run. Two model calls inline would
+		// add their full latency to a turn the user is waiting on, so the work
+		// moves off and the run continues on the checkpoint immediately.
+		//
+		// Nothing waits on it. The bond is read per turn by the prompt and the
+		// write is an atomic rename, so a document landing a few seconds late
+		// is read whole or not at all.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), extractBudget)
+			defer cancel()
+			running.Lock()
+			defer running.Unlock()
+			content, err := Extract(ctx, cfg, prior, one)
+			if err != nil {
+				logger.Warn("bond extraction: " + err.Error())
+				return
+			}
+			if content == "" {
+				// The model acknowledged the prompt instead of answering it, or
+				// returned prose. Keeping the previous bond is the safe direction:
+				// the file is better than the prompt and better than an overwrite.
+				logger.Warn("bond extraction produced no document; keeping the existing bond")
+				return
+			}
+			if err := Commit(bondPath, st, Document{At: time.Now(), Session: sessionID, Content: content}); err != nil {
+				logger.Warn("bond commit: " + err.Error())
+			}
+		}()
 	}, true
 }

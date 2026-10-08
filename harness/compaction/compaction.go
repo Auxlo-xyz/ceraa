@@ -555,10 +555,19 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 // skipped, so a caller wires whichever features are configured without
 // checking the other's state.
 //
-// Both hooks are off the hot path and failure-tolerant by contract: a hook that
-// errors must not fail the turnover, and each of these logs and returns. Order
-// is memory then bond, because the bond reads the same checkpoint and neither
-// one's result feeds the other.
+// Learn is called SYNCHRONOUSLY, inside the compaction that produced the
+// checkpoint, before the rewritten session is assembled. A hook therefore
+// delays the run that triggered compaction, and its cost is per compaction, not
+// per turn. That was previously documented here as "off the hot path", which
+// was wrong and cost a stalled run before it was noticed.
+//
+// Consequence for a caller adding a second learner: keep it cheap or hand it
+// off to its own goroutine. Memory extraction is one model call and stays
+// inline. The bond runs two and is dispatched asynchronously by its own hook.
+//
+// A hook that fails must not fail the turnover: each of these logs and returns.
+// Order is memory then bond, because the bond reads the same checkpoint and
+// neither one's result feeds the other.
 func ChainLearn(first, second func(context.Context, string, []sessionstore.Message, string)) func(context.Context, string, []sessionstore.Message, string) {
 	if first == nil {
 		return second

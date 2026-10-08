@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
@@ -261,5 +263,91 @@ func TestWindowSurvivesAProcessRestart(t *testing.T) {
 	var f file
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Errorf("the window is not readable JSON: %v", err)
+	}
+}
+
+// The hook must not block the run that triggered the compaction. Learn is
+// called inline by the compactor, so a synchronous two-pass extraction would
+// add two full model round trips to a turn the user is waiting on. This
+// asserts the hook has returned while the extraction is still running.
+func TestHookReturnsBeforeExtractionFinishes(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	restore := stubAsk(t, func(payload string) (string, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return "# BOND\n\nName: slow", nil
+	})
+	defer restore()
+
+	path := isolate(t)
+	st := NewStore(path)
+	hook := func(ctx context.Context, sessionID string, d []sessionstore.Message, summary string) {
+		one := contextFrom(summary, d)
+		prior, _ := st.Recent()
+		go func() {
+			running.Lock()
+			defer running.Unlock()
+			content, err := Extract(ctx, llm.ProviderConfig{}, prior, one)
+			if err == nil && content != "" {
+				_ = Commit(path, st, Document{Content: content})
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		hook(context.Background(), "s", []sessionstore.Message{{Role: llm.RoleUser, Content: "hi"}}, "SUMMARY")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hook blocked on the model")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the extraction never started")
+	}
+	close(release)
+}
+
+// Two extractions must not interleave writes: each reads the window, so a
+// race would let the second commit discard the first document.
+func TestRunningGuardSerialisesExtractions(t *testing.T) {
+	var concurrent, peak int
+	var mu sync.Mutex
+	restore := stubAsk(t, func(payload string) (string, error) {
+		mu.Lock()
+		concurrent++
+		if concurrent > peak {
+			peak = concurrent
+		}
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		mu.Lock()
+		concurrent--
+		mu.Unlock()
+		return "# BOND\n\nName: x", nil
+	})
+	defer restore()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			running.Lock()
+			defer running.Unlock()
+			_, _ = Extract(context.Background(), llm.ProviderConfig{}, nil, "USER: hi")
+		}()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > 1 {
+		t.Errorf("%d extractions ran concurrently, want 1", peak)
 	}
 }
