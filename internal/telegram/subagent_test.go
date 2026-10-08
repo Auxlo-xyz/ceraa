@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
 )
 
@@ -95,3 +96,38 @@ func TestBudgetStopIsDistinguishedFromFailure(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// The factory's children map was nil at every construction site since the tool
+// was written, so the first task call in the daemon's life panicked with
+// "assignment to entry in nil map" and took the process down. It survived
+// because nothing called NewSubagent: the recorded sessions contain zero task
+// calls, and no test reached this seam either.
+//
+// Built the way production builds it, with no children map, so the guard is
+// what is under test rather than the test's own setup.
+func TestNewSubagentWorksWithoutAnInitialisedChildrenMap(t *testing.T) {
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &subagentFactory{store: store, parentSession: "parent-1"}
+	sub, id, err := f.NewSubagent("general")
+	if err != nil {
+		t.Fatalf("NewSubagent on a factory with a nil children map: %v", err)
+	}
+	if sub == nil {
+		t.Fatal("NewSubagent returned no subagent")
+	}
+	if id == "" {
+		t.Fatal("NewSubagent returned no id")
+	}
+	f.mu.Lock()
+	child, tracked := f.children[id]
+	f.mu.Unlock()
+	if !tracked {
+		t.Fatalf("child %s is not tracked, so its cost is never rolled into the parent", id)
+	}
+	if child.kind != "general" {
+		t.Errorf("child kind is %q, want general", child.kind)
+	}
+}

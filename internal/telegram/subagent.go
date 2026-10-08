@@ -100,6 +100,14 @@ func (f *subagentFactory) NewSubagent(kind string) (tool.Subagent, string, error
 		return nil, "", fmt.Errorf("unknown subagent kind %q", kind)
 	}
 	f.mu.Lock()
+	// The map is created here rather than at the construction site because a
+	// nil map assignment is a panic, and every construction site that has ever
+	// existed omitted it: production, the wiring test, and this one. Lazy
+	// creation under the same lock that guards it cannot be beaten by a
+	// construction path that forgets.
+	if f.children == nil {
+		f.children = make(map[string]*childRun)
+	}
 	f.counter++
 	id := fmt.Sprintf("%s-sub-%s-%d", f.parentSession, kind, f.counter)
 	f.children[id] = &childRun{id: id, kind: kind}
