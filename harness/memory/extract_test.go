@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -200,9 +201,9 @@ func TestARepeatOnlyEverRaisesProvenance(t *testing.T) {
 func TestExtractConfigIsOptInWithoutAKey(t *testing.T) {
 	_, on := ExtractConfigFromENV(llm.ProviderConfig{BaseURL: "https://api.example.com", Model: "x", APIKey: "sk"})
 	if on {
-		t.Error("extraction runs without a CERAA_EXTRACT_KEY and a non-poolside main provider")
+		t.Error("extraction runs without a CERAA_EXTRACT_KEY and a main provider on a different host")
 	}
-	t.Setenv("CERAA_EXTRACT_KEY", "pool-key")
+	t.Setenv("CERAA_EXTRACT_KEY", "test-key")
 	_, on = ExtractConfigFromENV(llm.ProviderConfig{BaseURL: "https://api.example.com", Model: "x", APIKey: "sk"})
 	if !on {
 		t.Error("extraction is off even with CERAA_EXTRACT_KEY set")
@@ -233,3 +234,17 @@ func TestExtractSkipsAnEmptyHead(t *testing.T) {
 }
 
 var _ = sessionstore.Message{} // keep import anchored for future shape changes
+
+// The extractor's defaults must name a provider that holds still. Poolside
+// laguna returned three different documents across runs of the same prompt on
+// the same transcript, so its output could not be committed to memory and
+// audited later; the extraction path needs a repeatable answer.
+func TestExtractorDefaultProviderIsRepeatable(t *testing.T) {
+	if strings.Contains(DefaultExtractBaseURL, "poolside") || strings.Contains(DefaultExtractModel, "laguna") {
+		t.Fatalf("defaults still point at the provider that sampled a different answer each run: %s %s",
+			DefaultExtractBaseURL, DefaultExtractModel)
+	}
+	if !strings.HasPrefix(DefaultExtractBaseURL, "https://") {
+		t.Errorf("extract base URL is not HTTPS: %s", DefaultExtractBaseURL)
+	}
+}

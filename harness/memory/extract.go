@@ -15,9 +15,18 @@ import (
 // DefaultExtractBaseURL and DefaultExtractModel point the extractor at the
 // provider's endpoint and model by default. They are constants rather than
 // guesses so the live path is auditable and the config is explicit.
+//
+// Gemini, served through its OpenAI-compatible surface at /v1beta/openai, so
+// the existing chat-completions client drives it with no adapter. It replaced a
+// Poolside laguna default after the bond probe: on the same prompt and the same
+// transcript, Poolside returned three different documents across runs at the
+// same temperature with zero overlap between them, while Gemini held a correct
+// document on every run and on both temperatures tested. Extraction runs off the
+// hot path but its output is committed to long-lived memory, so a provider that
+// samples a different answer each time is the wrong one to build on.
 const (
-	DefaultExtractBaseURL = "https://inference.poolside.ai/v1"
-	DefaultExtractModel   = "poolside/laguna-s-2.1"
+	DefaultExtractBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+	DefaultExtractModel   = "gemini-3.5-flash-lite"
 )
 
 // extractorPrompt is the whole system instruction. It is tight on purpose:
