@@ -37,7 +37,12 @@
   html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
-    background: var(--ground);
+    background:
+      radial-gradient(72% 640px at 26% 0%, rgba(42, 166, 242, 0.13), transparent 70%),
+      radial-gradient(56% 520px at 84% 0%, rgba(42, 166, 242, 0.08), transparent 72%),
+      var(--ground);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
     color: var(--ink);
     font-family: var(--sf);
     font-size: 17px;
@@ -54,8 +59,9 @@
   header.nav {
     position: sticky; top: 0; z-index: 50;
     background: color-mix(in srgb, var(--ground) 88%, transparent);
-    backdrop-filter: saturate(1.6) blur(14px);
-    -webkit-backdrop-filter: saturate(1.6) blur(14px);
+    backdrop-filter: saturate(1.8) blur(16px);
+    -webkit-backdrop-filter: saturate(1.8) blur(16px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
     border-bottom: 1px solid var(--rule);
   }
   .nav-in { display: flex; align-items: center; gap: 20px; height: 66px; }
@@ -90,8 +96,8 @@
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   h1 {
-    font-size: clamp(40px, 7.4vw, 76px); line-height: 1.02;
-    letter-spacing: -0.035em; font-weight: 600;
+    font-size: clamp(42px, 10.5vw, 72px); line-height: 1.04;
+    letter-spacing: -0.04em; font-weight: 600;
     margin: 26px 0 0; max-width: 15ch;
   }
   .lede {
@@ -126,13 +132,13 @@
     font-family: var(--mono); font-size: 12px; letter-spacing: .09em;
     text-transform: uppercase; color: #6B6963; margin: 0 0 14px;
   }
-  h2 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.1; letter-spacing: -0.03em; font-weight: 600; margin: 0; }
+  h2 { font-size: clamp(28px, 4.4vw, 40px); line-height: 1.08; letter-spacing: -0.035em; font-weight: 600; margin: 0; }
   .sec-head p { font-family: var(--serif); font-size: 19px; color: #3B3A37; margin: 14px 0 0; }
 
-  .grid { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--r-card); overflow: hidden; }
+  .grid { display: grid; gap: 1px; background: rgba(18, 17, 16, 0.10); border: 1px solid rgba(18, 17, 16, 0.10); border-radius: var(--r-card); overflow: hidden; }
   .card { background: var(--ground); padding: 26px 24px 28px; }
   .card h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; }
-  .card p { margin: 0; color: #55534F; font-size: 15.5px; line-height: 1.62; }
+  .card p { margin: 0; color: #45433E; font-size: 15px; line-height: 1.6; }
   .card code, .inline-code {
     font-family: var(--mono); font-size: .88em;
     background: var(--well); border: 1px solid var(--rule);
@@ -145,13 +151,20 @@
   ul.durable { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
   ul.durable li {
     display: flex; gap: 16px; padding: 18px 4px; border-bottom: 1px solid var(--rule);
+    align-items: flex-start;
+  }
+  ul.durable li::before {
+    content: ""; flex: none; margin-top: 5px;
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid rgba(42, 166, 242, 0.35);
+    background: rgba(42, 166, 242, 0.10);
   }
   ul.durable .k {
     font-family: var(--mono); font-size: 12.5px; color: var(--accent);
     flex: none; width: 12ch; padding-top: 3px;
   }
-  ul.durable .t { font-weight: 500; }
-  ul.durable .d { color: #55534F; font-size: 15.5px; margin-top: 2px; }
+  ul.durable .t { font-weight: 500; display: block; }
+  ul.durable .d { display: block; color: #45433E; font-size: 15px; line-height: 1.55; margin-top: 3px; }
 
   /* commands */
   table.cmd { width: 100%; border-collapse: collapse; font-size: 15px; }
