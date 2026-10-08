@@ -46,7 +46,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.

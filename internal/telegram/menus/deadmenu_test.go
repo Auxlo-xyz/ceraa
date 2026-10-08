@@ -44,10 +44,13 @@ func TestSubscriptionProvidersOfferTheirEntryPoint(t *testing.T) {
 		"minimax":  "provider:minimax",
 		"cline":    "provider:cline",
 		"opencode": "provider:opencode",
+		"deepseek": "provider:deepseek",
+		"claude":   "provider:claude",
 	}
 	labels := map[string]string{
 		"hermes": "Hermes", "xai": "xAI", "minimax": "MiniMax",
 		"cline": "Cline", "opencode": "OpenCode Zen",
+		"deepseek": "DeepSeek", "claude": "Claude",
 	}
 	for name, entry := range cases {
 		raw, _ := json.Marshal(InlineForChat(name, 0, 1, ""))
@@ -61,6 +64,21 @@ func TestSubscriptionProvidersOfferTheirEntryPoint(t *testing.T) {
 		}
 		if !strings.Contains(string(raw), "menu:hub") {
 			t.Errorf("/%s offers no way back: %s", name, raw)
+		}
+	}
+}
+
+// A provider in the All grid must actually appear on it. The Claude row
+// shipped its label, menu, and route but was never added to All, so the hub
+// silently omitted it while every other surface worked.
+func TestEverySwitchableProviderHasAHubRow(t *testing.T) {
+	raw, err := json.Marshal(Hub())
+	if err != nil {
+		t.Fatalf("hub: %v", err)
+	}
+	for _, name := range []string{"hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude"} {
+		if !strings.Contains(string(raw), `"menu:`+name+`"`) {
+			t.Errorf("the hub has no row for %q", name)
 		}
 	}
 }
