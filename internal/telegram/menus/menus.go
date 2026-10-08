@@ -11,6 +11,7 @@ import (
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
@@ -44,7 +45,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission", "search",
 	"index", "snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline", "opencode",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.
@@ -205,10 +206,13 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("Cline", "🦞", clineauth.SignedIn(), selection().ActiveProvider == llm.ClineSubscription, "provider:cline")
 	case "opencode":
 		return subscriptionAuthMenu("OpenCode Zen", opencodeauth.SignedIn(), selection().ActiveProvider == llm.OpenCodeSubscription, "provider:opencode", true)
+	case "deepseek":
+		return subscriptionMenu("DeepSeek", "🐋", deepseekauth.SignedIn(), selection().ActiveProvider == llm.DeepSeekSubscription, "provider:deepseek")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
-		"opencode:models",
+		"opencode:models", "deepseek:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
-		"provider:cline:models", "provider:codex:models", "provider:opencode:models":
+		"provider:cline:models", "provider:codex:models", "provider:opencode:models",
+		"provider:deepseek:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -404,6 +408,19 @@ func ProviderMenu() map[string]any {
 		openCodeLabel += " · add key"
 	}
 	rows = append(rows, []map[string]string{{"text": openCodeLabel, "callback_data": "provider:opencode"}})
+	// DeepSeek is a row for the same reason as the others: a subscription
+	// profile cannot appear as a profile row until it exists, so without this
+	// a signed-in user could not reach it from here.
+	deepseekLabel := "🐋 DeepSeek Account"
+	switch {
+	case active == llm.DeepSeekSubscription:
+		deepseekLabel = "✅ " + deepseekLabel
+	case deepseekauth.SignedIn():
+		deepseekLabel += " · switch to it"
+	default:
+		deepseekLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": deepseekLabel, "callback_data": "provider:deepseek"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -1026,7 +1043,7 @@ func Hub() map[string]any {
 		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
-		"opencode": openCodeHubLabel(),
+		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1101,6 +1118,18 @@ func clineHubLabel() string {
 		return "🦞 Cline · signed in"
 	default:
 		return "🦞 Cline · sign in"
+	}
+}
+
+// deepseekHubLabel names the DeepSeek entry by state.
+func deepseekHubLabel() string {
+	switch {
+	case deepseekauth.SignedIn() && selection().ActiveProvider == llm.DeepSeekSubscription:
+		return "🐋 DeepSeek · active"
+	case deepseekauth.SignedIn():
+		return "🐋 DeepSeek · signed in"
+	default:
+		return "🐋 DeepSeek · sign in"
 	}
 }
 
@@ -1289,6 +1318,8 @@ func subscriptionForProvider(providerID string) string {
 		return llm.ClineSubscription
 	case "opencode":
 		return llm.OpenCodeSubscription
+	case "deepseek":
+		return llm.DeepSeekSubscription
 	default:
 		return ""
 	}

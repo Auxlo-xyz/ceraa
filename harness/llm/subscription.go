@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription, DeepSeekSubscription:
 		return true
 	default:
 		return false
@@ -447,6 +447,52 @@ var MiniMaxModels = []string{
 	"MiniMax-M2.7",
 }
 
+// DeepSeekSubscription identifies a DeepSeek account profile.
+//
+// Distinct from a DeepSeek API-key profile: this one authenticates with the
+// account grant from a browser sign-in and is served by the Messages API at
+// /anthropic, so it needs the Anthropic transport with the dsh header style.
+const DeepSeekSubscription = "deepseek"
+
+// DeepSeekBaseURL is the account inference endpoint: the Anthropic Messages
+// API on the grant's own host. The grant is accepted only here; the platform
+// host that issued it answers the same token with a 401.
+const DeepSeekBaseURL = "https://api.deepseek.com/anthropic"
+
+// DeepSeekMessagesAuth is the header style DeepSeekBaseURL authenticates
+// with: x-dsh-auth-token, not x-api-key and not a bearer token.
+const DeepSeekMessagesAuth = MessagesAuthDsh
+
+// DefaultDeepSeekModel is the model selected when DeepSeek is chosen without
+// one.
+//
+// The provider's own catalog lists deepseek-flash first, so this is a judgment
+// call rather than a mirror: v4-pro is described as suited to complex or
+// quality-critical work, which is what an agent turn is. Both ids below come
+// from packages/llm/llm-deepseek/src/models.ts; whether the account endpoint
+// accepts them on the wire is unverified pending a live probe, and if it
+// rejects one the picker still offers it, which is the failure to revisit.
+const DefaultDeepSeekModel = "deepseek-v4-pro"
+
+// DeepSeekModels lists the model ids the account catalog names.
+var DeepSeekModels = []string{
+	"deepseek-v4-pro",
+	"deepseek-flash",
+}
+
+// DeepSeekContextWindow returns a model's context window, or 0 when unknown.
+// Their defaults.ts states 1,000,000 for the catalog; unknown ids get zero
+// rather than a guess, for the reason MiniMax's comment above gives.
+func DeepSeekContextWindow(model string) int {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range DeepSeekModels {
+		if trimmed == known {
+			return 1000000
+		}
+	}
+	return 0
+}
+
 // QoderModels are the models Qoder's own CLI reports for an account, established by
 // running qodercli --list-models against a signed-in session rather than by
 // guessing from another provider's catalogue.
@@ -567,6 +613,8 @@ func SubscriptionModels(subscription string) []string {
 		return out
 	case MiniMaxSubscription:
 		return append([]string(nil), MiniMaxModels...)
+	case DeepSeekSubscription:
+		return append([]string(nil), DeepSeekModels...)
 	case ClineSubscription:
 		out := make([]string, 0, len(ClineModels))
 		for _, model := range ClineModels {
@@ -609,6 +657,8 @@ func DefaultModelFor(subscription string) string {
 		return DefaultXaiModel
 	case MiniMaxSubscription:
 		return DefaultMiniMaxModel
+	case DeepSeekSubscription:
+		return DefaultDeepSeekModel
 	case ClineSubscription:
 		return DefaultClineModel
 	case OpenCodeSubscription:

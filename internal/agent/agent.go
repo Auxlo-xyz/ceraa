@@ -19,6 +19,7 @@ import (
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
@@ -161,6 +162,20 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			// rather than chat completions.
 			modelConfig.AnthropicNative = true
 			modelConfig.AnthropicTokens = minimaxauth.NewTokenSource(credential.Region)
+			return modelConfig, nil
+		case "deepseek":
+			if !deepseekauth.SignedIn() {
+				return llm.ProviderConfig{}, fmt.Errorf("DeepSeek account is not signed in: sign in from the provider menu first")
+			}
+			// Host and header are fixed, not per-region: one account system,
+			// one inference origin, one grant. The grant is accepted only at
+			// the inference origin.
+			modelConfig.BaseURL = llm.DeepSeekBaseURL
+			modelConfig.MessagesAuthStyle = llm.DeepSeekMessagesAuth
+			// Served by the Messages API, so it needs the Anthropic transport
+			// rather than chat completions.
+			modelConfig.AnthropicNative = true
+			modelConfig.AnthropicTokens = deepseekauth.NewTokenSource()
 			return modelConfig, nil
 		case "xai":
 			credential, err := xaiauth.Resolve(ctx, nil)

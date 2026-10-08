@@ -11,6 +11,7 @@ import (
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/envs"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
@@ -2310,6 +2311,150 @@ func activateMinimaxProvider(token string, chatID int64, flowID string) {
 	send(token, chatID, "✅ MiniMax provider activated with model "+model+". Send a task to use it.")
 }
 
+// deepseekCallbackBase is the redirect_uri sent at auth_init. It names the
+// Mini App's own loopback listener, which does not serve /oauth/callback yet:
+// until it does, the operator copies the code from the browser address bar and
+// pastes it here. When the handler lands, this same URI starts completing
+// automatically with no re-login, because the platform binds exactly this
+// string at both initialization and exchange.
+const deepseekCallbackBase = "http://127.0.0.1:8787"
+
+// deepseekFlowOwner records which chat started a login and what it wanted.
+// The flow itself — verifier, state, authorize id — must survive the round
+// trip between "open this URL" and the pasted code, and no polling manager
+// holds it the way the device flows do, so it lives here rather than in the
+// shared provider draft, which has no field for it.
+type deepseekFlowOwner struct {
+	chatID        int64
+	activate      bool
+	activeAtStart string
+	flow          *deepseekauth.Flow
+}
+
+var deepseekFlows sync.Map
+
+func trackDeepSeekFlow(chatID int64, owner deepseekFlowOwner) {
+	deepseekFlows.Store(chatID, owner)
+}
+
+func deepseekFlowOwnerOf(chatID int64) (deepseekFlowOwner, bool) {
+	value, ok := deepseekFlows.Load(chatID)
+	if !ok {
+		return deepseekFlowOwner{}, false
+	}
+	owner, ok := value.(deepseekFlowOwner)
+	return owner, ok
+}
+
+func clearDeepSeekFlow(chatID int64) { deepseekFlows.Delete(chatID) }
+
+// deepseekNotify posts a DeepSeek outcome to a chat. Indirected so a test can
+// observe that the user was actually told, which is the requirement rather
+// than only that some internal flag flipped. Every user-visible message on
+// the DeepSeek paths goes through here — the start instructions, the code
+// acceptance, the errors and the cancel confirmation — so no branch is
+// testable only by inspection.
+var deepseekNotify = func(token string, chatID int64, text string, kb map[string]any) {
+	sendHTML(token, chatID, text, kb)
+}
+
+// deepseekExchange trades a pasted code for the grant. Indirected so the
+// paste-back stage is provable without reaching the live platform; the trade
+// itself is covered in the auth package.
+var deepseekExchange = func(ctx context.Context, flow *deepseekauth.Flow, code string) error {
+	return deepseekauth.NewManager(deepseekauth.Endpoints{}).Exchange(ctx, flow, code)
+}
+
+// selectDeepSeekProvider is the DeepSeek entry point, mirroring the other
+// subscription providers.
+//
+// A stored credential switches provider immediately; otherwise a browser
+// login starts. Reaching DeepSeek from the provider menu asks to use it, so
+// the flow is tracked with activate set and the pasted code switches provider
+// on its own once exchanged.
+func selectDeepSeekProvider(token string, chatID int64) {
+	deepseekEntryPoint(token, chatID)
+}
+
+// deepseekEntryPoint is the real entry point, indirected so a test can assert
+// the provider menu routes provider:deepseek here without starting a browser
+// login against the live platform.
+var deepseekEntryPoint = func(token string, chatID int64) {
+	signedIn := deepseekauth.SignedIn()
+	logger.Info("deepseek entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
+		activateDeepSeekProvider(token, chatID)
+		return
+	}
+	startDeepSeekLogin(token, chatID)
+}
+
+// deepseekStartLoginFlow opens the browser attempt. Indirected so the entry
+// path is provable without reaching the live platform; the attempt itself is
+// covered in the auth package.
+var deepseekStartLoginFlow = func(ctx context.Context, callbackBase, loginSource string) (*deepseekauth.Flow, error) {
+	return deepseekauth.NewManager(deepseekauth.Endpoints{}).Start(ctx, callbackBase, loginSource)
+}
+
+// startDeepSeekLogin begins a browser login, whether or not a credential
+// exists. Reachable only from an explicit request, for the reason
+// startMinimaxLogin's comment gives: silently re-activating on "sign in
+// again" would make re-authentication unreachable.
+func startDeepSeekLogin(token string, chatID int64) {
+	activeAtStart := defaultState.provider()
+	flow, err := deepseekStartLoginFlow(context.Background(), deepseekCallbackBase, "desktop")
+	if err != nil {
+		deepseekNotify(token, chatID, "Failed to start DeepSeek login: "+err.Error(), nil)
+		return
+	}
+	trackDeepSeekFlow(chatID, deepseekFlowOwner{
+		chatID: chatID, activate: true, activeAtStart: activeAtStart, flow: flow,
+	})
+	pendingProvider.Store(chatID, providerDraft{ID: llm.DeepSeekSubscription, Stage: "code"})
+	deepseekNotify(token, chatID,
+		"Sign in to DeepSeek to use it. Open the link, approve, then paste the code from the browser address bar back here — or type cancel.\n\n"+
+			"🔐 DeepSeek Account Login\n\n1. Open: "+flow.AuthorizeURL+"\n2. Approve, then copy the <code>code</code> value from the address bar\n3. Paste it here and it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": flow.AuthorizeURL}},
+		}})
+}
+
+// activateDeepSeekProvider saves the DeepSeek profile and makes it active.
+//
+// The model is always chosen, never inherited: a model left over from another
+// provider cannot produce a profile the endpoint rejects, and guardModel is
+// what enforces that rather than trust.
+func activateDeepSeekProvider(token string, chatID int64) {
+	model, err := guardModel("deepseek", llm.DefaultDeepSeekModel)
+	if err != nil {
+		logger.Warn("DeepSeek activate: " + err.Error())
+		deepseekNotify(token, chatID, "DeepSeek activation failed: "+err.Error(), nil)
+		return
+	}
+	// The profile URL is for display: the call sites resolve the credential
+	// per run and use their own base URL, which is the same host.
+	profile := config.ProviderProfile{
+		URL:             llm.DeepSeekBaseURL,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.DeepSeekSubscription,
+	}
+	if err := defaultState.setProviderProfile("deepseek", profile); err != nil {
+		logger.Warn("deepseek activate: profile save failed: " + err.Error())
+		deepseekNotify(token, chatID, "DeepSeek profile save failed: "+err.Error(), nil)
+		return
+	}
+	if err := defaultState.setProvider("deepseek"); err != nil {
+		logger.Warn("deepseek activate: provider set failed: " + err.Error())
+		deepseekNotify(token, chatID, "DeepSeek provider activation failed: "+err.Error(), nil)
+		return
+	}
+	logger.Info("deepseek activate: provider=" + defaultState.provider() + " model=" + model)
+	deepseekNotify(token, chatID, "✅ DeepSeek provider activated with model "+model+". Send a task to use it.", nil)
+}
+
 // minimaxModelForAccount picks the model to activate.
 //
 // Reuses the active model only when it is one the subscription serves, so a model
@@ -2589,6 +2734,8 @@ func subscriptionMarkerFor(providerID string) string {
 		return llm.ClineSubscription
 	case "opencode":
 		return llm.OpenCodeSubscription
+	case "deepseek":
+		return llm.DeepSeekSubscription
 	default:
 		return ""
 	}

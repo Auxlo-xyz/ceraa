@@ -27,12 +27,12 @@ const (
 
 // subscriptionProviderIDs are the providers served by their own gateway, with a
 // model list of their own.
-var subscriptionProviderIDs = []string{"codex", "hermes", "xai", "minimax", "cline", "opencode"}
+var subscriptionProviderIDs = []string{"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek"}
 
 // switchableProviderIDs are the ones reached by activating from the provider menu.
 // Codex is absent because it has its own screen with its own activate and login
 // callbacks, so "provider:codex" is not a route and must not become one.
-var switchableProviderIDs = []string{"hermes", "xai", "minimax", "cline", "opencode"}
+var switchableProviderIDs = []string{"hermes", "xai", "minimax", "cline", "opencode", "deepseek"}
 
 func isSwitchable(providerID string) bool {
 	for _, id := range switchableProviderIDs {

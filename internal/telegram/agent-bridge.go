@@ -26,6 +26,7 @@ import (
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
@@ -497,6 +498,15 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			// Served by the Messages API, so it needs the Anthropic transport.
 			model.AnthropicNative = true
 			model.AnthropicTokens = minimaxauth.NewTokenSource(credential.Region)
+			return model, nil
+		case "deepseek":
+			if !deepseekauth.SignedIn() {
+				return llm.ProviderConfig{}, fmt.Errorf("DeepSeek account is not signed in: sign in from the provider menu first")
+			}
+			model.BaseURL = llm.DeepSeekBaseURL
+			model.MessagesAuthStyle = llm.DeepSeekMessagesAuth
+			model.AnthropicNative = true
+			model.AnthropicTokens = deepseekauth.NewTokenSource()
 			return model, nil
 		case "cline":
 			credential, err := clineauth.Resolve(ctx, nil)

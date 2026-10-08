@@ -7,7 +7,7 @@ import "testing"
 func TestEverySubscriptionProviderHasModels(t *testing.T) {
 	for _, subscription := range []string{
 		CodexSubscription, HermesSubscription, XAISubscription,
-		MiniMaxSubscription, ClineSubscription,
+		MiniMaxSubscription, ClineSubscription, DeepSeekSubscription,
 	} {
 		models := SubscriptionModels(subscription)
 		if len(models) == 0 {
@@ -153,5 +153,28 @@ func TestTheFreeAnswerSetDropsTheOnesThatRefuse(t *testing.T) {
 				t.Errorf("%q does not answer from here but is listed as a free answer", id)
 			}
 		}
+	}
+}
+
+// DeepSeek rides the subscription path end to end: the predicate that decides
+// whether a profile is configured, the Messages transport, and the model
+// picker all key off these three values, so they are asserted together. A
+// mismatch between any two is a provider that looks configured in one place
+// and unconfigured in another.
+func TestDeepSeekSubscriptionWiringAgrees(t *testing.T) {
+	if !IsSubscription(DeepSeekSubscription) {
+		t.Error("deepseek is not counted as a subscription; doctor and the startup banner will report it unconfigured")
+	}
+	if DeepSeekBaseURL == "" || DeepSeekMessagesAuth == "" {
+		t.Error("the DeepSeek endpoint or header style is empty")
+	}
+	if DeepSeekMessagesAuth != MessagesAuthDsh {
+		t.Errorf("DeepSeekMessagesAuth = %q, want the dsh wire style the transport sends as x-dsh-auth-token", DeepSeekMessagesAuth)
+	}
+	if DeepSeekContextWindow(DefaultDeepSeekModel) <= 0 {
+		t.Errorf("the default model %q has no known context window", DefaultDeepSeekModel)
+	}
+	if DeepSeekContextWindow("not-a-model") != 0 {
+		t.Error("an unknown model got a window instead of zero")
 	}
 }

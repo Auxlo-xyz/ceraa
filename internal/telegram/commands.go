@@ -23,6 +23,7 @@ import (
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/miniapp"
 	"ceraa/internal/opencodeauth"
@@ -1051,6 +1052,46 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				return true
 			}
 			send(token, chatID, "✅ "+draft.ID+" is configured. Choose another control or send a task.")
+			return true
+		case "code":
+			// The DeepSeek browser-login paste-back. The text is an
+			// authorization code, not a task, and it belongs to the flow that
+			// is waiting for this chat — never to a flow from another chat.
+			if draft.ID != llm.DeepSeekSubscription {
+				pendingProvider.Delete(chatID)
+				return true
+			}
+			if strings.EqualFold(strings.TrimSpace(text), "cancel") {
+				pendingProvider.Delete(chatID)
+				clearDeepSeekFlow(chatID)
+				deepseekNotify(token, chatID, "DeepSeek login cancelled. Nothing was saved.", nil)
+				return true
+			}
+			owner, ok := deepseekFlowOwnerOf(chatID)
+			if !ok || owner.flow == nil {
+				pendingProvider.Delete(chatID)
+				deepseekNotify(token, chatID, "No DeepSeek login is waiting for a code. Start one from the provider menu first.", nil)
+				return true
+			}
+			if err := deepseekExchange(context.Background(), owner.flow, strings.TrimSpace(text)); err != nil {
+				pendingProvider.Delete(chatID)
+				clearDeepSeekFlow(chatID)
+				if deepseekauth.ErrorCode(err) == deepseekauth.CodeExpired {
+					deepseekNotify(token, chatID, "❌ That authorization window lapsed before the code was spent. Start the login again from the provider menu.", nil)
+					return true
+				}
+				logger.Warn("deepseek exchange failed: " + err.Error())
+				deepseekNotify(token, chatID, "❌ DeepSeek sign-in did not complete: "+err.Error()+"\n\nNothing was saved. Start over from the provider menu.", nil)
+				return true
+			}
+			pendingProvider.Delete(chatID)
+			clearDeepSeekFlow(chatID)
+			if flowActivationStillWanted("DeepSeek", owner.activate, owner.activeAtStart) {
+				activateDeepSeekProvider(token, chatID)
+				return true
+			}
+			deepseekNotify(token, chatID, "✅ DeepSeek sign-in completed. The credential is stored and ready.\n\n"+
+				flowNotActiveReason("DeepSeek", owner.activate), nil)
 			return true
 		}
 	}

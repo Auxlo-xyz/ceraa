@@ -59,6 +59,12 @@ func anthropicImageBlocks(paths []string) []map[string]any {
 // Authorization: Bearer rather than x-api-key.
 const MessagesAuthBearer = "bearer"
 
+// MessagesAuthDsh is the MessagesAuthStyle for a host that authenticates with
+// x-dsh-auth-token: the DeepSeek account grant. Declared here rather than in
+// the auth package so the transport owns every header it can send; the token
+// itself still comes from the auth package, never from this file.
+const MessagesAuthDsh = "dsh"
+
 func anthropicMessagesURL(base string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.HasSuffix(trimmed, "/messages") {
@@ -654,10 +660,14 @@ func (c *StreamingClient) postAnthropic(ctx context.Context, endpoint, token str
 	// MiniMax's agent backend is the other way round and says so: it answers an
 	// x-api-key request with {"code":401,"message":"token is required"}. So the
 	// style is a property of the host, set by the profile, and the token is the
-	// same either way.
-	if strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthBearer) {
+	// same either way. DeepSeek's account endpoint is a third style and says so
+	// the same way: an x-api-key or bearer request is not an authorized one.
+	switch {
+	case strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthBearer):
 		request.Header.Set("Authorization", "Bearer "+token)
-	} else {
+	case strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthDsh):
+		request.Header.Set("x-dsh-auth-token", token)
+	default:
 		request.Header.Set("x-api-key", token)
 	}
 	request.Header.Set("anthropic-version", "2023-06-01")

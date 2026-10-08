@@ -1369,3 +1369,45 @@ func TestAnUnrecoverableRejectionIsNotRetried(t *testing.T) {
 		t.Errorf("made %d request(s), want 1", calls)
 	}
 }
+
+// The account-grant style: the DeepSeek account endpoint authenticates with
+// x-dsh-auth-token, and neither of the other two headers is an authorized
+// request there. Observed against a stub, like the x-api-key test above,
+// because body assertions cannot see headers at all.
+func TestMessagesRequestHeadersDshStyle(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model:             "deepseek-v4-pro",
+			BaseURL:           srv.URL,
+			AnthropicNative:   true,
+			MessagesAuthStyle: MessagesAuthDsh,
+			AnthropicTokens:   stubTokens{token: "TEST-DSH-GRANT"},
+			MaxRetries:        0,
+		},
+		http: srv.Client(),
+	}
+	err := client.streamAnthropic(context.Background(), StreamRequest{
+		Messages:  []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		MaxTokens: 16,
+	}, func(ProviderResponse) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got.Get("x-dsh-auth-token") != "TEST-DSH-GRANT" {
+		t.Errorf("x-dsh-auth-token = %q, want the grant", got.Get("x-dsh-auth-token"))
+	}
+	if got.Get("x-api-key") != "" {
+		t.Errorf("an x-api-key header was also sent: %q", got.Get("x-api-key"))
+	}
+	if got.Get("Authorization") != "" {
+		t.Errorf("an Authorization header was also sent: %q", got.Get("Authorization"))
+	}
+}

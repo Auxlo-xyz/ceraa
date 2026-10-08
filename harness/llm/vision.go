@@ -82,6 +82,8 @@ func (c *StreamingClient) describeMediaAnthropic(ctx context.Context, media []*M
 	}
 	if strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthBearer) {
 		req.Header.Set("Authorization", "Bearer "+token)
+	} else if strings.EqualFold(strings.TrimSpace(c.cfg.MessagesAuthStyle), MessagesAuthDsh) {
+		req.Header.Set("x-dsh-auth-token", token)
 	} else {
 		req.Header.Set("x-api-key", token)
 	}

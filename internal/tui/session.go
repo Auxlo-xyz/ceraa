@@ -23,6 +23,7 @@ import (
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
@@ -506,6 +507,15 @@ func resolveProviderModel(ctx context.Context, provider config.LLMProvider) (llm
 		modelConfig.APIKey = credential.AccessToken
 		modelConfig.AnthropicNative = true
 		modelConfig.AnthropicTokens = minimaxauth.NewTokenSource(credential.Region)
+		return modelConfig, nil
+	case "deepseek":
+		if !deepseekauth.SignedIn() {
+			return llm.ProviderConfig{}, fmt.Errorf("DeepSeek account is not signed in: sign in from the provider menu first")
+		}
+		modelConfig.BaseURL = llm.DeepSeekBaseURL
+		modelConfig.MessagesAuthStyle = llm.DeepSeekMessagesAuth
+		modelConfig.AnthropicNative = true
+		modelConfig.AnthropicTokens = deepseekauth.NewTokenSource()
 		return modelConfig, nil
 	case "xai":
 		credential, err := xaiauth.Resolve(ctx, nil)
