@@ -43,6 +43,12 @@ func ratio(cached, input int) float64 {
 	if input <= 0 {
 		return 0
 	}
+	// Same split-reporting convention as UsageInfo.CacheReadRatio: cached can
+	// only exceed input when the endpoint counts fresh tokens alone, so that
+	// comparison selects the denominator here too.
+	if cached > input {
+		return float64(cached) / float64(input+cached) * 100
+	}
 	return float64(cached) / float64(input) * 100
 }
 

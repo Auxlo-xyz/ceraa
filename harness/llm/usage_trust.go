@@ -46,6 +46,13 @@ const (
 // local is summed across the same requests as usage, so the two are directly
 // comparable. A zero local count means we could not measure, which is not
 // evidence of a bad provider, so the figure is left trusted.
+//
+// Two conventions exist for where cached tokens are counted. Inclusive
+// endpoints report the whole prompt in input_tokens; split endpoints (DeepSeek,
+// native Anthropic) report only fresh tokens there and put the cached prefix in
+// cached_input_tokens. Either candidate may be compared against our full-prompt
+// count, and agreement on either one trusts the run: a running-total endpoint
+// misses by two orders of magnitude on both, so the tripwire still holds.
 func ReconcileUsage(usage UsageInfo, local TokenBreakdown) UsageTrust {
 	localInput := local.Total()
 	trust := UsageTrust{LocalInput: localInput, Reported: usage.InputTokens}
@@ -55,16 +62,21 @@ func ReconcileUsage(usage UsageInfo, local TokenBreakdown) UsageTrust {
 		return trust
 	}
 
-	ratio := float64(usage.InputTokens) / float64(localInput)
-	if ratio >= tokenAgreementLow && ratio <= tokenAgreementHigh {
+	if withinAgreement(float64(usage.InputTokens)/float64(localInput)) ||
+		withinAgreement(float64(usage.InputTokens+usage.CachedInputTokens)/float64(localInput)) {
 		trust.Trusted = true
 		return trust
 	}
 
+	ratio := float64(usage.InputTokens) / float64(localInput)
 	trust.Trusted = false
-	trust.Note = fmt.Sprintf("provider reported %d input tokens, we sent %d (%.0fx); treating it as a running total, not this request",
-		usage.InputTokens, localInput, ratio)
+	trust.Note = fmt.Sprintf("provider reported %d input (+%d cached) tokens, we sent %d (%.0fx); treating it as a running total, not this request",
+		usage.InputTokens, usage.CachedInputTokens, localInput, ratio)
 	return trust
+}
+
+func withinAgreement(ratio float64) bool {
+	return ratio >= tokenAgreementLow && ratio <= tokenAgreementHigh
 }
 
 // CacheReadRatioFor returns the cache hit ratio only when the usage behind it is

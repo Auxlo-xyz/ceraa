@@ -22,9 +22,34 @@ func TestReconcileUsageRejectsARunningTotal(t *testing.T) {
 	}
 }
 
-// Tokenizers differ and providers round, so a few percent must stay trusted. If
-// this band were tight enough to reject ordinary disagreement, every real run
-// would be marked unknown and the check would be worthless.
+// Split-reporting endpoints (DeepSeek, native Anthropic) count only fresh
+// tokens in input_tokens and put the cached prefix in cached_input_tokens, so
+// input alone looks impossibly small next to the prompt we sent. The run must
+// still be trusted: input plus cached describes the request. Rejecting it is
+// what blanked cache read and cost on every high-cache DeepSeek run.
+func TestReconcileUsageTrustsSplitCacheReporting(t *testing.T) {
+	// A real DeepSeek turn: 184 fresh tokens with a 22,016-token cached prefix,
+	// against our own ~15,000-token prompt count (len/4 undercounts).
+	usage := UsageInfo{InputTokens: 184, CachedInputTokens: 22_016, OutputTokens: 191}
+	local := TokenBreakdown{System: 500, Tools: 1200, User: 600, Conversation: 8000, ToolOutput: 4700}
+
+	if trust := ReconcileUsage(usage, local); !trust.Trusted {
+		t.Fatalf("split cache reporting was rejected: %s", trust.Note)
+	}
+}
+
+// A running total misses on both candidates, so the tripwire still holds when
+// the cached figure is cumulative too.
+func TestReconcileUsageRejectsARunningTotalWithSplitCache(t *testing.T) {
+	usage := UsageInfo{InputTokens: 47_513_540, CachedInputTokens: 100_532_640}
+	local := TokenBreakdown{ToolOutput: 112_375}
+
+	if trust := ReconcileUsage(usage, local); trust.Trusted {
+		t.Fatal("a cumulative total was trusted because the combined candidate was not checked")
+	}
+}
+
+// Tokenizers differ and providers round, so a few percent must stay trusted.
 func TestReconcileUsageToleratesTokenizerDisagreement(t *testing.T) {
 	for _, ratio := range []float64{1.0, 0.97, 1.05, 0.88, 1.01, 0.5, 2.0} {
 		local := TokenBreakdown{ToolOutput: 100_000}

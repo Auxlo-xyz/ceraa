@@ -175,6 +175,17 @@ func TestUsageCacheReadRatio(t *testing.T) {
 	}
 }
 
+// Split-reporting endpoints count only fresh tokens in input, so cached/input
+// exceeds 1 and the old formula saturated at exactly 1 for every high-cache
+// turn. The denominator must include the cached prefix in that case.
+func TestUsageCacheReadRatioSplitReporting(t *testing.T) {
+	usage := UsageInfo{InputTokens: 184, CachedInputTokens: 22_016}
+	want := float64(22_016) / float64(184+22_016)
+	if got := usage.CacheReadRatio(); got != want {
+		t.Fatalf("split cache read ratio = %v, want %v", got, want)
+	}
+}
+
 func TestEncodeMessagesAttachesReasoningToAssistantText(t *testing.T) {
 	messages := encodeMessages([]Item{{Kind: "text", Role: RoleAssistant, Text: "answer", Reason: "thinking", ReasoningDetails: json.RawMessage(`{"type":"summary"}`)}}, false)
 	if len(messages) != 1 {

@@ -376,6 +376,13 @@ func (u UsageInfo) CacheReadRatio() float64 {
 	if u.InputTokens <= 0 || u.CachedInputTokens <= 0 {
 		return 0
 	}
+	// Split-reporting endpoints (DeepSeek, native Anthropic) count only fresh
+	// tokens in input, so cached/input exceeds 1 and saturates. Cached can only
+	// exceed input under that convention, since a cache hit is a subset of the
+	// prompt everywhere else, so the comparison itself selects the denominator.
+	if u.CachedInputTokens > u.InputTokens {
+		return float64(u.CachedInputTokens) / float64(u.InputTokens+u.CachedInputTokens)
+	}
 	ratio := float64(u.CachedInputTokens) / float64(u.InputTokens)
 	if ratio > 1 {
 		return 1
