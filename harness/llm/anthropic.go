@@ -121,8 +121,12 @@ type thinkingAccumulator struct {
 // repeated: type first, then the payload. A thinking block with no signature
 // is returned without one rather than refused here; whether the endpoint
 // accepts unsigned thinking is its decision, and refusing locally would turn
-// a debatable request into a certain failure. Empty accumulations report
-// false so a block that never carried anything emits nothing.
+// a debatable request into a certain failure. Only a block that carried
+// nothing at all reports false. A signature-only block still emits, with
+// empty thinking text: the endpoint issued that block and expects it back,
+// and a trivial step where the model barely deliberates is exactly when the
+// text is empty. Dropping it records a thinking-less turn, and every later
+// thinking continuation then fails with "thinking must be passed back".
 func (a *thinkingAccumulator) finalize() (json.RawMessage, bool) {
 	if a.kind == "redacted_thinking" {
 		if a.data == "" {
@@ -134,7 +138,7 @@ func (a *thinkingAccumulator) finalize() (json.RawMessage, bool) {
 		}
 		return encoded, true
 	}
-	if a.text.Len() == 0 {
+	if a.text.Len() == 0 && a.signature.Len() == 0 {
 		return nil, false
 	}
 	block := map[string]any{"type": "thinking", "thinking": a.text.String()}

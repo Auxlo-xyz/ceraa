@@ -1461,6 +1461,49 @@ func TestStreamCapturesThinkingBlocksVerbatim(t *testing.T) {
 	}
 }
 
+// A thinking block can arrive with a signature and empty text: a trivial step
+// where the model barely deliberates. The block must still be captured, or
+// the turn is recorded thinking-less and every later thinking continuation
+// fails with "thinking must be passed back". Only a block that carried
+// nothing at all (no text, no signature) emits nothing.
+func TestStreamKeepsSignatureOnlyThinkingBlock(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4-pro"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG-ONLY"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var details []json.RawMessage
+	client := &StreamingClient{}
+	err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if len(r.ReasoningDetails) > 0 {
+			details = append(details, r.ReasoningDetails)
+		}
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(details) != 1 {
+		t.Fatalf("got %d thinking detail deltas, want 1 (the signature-only block)", len(details))
+	}
+	merged := MergeReasoningDetails(details)
+	var block map[string]any
+	if err := json.Unmarshal(merged, &block); err != nil {
+		t.Fatalf("merged details are not a thinking object: %v", err)
+	}
+	if block["type"] != "thinking" || block["signature"] != "SIG-ONLY" {
+		t.Errorf("signature-only thinking block was not kept: %v", block)
+	}
+	if text, _ := block["thinking"].(string); text != "" {
+		t.Errorf("thinking text = %q, want empty (nothing to reword, only replay)", text)
+	}
+}
+
 // The encoded follow-up opens with the stored thinking, in order, before any
 // text or tool_use. Anything else is the malformed request.
 func TestEncodeRepeatsThinkingBlocksFirst(t *testing.T) {
