@@ -167,9 +167,25 @@ func TestEveryRewrittenBrowserNameIsAToolTheModelIsOffered(t *testing.T) {
 		{Kind: "tool_call", CallID: "c9", Name: "browser", Args: `{"action":"close"}`},
 		{Kind: "tool_call", CallID: "c10", Name: "browser", Args: `{"action":"open","path":"/tmp/page.html"}`},
 	}
-	for _, item := range normalizeDispatcherMessages(items) {
+	normalized := normalizeDispatcherMessages(items)
+	for _, item := range normalized {
+		// A name that stayed combined was not rewritten, so it is not held to
+		// the catalogue rule below.
+		if item.Name == "browser" {
+			continue
+		}
 		if !offered[item.Name] {
 			t.Errorf("rewrote to %q, which the model is not offered", item.Name)
+		}
+	}
+	// The split is not total. text and html have no per-action tool any more, so
+	// a recorded call that used one must keep the combined name: the hidden
+	// browser tool is still executable, and renaming it to a tool that does not
+	// exist would turn a working history into a dead one.
+	for _, index := range []int{2, 3} {
+		if normalized[index].Name != "browser" {
+			t.Errorf("action %q was rewritten to %q; it has no per-action tool and must stay combined",
+				items[index].Args, normalized[index].Name)
 		}
 	}
 	if strings.TrimSpace(items[0].Args) == "" {

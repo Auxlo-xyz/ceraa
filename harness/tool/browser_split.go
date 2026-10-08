@@ -103,14 +103,6 @@ var browserActionDefs = []browserActionDef{
 			"Replaces whatever page was open.",
 	},
 	{
-		action:      "text",
-		description: "Read the visible text of the open page, or of one element on it, given a selector.",
-	},
-	{
-		action:      "html",
-		description: "Read the HTML source of the open page, or of one element on it, given a selector.",
-	},
-	{
 		action:      "click",
 		description: "Click one element on the open page, named by a CSS selector.",
 	},

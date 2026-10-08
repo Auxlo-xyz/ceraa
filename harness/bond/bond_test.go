@@ -312,6 +312,20 @@ func TestHookReturnsBeforeExtractionFinishes(t *testing.T) {
 		t.Fatal("the extraction never started")
 	}
 	close(release)
+	// Wait for the detached extraction to finish before returning. It holds the
+	// package-level running guard, and a test that returned while it was still
+	// holding it left the next test blocked on a lock nobody would release.
+	finished := make(chan struct{})
+	go func() {
+		running.Lock()
+		running.Unlock()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the detached extraction never released the running guard")
+	}
 }
 
 // Two extractions must not interleave writes: each reads the window, so a

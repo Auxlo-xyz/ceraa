@@ -27,7 +27,7 @@ func (l toolList) mustFind(t *testing.T, name string) Tool {
 func TestEachBrowserActionIsItsOwnTool(t *testing.T) {
 	reg := DefaultRegistry()
 	for _, want := range []string{
-		"browser_open", "browser_screenshot", "browser_text", "browser_html",
+		"browser_open", "browser_screenshot",
 		"browser_click", "browser_type", "browser_eval", "browser_status", "browser_close",
 	} {
 		if _, ok := toolList(reg.Offered()).find(want); !ok {
@@ -222,8 +222,8 @@ func TestThePromptTeachesTheBrowserSequence(t *testing.T) {
 			names = append(names, tool.Name())
 		}
 	}
-	if len(names) != 10 {
-		t.Fatalf("browser tools = %v, want ten", names)
+	if len(names) != 8 {
+		t.Fatalf("browser tools = %v, want eight", names)
 	}
 	// TestPromptNamesEveryRegisteredTool already covers naming, so this covers the
 	// part it cannot: that the split, and the shared page, are stated.

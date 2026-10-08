@@ -2288,7 +2288,7 @@ func splitLegacyBrowserCall(item llm.Item) llm.Item {
 		return item
 	}
 	action, args := takeBrowserAction(item.Args)
-	if action == "" {
+	if !splitBrowserAction(action) {
 		return item
 	}
 	item.Name = "browser_" + action
@@ -2296,12 +2296,26 @@ func splitLegacyBrowserCall(item llm.Item) llm.Item {
 	return item
 }
 
+// splitBrowserAction reports whether an action has its own tool.
+//
+// It is a list rather than a blanket rename because the split is not total: the
+// text and html readers were removed, and a recorded call that used one must
+// keep the combined name. The hidden browser tool is still executable precisely
+// so those calls still run, and renaming them to a tool that does not exist
+// would turn a working history into a dead one.
+var splitBrowserActions = map[string]bool{
+	"open": true, "open_file": true, "click": true, "type": true,
+	"screenshot": true, "eval": true, "status": true, "close": true,
+}
+
+func splitBrowserAction(action string) bool { return splitBrowserActions[action] }
+
 func splitLegacyBrowserCallRef(call llm.ToolCall) llm.ToolCall {
 	if call.Name != "browser" {
 		return call
 	}
 	action, args := takeBrowserAction(call.Args)
-	if action == "" {
+	if !splitBrowserAction(action) {
 		return call
 	}
 	call.Name = "browser_" + action
