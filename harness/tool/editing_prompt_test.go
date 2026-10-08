@@ -50,17 +50,29 @@ func TestThePromptDescribesTheEditToolsAsTheyBehave(t *testing.T) {
 
 // The steering away from shell editing is the reason the edit tools exist, and
 // sed silently succeeding on no match is the specific hazard.
+//
+// The owner rewrote this line to a flat prohibition ("strictly never with shell
+// redirection or sed") and dropped the reason clause with it, deliberately, so
+// the literal "not with shell redirection or sed" and the "silent corruption"
+// phrase are no longer asserted. What is still asserted is the shape of the
+// rule: the edit tools are named, and shell editing is forbidden in words. The
+// regression this must not miss is bash being named as the way to edit.
 func TestThePromptStillSteersEditingAwayFromShell(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	prompt := string(raw)
-	if !strings.Contains(prompt, "not with shell redirection or sed") {
-		t.Error("the prompt no longer steers editing away from sed and shell redirection")
+	if !strings.Contains(prompt, "never with shell redirection or sed") {
+		t.Error("the prompt no longer forbids sed and shell redirection")
 	}
-	if !strings.Contains(prompt, "silent corruption") {
-		t.Error("the prompt no longer says why: a shell edit succeeds whether or not the file matched")
+	for _, tool := range []string{"write", "edit_line", "batch_edit_file"} {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("the prompt no longer names %s as an edit tool", tool)
+		}
+	}
+	if strings.Contains(prompt, "bash is the default for running, inspecting and editing") {
+		t.Error("the prompt makes bash the default for editing again")
 	}
 }
 

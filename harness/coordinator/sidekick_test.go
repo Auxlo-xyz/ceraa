@@ -279,7 +279,7 @@ func TestBashIsNotTheDefaultForEditing(t *testing.T) {
 	if strings.Contains(text, "bash is the default for running, inspecting and editing") {
 		t.Error("the prompt still makes bash the default for editing, which is the one tool the path trigger cannot see")
 	}
-	if !strings.Contains(text, "not with shell redirection or sed") {
-		t.Error("the prompt does not tell the model to use the edit tools instead")
+	if !strings.Contains(text, "never with shell redirection or sed") {
+		t.Error("the prompt does not forbid the model editing with shell redirection or sed")
 	}
 }
