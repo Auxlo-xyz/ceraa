@@ -546,3 +546,28 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	sess.Messages = newMessages
 	return true, nil
 }
+
+// ChainLearn returns one hook that runs both, in order.
+//
+// The Compactor carries a single Learn slot, and memory extraction already
+// holds it. Rather than widen the field to a slice and touch every reader for
+// a second consumer, each learner takes its turn through this. A nil hook is
+// skipped, so a caller wires whichever features are configured without
+// checking the other's state.
+//
+// Both hooks are off the hot path and failure-tolerant by contract: a hook that
+// errors must not fail the turnover, and each of these logs and returns. Order
+// is memory then bond, because the bond reads the same checkpoint and neither
+// one's result feeds the other.
+func ChainLearn(first, second func(context.Context, string, []sessionstore.Message, string)) func(context.Context, string, []sessionstore.Message, string) {
+	if first == nil {
+		return second
+	}
+	if second == nil {
+		return first
+	}
+	return func(ctx context.Context, sessionID string, discarded []sessionstore.Message, summary string) {
+		first(ctx, sessionID, discarded, summary)
+		second(ctx, sessionID, discarded, summary)
+	}
+}

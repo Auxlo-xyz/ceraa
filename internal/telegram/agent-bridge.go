@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/harness/bond"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -139,6 +140,12 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	compactor := newCompactor(cfg, providerID, sessionID)
 	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
 		compactor.Learn = learn
+	}
+	// The bond rides the same checkpoint: a compaction is the only place a
+	// transcript has been condensed on purpose, so it is the only place a
+	// context worth reading exists, and it costs nothing per turn.
+	if bl, enabled := bond.MakeLearner(modelConfig, paths.BondFile()); enabled {
+		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
 	}
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel

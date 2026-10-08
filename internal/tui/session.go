@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/harness/bond"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -165,6 +166,12 @@ func (s *Session) build() error {
 	evaluationStore, err := newEvaluationStore(s.cfg)
 	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
 		compactor.Learn = learn
+	}
+	// The bond rides the same checkpoint: a compaction is the only place a
+	// transcript has been condensed on purpose, so it is the only place a
+	// context worth reading exists, and it costs nothing per turn.
+	if bl, enabled := bond.MakeLearner(modelConfig, paths.BondFile()); enabled {
+		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
 	}
 	if err != nil {
 		return err

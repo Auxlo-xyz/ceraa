@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/harness/bond"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -87,6 +88,12 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	compactor := compaction.New(pcfg)
 	if learn, enabled := memory.MakeLearner(pcfg, memoryStore, "cli"); enabled {
 		compactor.Learn = learn
+	}
+	// The bond rides the same checkpoint: a compaction is the only place a
+	// transcript has been condensed on purpose, so it is the only place a
+	// context worth reading exists, and it costs nothing per turn.
+	if bl, enabled := bond.MakeLearner(pcfg, paths.BondFile()); enabled {
+		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
 	}
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
