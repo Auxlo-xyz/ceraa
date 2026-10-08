@@ -174,7 +174,7 @@ func (r *ReadTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path":   map[string]any{"type": "string", "description": "Absolute or relative path"},
-			"offset": map[string]any{"type": "integer", "description": "First line to return, counting from 1. Use it to read part of a large file instead of all of it."},
+			"offset": map[string]any{"type": "integer", "description": "First line to return, counting from 1."},
 			"limit":  map[string]any{"type": "integer", "description": "How many lines to return from offset."},
 		},
 		"required": []string{"path"},
@@ -277,9 +277,7 @@ func (e *EditTool) Name() string { return "edit_line" }
 // the prompt's job. TestDescriptionsCarryNoUsageGuidance enforces that split.
 func (e *EditTool) Description() string {
 	return "Replace one exact occurrence of old_text with new_text. " +
-		"old_text must be unique unless occurrence, 1-based, picks a repeat. " +
-		"Never writes on failure: it names the line of every match, and names the " +
-		"line when old_text is present but differs only in whitespace."
+		"old_text must be unique unless occurrence, 1-based, picks a repeat."
 }
 func (e *EditTool) Schema() map[string]any {
 	return map[string]any{
@@ -326,9 +324,7 @@ type BatchEditFileTool struct{}
 func (b *BatchEditFileTool) Name() string { return "batch_edit_file" }
 func (b *BatchEditFileTool) Description() string {
 	return "Apply several old_text to new_text replacements to one file in a " +
-		"single write. Each must be unique unless it names occurrence, 1-based. " +
-		"Never writes on failure: every failing edit is reported at once, with the " +
-		"lines involved."
+		"single write. Each must be unique unless it names occurrence, 1-based."
 }
 func (b *BatchEditFileTool) Schema() map[string]any {
 	return map[string]any{

@@ -30,8 +30,8 @@ type RunCommandWithSecretTool struct{}
 func (t *RunCommandWithSecretTool) Name() string { return "run_command_with_secret" }
 func (t *RunCommandWithSecretTool) Description() string {
 	return "Run a shell command with a stored secret injected as an environment variable. " +
-		"The value is not placed in the command line and is not returned; anything the " +
-		"command prints has it scrubbed. Fails for an unknown or reserved secret name."
+		"The value is not placed in the command line and is not returned. " +
+		"Fails for an unknown or reserved secret name."
 }
 func (t *RunCommandWithSecretTool) Schema() map[string]any {
 	return map[string]any{
@@ -104,7 +104,7 @@ type ListSecretsTool struct{}
 func (t *ListSecretsTool) Name() string { return "list_secrets" }
 func (t *ListSecretsTool) Description() string {
 	return "List the names of the stored secrets you can pass to run_command_with_secret, with " +
-		"the length of each value. Never shows a value. Names reserved for Ceraa's own " +
+		"the length of each value. Names reserved for Ceraa's own " +
 		"provider credentials are not listed and cannot be used."
 }
 func (t *ListSecretsTool) Schema() map[string]any {

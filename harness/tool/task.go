@@ -155,7 +155,7 @@ func (t *TaskTool) Schema() map[string]any {
 			},
 			"task_id": map[string]any{
 				"type":        "string",
-				"description": "Resume a previous child instead of starting a new one, by the task_id a previous result returned. Use it to send more context to a child that is still useful, not to restart finished work.",
+				"description": "Resume a previous child instead of starting a new one, by the task_id a previous result returned.",
 			},
 		},
 		"required": []string{"subagent_type", "description", "prompt"},

@@ -70,7 +70,7 @@ func (b *BrowserTool) Schema() map[string]any {
 			"url": map[string]any{"type": "string", "description": "Web address to open, http or https. Use with action=open."},
 			"path": map[string]any{
 				"type":        "string",
-				"description": "For action=open, a local file to render, which is usually what you want after writing HTML. For action=screenshot, where to write the image, defaulting to the Ceraa data directory.",
+				"description": "For action=open, a local file to render. For action=screenshot, where to write the image, defaulting to the Ceraa data directory.",
 			},
 			"selector": map[string]any{"type": "string", "description": "CSS selector for screenshot, text, html, click, or type."},
 			"text":     map[string]any{"type": "string", "description": "Text to type for action=type."},
