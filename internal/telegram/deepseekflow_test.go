@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -233,5 +234,37 @@ func TestDeepSeekCodeStageWithoutFlowAsksForAStart(t *testing.T) {
 	}
 	if len(*seen) != 1 || !strings.Contains((*seen)[0], "No DeepSeek login") {
 		t.Fatalf("an orphaned code did not ask for a fresh start: %v", *seen)
+	}
+}
+
+// The model follows the provider from one source of truth: the current model
+// survives a switch only when the new provider serves it, otherwise the
+// provider default. A pinned model from the previous provider is how a switch
+// crashes the first run.
+func TestDeepSeekActivationInheritsAServedModel(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+	// setModel keeps the env file in step, and the process environment is
+	// global: without restoring it here, CERAA_MODEL leaks into whatever test
+	// runs next and its menu reads the leftover. File order decides who pays.
+	prevModel, hadModel := os.LookupEnv("CERAA_MODEL")
+	defer func() {
+		if hadModel {
+			os.Setenv("CERAA_MODEL", prevModel)
+		} else {
+			os.Unsetenv("CERAA_MODEL")
+		}
+	}()
+	if err := providers.setModel("deepseek-flash"); err != nil {
+		t.Fatal(err)
+	}
+	if got := deepseekModelForAccount(); got != "deepseek-flash" {
+		t.Errorf("deepseekModelForAccount = %q, want the served current model", got)
+	}
+	if err := providers.setModel("gpt-6-luna"); err != nil {
+		t.Fatal(err)
+	}
+	if got := deepseekModelForAccount(); got != llm.DefaultDeepSeekModel {
+		t.Errorf("deepseekModelForAccount = %q, want the default for an unserved model", got)
 	}
 }

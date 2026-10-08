@@ -2425,8 +2425,23 @@ func startDeepSeekLogin(token string, chatID int64) {
 // The model is always chosen, never inherited: a model left over from another
 // provider cannot produce a profile the endpoint rejects, and guardModel is
 // what enforces that rather than trust.
+// deepseekModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the subscription serves, so a
+// model left over from another provider cannot produce a profile the endpoint
+// rejects. Same rule as every other activation path: the model follows the
+// provider from one source of truth, never pinned by whichever provider was
+// active before.
+func deepseekModelForAccount() string {
+	current, _ := defaultState.values()
+	if llm.IsDeepSeekModel(current) {
+		return current
+	}
+	return llm.DefaultDeepSeekModel
+}
+
 func activateDeepSeekProvider(token string, chatID int64) {
-	model, err := guardModel("deepseek", llm.DefaultDeepSeekModel)
+	model, err := guardModel("deepseek", deepseekModelForAccount())
 	if err != nil {
 		logger.Warn("DeepSeek activate: " + err.Error())
 		deepseekNotify(token, chatID, "DeepSeek activation failed: "+err.Error(), nil)

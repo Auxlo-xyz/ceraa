@@ -1411,3 +1411,103 @@ func TestMessagesRequestHeadersDshStyle(t *testing.T) {
 		t.Errorf("an Authorization header was also sent: %q", got.Get("Authorization"))
 	}
 }
+
+// A thinking turn must survive the round trip byte-identical: the next request
+// repeats exactly what the model sent, signature included, with thinking first.
+// Dropping the blocks is the request a strict endpoint refuses with "thinking
+// must be passed back", and rewording them breaks the signature.
+func TestStreamCapturesThinkingBlocksVerbatim(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4-pro"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"think."}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG1"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"REDACTED1"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+		`data: {"type":"content_block_stop","index":2}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	var details []json.RawMessage
+	client := &StreamingClient{}
+	err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		if len(r.ReasoningDetails) > 0 {
+			details = append(details, r.ReasoningDetails)
+		}
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(details) != 2 {
+		t.Fatalf("got %d thinking detail deltas, want 2 (thinking + redacted)", len(details))
+	}
+	merged := MergeReasoningDetails(details)
+	var blocks []map[string]any
+	if err := json.Unmarshal(merged, &blocks); err != nil {
+		t.Fatalf("merged details are not a block array: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("got %d blocks, want 2", len(blocks))
+	}
+	if blocks[0]["type"] != "thinking" || blocks[0]["thinking"] != "Let me think." || blocks[0]["signature"] != "SIG1" {
+		t.Errorf("thinking block was not repeated verbatim: %v", blocks[0])
+	}
+	if blocks[1]["type"] != "redacted_thinking" || blocks[1]["data"] != "REDACTED1" {
+		t.Errorf("redacted block was not repeated verbatim: %v", blocks[1])
+	}
+}
+
+// The encoded follow-up opens with the stored thinking, in order, before any
+// text or tool_use. Anything else is the malformed request.
+func TestEncodeRepeatsThinkingBlocksFirst(t *testing.T) {
+	details := json.RawMessage(`[{"type":"thinking","thinking":"Let me think.","signature":"SIG1"},{"type":"redacted_thinking","data":"REDACTED1"}]`)
+	msgs, err := encodeAnthropicMessages([]Item{{
+		Kind: "tool_calls", Role: RoleAssistant, Text: "checking",
+		ToolCalls:        []ToolCall{{ID: "toolu_1", Name: "read", Args: `{}`}},
+		ReasoningDetails: details,
+	}, {
+		Kind: "text", Role: RoleTool, CallID: "toolu_1", Output: "ok",
+	}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want assistant + tool result", len(msgs))
+	}
+	content := msgs[0].Content
+	if len(content) != 4 {
+		t.Fatalf("got %d blocks, want thinking + redacted + text + tool_use", len(content))
+	}
+	if content[0]["type"] != "thinking" || content[0]["signature"] != "SIG1" {
+		t.Errorf("first block is not the thinking block: %v", content[0])
+	}
+	if content[1]["type"] != "redacted_thinking" || content[1]["data"] != "REDACTED1" {
+		t.Errorf("second block is not the redacted block: %v", content[1])
+	}
+	if content[2]["type"] != "text" || content[3]["type"] != "tool_use" {
+		t.Errorf("text and tool_use do not follow the thinking: %v %v", content[2]["type"], content[3]["type"])
+	}
+}
+
+// Details recorded by another transport are opaque here. Treating an
+// OpenAI-shaped payload as thinking blocks would fabricate a thinking turn
+// the model never had, which is worse than omitting it.
+func TestEncodeIgnoresForeignReasoningDetails(t *testing.T) {
+	details := json.RawMessage(`{"summary":"someone else's format"}`)
+	msgs, err := encodeAnthropicMessages([]Item{{
+		Kind: "tool_call", Role: RoleAssistant, CallID: "toolu_1", Name: "read", Args: `{}`,
+		ReasoningDetails: details,
+	}, {
+		Kind: "text", Role: RoleTool, CallID: "toolu_1", Output: "ok",
+	}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if len(msgs) != 2 || len(msgs[0].Content) != 1 || msgs[0].Content[0]["type"] != "tool_use" {
+		t.Fatalf("foreign details leaked into the message: %+v", msgs)
+	}
+}

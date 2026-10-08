@@ -106,6 +106,48 @@ type toolInputBuilder struct {
 	sawStreamed bool
 }
 
+// thinkingAccumulator rebuilds one thinking block from the stream so it can
+// be passed back verbatim. A thinking block carries text plus a signature
+// across separate delta events; a redacted block arrives whole in its start
+// event and accumulates nothing.
+type thinkingAccumulator struct {
+	kind      string // "thinking" or "redacted_thinking"
+	text      strings.Builder
+	signature strings.Builder
+	data      string
+}
+
+// finalize renders the accumulated block exactly as the API requires it to be
+// repeated: type first, then the payload. A thinking block with no signature
+// is returned without one rather than refused here; whether the endpoint
+// accepts unsigned thinking is its decision, and refusing locally would turn
+// a debatable request into a certain failure. Empty accumulations report
+// false so a block that never carried anything emits nothing.
+func (a *thinkingAccumulator) finalize() (json.RawMessage, bool) {
+	if a.kind == "redacted_thinking" {
+		if a.data == "" {
+			return nil, false
+		}
+		encoded, err := json.Marshal(map[string]any{"type": "redacted_thinking", "data": a.data})
+		if err != nil {
+			return nil, false
+		}
+		return encoded, true
+	}
+	if a.text.Len() == 0 {
+		return nil, false
+	}
+	block := map[string]any{"type": "thinking", "thinking": a.text.String()}
+	if a.signature.Len() > 0 {
+		block["signature"] = a.signature.String()
+	}
+	encoded, err := json.Marshal(block)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
 // arguments returns the block's input as a single JSON value.
 //
 // An empty result becomes {} rather than being sent as an absent value, so the
@@ -224,17 +266,27 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 				pending = append(pending, block)
 				continue
 			}
-			if item.Role == RoleAssistant && strings.TrimSpace(item.Text) == "" {
-				continue
-			}
+			// An empty-text assistant turn still carries its thinking when the
+			// turn had any: the guard below tests the assembled message, not
+			// the text alone, so thinking without prose is emitted rather
+			// than dropped.
 			content := strings.TrimSpace(item.Text)
-			if content == "" {
+			thinking := anthropicThinkingBlocks(item.ReasoningDetails)
+			if content == "" && len(thinking) == 0 {
 				continue
 			}
 			flush()
+			// Thinking blocks open the message when the turn had them. An
+			// assistant turn recorded with thinking but reconstructed without
+			// is the request a strict endpoint refuses.
+			assembled := make([]map[string]any, 0, len(thinking)+1)
+			assembled = append(assembled, thinking...)
+			if content != "" {
+				assembled = append(assembled, map[string]any{"type": "text", "text": content})
+			}
 			messages = append(messages, anthropicMessage{
 				Role:    normalizeAnthropicRole(item.Role),
-				Content: []map[string]any{{"type": "text", "text": content}},
+				Content: assembled,
 			})
 		case "tool_call":
 			flush()
@@ -242,14 +294,18 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 			if err != nil {
 				return nil, err
 			}
+			// Thinking blocks open the message when the turn had them: the
+			// call was made under thinking, and the endpoint requires the
+			// thinking it already saw to come back with it.
+			callContent := append(anthropicThinkingBlocks(item.ReasoningDetails), map[string]any{
+				"type":  "tool_use",
+				"id":    item.CallID,
+				"name":  item.Name,
+				"input": input,
+			})
 			messages = append(messages, anthropicMessage{
-				Role: "assistant",
-				Content: []map[string]any{{
-					"type":  "tool_use",
-					"id":    item.CallID,
-					"name":  item.Name,
-					"input": input,
-				}},
+				Role:    "assistant",
+				Content: callContent,
 			})
 		case "tool_calls":
 			// Parallel calls from one turn arrive as a single item and belong in a
@@ -280,6 +336,10 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 				continue
 			}
 			content := make([]map[string]any, 0, len(blocks)+1)
+			// Thinking blocks open the message when the turn had them, for the
+			// same reason the single-call case above states: the calls were
+			// made under thinking.
+			content = append(content, anthropicThinkingBlocks(item.ReasoningDetails)...)
 			// Text alongside the calls is part of the same assistant turn, and
 			// dropping it loses whatever the model said before calling.
 			if text := strings.TrimSpace(item.Text); text != "" {
@@ -291,6 +351,40 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 	}
 	flush()
 	return messages, nil
+}
+
+// anthropicThinkingBlocks returns stored thinking blocks for an assistant
+// turn, verbatim and in order. While thinking mode is on, the next request
+// must repeat exactly what the model sent: dropping them is a 400 on a strict
+// endpoint, and rewording or reordering breaks the signature. Anything that
+// is not a thinking-shaped object is ignored, so details recorded by other
+// transports pass through untouched rather than being misread as blocks.
+func anthropicThinkingBlocks(details json.RawMessage) []map[string]any {
+	trimmed := bytes.TrimSpace(details)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	var out []map[string]any
+	if trimmed[0] == '[' {
+		var arr []map[string]any
+		if json.Unmarshal(trimmed, &arr) != nil {
+			return nil
+		}
+		for _, block := range arr {
+			if block["type"] == "thinking" || block["type"] == "redacted_thinking" {
+				out = append(out, block)
+			}
+		}
+		return out
+	}
+	var single map[string]any
+	if json.Unmarshal(trimmed, &single) != nil {
+		return nil
+	}
+	if single["type"] == "thinking" || single["type"] == "redacted_thinking" {
+		return []map[string]any{single}
+	}
+	return nil
 }
 
 func containsString(values []string, want string) bool {
@@ -727,6 +821,13 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 	// session is the {} seed with the real arguments discarded.
 	toolInput := map[int]*toolInputBuilder{}
 	toolName := map[int]string{}
+	// Thinking blocks must be passed back verbatim on the next request while
+	// thinking mode is on; dropping them is a 400 on a strict endpoint. They
+	// accumulate here per block index exactly like tool input does, and each
+	// completed block is emitted as ReasoningDetails so the session carries
+	// what the next request must repeat. The display text still streams
+	// through Reasoning alongside, which is unaffected.
+	thinking := map[int]*thinkingAccumulator{}
 
 	mergeUsage := func(raw json.RawMessage) {
 		if len(raw) == 0 || string(raw) == "null" {
@@ -771,12 +872,14 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 			ContentBlock struct {
 				Type  string `json:"type"`
 				Name  string `json:"name"`
 				ID    string `json:"id"`
+				Data  string `json:"data"`
 				Input json.RawMessage
 			} `json:"content_block"`
 			Message struct {
@@ -796,6 +899,12 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 				onDelta(ProviderResponse{ResponseID: event.Message.ID, ResponseModel: event.Message.Model})
 			}
 		case "content_block_start":
+			if event.ContentBlock.Type == "thinking" || event.ContentBlock.Type == "redacted_thinking" {
+				// A redacted block arrives whole in the start event; a thinking
+				// block accumulates through deltas. Both are held until stop so
+				// emissions follow wire order.
+				thinking[event.Index] = &thinkingAccumulator{kind: event.ContentBlock.Type, data: event.ContentBlock.Data}
+			}
 			if event.ContentBlock.Type == "tool_use" {
 				toolName[event.Index] = event.ContentBlock.Name
 				// Registered even with no input, so a block that never streams a
@@ -822,6 +931,13 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 				if onDelta != nil && event.Delta.Thinking != "" {
 					onDelta(ProviderResponse{Reasoning: event.Delta.Thinking})
 				}
+				if acc, ok := thinking[event.Index]; ok && acc.kind == "thinking" {
+					acc.text.WriteString(event.Delta.Thinking)
+				}
+			case "signature_delta":
+				if acc, ok := thinking[event.Index]; ok && acc.kind == "thinking" {
+					acc.signature.WriteString(event.Delta.Signature)
+				}
 			case "input_json_delta":
 				builder := toolInput[event.Index]
 				if builder == nil {
@@ -832,6 +948,12 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 				builder.sawStreamed = true
 			}
 		case "content_block_stop":
+			if acc, ok := thinking[event.Index]; ok {
+				if block, ok := acc.finalize(); ok && onDelta != nil {
+					onDelta(ProviderResponse{ReasoningDetails: block})
+				}
+				delete(thinking, event.Index)
+			}
 			if builder, ok := toolInput[event.Index]; ok {
 				name := toolName[event.Index]
 				if name != "" && onDelta != nil {

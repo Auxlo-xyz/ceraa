@@ -542,6 +542,19 @@ func IsMiniMaxModel(model string) bool {
 	return false
 }
 
+// IsDeepSeekModel reports whether the account endpoint serves a model id.
+// Same shape as IsMiniMaxModel so every activation path asks the question
+// the same way, rather than one path inheriting and another forcing.
+func IsDeepSeekModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range DeepSeekModels {
+		if trimmed == strings.ToLower(known) {
+			return true
+		}
+	}
+	return false
+}
+
 // ClineSubscription identifies a Cline Account profile.
 //
 // Not a vendor subscription but a hosted gateway: Cline serves chat completions
