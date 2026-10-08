@@ -32,6 +32,7 @@ import (
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
+	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
@@ -195,7 +196,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
-		MemoryContextFunc:   liveMemory,
+		MemoryContextFunc:   memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),
 		SkillContext:        skillContext,

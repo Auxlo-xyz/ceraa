@@ -200,7 +200,7 @@ func (s *Session) build() error {
 		ModelCatalogCache:   s.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(s.cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
-		MemoryContextFunc:   liveMemory,
+		MemoryContextFunc:   memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
 		MemoryDelivery:      s.cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, s.session),
 		SkillContext:        skillContext,

@@ -231,7 +231,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
-		MemoryContextFunc:   liveMemory,
+		MemoryContextFunc:   memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),
 		SkillContext:        skillContext,
