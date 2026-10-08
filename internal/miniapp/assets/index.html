@@ -2726,8 +2726,16 @@ contextLimit: p.context_limit || 0,
           if (idx >= conf.n) idx = conf.n - 1;
           if (idx < 0) idx = 0;
           const b = buckets[idx];
+          // Fresh input is convention-aware. Inclusive endpoints report the
+          // whole prompt in p.in, so fresh is p.in minus the cached prefix.
+          // Split endpoints (DeepSeek, native Anthropic) report fresh tokens
+          // in p.in already, and subtracting the prefix double-counts into the
+          // negative, which then shrinks this bucket's stack, hands maxTotal
+          // to a smaller bucket, and renders this bar past the plot. read can
+          // only exceed in under split reporting, so that selects the branch.
+          const fresh = (p.read || 0) > (p.in || 0) ? (p.in || 0) : (p.in || 0) - (p.read || 0);
           b.cacheRead += (p.read || 0) / 1000;
-          b.input += ((p.in || 0) - (p.read || 0)) / 1000;
+          b.input += fresh / 1000;
           b.output += (p.out || 0) / 1000;
           b.cacheWrite += (p.write || 0) / 1000;
           b.cost += p.known ? p.cost || 0 : 0;

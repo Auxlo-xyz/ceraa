@@ -809,10 +809,11 @@ func webStats() (map[string]any, error) {
 	}
 	endpointList := []map[string]any{}
 	for host, agg := range endpoints {
-		hitRate := 0.0
-		if agg.input > 0 {
-			hitRate = float64(agg.cached) / float64(agg.input)
-		}
+		// The shared ratio, not cached/input: split-reporting endpoints count
+		// fresh tokens alone in input, so the naive quotient exceeds 1 and the
+		// dashboard prints 270% hit rates. The discriminator lives in the
+		// function, which is pinned by its own tests.
+		hitRate := (llm.UsageInfo{InputTokens: agg.input, CachedInputTokens: agg.cached}).CacheReadRatio()
 		models := make([]string, 0, len(agg.models))
 		for model := range agg.models {
 			models = append(models, model)
