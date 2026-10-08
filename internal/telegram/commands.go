@@ -1073,7 +1073,7 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				deepseekNotify(token, chatID, "No DeepSeek login is waiting for a code. Start one from the provider menu first.", nil)
 				return true
 			}
-			if err := deepseekExchange(context.Background(), owner.flow, strings.TrimSpace(text)); err != nil {
+			if err := deepseekExchange(context.Background(), owner.flow, deepseekauth.ExtractCode(text)); err != nil {
 				pendingProvider.Delete(chatID)
 				clearDeepSeekFlow(chatID)
 				if deepseekauth.ErrorCode(err) == deepseekauth.CodeExpired {

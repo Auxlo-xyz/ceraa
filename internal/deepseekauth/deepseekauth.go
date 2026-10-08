@@ -48,6 +48,7 @@ import (
 	"ceraa/harness/llm"
 	"ceraa/internal/build"
 	"ceraa/internal/secret"
+	"golang.org/x/sys/unix"
 )
 
 // Production endpoints, from the provider's own defaults.
@@ -398,7 +399,10 @@ func (m *Manager) postPlatform(ctx context.Context, origin, method string, body 
 		return nil, newError(CodeProtocol, "platform answer is not the expected envelope")
 	}
 	if parsed.Data.BizCode != 0 {
-		return nil, newError(CodeProtocol, "platform refused the request")
+		// The code travels in the error: a bare refusal tells the operator
+		// nothing, and the number is what distinguishes a bad code from a
+		// bad device record from a revoked grant.
+		return nil, newError(CodeProtocol, "platform refused the request (biz_code=%d)", parsed.Data.BizCode)
 	}
 	return parsed.Data.BizData, nil
 }
@@ -783,6 +787,55 @@ func deviceID() string {
 		raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
 
-func deviceModel() string { return runtime.GOOS + "-" + runtime.GOARCH }
+// nodePlatform and nodeArch speak Node's vocabulary, because that is what the
+// platform's own client sends and what its device records contain. Go's names
+// differ in exactly the places that matter: Go says amd64 and windows where
+// the platform expects x64 and win32. Sending Go's names is a well-formed
+// request carrying a device the platform has never seen, which is a refusal
+// shaped like a validation failure rather than a transport error.
+func nodePlatform() string {
+	if runtime.GOOS == "windows" {
+		return "win32"
+	}
+	return runtime.GOOS
+}
 
-func osVersion() string { return runtime.GOOS + "/" + runtime.Version() }
+func nodeArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "386":
+		return "ia32"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+func deviceModel() string { return nodePlatform() + "-" + nodeArch() }
+
+// osVersion mirrors Node's os.platform() + os.release(): the platform name
+// and the kernel release, e.g. "linux 6.8.0-62-generic". A Go toolchain
+// version is not an OS version and must not go here.
+func osVersion() string {
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err == nil {
+		if release := unix.ByteSliceToString(uts.Release[:]); release != "" {
+			return nodePlatform() + " " + release
+		}
+	}
+	return nodePlatform()
+}
+
+// ExtractCode accepts what the operator pasted: either the bare authorization
+// code or the whole callback URL from the browser address bar. Requiring the
+// bare code turns every full-URL paste into a platform refusal, and the
+// refusal arrives as a bare biz_code with no hint about what was wrong.
+func ExtractCode(pasted string) string {
+	trimmed := strings.TrimSpace(pasted)
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if code := parsed.Query().Get("code"); code != "" {
+			return code
+		}
+	}
+	return trimmed
+}

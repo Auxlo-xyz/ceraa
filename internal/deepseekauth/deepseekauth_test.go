@@ -448,3 +448,51 @@ func TestWireStyleValue(t *testing.T) {
 		t.Fatalf("DefaultInferenceBaseURL = %q, want the provider's Messages endpoint", DefaultInferenceBaseURL)
 	}
 }
+
+// Operators paste what the browser shows, which is the whole callback URL,
+// not the bare code. Requiring the bare value turns every full-URL paste
+// into a platform refusal shaped exactly like a bad code.
+func TestExtractCodeAcceptsTheWholeCallbackURL(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"abc123", "abc123"},
+		{"  abc123  ", "abc123"},
+		{"http://127.0.0.1:8787/oauth/callback?code=abc123&state=s", "abc123"},
+		{"https://platform.deepseek.com/oauth/callback?code=abc123", "abc123"},
+		{"not a url at all", "not a url at all"},
+		{"http://127.0.0.1:8787/oauth/callback?state=only", "http://127.0.0.1:8787/oauth/callback?state=only"},
+	} {
+		if got := ExtractCode(tc.in); got != tc.want {
+			t.Errorf("ExtractCode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The device record speaks Node's vocabulary because that is what the
+// platform's own client sends. Go's names differ in the two places that
+// matter, and the platform sees an unknown device otherwise.
+func TestDeviceIdentityUsesNodeVocabulary(t *testing.T) {
+	if strings.Contains(deviceModel(), "amd64") || strings.Contains(deviceModel(), "windows") {
+		t.Errorf("deviceModel = %q, want Node arch/platform names (x64, win32)", deviceModel())
+	}
+	if strings.Contains(osVersion(), "/") {
+		t.Errorf("osVersion = %q, want '<platform> <release>', never a toolchain path", osVersion())
+	}
+}
+
+// The refusal number is the diagnosis. A bare refusal tells the operator
+// nothing; the number distinguishes a spent code from an unknown device.
+func TestRefusalCarriesTheBusinessCode(t *testing.T) {
+	isolateSecrets(t)
+	mp, srv := newMockPlatform(t)
+	defer srv.Close()
+	m := testManager(t, mp, srv)
+	flow, err := m.Start(context.Background(), srv.URL, "web")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	mp.bizCode = 40001
+	err = m.Exchange(context.Background(), flow, fixtureCode)
+	if ErrorCode(err) != CodeProtocol || !strings.Contains(err.Error(), "40001") {
+		t.Fatalf("exchange error = %v, want the refusal number in it", err)
+	}
+}
