@@ -228,6 +228,13 @@
     .two { grid-template-columns: 1fr 1fr; gap: 60px; }
     .g2 { grid-template-columns: 1fr 1fr; }
   }
+  @media (max-width: 767px) {
+    /* the portrait crop is 780x1690. Locking the band to that ratio lets
+       object-fit cover show the whole photograph instead of half of it. */
+    .sky { min-height: 0; aspect-ratio: 780 / 1690; }
+    .sky img { object-position: center; }
+    .sky-inner { padding: 54px 24px 46px; }
+  }
   @media (max-width: 720px) {
     body { font-size: 16px; }
     .nav-links { display: none; }
