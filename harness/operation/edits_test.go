@@ -156,7 +156,9 @@ func TestABatchReportsEveryFailureAtOnce(t *testing.T) {
 	if !strings.Contains(result.Error, "2 of the 4 edits") {
 		t.Errorf("error = %q, want it to say two of the four failed", result.Error)
 	}
-	for _, marker := range []string{"edit 1", "edit 3"} {
+	// One-based, like the occurrence argument: the failures are the second and
+	// fourth edits in the set, not the first and third.
+	for _, marker := range []string{"edit 2", "edit 4"} {
 		if !strings.Contains(result.Error, marker) {
 			t.Errorf("error = %q, want it to name %s", result.Error, marker)
 		}

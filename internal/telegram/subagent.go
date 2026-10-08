@@ -58,9 +58,14 @@ type subagentFactory struct {
 	projectRoot   string
 	providerID    string
 	providerCfg   config.LLMProvider
-	reasoning     llm.ReasonLevel
-	parentPrompt  string
-	skillStore    *skills.Store
+	// resolveModel is the parent's credential resolver. A subscription provider
+	// such as DeepSeek authenticates from the encrypted account grant rather
+	// than the profile's api key, and without this a child sends the plain key
+	// and is answered 401 while the parent succeeds on the same turn.
+	resolveModel func(context.Context) (llm.ProviderConfig, error)
+	reasoning    llm.ReasonLevel
+	parentPrompt string
+	skillStore   *skills.Store
 	// Rendered once, from the parent's project and session, so a child inherits the
 	// same memory and skills the agent that spawned it had.
 	memoryContext   string
@@ -183,6 +188,7 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		Reasoning:           f.reasoning,
 		SystemPrompt:        childSystemPrompt(f.parentPrompt, c.kind),
 		Model:               llm.FromProvider(f.providerCfg.URL, f.providerCfg.APIKey, f.providerCfg.Model),
+		ResolveModel:        f.resolveModel,
 		ContextLimit:        f.providerCfg.ContextLimit,
 		MaxOutputTokens:     f.providerCfg.MaxOutputTokens,
 		WorkDir:             f.projectRoot,

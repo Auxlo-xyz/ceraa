@@ -1,11 +1,15 @@
 package telegram
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
+	"ceraa/internal/config"
 )
 
 // A registered tool that cannot do anything is the failure this whole feature
@@ -130,4 +134,43 @@ func TestNewSubagentWorksWithoutAnInitialisedChildrenMap(t *testing.T) {
 	if child.kind != "general" {
 		t.Errorf("child kind is %q, want general", child.kind)
 	}
+}
+
+// The DeepSeek account provider authenticates from the encrypted grant, not from
+// the profile's api key, and ResolveModel is what performs that. The child was
+// built from the static profile instead, so a subagent sent the plain key and
+// was answered 401 while the parent on the same turn succeeded.
+//
+// Proved through the seam rather than by checking a field: a resolver that
+// fails has to be what stops the child, which only happens if the child asked
+// it. If the child never consults ResolveModel it gets past this and fails
+// somewhere else, at the transport, which is the 401.
+func TestChildConsultTheParentCredentialResolver(t *testing.T) {
+	store, err := sessionstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &subagentFactory{
+		cfg:           &config.Config{},
+		store:         store,
+		parentSession: "p",
+		resolveModel: func(context.Context) (llm.ProviderConfig, error) {
+			return llm.ProviderConfig{}, errors.New("resolver-was-consulted")
+		},
+		providerCfg:  config.LLMProvider{URL: "http://127.0.0.1:1", Model: "m"},
+		skillContext: "",
+	}
+	sub, id, err := f.NewSubagent("general")
+	if err != nil {
+		t.Fatalf("NewSubagent: %v", err)
+	}
+	_, runErr := sub.Run(context.Background(), "say nothing", tool.RequestBudget{})
+	if runErr == nil {
+		t.Fatal("a child whose credential resolver failed still ran")
+	}
+	if !strings.Contains(runErr.Error(), "resolver-was-consulted") &&
+		!strings.Contains(runErr.Error(), "resolve provider credentials") {
+		t.Errorf("child error = %v, want it to name the credential resolver", runErr)
+	}
+	_ = id
 }

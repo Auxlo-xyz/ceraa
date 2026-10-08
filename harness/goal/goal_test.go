@@ -11,7 +11,7 @@ func TestGoalStoreLifecycle(t *testing.T) {
 		t.Fatalf("load empty: exists=%t err=%v", exists, err)
 	}
 	value := Goal{Objective: "finish the migration", Status: StatusActive, TokenBudget: 100}
-	if err := store.Save("session", value); err != nil {
+	if _, err := store.Save("session", value); err != nil {
 		t.Fatal(err)
 	}
 	loaded, exists, err := store.Load("session")
@@ -19,7 +19,7 @@ func TestGoalStoreLifecycle(t *testing.T) {
 		t.Fatalf("loaded=%+v exists=%t err=%v", loaded, exists, err)
 	}
 	loaded.Status = StatusCompleted
-	if err := store.Save("session", loaded); err != nil {
+	if _, err := store.Save("session", loaded); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, _ = store.Load("session")

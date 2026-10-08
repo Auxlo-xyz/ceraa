@@ -66,7 +66,11 @@ func (s *Store) Load(sessionID string) (Goal, bool, error) {
 	return value, true, nil
 }
 
-func (s *Store) Save(sessionID string, value Goal) error {
+// Save persists the goal and returns what it persisted, with the timestamps the
+// store filled in. Returning the value matters because value is a parameter: a
+// caller that encodes its own copy after Save reports a zeroed created_at,
+// which is what create_goal answered with while the file on disk was right.
+func (s *Store) Save(sessionID string, value Goal) (Goal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if value.Status == "" {
@@ -78,31 +82,34 @@ func (s *Store) Save(sessionID string, value Goal) error {
 	value.UpdatedAt = time.Now()
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return err
+		return Goal{}, err
 	}
 	path := s.path(sessionID)
 	tmp, err := os.CreateTemp(s.dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return err
+		return Goal{}, err
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return err
+		return Goal{}, err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return err
+		return Goal{}, err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return err
+		return Goal{}, err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return Goal{}, err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return Goal{}, err
+	}
+	return value, nil
 }
 
 func (s *Store) Clear(sessionID string) error {

@@ -329,7 +329,7 @@ func TestBatchEditIsAllOrNothing(t *testing.T) {
 		if r.Status != StatusFailed {
 			t.Fatalf("a set with a bad edit reported %s", r.Status)
 		}
-		if !strings.Contains(r.Error, "edit 2") {
+		if !strings.Contains(r.Error, "edit 3") {
 			t.Errorf("error = %q, want it to name which edit did not match", r.Error)
 		}
 		// The count is reported as a batch position rather than an occurrence

@@ -211,7 +211,10 @@ func applyEdits(content, file string, edits []map[string]any) (string, []editFai
 func batchFailureText(file string, total int, failures []editFailure) string {
 	parts := make([]string, 0, len(failures))
 	for _, failure := range failures {
-		parts = append(parts, fmt.Sprintf("edit %d: %s", failure.index, failure.reason))
+		// One-based, to match the occurrence argument the schema and the prompt
+		// both describe as 1-based. Reporting a zero-based index next to a
+		// 1-based parameter is how a model retries the wrong edit.
+		parts = append(parts, fmt.Sprintf("edit %d: %s", failure.index+1, failure.reason))
 	}
 	// The noun agrees with the failure count, and the batch size is always the
 	// plural one. "1 of 2 edit did not match" is what a single shared noun

@@ -851,9 +851,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						if current.TokenBudget > 0 && current.TokensUsed >= current.TokenBudget {
 							current.Status = goal.StatusBlocked
 							current.Reason = "token budget exhausted"
-							_ = goalStore.Save(r.cfg.SessionID, current)
+							_, _ = goalStore.Save(r.cfg.SessionID, current)
 						} else {
-							if saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+							if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
 								goalContinuations++
 								sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Continue working autonomously on the active goal. Make progress, verify the result, and call update_goal when it is completed or blocked. Active goal: " + current.Objective})
 								if saveErr := r.store.Save(sess); saveErr != nil {

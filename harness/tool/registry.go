@@ -366,7 +366,7 @@ func (b *BatchEditFileTool) Translate(args map[string]any) (operation.Spec, erro
 		oldText, _ := pair["old_text"].(string)
 		newText, _ := pair["new_text"].(string)
 		if oldText == "" {
-			return operation.Spec{}, fmt.Errorf("edit %d has no old_text", i)
+			return operation.Spec{}, fmt.Errorf("edit %d has no old_text", i+1)
 		}
 		normalized := map[string]any{"old_text": oldText, "new_text": newText}
 		if n := occurrenceFromAny(pair["occurrence"]); n > 0 {

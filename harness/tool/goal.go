@@ -113,10 +113,11 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 		} else {
 			current = goal.Goal{Objective: objective, Status: goal.StatusActive, TokenBudget: budget}
 		}
-		if err := store.Save(sessionID, current); err != nil {
+		saved, err := store.Save(sessionID, current)
+		if err != nil {
 			return "", err
 		}
-		return encodeGoal(current), nil
+		return encodeGoal(saved), nil
 	case "get":
 		if !exists {
 			return "No persistent goal exists.", nil
@@ -129,10 +130,11 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 		status, _ := spec.Args["status"].(string)
 		current.Status = goal.Status(status)
 		current.Reason, _ = spec.Args["reason"].(string)
-		if err := store.Save(sessionID, current); err != nil {
+		saved, err := store.Save(sessionID, current)
+		if err != nil {
 			return "", err
 		}
-		return encodeGoal(current), nil
+		return encodeGoal(saved), nil
 	default:
 		return "", fmt.Errorf("unknown goal action")
 	}

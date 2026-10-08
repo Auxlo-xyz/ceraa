@@ -152,6 +152,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		projectRoot:     projectRoot,
 		providerID:      providerID,
 		providerCfg:     providerConfig,
+		resolveModel:    resolveModel,
 		reasoning:       reasoning,
 		parentPrompt:    prompt.System,
 		skillStore:      skillStore,
