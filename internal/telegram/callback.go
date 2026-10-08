@@ -876,10 +876,6 @@ func handleCallback(token string, q *callbackQuery) {
 		send(token, chatID, "Send /search <query> to search the active project index.")
 		return
 	}
-	if data == "index:rebuild" {
-		handleIndexCommand(token, chatID, "/index")
-		return
-	}
 	if data == "snapshots:list" {
 		handleSnapshotsCommand(token, chatID)
 		return
@@ -1126,13 +1122,13 @@ func handlePermissionMenuCallback(token string, chatID int64, action string) {
 	case "policy":
 		send(token, chatID, "🔒 Write, delete, move, copy, and risky shell operations require approval. Read/search tools run without approval.")
 	case "allow_read":
-		for _, name := range []string{"read", "glob", "grep", "fts_search"} {
+		for _, name := range []string{"read", "glob", "grep"} {
 			permission.Default.AllowAlways(name)
 			_ = defaultState.setAlwaysAllow(name, true)
 		}
 		send(token, chatID, "✅ Read/search tools will be allowed without prompts.")
 	case "reset":
-		for _, name := range []string{"read", "glob", "grep", "fts_search", "write", "bash"} {
+		for _, name := range []string{"read", "glob", "grep", "write", "bash"} {
 			permission.Default.ClearAlways(name)
 			_ = defaultState.setAlwaysAllow(name, false)
 		}
@@ -1169,8 +1165,6 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 		handlePermissionCommand(token, chatID)
 	case "/compaction", "/compaction_level":
 		handleCompaction(token, chatID, command)
-	case "/index":
-		handleIndexCommand(token, chatID, command)
 	case "/snapshots":
 		handleSnapshotsCommand(token, chatID)
 	case "/revert":
@@ -1195,8 +1189,6 @@ func executeCallbackCommand(token string, chatID int64, command string) {
 		handleCodexStatus(token, chatID)
 	case "/hub", "/menu":
 		sendHub(token, chatID)
-	case "/search":
-		handleSearchCommand(token, chatID, command)
 	default:
 		send(token, chatID, "Use that command with an argument, for example /"+strings.TrimPrefix(command, "/")+" value")
 	}

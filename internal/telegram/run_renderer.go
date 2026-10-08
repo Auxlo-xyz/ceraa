@@ -1479,8 +1479,6 @@ func toolArgsSummary(name string, args map[string]any) string {
 		key = "pattern"
 	case "grep":
 		key = "pattern"
-	case "fts_search":
-		key = "query"
 	}
 	value, ok := values[key]
 	if !ok {
@@ -1547,8 +1545,6 @@ func toolDisplayName(name string) string {
 		return "Find files"
 	case "grep":
 		return "Search files"
-	case "fts_search":
-		return "Search project"
 	default:
 		if name == "" {
 			return "Run tool"
@@ -1691,7 +1687,7 @@ func boldWordTool(name string) bool {
 	case "write", "edit", "edit_line", "batch_edit_file", "apply_patch":
 		return true
 	// Search, every route into it.
-	case "grep", "fts_search", "glob":
+	case "grep", "glob":
 		return true
 	// Outbound: fetching, searching, sending, and looking at what came back.
 	case "webfetch", "websearch", "send_media", "view_image":

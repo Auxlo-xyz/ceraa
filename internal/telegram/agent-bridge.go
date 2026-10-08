@@ -20,7 +20,6 @@ import (
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/permission"
-	"ceraa/harness/search"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -62,26 +61,6 @@ func runAgentContext(parent context.Context, sessionID string, user string, onCo
 
 func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
 	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly)
-}
-
-// applySearchScope points an fts_search at the project index and gives it a
-// scope, defaulting to the project root only when the caller named none.
-//
-// It assigns db_path unconditionally because the index is a host concern, but
-// never overwrites path. A real session scoped two searches to a subdirectory
-// and got workspace-wide results back, from unrelated projects and the Python
-// standard library, because this used to replace the caller's path outright.
-//
-// One function rather than a closure per entry point: the parent runner and the
-// subagent factory each had their own copy, and both carried the same defect.
-func applySearchScope(spec *operation.Spec, projectRoot, workspaceRoot string) {
-	if spec.Type != "fts_search" {
-		return
-	}
-	if chosen, _ := spec.Args["path"].(string); strings.TrimSpace(chosen) == "" {
-		spec.Args["path"] = projectRoot
-	}
-	spec.Args["db_path"] = search.ProjectIndexPath(workspaceRoot, projectRoot)
 }
 
 func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
@@ -209,13 +188,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,
-		AdjustSpec: func(spec *operation.Spec) {
-			applySearchScope(spec, projectRoot, cfg.WorkspaceRootPath())
-		},
-		// Keeps the search index current as the agent writes, so fts_search returns
-		// results instead of "No matches" against an index that was never built.
-		OnFileMutated:    searchFollower(cfg, projectRoot).Note,
-		ForcedCompaction: func() bool { return consumeForcedCompaction(sessionID) },
+		ForcedCompaction:    func() bool { return consumeForcedCompaction(sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
 			return needsPermission(name, fmt.Sprint(args))
 		},

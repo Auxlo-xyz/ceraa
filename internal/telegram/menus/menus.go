@@ -43,8 +43,8 @@ import (
 // default to a bare Close rather than opening something that no longer exists.
 var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
-	"context", "compaction_level", "file_browser", "settings", "permission", "search",
-	"index", "snapshots", "message_history", "skills_catalog", "worktree",
+	"context", "compaction_level", "file_browser", "settings", "permission",
+	"snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
 	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude",
 }
@@ -229,12 +229,8 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return permissionMenu()
 	case "compaction_level":
 		return compactionMenu()
-	case "index":
-		return indexMenu()
 	case "snapshots":
 		return snapshotMenu()
-	case "search":
-		return searchMenu()
 	case "message_history":
 		return historyMenu()
 	case "worktree":
@@ -858,18 +854,6 @@ func snapshotMenu() map[string]any {
 	}}
 }
 
-func searchMenu() map[string]any {
-	return map[string]any{"inline_keyboard": [][]map[string]string{
-		{{"text": "🔎 Search index", "callback_data": "search:prompt"}},
-		{{"text": "🗃️ Rebuild index", "callback_data": "index:rebuild"}},
-		{{"text": "✕ Close", "callback_data": "close"}},
-	}}
-}
-
-func indexMenu() map[string]any {
-	return searchMenu()
-}
-
 func historyMenu() map[string]any {
 	return map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text": "Last 5", "callback_data": "show_messages:5"}},
@@ -1053,7 +1037,7 @@ func Hub() map[string]any {
 		"status": "📊 Status", "session": "💬 Sessions", "provider": "🔌 Provider", "model": "🤖 Model", "agent": "🤖 Mode",
 		"thinking": "🧠 Thinking", "project": "📁 Project", "tools": "🔧 Tools", "todos": "✅ Todos",
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
-		"settings": "⚙️ Settings", "permission": "🔒 Permissions", "search": "🔎 Search", "index": "🗃️ Index",
+		"settings": "⚙️ Settings", "permission": "🔒 Permissions",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools",
 		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",

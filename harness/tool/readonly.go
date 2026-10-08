@@ -19,7 +19,6 @@ package tool
 // somebody else's server.
 var readOnly = map[string]bool{
 	"read":         true,
-	"fts_search":   true,
 	"webfetch":     true,
 	"websearch":    true,
 	"view_image":   true,

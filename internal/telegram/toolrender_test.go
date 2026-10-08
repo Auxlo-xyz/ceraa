@@ -18,7 +18,7 @@ func TestEveryToolFamilyIsWhollyBoldOrWhollyNot(t *testing.T) {
 		tools []string
 	}{
 		{"file mutation", []string{"write", "edit", "edit_line", "batch_edit_file", "apply_patch"}},
-		{"search", []string{"grep", "fts_search", "glob"}},
+		{"search", []string{"grep", "glob"}},
 		{"shell", []string{"bash", "script", "run_command_with_secret"}},
 		{"browser", []string{"browser"}},
 		{"outbound", []string{"webfetch", "websearch", "send_media", "view_image"}},

@@ -10,7 +10,7 @@ import (
 // but forgetting silently is still how a mutating tool ends up on a list.
 func TestReadOnlySetIsPinnedAndEveryNameIsARealTool(t *testing.T) {
 	want := []string{
-		"fts_search", "get_goal", "list_secrets", "question",
+		"get_goal", "list_secrets", "question",
 		"read", "view_image", "webfetch", "websearch",
 	}
 	got := ReadOnlyNames()

@@ -768,8 +768,6 @@ func argKeyFor(name string) string {
 		return "command"
 	case "webfetch":
 		return "url"
-	case "fts_search":
-		return "query"
 	default:
 		return "path"
 	}

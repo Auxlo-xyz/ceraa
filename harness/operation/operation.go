@@ -21,7 +21,6 @@ import (
 	"ceraa/harness/primitives"
 	"ceraa/harness/question"
 	"ceraa/harness/redact"
-	"ceraa/harness/search"
 	"ceraa/harness/snapshot"
 	"ceraa/harness/todo"
 	"ceraa/internal/secret"
@@ -566,41 +565,6 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			}
 			result.Error = "todowrite failed"
 			result.Status = StatusFailed
-		case "fts_search":
-			query, _ := op.Spec.Args["query"].(string)
-			limit := 20
-			if v, ok := op.Spec.Args["limit"]; ok {
-				switch n := v.(type) {
-				case float64:
-					limit = int(n)
-				case int:
-					limit = n
-				case int64:
-					limit = int(n)
-				}
-			}
-			if workDir, _ := op.Spec.Args["workdir"].(string); workDir != "" {
-				if _, ok := op.Spec.Args["path"]; !ok {
-					op.Spec.Args["path"] = workDir
-				}
-			}
-			dbPath, _ := op.Spec.Args["db_path"].(string)
-			if dbPath == "" {
-				home, _ := os.UserHomeDir()
-				if home != "" {
-					dbPath = filepath.Join(home, ".cache", "ceraa", "index.db")
-				} else {
-					dbPath = ".ceraa-index.db"
-				}
-			}
-			out, err := runFTSSearch(ctx, dbPath, query, limit, op.Spec.Args)
-			result.Output = out
-			if err != nil {
-				result.Error = err.Error()
-				result.Status = StatusFailed
-			} else {
-				result.Status = StatusCompleted
-			}
 		case "question":
 			// Maps to soraacode tool/question.ts + question-manager poll with buttons
 			ques, _ := op.Spec.Args["question"].(string)
@@ -745,55 +709,6 @@ func (m *LocalManager) RunSync(ctx context.Context, spec Spec) (string, error) {
 		return "", errors.New(result.Error)
 	}
 	return "", fmt.Errorf("operation %s did not complete", spec.Type)
-}
-
-func runFTSSearch(ctx context.Context, dbPath, query string, limit int, args map[string]any) (string, error) {
-	idx, err := search.Open(dbPath)
-	if err != nil {
-		return "", err
-	}
-	defer idx.Close()
-
-	// Handle index flag
-	if doIndex, _ := args["index"].(bool); doIndex {
-		root, _ := args["path"].(string)
-		if root == "" {
-			if cwd, err := os.Getwd(); err == nil {
-				root = cwd
-			} else {
-				root = "."
-			}
-		}
-		if abs, err := filepath.Abs(root); err == nil {
-			root = abs
-		}
-		_, _ = idx.IndexDir(root)
-	}
-	// Auto-index if empty
-	var cnt int
-	if err := idx.DB().QueryRow(`SELECT count(*) FROM files`).Scan(&cnt); err == nil && cnt == 0 {
-		root, _ := args["path"].(string)
-		if root == "" {
-			if cwd, err := os.Getwd(); err == nil {
-				root = cwd
-			} else {
-				root = "."
-			}
-		}
-		_, _ = idx.IndexDir(root)
-	}
-	results, err := idx.Search(query, limit)
-	if err != nil {
-		return "", err
-	}
-	if len(results) == 0 {
-		return "No matches for: " + query, nil
-	}
-	var b strings.Builder
-	for i, r := range results {
-		fmt.Fprintf(&b, "%d. %s (rank %.2f)\n", i+1, r.Path, r.Rank)
-	}
-	return b.String(), nil
 }
 
 func operationPath(path, workDir string) string {

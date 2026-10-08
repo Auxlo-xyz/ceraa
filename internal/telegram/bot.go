@@ -1653,16 +1653,6 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 		handleProjectCommand(token, chatID, txt)
 		return true
 	}
-	if txt == "/search" || strings.HasPrefix(txt, "/search ") {
-		GetDefaultInbox().CheckAndRecord(updateID)
-		handleSearchCommand(token, chatID, txt)
-		return true
-	}
-	if txt == "/index" || strings.HasPrefix(txt, "/index ") {
-		GetDefaultInbox().CheckAndRecord(updateID)
-		handleIndexCommand(token, chatID, txt)
-		return true
-	}
 	if txt == "/snapshots" {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleSnapshotsCommand(token, chatID)

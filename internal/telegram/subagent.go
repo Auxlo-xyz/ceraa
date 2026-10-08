@@ -12,8 +12,6 @@ import (
 	"ceraa/harness/evaluation"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
-	"ceraa/harness/operation"
-	"ceraa/harness/search"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -198,9 +196,6 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		MaxRequests: budget.Soft,
 		YieldAt:     budget.YieldAt,
 		HardGrace:   budget.HardAfter,
-		AdjustSpec: func(spec *operation.Spec) {
-			applySearchScope(spec, f.projectRoot, f.cfg.WorkspaceRootPath())
-		},
 		// A child cannot ask the person anything. The question tool blocks on an
 		// answer that cannot arrive, because the prompt it would surface is the
 		// parent's chat and nobody is looking at it for a child's question.
@@ -285,26 +280,4 @@ func attachSubagents(registry *tool.Registry, factory *subagentFactory) {
 	if wired.WallClock == 0 {
 		wired.WallClock = factory.WallClock
 	}
-}
-
-// searchFollowers is the process-wide set of index followers, one per project.
-//
-// A follower is a debounced writer, so sharing one per project rather than one per
-// run is what makes the debounce work: two runs against the same tree would
-// otherwise each flush their own batch.
-var (
-	searchFollowersMu sync.Mutex
-	searchFollowers   = map[string]*search.Follower{}
-)
-
-func searchFollower(cfg *config.Config, projectRoot string) *search.Follower {
-	dbPath := search.ProjectIndexPath(cfg.WorkspaceRootPath(), projectRoot)
-	searchFollowersMu.Lock()
-	defer searchFollowersMu.Unlock()
-	if f, ok := searchFollowers[dbPath]; ok {
-		return f
-	}
-	f := search.NewFollower(dbPath, projectRoot)
-	searchFollowers[dbPath] = f
-	return f
 }

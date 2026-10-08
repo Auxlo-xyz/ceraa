@@ -16,7 +16,6 @@ import (
 	"ceraa/harness/coordinator"
 	"ceraa/harness/memory"
 	"ceraa/harness/scheduler"
-	"ceraa/harness/search"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/snapshot"
@@ -448,73 +447,6 @@ func groupDigits(n int) string {
 		out.WriteString(digits[index : index+3])
 	}
 	return out.String()
-}
-
-func handleSearchCommand(token string, chatID int64, text string) {
-	query := strings.TrimSpace(strings.TrimPrefix(text, "/search"))
-	if query == "" {
-		sendMenuMarkup(token, chatID, "Search project", menusInline("search"))
-		return
-	}
-	project := defaultState.project(chatID)
-	if project == "" {
-		send(token, chatID, "Choose a project before searching")
-		return
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		send(token, chatID, "Config error: "+err.Error())
-		return
-	}
-	idx, err := search.Open(search.ProjectIndexPath(cfg.WorkspaceRootPath(), project))
-	if err != nil {
-		send(token, chatID, "Search index error: "+err.Error())
-		return
-	}
-	defer idx.Close()
-	if _, err := idx.IndexDir(project); err != nil {
-		send(token, chatID, "Index error: "+err.Error())
-		return
-	}
-	results, err := idx.Search(query, 10)
-	if err != nil {
-		send(token, chatID, "Search error: "+err.Error())
-		return
-	}
-	if len(results) == 0 {
-		send(token, chatID, "No matches for "+query)
-		return
-	}
-	var lines []string
-	for i, result := range results {
-		lines = append(lines, fmt.Sprintf("%d. `%s` (rank %.2f)", i+1, result.Path, result.Rank))
-	}
-	send(token, chatID, "Search results:\n"+strings.Join(lines, "\n"))
-}
-
-func handleIndexCommand(token string, chatID int64, text string) {
-	project := defaultState.project(chatID)
-	if project == "" {
-		send(token, chatID, "Choose a project before indexing")
-		return
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		send(token, chatID, "Config error: "+err.Error())
-		return
-	}
-	idx, err := search.Open(search.ProjectIndexPath(cfg.WorkspaceRootPath(), project))
-	if err != nil {
-		send(token, chatID, "Index error: "+err.Error())
-		return
-	}
-	defer idx.Close()
-	count, err := idx.IndexDir(project)
-	if err != nil {
-		send(token, chatID, "Index error: "+err.Error())
-		return
-	}
-	send(token, chatID, fmt.Sprintf("🗃️ Indexed %d files from %s", count, project))
 }
 
 func handleCatalogCommand(token string, chatID int64, text string) {

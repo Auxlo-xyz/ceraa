@@ -68,8 +68,6 @@ func primaryToolArg(tool string) (string, bool) {
 		return "path", true
 	case "edit_line", "batch_edit_file":
 		return "path", true
-	case "fts_search":
-		return "pattern", true
 	case "webfetch":
 		return "url", false
 	case "browser":

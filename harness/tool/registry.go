@@ -444,7 +444,6 @@ func DefaultRegistryWithStores(memoryStore *memory.Store, skillStore *skills.Sto
 	// Registered without a factory and attached later by whoever knows how to build a
 	// runner: the tool layer cannot import the coordinator, which imports this one.
 	r.Register(NewTaskTool())
-	r.Register(&FTSSearchTool{})
 	r.Register(&QuestionTool{})
 	r.Register(&TodoWriteTool{})
 	r.Register(&CreateGoalTool{})
