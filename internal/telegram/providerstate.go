@@ -1,10 +1,12 @@
 package telegram
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/internal/config"
@@ -99,6 +101,17 @@ func (p *providerState) setProfile(name string, profile config.ProviderProfile) 
 	if name == "" {
 		return errors.New("provider name is empty")
 	}
+	// Thinking parameters are resolved here, at the one place every provider is
+	// written through, so a model added by subscription, by API key or by hand
+	// in the dashboard carries the same answer. Resolving anywhere else leaves
+	// a path that stores a level the model does not accept, which is what sent
+	// "medium" to a model whose vocabulary is max/high/low.
+	//
+	// Best effort throughout: a catalog that is unreachable, stale or missing
+	// the model leaves the profile as it was written, which is exactly the old
+	// behaviour. Failing the save over a catalog would stop a user adding a
+	// provider because a lookup failed.
+	resolveProfileThinking(p.store, &profile)
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 	return p.store.Update(func(cfg *config.Config) error {
@@ -108,6 +121,30 @@ func (p *providerState) setProfile(name string, profile config.ProviderProfile) 
 		cfg.ProviderProfiles[name] = profile
 		return nil
 	})
+}
+
+// resolveProfileThinking fills in the model's reasoning profile from the
+// catalog the deployment already fetches pricing from.
+//
+// The model id is normalised first: Ceraa's own subscription defaults name a
+// free variant (space-bunny-free, solar-pro4:free) of a model the catalog
+// lists without the suffix, and the two share one reasoning profile.
+func resolveProfileThinking(store *config.Store, profile *config.ProviderProfile) {
+	if store == nil || profile == nil || strings.TrimSpace(profile.Model) == "" {
+		return
+	}
+	cfg, err := store.Load()
+	if err != nil || cfg == nil {
+		return
+	}
+	thinking, err := llm.ResolveThinking(context.Background(), cfg.ModelCatalogURL, cfg.ModelCatalogCache,
+		time.Duration(cfg.ModelCatalogRefreshHours)*time.Hour, profile.Model)
+	if err != nil || !thinking.Known {
+		return
+	}
+	profile.ReasoningEfforts = thinking.Efforts
+	profile.ReasoningDefault = thinking.Default
+	profile.ReasoningMandatory = thinking.Mandatory
 }
 
 // removeProfile deletes a stored profile and reports whether one was there.

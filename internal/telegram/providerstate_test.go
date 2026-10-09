@@ -1,6 +1,9 @@
 package telegram
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -301,4 +304,68 @@ func TestMediaTokenFallsBackToConfig(t *testing.T) {
 	if got := resolveMediaToken(cfg); got != "config-token" {
 		t.Errorf("media token = %q, want the config value", got)
 	}
+}
+
+// A profile saved through the one writer carries the model's thinking
+// vocabulary, and a catalogue that cannot answer leaves it exactly as written.
+// Both directions matter: the first is the whole point, the second is what
+// keeps an unreachable catalogue from breaking provider setup.
+func TestSavedProfileCarriesResolvedThinking(t *testing.T) {
+	dir := t.TempDir()
+	store := config.NewStoreAt(filepath.Join(dir, "config.json"))
+	if err := store.Update(func(cfg *config.Config) error {
+		cfg.ModelCatalogURL = newCatalogTestServer(t)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderState(store)
+
+	profile := config.ProviderProfile{URL: "https://x.invalid/v1", Model: "deepseek-flash-free"}
+	if err := p.setProfile("deepseek", profile); err != nil {
+		t.Fatalf("setProfile: %v", err)
+	}
+	stored, ok := p.profiles()["deepseek"]
+	if !ok {
+		t.Fatal("the profile was not stored")
+	}
+	if len(stored.ReasoningEfforts) != 3 || stored.ReasoningEfforts[0] != "max" {
+		t.Fatalf("efforts were not resolved: %+v", stored.ReasoningEfforts)
+	}
+	if stored.ReasoningDefault != "high" {
+		t.Errorf("default effort = %q", stored.ReasoningDefault)
+	}
+}
+
+func TestSavedProfileSurvivesAnUnreachableCatalogue(t *testing.T) {
+	dir := t.TempDir()
+	store := config.NewStoreAt(filepath.Join(dir, "config.json"))
+	if err := store.Update(func(cfg *config.Config) error {
+		cfg.ModelCatalogURL = "http://127.0.0.1:1"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderState(store)
+	profile := config.ProviderProfile{URL: "https://x.invalid/v1", Model: "whatever"}
+	if err := p.setProfile("deepseek", profile); err != nil {
+		t.Fatalf("an unreachable catalogue failed the save: %v", err)
+	}
+	stored, _ := p.profiles()["deepseek"]
+	if len(stored.ReasoningEfforts) != 0 {
+		t.Errorf("efforts appeared from an unreachable catalogue: %+v", stored.ReasoningEfforts)
+	}
+}
+
+func newCatalogTestServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":[{"id":"deepseek-flash","name":"DeepSeek Flash","owned_by":"deepseek",
+		 "context_length":128000,"max_tokens":8192,"pricing":{"prompt":"0","completion":"0"},
+		 "reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low"],"default_effort":"high"},
+		 "supported_parameters":["tools","reasoning","reasoning_effort"]}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }

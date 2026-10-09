@@ -161,15 +161,16 @@ func (p *ModelPricing) UnmarshalJSON(data []byte) error {
 }
 
 type ModelMetadata struct {
-	ID               string       `json:"id"`
-	Name             string       `json:"name,omitempty"`
-	OwnedBy          string       `json:"owned_by,omitempty"`
-	ContextWindow    int          `json:"context_window,omitempty"`
-	MaxTokens        int          `json:"max_tokens,omitempty"`
-	ReasoningOptions []string     `json:"reasoning_options,omitempty"`
-	Pricing          ModelPricing `json:"pricing"`
-	PricingCurrent   bool         `json:"-"`
-	PricingFetchedAt time.Time    `json:"-"`
+	ID               string         `json:"id"`
+	Name             string         `json:"name,omitempty"`
+	OwnedBy          string         `json:"owned_by,omitempty"`
+	ContextWindow    int            `json:"context_window,omitempty"`
+	MaxTokens        int            `json:"max_tokens,omitempty"`
+	Reasoning        ModelReasoning `json:"reasoning,omitempty"`
+	ReasoningOptions []string       `json:"reasoning_options,omitempty"`
+	Pricing          ModelPricing   `json:"pricing"`
+	PricingCurrent   bool           `json:"-"`
+	PricingFetchedAt time.Time      `json:"-"`
 }
 
 func (m ModelMetadata) PricingUsable() bool {
@@ -264,6 +265,30 @@ type ReasoningOption struct {
 	Max    int      `json:"max,omitempty"`
 }
 
+// ModelReasoning is the model's thinking capability as the catalog declares it.
+//
+// The vocabularies differ per vendor and are not derivable: gpt-5 takes
+// high/medium/low/minimal, deepseek-v4-flash takes xhigh/high, deepseek-v4.1
+// takes max/high/low, and an old deepseek-chat takes none of them. A level the
+// model does not list is either 400'd or silently replaced by its default, so
+// this is the only place the answer comes from.
+type ModelReasoning struct {
+	// Mandatory means the model always thinks and cannot be turned off.
+	Mandatory bool `json:"mandatory,omitempty"`
+	// DefaultEnabled means thinking is on when the caller sends nothing.
+	DefaultEnabled bool `json:"default_enabled,omitempty"`
+	// SupportedEfforts is the accepted effort vocabulary, most first. Empty
+	// means the model declared no reasoning at all.
+	SupportedEfforts []string `json:"supported_efforts,omitempty"`
+	// DefaultEffort is what the model falls back to when none is sent.
+	DefaultEffort string `json:"default_effort,omitempty"`
+}
+
+// Declared reports whether the model listed an effort vocabulary, which is the
+// signal to clamp against it. A model with reasoning but no list, Claude's
+// shape, is left to its own default rather than guessed at.
+func (r ModelReasoning) Declared() bool { return len(r.SupportedEfforts) > 0 }
+
 type catalogModel struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
@@ -276,6 +301,7 @@ type catalogModel struct {
 		MaxCompletionTokens int `json:"max_completion_tokens"`
 	} `json:"top_provider"`
 	ReasoningOptions    []ReasoningOption `json:"reasoning_options"`
+	Reasoning           ModelReasoning    `json:"reasoning"`
 	SupportedParameters []string          `json:"supported_parameters"`
 	Pricing             ModelPricing      `json:"pricing"`
 }
@@ -448,6 +474,7 @@ func (c *CatalogClient) refreshLocked(ctx context.Context) error {
 			OwnedBy:       ownedBy,
 			ContextWindow: contextWindow,
 			MaxTokens:     maxTokens,
+			Reasoning:     model.Reasoning,
 			Pricing:       model.Pricing,
 		}
 		for _, option := range model.ReasoningOptions {
@@ -518,4 +545,22 @@ func (c *CatalogClient) writeCache(cache *modelCatalogCache) error {
 		return err
 	}
 	return os.Rename(tmpPath, c.CachePath)
+}
+
+// NormalizeCatalogModel maps a configured model id onto the catalog's key.
+//
+// Two of Ceraa's own defaults name a free variant of a model that the catalog
+// lists without it: opencode signs in as space-bunny-free and hermes as
+// solar-pro4:free, while the catalog carries space-bunny and solar-pro4. The
+// suffix is dropped in both spellings, because the paid and free builds of a
+// model share one reasoning profile and the alias otherwise resolves to
+// nothing.
+func NormalizeCatalogModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	for _, suffix := range []string{":free", "-free"} {
+		if len(trimmed) > len(suffix) && strings.EqualFold(trimmed[len(trimmed)-len(suffix):], suffix) {
+			return strings.TrimSpace(trimmed[:len(trimmed)-len(suffix)])
+		}
+	}
+	return trimmed
 }

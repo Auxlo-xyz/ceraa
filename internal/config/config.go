@@ -67,27 +67,42 @@ type LLMProvider struct {
 	// minimal, low, medium, high, xhigh, or max. It is advisory; a provider
 	// clamps it to what its model supports. Empty leaves the provider on its
 	// own default.
-	Reasoning       string `json:"reasoning,omitempty"`
-	APIKey          string `json:"api_key,omitempty"`
-	ContextLimit    int    `json:"context_limit,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
-	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
-	PromptCacheTTL  string `json:"prompt_cache_ttl,omitempty"`
-	Subscription    string `json:"subscription,omitempty"`
-	HermesProvider  string `json:"hermes_provider,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningEfforts is the effort vocabulary this model declared when it was
+	// added, resolved from the model catalog. Empty means unresolved: the level
+	// is sent as-is and never clamped.
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	// ReasoningDefault is the effort the model uses when none is sent, from the
+	// same resolution.
+	ReasoningDefault string `json:"reasoning_default,omitempty"`
+	// ReasoningMandatory is the model always think and cannot be told not to.
+	ReasoningMandatory bool   `json:"reasoning_mandatory,omitempty"`
+	APIKey             string `json:"api_key,omitempty"`
+	ContextLimit       int    `json:"context_limit,omitempty"`
+	MaxOutputTokens    int    `json:"max_output_tokens,omitempty"`
+	PromptCacheMode    string `json:"prompt_cache_mode,omitempty"`
+	PromptCacheTTL     string `json:"prompt_cache_ttl,omitempty"`
+	Subscription       string `json:"subscription,omitempty"`
+	HermesProvider     string `json:"hermes_provider,omitempty"`
 }
 
 type ProviderProfile struct {
-	URL             string `json:"url"`
-	APIKey          string `json:"api_key,omitempty"`
-	Model           string `json:"model"`
-	Reasoning       string `json:"reasoning,omitempty"`
-	ContextLimit    int    `json:"context_limit,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
-	PromptCacheMode string `json:"prompt_cache_mode,omitempty"`
-	PromptCacheTTL  string `json:"prompt_cache_ttl,omitempty"`
-	Subscription    string `json:"subscription,omitempty"`
-	HermesProvider  string `json:"hermes_provider,omitempty"`
+	URL       string `json:"url"`
+	APIKey    string `json:"api_key,omitempty"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningEfforts, ReasoningDefault and ReasoningMandatory are the model's
+	// thinking parameters as the catalog declared them when the profile was
+	// saved. See LLMProvider for what an empty vocabulary means.
+	ReasoningEfforts   []string `json:"reasoning_efforts,omitempty"`
+	ReasoningDefault   string   `json:"reasoning_default,omitempty"`
+	ReasoningMandatory bool     `json:"reasoning_mandatory,omitempty"`
+	ContextLimit       int      `json:"context_limit,omitempty"`
+	MaxOutputTokens    int      `json:"max_output_tokens,omitempty"`
+	PromptCacheMode    string   `json:"prompt_cache_mode,omitempty"`
+	PromptCacheTTL     string   `json:"prompt_cache_ttl,omitempty"`
+	Subscription       string   `json:"subscription,omitempty"`
+	HermesProvider     string   `json:"hermes_provider,omitempty"`
 }
 
 // Subscriptions holds provider subscription settings.
