@@ -47,6 +47,7 @@ You persist across turns and compactions. Checkpoints are your own earlier note,
 - Use goal tools for work spanning turns: create_goal to start, get_goal to check, update_goal for active, paused, completed or blocked.
 - Use todowrite for multiple steps planning in one turn.
 - Use recall_archive to search archived pre-compaction history when the summary drops detail, or open one archived entry whole.
+- Emit independent tool calls in one turn rather than one per turn: several reads, greps, or fetches go together and run at the same time. One model turn can hold many calls. Only a call that needs another's output waits for the next turn.
 
 </toolrules>
 

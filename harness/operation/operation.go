@@ -142,12 +142,46 @@ type ContextRunner interface {
 
 // LocalManager runs operations in goroutines within the current process.
 type LocalManager struct {
-	mu       sync.Mutex
-	results  chan ResultEvent
-	cancels  map[string]context.CancelCauseFunc
-	runner   ToolRunner
-	slots    chan struct{}
-	serialMu sync.Mutex
+	mu      sync.Mutex
+	results chan ResultEvent
+	cancels map[string]context.CancelCauseFunc
+	runner  ToolRunner
+	slots   chan struct{}
+	// queues are the sequential lanes, one channel each, and each drained by a
+	// single goroutine so its operations run in arrival order.
+	//
+	// This was one mutex over every sequential operation in the process, which
+	// cost twice. A single edit in a batch stopped the reads beside it, because
+	// the runner marked the whole batch sequential; and order among the
+	// sequential calls came from goroutine scheduling, so a browser pipeline
+	// could run its click before its open.
+	queues map[string]chan queuedOperation
+}
+
+// DefaultSequentialQueue is the lane a sequential tool runs on when it names
+// none. Everything on it serialises against everything else on it, which is
+// what the single mutex used to give.
+const DefaultSequentialQueue = "default"
+
+// queuedOperation carries what a lane needs: the operation, its cancellation,
+// and the slot channel as it stood when the operation was queued.
+type queuedOperation struct {
+	ctx   context.Context
+	op    Operation
+	slots chan struct{}
+}
+
+func NewWithBuffer(runner ToolRunner, capacity int) *LocalManager {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	m := &LocalManager{
+		results: make(chan ResultEvent, capacity),
+		cancels: make(map[string]context.CancelCauseFunc),
+		runner:  runner,
+		queues:  make(map[string]chan queuedOperation),
+	}
+	return m
 }
 
 // New creates a LocalManager. If runner is nil, only built-in types (shell, read, write, glob) are supported.
@@ -180,17 +214,6 @@ func clampShellTimeout(seconds int) time.Duration {
 		return maxShellTimeout
 	}
 	return requested
-}
-
-func NewWithBuffer(runner ToolRunner, capacity int) *LocalManager {
-	if capacity < 1 {
-		capacity = 1
-	}
-	return &LocalManager{
-		results: make(chan ResultEvent, capacity),
-		cancels: make(map[string]context.CancelCauseFunc),
-		runner:  runner,
-	}
 }
 
 func (m *LocalManager) Results() <-chan ResultEvent {
@@ -227,14 +250,55 @@ func (m *LocalManager) Cancel(id string) {
 
 // Add dispatches an operation for execution and returns immediately.
 func (m *LocalManager) Add(op Operation) {
-	m.add(op, false)
+	m.add(op)
 }
 
-func (m *LocalManager) AddSequential(op Operation) {
-	m.add(op, true)
+func (m *LocalManager) AddSequential(op Operation, queue string) {
+	name := strings.TrimSpace(queue)
+	if name == "" {
+		name = DefaultSequentialQueue
+	}
+	m.mu.Lock()
+	if _, exists := m.cancels[op.ID]; exists {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	m.cancels[op.ID] = cancel
+	pending := m.queues[name]
+	if pending == nil {
+		// The buffer is sized for a whole batch, so a runner enqueuing one
+		// never waits on a lane that is about to start it. A batch larger
+		// than this would block the sender until the lane drains, which is
+		// safe: the lane needs no slot the sender is holding.
+		pending = make(chan queuedOperation, 256)
+		m.queues[name] = pending
+		go m.drainLane(pending)
+	}
+	slots := m.slots
+	m.mu.Unlock()
+	pending <- queuedOperation{ctx: ctx, op: op, slots: slots}
 }
 
-func (m *LocalManager) add(op Operation, sequential bool) {
+// drainLane runs one lane's operations in arrival order, one at a time, each
+// taking a slot of the shared concurrency budget while it runs.
+//
+// Order is the point, not just exclusion: a browser pipeline is several calls
+// the model emitted as a sequence it expects honoured, and a mutex handed
+// that to whichever goroutine got there first.
+func (m *LocalManager) drainLane(pending chan queuedOperation) {
+	for queued := range pending {
+		if queued.slots != nil {
+			queued.slots <- struct{}{}
+			m.execute(queued.ctx, queued.op)
+			<-queued.slots
+			continue
+		}
+		m.execute(queued.ctx, queued.op)
+	}
+}
+
+func (m *LocalManager) add(op Operation) {
 	m.mu.Lock()
 	if _, exists := m.cancels[op.ID]; exists {
 		m.mu.Unlock()
@@ -251,10 +315,6 @@ func (m *LocalManager) add(op Operation, sequential bool) {
 	go func() {
 		if slots != nil {
 			defer func() { <-slots }()
-		}
-		if sequential {
-			m.serialMu.Lock()
-			defer m.serialMu.Unlock()
 		}
 		m.execute(ctx, op)
 	}()

@@ -251,7 +251,8 @@ func (t *BrowserActionTool) RunContext(ctx context.Context, spec operation.Spec)
 
 // Sequential for the same reason the combined tool is: one browser, one page,
 // and a batch is a pipeline the model expects in order.
-func (t *BrowserActionTool) Sequential() bool { return true }
+func (t *BrowserActionTool) Sequential() bool        { return true }
+func (t *BrowserActionTool) SequentialQueue() string { return "browser" }
 
 // BrowserActionTools returns the per-action tools over one shared browser.
 func BrowserActionTools(base *BrowserTool) []Tool {

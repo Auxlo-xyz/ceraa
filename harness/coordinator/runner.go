@@ -1647,7 +1647,7 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 	}
 
 	dispatched := make([]preparedTool, 0, len(prepared))
-	start := func(item preparedTool, forceSequential bool) error {
+	start := func(item preparedTool) error {
 		if r.cb.OnToolStart != nil {
 			r.cb.OnToolStart(item.call.ID, item.tool.Name(), map[string]any{"tool": item.tool.Name(), "args": item.rawArgs})
 		}
@@ -1661,10 +1661,8 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			return err
 		}
 		op := operation.Operation{ID: item.call.ID, Spec: item.spec, Status: operation.StatusRunning}
-		if forceSequential {
-			r.opMgr.AddSequential(op)
-		} else if sequential, ok := item.tool.(tool.SequentialTool); ok && sequential.Sequential() {
-			r.opMgr.AddSequential(op)
+		if sequential, ok := item.tool.(tool.SequentialTool); ok && sequential.Sequential() {
+			r.opMgr.AddSequential(op, sequentialQueueFor(item.tool))
 		} else {
 			r.opMgr.Add(op)
 		}
@@ -1703,7 +1701,6 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		decisions[decision.id] = authDecision{allow: decision.allow, err: decision.err}
 	}
 	authorized := make([]preparedTool, 0, len(prepared))
-	hasSequential := false
 	for _, item := range prepared {
 		decision := decisions[item.call.ID]
 		if decision.err != nil || !decision.allow {
@@ -1718,20 +1715,37 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			continue
 		}
 		authorized = append(authorized, item)
-		if sequential, ok := item.tool.(tool.SequentialTool); ok && sequential.Sequential() {
-			hasSequential = true
-		}
 	}
-	// One sequential tool makes the whole batch sequential. That is coarse, but
-	// a batch is a single model turn, and the model cannot see one call's result
-	// before emitting the next, so anything it batches together is a pipeline it
-	// expects to run in order rather than independent work.
+	// A sequential tool runs in its own lane, and the rest of the batch runs
+	// beside it rather than behind it.
+	//
+	// One sequential tool used to make the whole batch sequential, on the
+	// reasoning that a batch is a pipeline the model expects in order. That is
+	// true of the calls the model sequenced against each other and false of the
+	// rest: a batch of one edit and two reads is not a pipeline, and the reads
+	// lost their parallelism to a file write they do not depend on. Lanes are
+	// per resource now, so an edit and a browser action do not queue either.
+	//
+	// Order within a lane is still arrival order, which is what keeps a browser
+	// pipeline intact: the calls that must be sequential go to the same lane.
 	for _, item := range authorized {
-		if err := start(item, hasSequential); err != nil {
+		if err := start(item); err != nil {
 			return nil, nil, false, err
 		}
 	}
 	return dispatched, results, corrective, nil
+}
+
+// sequentialQueueFor is the lane a sequential tool runs in, or the default lane
+// when it names none. The default is the conservative choice: a tool that does
+// not say what it contends with is assumed to contend with everything.
+func sequentialQueueFor(t tool.Tool) string {
+	if named, ok := t.(tool.SequentialQueueTool); ok {
+		if lane := strings.TrimSpace(named.SequentialQueue()); lane != "" {
+			return lane
+		}
+	}
+	return operation.DefaultSequentialQueue
 }
 
 // fileMutatingSpecs are the operations whose whole purpose is to change a file.

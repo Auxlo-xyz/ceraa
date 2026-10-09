@@ -66,6 +66,7 @@ func (t *RunCommandWithSecretTool) Translate(args map[string]any) (operation.Spe
 }
 func (t *RunCommandWithSecretTool) TranslateResult(op operation.Operation) string { return op.Output }
 func (t *RunCommandWithSecretTool) Sequential() bool                              { return true }
+func (t *RunCommandWithSecretTool) SequentialQueue() string                       { return "shell" }
 func (t *RunCommandWithSecretTool) MutationKey(map[string]any) string             { return "secret-run" }
 
 // validEnvVarName keeps the injected name to something a shell can actually use.

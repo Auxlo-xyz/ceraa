@@ -38,7 +38,7 @@ func TestConcurrentWritesSerializeSamePath(t *testing.T) {
 	mgr := New(nil)
 	mgr.SetConcurrencyLimit(4)
 	for i := 0; i < 8; i++ {
-		mgr.AddSequential(Operation{ID: string(rune('a' + i)), Spec: Spec{Type: "write", Args: map[string]any{"path": path, "content": "value\n"}}})
+		mgr.AddSequential(Operation{ID: string(rune('a' + i)), Spec: Spec{Type: "write", Args: map[string]any{"path": path, "content": "value\n"}}}, "file")
 	}
 	for i := 0; i < 8; i++ {
 		select {

@@ -183,7 +183,8 @@ func displayBase(base string) string {
 // Sequential reports that a send must not race another one. Telegram accepts
 // them concurrently, but the results are returned in one message, so ordering
 // them keeps the transcript readable.
-func (s *SendMediaTool) Sequential() bool { return true }
+func (s *SendMediaTool) Sequential() bool        { return true }
+func (s *SendMediaTool) SequentialQueue() string { return "media" }
 
 // MediaEndpointFor chooses the Telegram method for a file, so an image arrives as
 // a viewable photo rather than a document with a preview the user must tap.

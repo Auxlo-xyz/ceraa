@@ -637,7 +637,8 @@ func (m *BrowserManager) closeIfIdleLocked() {
 // Sequential reports that browser actions must not run concurrently. They share
 // one page, so two actions at once would interleave on the same document and
 // produce results neither caller asked for.
-func (b *BrowserTool) Sequential() bool { return true }
+func (b *BrowserTool) Sequential() bool        { return true }
+func (b *BrowserTool) SequentialQueue() string { return "browser" }
 
 // browserOpenTarget resolves what to navigate to.
 //

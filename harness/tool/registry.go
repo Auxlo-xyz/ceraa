@@ -31,6 +31,20 @@ type SequentialTool interface {
 	Sequential() bool
 }
 
+// SequentialQueueTool names the lane a sequential tool runs on.
+//
+// The default lane serialises a sequential tool against every other one, which
+// is safe but coarse: it meant a batch holding one edit and one browser session
+// ran them one after the other even though they share nothing. Naming a lane
+// lets a batch carry an edit and a browser action at once, while two edits
+// still never interleave.
+//
+// It is optional, and a tool that does not implement it behaves exactly as it
+// did before this existed.
+type SequentialQueueTool interface {
+	SequentialQueue() string
+}
+
 type MutationKeyer interface {
 	MutationKey(args map[string]any) string
 }
@@ -252,6 +266,8 @@ func (w *WriteTool) TranslateResult(op operation.Operation) string {
 	return "written"
 }
 func (w *WriteTool) Sequential() bool { return true }
+
+func (w *WriteTool) SequentialQueue() string { return "file" }
 func (w *WriteTool) MutationKey(args map[string]any) string {
 	path, _ := args["path"].(string)
 	return path
@@ -307,6 +323,7 @@ func (e *EditTool) Translate(args map[string]any) (operation.Spec, error) {
 }
 func (e *EditTool) TranslateResult(op operation.Operation) string { return "edited" }
 func (e *EditTool) Sequential() bool                              { return true }
+func (e *EditTool) SequentialQueue() string                       { return "file" }
 func (e *EditTool) MutationKey(args map[string]any) string {
 	path, _ := args["path"].(string)
 	return path
@@ -378,6 +395,7 @@ func (b *BatchEditFileTool) Translate(args map[string]any) (operation.Spec, erro
 }
 func (b *BatchEditFileTool) TranslateResult(op operation.Operation) string { return "edited" }
 func (b *BatchEditFileTool) Sequential() bool                              { return true }
+func (b *BatchEditFileTool) SequentialQueue() string                       { return "file" }
 func (b *BatchEditFileTool) MutationKey(args map[string]any) string {
 	path, _ := args["path"].(string)
 	return path
