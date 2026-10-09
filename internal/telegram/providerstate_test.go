@@ -279,3 +279,26 @@ func stubProviders(t *testing.T) func() {
 	providers = newProviderState(config.NewStoreAt(filepath.Join(dir, "config.json")))
 	return func() { providers = previous }
 }
+
+// A stale config token must never shadow a working environment one. The live
+// incident: config held a placeholder while the environment held the real
+// token, the registry read config first, and send_media answered 401 on a
+// chat the bot itself could talk on.
+func TestMediaTokenPrefersEnvironmentOverConfig(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "env-token")
+	cfg := config.DefaultConfig()
+	cfg.Telegram.BotToken = "config-token"
+	if got := resolveMediaToken(cfg); got != "env-token" {
+		t.Errorf("media token = %q, want the environment value", got)
+	}
+}
+
+// With no environment token the config value is what there is.
+func TestMediaTokenFallsBackToConfig(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	cfg := config.DefaultConfig()
+	cfg.Telegram.BotToken = "config-token"
+	if got := resolveMediaToken(cfg); got != "config-token" {
+		t.Errorf("media token = %q, want the config value", got)
+	}
+}

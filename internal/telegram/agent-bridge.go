@@ -312,12 +312,20 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 // chat the user is already in. Resolving it here rather than threading it
 // through the run means there is exactly one place that decides where output
 // goes.
+// resolveMediaToken is the credential the send_media tool delivers with. It
+// resolves in the same order the daemon does: environment first, config
+// second. A stale config value must never shadow a working environment one,
+// or the bot talks while its own media tool answers 401 on the same chat.
+func resolveMediaToken(cfg *config.Config) string {
+	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
+		return token
+	}
+	return cfg.Telegram.BotToken
+}
+
 func telegramRegistry(cfg *config.Config, user string, skillStore *skills.Store) *tool.Registry {
 	registry := tool.DefaultRegistryForUser(user, skillStore)
-	token := cfg.Telegram.BotToken
-	if token == "" {
-		token = os.Getenv("TELEGRAM_BOT_TOKEN")
-	}
+	token := resolveMediaToken(cfg)
 	chatID := cfg.Telegram.AllowedUserID
 	if chatID == 0 {
 		chatID = defaultState.allowedUserID()
