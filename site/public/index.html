@@ -71,6 +71,8 @@
   }
   .nav-in { display: flex; align-items: center; gap: 20px; height: 66px; }
   .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; letter-spacing: -0.02em; font-size: 19px; }
+  .brand span { color: #FFFFFF; text-shadow: 0 1px 12px rgba(6, 26, 48, 0.35); transition: color .3s var(--ease); }
+  header.nav.solid .brand span { color: var(--ink); text-shadow: none; }
   .brand img { width: 30px; height: 30px; border-radius: 8px; }
   .nav-links { display: flex; align-items: center; gap: 26px; margin-left: auto; }
   .nav-links a {
@@ -228,6 +230,8 @@
     .two { grid-template-columns: 1fr 1fr; gap: 60px; }
     .g2 { grid-template-columns: 1fr 1fr; }
   }
+  .nav-cta { background: #FFFFFF; color: var(--ink); border-color: #FFFFFF; transition: background .3s var(--ease), color .3s var(--ease); }
+  header.nav.solid .nav-cta { background: var(--ink); color: var(--ground); border-color: var(--rule-strong); }
   @media (max-width: 767px) {
     /* Halved the dead space the headline was floating in. The band is now
        shorter than the portrait source, so cover trims the lower sky; the
@@ -458,6 +462,20 @@
     </div>
   </div>
 </footer>
+
+<script>
+(function () {
+  var nav = document.querySelector('header.nav');
+  var sky = document.querySelector('.sky');
+  if (!nav || !sky) return;
+  var onScroll = function () {
+    nav.classList.toggle('solid', window.scrollY > Math.max(0, sky.offsetHeight - 90));
+  };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll);
+  onScroll();
+})();
+</script>
 
 </body>
 </html>
