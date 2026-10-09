@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -576,5 +578,65 @@ func TestExtraHeadersFuncIsEvaluatedPerRequestAndCannotShadowTransportHeaders(t 
 	}
 	if seen[0]["X-Opencode-Request"] == "" {
 		t.Error("x-opencode-request was not sent")
+	}
+}
+
+// A provider refusing the reasoning level is the one 400 worth asking again
+// about, and the retry goes out without the level.
+func TestReasoningRetryFiresOnAParameterRejection(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "reasoning_effort") {
+			attempts = append(attempts, "with-reasoning")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"reasoning_effort max is not supported for this model"}}`)
+			return
+		}
+		attempts = append(attempts, "without-reasoning")
+		w.Header().Set("Content-Type", "text/event-stream")
+		encoded, _ := json.Marshal("ok")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", encoded)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := New(ProviderConfig{BaseURL: server.URL, APIKey: "k", Model: "m", MaxRetries: 0})
+	var seen strings.Builder
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		Reason:   ReasonMax,
+	}, func(d ProviderResponse) { seen.WriteString(d.Content) })
+	if err != nil {
+		t.Fatalf("the retry did not recover: %v", err)
+	}
+	if len(attempts) != 2 || attempts[0] != "with-reasoning" || attempts[1] != "without-reasoning" {
+		t.Fatalf("attempts = %v, want one with and one without reasoning", attempts)
+	}
+	if seen.String() != "ok" {
+		t.Errorf("content = %q", seen.String())
+	}
+}
+
+// A 400 that is not about reasoning is a genuinely bad request. Retrying it
+// only repeats the failure and doubles the bill.
+func TestReasoningRetryStaysOffForOtherBadRequests(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"messages: text content blocks must be non-empty"}}`)
+	}))
+	defer server.Close()
+	client := New(ProviderConfig{BaseURL: server.URL, APIKey: "k", Model: "m", MaxRetries: 0})
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+		Reason:   ReasonHigh,
+	}, func(ProviderResponse) {})
+	if err == nil {
+		t.Fatal("a bad request succeeded")
+	}
+	if attempts != 1 {
+		t.Fatalf("sent %d requests, want 1", attempts)
 	}
 }

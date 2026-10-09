@@ -242,6 +242,9 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
+		Reasoning:           llm.ReasonLevel(strings.TrimSpace(provider.Reasoning)),
+		ReasoningEfforts:    provider.ReasoningEfforts,
+		ReasoningDefault:    provider.ReasoningDefault,
 		Compactor:           compactor,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) { fmt.Print(content) },

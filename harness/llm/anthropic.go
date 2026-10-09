@@ -692,14 +692,28 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 // reasoning.effort is accepted and ignored, which is a silent way to send a
 // setting that appears to work and does nothing. Hermes and the DeepSeek harness
 // both name these three fields, so the spelling here is theirs.
+// anthropicEffort maps Ceraa's level onto the Messages API's effort vocabulary.
+//
+// It is one to one, including xhigh and max, which used to collapse into "high"
+// and made a model's top tier unreachable. Sending a level the model never
+// declared is a 400, so the guarantee comes from Thinking.Resolved rather than
+// from here: nothing above high reaches this function unless the catalog said
+// the model accepts it, and the reasoning retry catches the case where the
+// catalog and the endpoint disagree.
 func anthropicEffort(level ReasonLevel) string {
 	switch level {
 	case ReasonMinimal:
 		return "low"
-	case ReasonLow, ReasonMedium:
+	case ReasonLow:
+		return "low"
+	case ReasonMedium:
 		return "medium"
-	case ReasonHigh, ReasonXHigh, ReasonMax:
+	case ReasonHigh:
 		return "high"
+	case ReasonXHigh:
+		return "xhigh"
+	case ReasonMax:
+		return "max"
 	default:
 		return ""
 	}

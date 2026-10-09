@@ -893,6 +893,61 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	if c.cfg.AnthropicNative {
 		return c.streamAnthropic(ctx, req, onDelta)
 	}
+	return c.streamWithReasoningRetry(ctx, req, onDelta, c.streamOpenAI)
+}
+
+// streamWithReasoningRetry calls a transport and, if the provider rejected the
+// request over the reasoning level before a single token arrived, asks once
+// more without it.
+//
+// A level the model does not accept is a request the provider refuses, and
+// refusing is fatal: the run dies with a 400 and no diagnosis. The retry is a
+// cache read of the same prefix, so the second attempt costs almost nothing,
+// and it only fires when nothing was streamed, because a retry after deltas
+// would repeat content that has already been shown.
+func (c *StreamingClient) streamWithReasoningRetry(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse), stream func(context.Context, StreamRequest, func(ProviderResponse)) error) error {
+	emitted := 0
+	tracked := func(delta ProviderResponse) {
+		if onDelta != nil {
+			onDelta(delta)
+		}
+		emitted++
+	}
+	err := stream(ctx, req, tracked)
+	if !retryWithoutReasoning(err, req.Reason) || emitted > 0 {
+		return err
+	}
+	req.Reason = ""
+	return stream(ctx, req, tracked)
+}
+
+// retryWithoutReasoning reports whether an error is a provider refusing the
+// reasoning level, which is the one failure worth asking again about.
+//
+// The bodies differ per vendor - "reasoning_effort", "output_config.effort",
+// "thinking", and a plain mention of the parameter - so the match is on the
+// parameter name rather than on one vendor's wording. A 400 without any of
+// them is a genuinely bad request and retrying would only repeat it.
+func retryWithoutReasoning(err error, reason ReasonLevel) bool {
+	if err == nil || strings.TrimSpace(string(reason)) == "" {
+		return false
+	}
+	status, body := errorStatusAndBody(err)
+	if status != http.StatusBadRequest {
+		return false
+	}
+	lowered := strings.ToLower(body)
+	for _, needle := range []string{"reasoning", "effort", "thinking", "output_config"} {
+		if strings.Contains(lowered, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// streamOpenAI is the OpenAI-compatible path: chat completions on any host
+// that speaks it.
+func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
 	compatibility := compatibilityFor(c.cfg)
 	url := chatCompletionsURL(c.cfg.BaseURL)
 	msgs := encodeMessagesWithCompatibility(req.Messages, c.cfg.GeminiThoughtSignatures, compatibility)
@@ -1661,4 +1716,16 @@ func readLimited(r io.Reader) (string, error) {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// errorStatusAndBody pulls the status and body out of whatever a transport
+// wrapped. Providers answer a rejected parameter in several envelopes, and the
+// reasoning retry has to see through all of them: StreamError unwraps to the
+// ProviderError a stream was built from, and both are unwrapped here.
+func errorStatusAndBody(err error) (int, string) {
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.Status, providerErr.Body
+	}
+	return http.StatusOK, err.Error()
 }

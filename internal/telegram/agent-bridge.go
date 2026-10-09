@@ -167,6 +167,8 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
 		Reasoning:           reasoning,
+		ReasoningEfforts:    providerConfig.ReasoningEfforts,
+		ReasoningDefault:    providerConfig.ReasoningDefault,
 		SystemPrompt:        prompt.System,
 		Model:               modelConfig,
 		ResolveModel:        resolveModel,

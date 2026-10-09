@@ -29,9 +29,16 @@ import (
 )
 
 type RunnerConfig struct {
-	SessionID          string
-	SystemPrompt       string
-	Reasoning          llm.ReasonLevel
+	SessionID    string
+	SystemPrompt string
+	// Reasoning selects the level every request asks for.
+	Reasoning llm.ReasonLevel
+	// ReasoningEfforts and ReasoningDefault are the model's declared thinking
+	// vocabulary, resolved from the catalog when the provider was added. Empty
+	// means unresolved, and the level is clamped conservatively rather than
+	// guessed at.
+	ReasoningEfforts   []string
+	ReasoningDefault   string
 	StopWhenIdle       bool
 	Model              llm.ProviderConfig
 	ContextLimit       int
@@ -341,6 +348,11 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	if cfg.GoalDir == "" {
 		cfg.GoalDir = "sessions"
 	}
+	// The level is clamped once, here, so every request the runner makes carries
+	// a level the model said it accepts. It is the only place the configured
+	// level and the resolved vocabulary are both in hand, and doing it per
+	// request would mean the transport guessing.
+	cfg.Reasoning = llm.Thinking{Efforts: cfg.ReasoningEfforts, Default: cfg.ReasoningDefault, Known: len(cfg.ReasoningEfforts) > 0}.Resolved(cfg.Reasoning)
 	if cfg.ToolOutputDir == "" {
 		cfg.ToolOutputDir = defaultToolOutputDir(cfg.GoalDir)
 	}

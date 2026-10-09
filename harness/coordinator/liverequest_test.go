@@ -119,3 +119,36 @@ func TestSpoolDefaultsBesideTheSessions(t *testing.T) {
 		t.Errorf("spool dir = %q, want %q", r.cfg.ToolOutputDir, want)
 	}
 }
+
+// The configured level is clamped against the vocabulary the catalog resolved,
+// once, so every request the runner makes carries a sendable level. A model
+// whose vocabulary is max/high/low must never be sent medium.
+func TestRunnerClampsTheReasoningLevel(t *testing.T) {
+	reg := tool.NewRegistry()
+	runner := New(RunnerConfig{
+		SessionID:        "clamp",
+		SystemPrompt:     "system",
+		Model:            llm.FromProvider("https://x.invalid/v1", "k", "m"),
+		Reasoning:        llm.ReasonMedium,
+		ReasoningEfforts: []string{"max", "high", "low"},
+		ReasoningDefault: "high",
+	}, nil, reg)
+	if runner.cfg.Reasoning != llm.ReasonHigh {
+		t.Fatalf("reasoning = %q, want high", runner.cfg.Reasoning)
+	}
+}
+
+// With no resolved vocabulary the conservative mapping stands, which is the
+// behaviour the transport had before the catalog was parsed.
+func TestRunnerKeepsTheTopTierWhenUnresolved(t *testing.T) {
+	reg := tool.NewRegistry()
+	runner := New(RunnerConfig{
+		SessionID:    "clamp",
+		SystemPrompt: "system",
+		Model:        llm.FromProvider("https://x.invalid/v1", "k", "m"),
+		Reasoning:    llm.ReasonMax,
+	}, nil, reg)
+	if runner.cfg.Reasoning != llm.ReasonHigh {
+		t.Fatalf("reasoning = %q, want high", runner.cfg.Reasoning)
+	}
+}

@@ -586,14 +586,18 @@ func TestThinkingOffSendsNothing(t *testing.T) {
 	}
 }
 
+// One to one, including the top tier. xhigh and max used to collapse into high,
+// which made a model's top tier unreachable no matter what the catalog said it
+// accepted. The guarantee that a level is sendable lives in Thinking.Resolved,
+// not here.
 func TestAnthropicEffortMapping(t *testing.T) {
 	cases := map[ReasonLevel]string{
 		ReasonMinimal: "low",
-		ReasonLow:     "medium",
+		ReasonLow:     "low",
 		ReasonMedium:  "medium",
 		ReasonHigh:    "high",
-		ReasonXHigh:   "high",
-		ReasonMax:     "high",
+		ReasonXHigh:   "xhigh",
+		ReasonMax:     "max",
 	}
 	for level, want := range cases {
 		if got := anthropicEffort(level); got != want {

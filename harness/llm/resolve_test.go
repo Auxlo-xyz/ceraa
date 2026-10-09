@@ -22,9 +22,11 @@ func TestNormalizeCatalogModelStripsFreeVariants(t *testing.T) {
 	}
 }
 
+// With no declared vocabulary the levels Ceraa has always sent pass through,
+// and the top tier collapses to high: see TestThinkingCollapsesTheTopTierWhenUnresolved.
 func TestThinkingPassesThroughWhenUnresolved(t *testing.T) {
 	tk := Thinking{}
-	for _, level := range []ReasonLevel{ReasonOff, ReasonLow, ReasonMedium, ReasonHigh, ReasonMax} {
+	for _, level := range []ReasonLevel{ReasonOff, ReasonMinimal, ReasonLow, ReasonMedium, ReasonHigh} {
 		if got := tk.Resolved(level); got != level {
 			t.Errorf("unresolved thinking rewrote %s to %s", level, got)
 		}
@@ -42,11 +44,16 @@ func TestThinkingClampsToTheDeclaredVocabulary(t *testing.T) {
 		ReasonMax:     "max",
 		ReasonMinimal: "high",
 		ReasonXHigh:   "high",
-		ReasonOff:     "high",
 	} {
 		if got := tk.Resolved(level); got != want {
 			t.Errorf("Resolved(%s) = %s, want %s", level, got, want)
 		}
+	}
+	// "off" means send no reasoning field at all, which is how the provider is
+	// left on its own default. It is never clamped into a thinking tier, or a
+	// user who asked for none would be billed for the top one.
+	if got := tk.Resolved(ReasonOff); got != ReasonOff {
+		t.Errorf("Resolved(off) = %s, want off", got)
 	}
 	if tk.Allows(ReasonMedium) {
 		t.Error("medium was reported as allowed")
@@ -62,5 +69,52 @@ func TestThinkingLeavesAVocabularylessModelAlone(t *testing.T) {
 	tk := Thinking{Known: true}
 	if got := tk.Resolved(ReasonMedium); got != ReasonMedium {
 		t.Errorf("a model with no declared vocabulary was rewritten: %s", got)
+	}
+}
+
+// An unresolved vocabulary keeps the old conservative shape: xhigh and max
+// collapse to high, because a tier the model never claimed is a 400.
+func TestThinkingCollapsesTheTopTierWhenUnresolved(t *testing.T) {
+	tk := Thinking{}
+	for level, want := range map[ReasonLevel]ReasonLevel{
+		ReasonXHigh: ReasonHigh,
+		ReasonMax:   ReasonHigh,
+		ReasonHigh:  ReasonHigh,
+		ReasonLow:   ReasonLow,
+	} {
+		if got := tk.Resolved(level); got != want {
+			t.Errorf("Resolved(%s) = %s, want %s", level, got, want)
+		}
+	}
+}
+
+// With a declared vocabulary the top tier survives, which is the point.
+func TestThinkingKeepsTheDeclaredTopTier(t *testing.T) {
+	tk := Thinking{Known: true, Efforts: []string{"max", "xhigh", "high", "low"}, Default: "high"}
+	for level, want := range map[ReasonLevel]ReasonLevel{
+		ReasonMax:   ReasonMax,
+		ReasonXHigh: ReasonXHigh,
+		ReasonHigh:  ReasonHigh,
+	} {
+		if got := tk.Resolved(level); got != want {
+			t.Errorf("Resolved(%s) = %s, want %s", level, got, want)
+		}
+	}
+}
+
+// The transport mapping is one to one now, including the top tier.
+func TestAnthropicEffortIsOneToOne(t *testing.T) {
+	for level, want := range map[ReasonLevel]string{
+		ReasonMinimal: "low",
+		ReasonLow:     "low",
+		ReasonMedium:  "medium",
+		ReasonHigh:    "high",
+		ReasonXHigh:   "xhigh",
+		ReasonMax:     "max",
+		ReasonOff:     "",
+	} {
+		if got := anthropicEffort(level); got != want {
+			t.Errorf("anthropicEffort(%s) = %q, want %q", level, got, want)
+		}
 	}
 }

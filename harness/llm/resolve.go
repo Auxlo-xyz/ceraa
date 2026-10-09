@@ -42,8 +42,20 @@ func (t Thinking) Allows(level ReasonLevel) bool {
 // Resolved returns the level to actually send for a request: the requested one
 // when the model accepts it, otherwise the nearest effort it does accept, and
 // its own default when it accepts none of Ceraa's levels at all.
+//
+// With no declared vocabulary the conservative mapping stands: xhigh and max
+// collapse to high, because sending a tier the model never claimed is a 400 and
+// the request would be lost. That is the shape this transport had before the
+// catalog was parsed, kept as the default rather than as a regression.
 func (t Thinking) Resolved(level ReasonLevel) ReasonLevel {
+	if level == "" || level == ReasonOff {
+		return level
+	}
 	if !t.Known || len(t.Efforts) == 0 {
+		switch level {
+		case ReasonXHigh, ReasonMax:
+			return ReasonHigh
+		}
 		return level
 	}
 	if t.Allows(level) {
