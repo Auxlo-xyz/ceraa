@@ -223,7 +223,7 @@ const summaryBoundaryRules = `Reply with the summary and nothing else: do not ca
 // request.
 func compactionInstruction(attempt int) string {
 	instruction := strings.Join([]string{
-		"Produce a compaction of this conversation: a checkpoint a fresh reader will be given in place of everything above it. If the conversation holds a prior checkpoint, carry its unresolved items forward: anything omitted is permanently lost.",
+		"Record what you need to remember from everything above. You will continue this same work with only this note and the recent tail; write it as yourself, to yourself. If the conversation holds a prior checkpoint, carry its unresolved items forward: anything omitted is permanently lost.",
 		summaryTemplate,
 		summaryBoundaryRules,
 	}, "\n\n")

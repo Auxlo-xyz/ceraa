@@ -449,7 +449,7 @@ func TestManualCompactionGoesInBandByDefault(t *testing.T) {
 	}
 	last, _ := sent[len(sent)-1].(map[string]any)
 	content, _ := last["content"].(string)
-	if !strings.Contains(content, "Produce a compaction of this conversation") {
+	if !strings.Contains(content, "write it as yourself, to yourself") {
 		t.Errorf("the last message is not the compaction instruction: %.120q", content)
 	}
 	if first["tool_choice"] != "none" {

@@ -206,7 +206,7 @@ func TestInBandCompactionSummarisesOverTheLiveRequest(t *testing.T) {
 		t.Error("no checkpoint was written to the session")
 	}
 	for _, message := range sess.Messages {
-		if strings.Contains(message.Content, "Produce a compaction of this conversation") {
+		if strings.Contains(message.Content, "write it as yourself, to yourself") {
 			t.Error("the instruction leaked into the session transcript")
 		}
 	}
