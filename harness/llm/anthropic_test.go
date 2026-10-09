@@ -32,10 +32,7 @@ func TestMessagesRequestShape(t *testing.T) {
 	}
 	tools := []ToolDef{{Name: "read", Description: "read a file", Parameters: map[string]any{"type": "object"}}}
 
-	messages, err := encodeAnthropicMessages(items)
-	if err != nil {
-		t.Fatal(err)
-	}
+	messages := encodeAnthropicMessages(items)
 	system := anthropicSystemBlocks(joinSystemText(items), 0, cfg)
 	convertedTools := anthropicTools(tools, cfg)
 	body := map[string]any{
@@ -282,10 +279,7 @@ func TestDuplicateToolResultsAreCollapsed(t *testing.T) {
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "first"},
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "second"},
 	}
-	messages, err := encodeAnthropicMessages(items)
-	if err != nil {
-		t.Fatal(err)
-	}
+	messages := encodeAnthropicMessages(items)
 	encoded, _ := json.Marshal(messages)
 	raw := string(encoded)
 	if strings.Count(raw, `"tool_result"`) != 1 {
@@ -795,10 +789,7 @@ func TestToolInputIsOneJSONValueAndSurvivesEncoding(t *testing.T) {
 		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: calls[0].Arguments},
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "bin\nprompt"},
 	}
-	messages, err := encodeAnthropicMessages(items)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	messages := encodeAnthropicMessages(items)
 	if _, err := json.Marshal(messages); err != nil {
 		t.Fatalf("the follow-up request does not encode: %v", err)
 	}
@@ -842,29 +833,117 @@ func TestToolInputWithoutFragments(t *testing.T) {
 	}
 }
 
-// Malformed arguments are reported against the tool that produced them, with a
-// bounded snippet, instead of surfacing as an encoding error from inside
-// encoding/json that names neither.
-func TestMalformedToolArgumentsAreNamedAndBounded(t *testing.T) {
-	long := strings.Repeat("x", 400)
-	_, err := encodeAnthropicMessages([]Item{
-		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: `{}{"command":"ls"}`},
+// readToolCalls runs a raw SSE stream and returns the tool calls it emits.
+func readToolCalls(t *testing.T, stream string) []StreamedToolCall {
+	t.Helper()
+	var calls []StreamedToolCall
+	client := &StreamingClient{}
+	err := client.readAnthropicStream(strings.NewReader(stream), func(r ProviderResponse) {
+		calls = append(calls, r.ToolCalls...)
 	})
-	if err == nil {
-		t.Fatal("two concatenated JSON values were accepted as tool input")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
 	}
-	if !strings.Contains(err.Error(), "bash") {
-		t.Errorf("the error does not name the tool: %v", err)
-	}
+	return calls
+}
 
-	_, err = encodeAnthropicMessages([]Item{
-		{Kind: "tool_call", CallID: "c1", Name: "bash", Args: long},
-	})
-	if err == nil {
-		t.Fatal("a non-JSON argument value was accepted")
+// A compatibility layer is free to number its content blocks however it likes,
+// and one of them numbers every tool block 0. Downstream, MergeStreamedToolCalls
+// keys on that number, so two calls sharing it become one: the arguments of both
+// concatenated and the name of whichever block stopped last. The session that
+// produced this showed {"command":"..."}{"limit":40} stored under the name read,
+// and because this transport encodes arguments as a raw JSON value, every later
+// request for that session failed at step 0 with the same error.
+func TestTwoToolBlocksSharingAContentIndexStaySeparate(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"M"},"usage":{}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_2","name":"read","input":{}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"/tmp/x\"}"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	calls := readToolCalls(t, stream)
+	merged := MergeStreamedToolCalls(nil, calls)
+	if len(merged) != 2 {
+		t.Fatalf("got %d calls after the merge, want 2: %+v", len(merged), merged)
 	}
-	if len(err.Error()) > 260 {
-		t.Errorf("the error is %d bytes; the snippet is not bounded: %v", len(err.Error()), err)
+	if merged[0].Name != "bash" || merged[0].Arguments != `{"command":"ls"}` {
+		t.Errorf("first call = %s(%s)", merged[0].Name, merged[0].Arguments)
+	}
+	if merged[1].Name != "read" || merged[1].Arguments != `{"path":"/tmp/x"}` {
+		t.Errorf("second call = %s(%s)", merged[1].Name, merged[1].Arguments)
+	}
+	if merged[0].Index == merged[1].Index {
+		t.Errorf("both calls carry index %d, so they collide downstream", merged[0].Index)
+	}
+}
+
+// The same collision without a stop between the blocks: the second block starts
+// at an index the first never released, so its input is appended to the first
+// block's rather than replacing it.
+func TestAToolBlockIsFinishedWhenTheNextOneStartsAtItsIndex(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"M"},"usage":{}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_2","name":"read","input":{}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"/tmp/x\"}"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n"
+
+	merged := MergeStreamedToolCalls(nil, readToolCalls(t, stream))
+	if len(merged) != 2 {
+		t.Fatalf("got %d calls, want 2: %+v", len(merged), merged)
+	}
+	if merged[0].Name != "bash" || merged[0].Arguments != `{"command":"ls"}` {
+		t.Errorf("first call = %s(%s)", merged[0].Name, merged[0].Arguments)
+	}
+	if merged[1].Name != "read" || merged[1].Arguments != `{"path":"/tmp/x"}` {
+		t.Errorf("second call = %s(%s)", merged[1].Name, merged[1].Arguments)
+	}
+}
+
+// Stored arguments are normalised rather than validated. This transport puts
+// them on the wire as a raw JSON value, so an entry that will not encode used
+// to fail the whole request - and because the entry is history, it failed every
+// later request too, leaving a session that could never be sent again. The two
+// shapes that actually reach here are two values run together and a string that
+// is not JSON at all, and both have to leave an encodable request behind.
+func TestToolInputIsRecoveredRatherThanRefused(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{"seed plus streamed fragments", `{}{"command":"ls"}`, `{"command":"ls"}`},
+		{"two calls fused by a shared index", `{"command":"ls -la"}{"path":"/tmp/x"}`, `{"command":"ls -la"}`},
+		{"not json at all", long, "{}"},
+		{"nothing", "   ", "{}"},
+		{"already one value", `{"path":"/tmp/x"}`, `{"path":"/tmp/x"}`},
+	} {
+		if got := string(toolInputJSON(tc.args)); got != tc.want {
+			t.Errorf("%s: input = %s, want %s", tc.name, got, tc.want)
+		}
+		messages := encodeAnthropicMessages([]Item{
+			{Kind: "tool_call", CallID: "c1", Name: "bash", Args: tc.args},
+			{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "ok"},
+		})
+		if len(messages) != 2 {
+			t.Fatalf("%s: got %d messages, want the call and its result", tc.name, len(messages))
+		}
+		encoded, err := json.Marshal(messages)
+		if err != nil {
+			t.Fatalf("%s: the follow-up request does not encode: %v", tc.name, err)
+		}
+		if !strings.Contains(string(encoded), `"name":"bash"`) {
+			t.Errorf("%s: the tool call is missing from the request: %s", tc.name, encoded)
+		}
 	}
 }
 
@@ -957,10 +1036,7 @@ func TestParallelToolCallsSurviveEncoding(t *testing.T) {
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "bash", Output: "b"},
 		{Kind: "text", Role: RoleTool, CallID: "c2", Name: "bash", Output: "c"},
 	}
-	messages, err := encodeAnthropicMessages(items)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	messages := encodeAnthropicMessages(items)
 	uses := map[string]bool{}
 	results := map[string]bool{}
 	for _, m := range messages {
@@ -1006,13 +1082,10 @@ func TestParallelToolCallsSurviveEncoding(t *testing.T) {
 // An empty batch must not produce an empty assistant turn, which the endpoint
 // would reject outright.
 func TestAnEmptyParallelBatchIsDropped(t *testing.T) {
-	messages, err := encodeAnthropicMessages([]Item{
+	messages := encodeAnthropicMessages([]Item{
 		{Kind: "text", Role: RoleUser, Text: "hi"},
 		{Kind: "tool_calls"},
 	})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
 	for _, m := range messages {
 		if m.Role == "assistant" {
 			t.Error("an empty tool_calls item produced an empty assistant message")
@@ -1037,10 +1110,7 @@ func TestAnImageReadTravelsAsAnImageBlock(t *testing.T) {
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read",
 			Output: "shot.png attached as an image (image/png, 1.2 kB).", Images: []string{shot}},
 	}
-	messages, err := encodeAnthropicMessages(items)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	messages := encodeAnthropicMessages(items)
 	encoded, err := json.Marshal(messages)
 	if err != nil {
 		t.Fatalf("the request does not encode: %v", err)
@@ -1088,8 +1158,10 @@ func TestAMissingImageDegradesToText(t *testing.T) {
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read",
 			Output: "shot.png attached as an image.", Images: []string{filepath.Join(t.TempDir(), "gone.png")}},
 	}
-	if _, err := encodeAnthropicMessages(items); err != nil {
-		t.Errorf("a missing image failed the encode: %v", err)
+	// Encoding cannot refuse any more, so what is left to assert is that the
+	// turn survives: a missing file must not drop the message it was on.
+	if messages := encodeAnthropicMessages(items); len(messages) == 0 {
+		t.Errorf("a missing image emptied the encoded request")
 	}
 }
 
@@ -1549,16 +1621,13 @@ func TestStreamKeepsSignatureOnlyThinkingBlock(t *testing.T) {
 // text or tool_use. Anything else is the malformed request.
 func TestEncodeRepeatsThinkingBlocksFirst(t *testing.T) {
 	details := json.RawMessage(`[{"type":"thinking","thinking":"Let me think.","signature":"SIG1"},{"type":"redacted_thinking","data":"REDACTED1"}]`)
-	msgs, err := encodeAnthropicMessages([]Item{{
+	msgs := encodeAnthropicMessages([]Item{{
 		Kind: "tool_calls", Role: RoleAssistant, Text: "checking",
 		ToolCalls:        []ToolCall{{ID: "toolu_1", Name: "read", Args: `{}`}},
 		ReasoningDetails: details,
 	}, {
 		Kind: "text", Role: RoleTool, CallID: "toolu_1", Output: "ok",
 	}})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages, want assistant + tool result", len(msgs))
 	}
@@ -1582,15 +1651,12 @@ func TestEncodeRepeatsThinkingBlocksFirst(t *testing.T) {
 // the model never had, which is worse than omitting it.
 func TestEncodeIgnoresForeignReasoningDetails(t *testing.T) {
 	details := json.RawMessage(`{"summary":"someone else's format"}`)
-	msgs, err := encodeAnthropicMessages([]Item{{
+	msgs := encodeAnthropicMessages([]Item{{
 		Kind: "tool_call", Role: RoleAssistant, CallID: "toolu_1", Name: "read", Args: `{}`,
 		ReasoningDetails: details,
 	}, {
 		Kind: "text", Role: RoleTool, CallID: "toolu_1", Output: "ok",
 	}})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
 	if len(msgs) != 2 || len(msgs[0].Content) != 1 || msgs[0].Content[0]["type"] != "tool_use" {
 		t.Fatalf("foreign details leaked into the message: %+v", msgs)
 	}

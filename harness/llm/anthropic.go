@@ -181,26 +181,57 @@ func (b *toolInputBuilder) arguments() string {
 	return value
 }
 
-// toolInputJSON validates one tool_use input value and describes it if it cannot
-// be sent.
+// toolInputJSON renders stored tool arguments as one JSON value.
 //
-// The value reaches json.RawMessage on the request, so a malformed one is
-// otherwise only visible as "invalid character '{' after top-level value" from
-// deep inside encoding/json, naming neither the tool nor the arguments. The
-// snippet is bounded because arguments are model output and can be large.
-func toolInputJSON(name, arguments string) (json.RawMessage, error) {
+// It never fails. This runs on every request, so a refusal here turns one
+// malformed entry in history into a session that can never be sent again: the
+// same error at step 0 for every later prompt, with no way forward but deleting
+// the message that caused it. The fault is already reported where it happened,
+// because the executor answers the call with "invalid JSON arguments for
+// <tool>", which is what the model sees. What is left here is to keep the
+// conversation sendable.
+//
+// Recovery walks the top-level values in order and takes the first that carries
+// anything. Two values running together is the shape a fused tool block leaves
+// behind, {"command":"ls"}{"limit":40}, and the meaningful half of it is still
+// an object the endpoint accepts; only a string holding no JSON at all becomes
+// {}.
+func toolInputJSON(arguments string) json.RawMessage {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
-		trimmed = "{}"
+		return json.RawMessage("{}")
 	}
-	if !json.Valid([]byte(trimmed)) {
-		snippet := trimmed
-		if len(snippet) > 120 {
-			snippet = snippet[:120] + "…"
+	if json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed)
+	}
+	if recovered := firstMeaningfulJSONValue(trimmed); recovered != "" {
+		return json.RawMessage(recovered)
+	}
+	return json.RawMessage("{}")
+}
+
+// firstMeaningfulJSONValue returns the first top-level JSON value in s that
+// carries something, skipping empty objects and arrays.
+func firstMeaningfulJSONValue(s string) string {
+	decoder := json.NewDecoder(strings.NewReader(s))
+	fallback := ""
+	for {
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			break
 		}
-		return nil, fmt.Errorf("tool %q returned arguments that are not one JSON value: %q", name, snippet)
+		trimmed := strings.TrimSpace(string(value))
+		if trimmed == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = trimmed
+		}
+		if trimmed != "{}" && trimmed != "[]" {
+			return trimmed
+		}
 	}
-	return json.RawMessage(trimmed), nil
+	return fallback
 }
 
 // encodeAnthropicMessages converts stored items into Anthropic message turns.
@@ -214,10 +245,9 @@ func toolInputJSON(name, arguments string) (json.RawMessage, error) {
 // A result carries the call id, and the name is recovered from the call history
 // because the Messages API matches on id and the name is only for readability.
 //
-// It returns an error when a tool call's arguments are not one JSON value, so the
-// fault is reported against the tool that produced it rather than surfacing later
-// as an encoding failure with no indication of which call was at fault.
-func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
+// Stored arguments are normalised rather than validated, because an entry that
+// will not encode has to be sent anyway: see toolInputJSON.
+func encodeAnthropicMessages(items []Item) []anthropicMessage {
 	items = normalizeItemsForChat(items)
 	// One result per call id. History recorded across an interrupted run can hold
 	// two, and a duplicate tool_result for the same id is malformed.
@@ -305,10 +335,7 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 			})
 		case "tool_call":
 			flush()
-			input, err := toolInputJSON(item.Name, item.Args)
-			if err != nil {
-				return nil, err
-			}
+			input := toolInputJSON(item.Args)
 			// Thinking blocks open the message when the turn had them: the
 			// call was made under thinking, and the endpoint requires the
 			// thinking it already saw to come back with it.
@@ -336,10 +363,7 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 			flush()
 			blocks := make([]map[string]any, 0, len(item.ToolCalls))
 			for _, call := range item.ToolCalls {
-				input, err := toolInputJSON(call.Name, call.Args)
-				if err != nil {
-					return nil, err
-				}
+				input := toolInputJSON(call.Args)
 				blocks = append(blocks, map[string]any{
 					"type":  "tool_use",
 					"id":    call.ID,
@@ -365,7 +389,7 @@ func encodeAnthropicMessages(items []Item) ([]anthropicMessage, error) {
 		}
 	}
 	flush()
-	return messages, nil
+	return messages
 }
 
 // anthropicThinkingBlocks returns stored thinking blocks for an assistant
@@ -530,10 +554,7 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 		return err
 	}
 
-	messages, err := encodeAnthropicMessages(req.Messages)
-	if err != nil {
-		return err
-	}
+	messages := encodeAnthropicMessages(req.Messages)
 	if len(messages) == 0 {
 		return fmt.Errorf("no messages to send to the messages API")
 	}
@@ -839,6 +860,53 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 	// session is the {} seed with the real arguments discarded.
 	toolInput := map[int]*toolInputBuilder{}
 	toolName := map[int]string{}
+	// The index on the wire is the provider's content-block number, and it is
+	// not trustworthy: a Messages API compatibility layer that reuses 0 for
+	// every block makes two unrelated tool calls share a key. MergeStreamedToolCalls
+	// keys on Index, so a shared index concatenates their arguments and takes
+	// the name of whichever block stopped last, which is how a stored call came
+	// out as {"command":"ls"}{"limit":40} under the name read. toolSeq hands each
+	// tool block a sequence of its own so no two ever collide downstream.
+	toolSeq := map[int]int{}
+	toolID := map[int]string{}
+	nextToolSeq := 0
+
+	// finishToolBlock emits one accumulated tool block and releases it.
+	//
+	// It is used from content_block_stop, the normal end of a block, and from
+	// content_block_start when the index is still held: an endpoint that never
+	// sent the stop would otherwise have the next block's input appended to this
+	// one's, since both address the same slot.
+	finishToolBlock := func(index int, builder *toolInputBuilder) {
+		if builder == nil || onDelta == nil {
+			return
+		}
+		name := toolName[index]
+		if name == "" {
+			delete(toolInput, index)
+			delete(toolName, index)
+			delete(toolSeq, index)
+			delete(toolID, index)
+			return
+		}
+		arguments := builder.arguments()
+		if strings.TrimSpace(arguments) == "" {
+			arguments = "{}"
+		}
+		sequence := toolSeq[index]
+		identifier := toolID[index]
+		delete(toolInput, index)
+		delete(toolName, index)
+		delete(toolSeq, index)
+		delete(toolID, index)
+		onDelta(ProviderResponse{ToolCalls: []StreamedToolCall{{
+			Index:     sequence,
+			ID:        identifier,
+			Name:      name,
+			Arguments: arguments,
+		}}})
+	}
+
 	// Thinking blocks must be passed back verbatim on the next request while
 	// thinking mode is on; dropping them is a 400 on a strict endpoint. They
 	// accumulate here per block index exactly like tool input does, and each
@@ -924,17 +992,22 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 				thinking[event.Index] = &thinkingAccumulator{kind: event.ContentBlock.Type, data: event.ContentBlock.Data}
 			}
 			if event.ContentBlock.Type == "tool_use" {
-				toolName[event.Index] = event.ContentBlock.Name
-				// Registered even with no input, so a block that never streams a
-				// fragment still produces a tool call at content_block_stop. It
-				// used to be created only when input was present, and a block with
-				// neither input nor fragments emitted nothing, so the call the
-				// model made simply disappeared.
-				builder := toolInput[event.Index]
-				if builder == nil {
-					builder = &toolInputBuilder{}
-					toolInput[event.Index] = builder
+				// The previous block at this index never stopped. Emit it before
+				// its input is overwritten, or two calls become one.
+				if held, ok := toolInput[event.Index]; ok {
+					finishToolBlock(event.Index, held)
 				}
+				toolName[event.Index] = event.ContentBlock.Name
+				toolID[event.Index] = event.ContentBlock.ID
+				toolSeq[event.Index] = nextToolSeq
+				nextToolSeq++
+				// Always a fresh builder: registered even with no input, so a
+				// block that never streams a fragment still produces a tool call
+				// at content_block_stop. It used to be created only when input
+				// was present, and a block with neither input nor fragments
+				// emitted nothing, so the call the model made simply disappeared.
+				builder := &toolInputBuilder{}
+				toolInput[event.Index] = builder
 				if len(event.ContentBlock.Input) > 0 {
 					builder.seed.Write(event.ContentBlock.Input)
 				}
@@ -973,20 +1046,7 @@ func (c *StreamingClient) readAnthropicStream(r io.Reader, onDelta func(Provider
 				delete(thinking, event.Index)
 			}
 			if builder, ok := toolInput[event.Index]; ok {
-				name := toolName[event.Index]
-				if name != "" && onDelta != nil {
-					arguments := builder.arguments()
-					if strings.TrimSpace(arguments) == "" {
-						arguments = "{}"
-					}
-					onDelta(ProviderResponse{ToolCalls: []StreamedToolCall{{
-						Index:     event.Index,
-						Name:      name,
-						Arguments: arguments,
-					}}})
-				}
-				delete(toolInput, event.Index)
-				delete(toolName, event.Index)
+				finishToolBlock(event.Index, builder)
 			}
 		case "message_delta":
 			// Replaces what message_start reported rather than adding to it.

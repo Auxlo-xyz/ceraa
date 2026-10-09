@@ -56,10 +56,7 @@ func TestLiveTheModelSeesAnImageReadByTheReadTool(t *testing.T) {
 		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read",
 			Output: "probe.png attached as an image (image/png, 96 kB).", Images: []string{shot}},
 	}
-	encoded, err := encodeAnthropicMessages(items)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	encoded := encodeAnthropicMessages(items)
 	wire, _ := json.Marshal(encoded)
 	if !bytes.Contains(wire, []byte(`"type":"image"`)) {
 		t.Fatalf("no image block in the encoded request:\n%s", wire)
