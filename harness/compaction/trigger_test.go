@@ -33,6 +33,27 @@ func TestCompactAtIsNinetyPercentOfAnyGenerousWindow(t *testing.T) {
 // point. The raw difference is negative on a small window, and a negative
 // threshold is exceeded by every turn, so compaction would run forever and never
 // reclaim anything.
+// The reported bug, end to end. A split-reporting endpoint reports the cache read
+// beside the fresh input, so the turn's TotalTokens carries the fresh tokens only.
+// This session's last turn re-read a 185k prefix and reported 2,700 tokens; the
+// trigger compared that against 90% of the window and stayed silent while the real
+// prompt was over 187k.
+func TestNeedsCompactionCountsTheCachedPrefix(t *testing.T) {
+	usage := llm.UsageInfo{InputTokens: 1200, CachedInputTokens: 185000, OutputTokens: 1500, TotalTokens: 2700}
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{{Role: llm.RoleAssistant, Usage: usage}}}
+	c := compactorFor(200000, 8192)
+	if usage.TotalTokens >= c.compactAt() {
+		t.Fatalf("this fixture no longer separates TotalTokens (%d) from ContextTokens; pick another", usage.TotalTokens)
+	}
+	want := 1200 + 185000 + 1500
+	if got := EstimatedContext(sess); got != want {
+		t.Fatalf("estimatedContext = %d, want %d; the cached prefix is part of the prompt", got, want)
+	}
+	if !c.NeedsCompaction(sess) {
+		t.Fatal("a session whose prompt is 187.7k of a 200k window did not compact")
+	}
+}
+
 func TestCompactAtStaysPositiveOnASmallWindow(t *testing.T) {
 	for _, window := range []int{4000, 8000, 16000, 32000} {
 		c := compactorFor(window, 8192)
@@ -117,11 +138,13 @@ func TestConfiguredBufferRaisesTheTrigger(t *testing.T) {
 // subtracts it for itself, and doing it here as well was the double count.
 func TestResolvedWindowIsTheWindowNotLess(t *testing.T) {
 	for _, window := range []int{8000, 32000, 200000, 1000000} {
-		got, source := llm.ResolveContextWindow(0, llm.ModelMetadata{ContextWindow: window})
+		// Configured equal to the advertised window: the limit governs and is
+		// returned whole rather than shaved for headroom.
+		got, source := llm.ResolveContextWindow(window, llm.ModelMetadata{ContextWindow: window})
 		if got != window {
 			t.Errorf("window %d resolved to %d, want the window unchanged", window, got)
 		}
-		if source != llm.ContextFromCatalog {
+		if source != llm.ContextFromProfile {
 			t.Errorf("window %d: source = %s", window, source)
 		}
 	}

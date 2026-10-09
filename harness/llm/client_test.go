@@ -170,6 +170,31 @@ func TestAddPromptCacheFieldsCanDisableCaching(t *testing.T) {
 	}
 }
 
+// The context a request occupied is the whole prompt plus the reply. On a
+// split-reporting endpoint the cache read is reported beside the fresh input, so
+// it must be added back; where a cache hit is already inside the input, adding it
+// would count the same tokens twice.
+func TestUsageContextTokens(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage UsageInfo
+		want  int
+	}{
+		{"split reporting adds the cached prefix", UsageInfo{InputTokens: 1616, CachedInputTokens: 76416, OutputTokens: 2287, TotalTokens: 3903}, 1616 + 76416 + 2287},
+		{"a subset cache hit is not counted twice", UsageInfo{InputTokens: 1000, CachedInputTokens: 900, OutputTokens: 50, TotalTokens: 1050}, 1050},
+		{"a fully cached prompt still counts", UsageInfo{CachedInputTokens: 5000, OutputTokens: 40, TotalTokens: 40}, 5040},
+		{"reasoning tokens stay counted", UsageInfo{InputTokens: 100, OutputTokens: 20, ReasoningTokens: 8, TotalTokens: 128}, 128},
+		{"nothing reported stays zero", UsageInfo{}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.usage.ContextTokens(); got != tc.want {
+				t.Errorf("ContextTokens(%+v) = %d, want %d", tc.usage, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestUsageCacheReadRatio(t *testing.T) {
 	usage := UsageInfo{InputTokens: 100, CachedInputTokens: 75}
 	if usage.CacheReadRatio() != 0.75 {

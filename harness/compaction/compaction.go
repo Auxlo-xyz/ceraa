@@ -85,12 +85,29 @@ func estimateSession(sess *sessionstore.Session) int {
 	return total
 }
 
-func estimatedContext(sess *sessionstore.Session) int {
+// EstimatedContext is the size of the context a session is carrying: the whole
+// prompt the last turn sent, cached prefix included, plus whatever was appended
+// since.
+//
+// It is exported because it is the figure the compaction trigger compares against
+// the window, and the status card has to show that same number. Summing the text
+// of every stored message instead reported a session as 137% of its window while
+// the request the provider actually saw carried 87k, so the card alarmed at a
+// threshold the trigger was never near.
+func EstimatedContext(sess *sessionstore.Session) int {
 	lastUsage := 0
 	lastAssistant := -1
 	for i, message := range sess.Messages {
-		if message.Role == llm.RoleAssistant && message.Usage.TotalTokens > 0 {
-			lastUsage = message.Usage.TotalTokens
+		if message.Role != llm.RoleAssistant {
+			continue
+		}
+		// ContextTokens, not TotalTokens: on a split-reporting endpoint the cached
+		// prefix is reported beside the input, so TotalTokens carries only the
+		// fresh tokens and a session holding tens of thousands reads as a few
+		// thousand. That is how one passed 137% of its window while the trigger
+		// still saw a figure under its threshold and stayed silent.
+		if size := message.Usage.ContextTokens(); size > 0 {
+			lastUsage = size
 			lastAssistant = i
 		}
 	}
@@ -441,7 +458,7 @@ func (c *Compactor) NeedsCompaction(sess *sessionstore.Session) bool {
 		return false
 	}
 	// Estimate request size including system prompt overhead
-	return estimatedContext(sess) > c.compactAt()
+	return EstimatedContext(sess) > c.compactAt()
 }
 
 // IsOverflow checks like soraacode overflow.ts isOverflow
@@ -449,7 +466,7 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 	if !c.Settings.Auto {
 		return false
 	}
-	used := estimatedContext(sess)
+	used := EstimatedContext(sess)
 	usable := c.contextLimit() - c.outputReserve()
 	return used >= usable
 }
@@ -553,7 +570,7 @@ func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Sess
 	// checkpoint must never be faked from a conversation that cannot be sent.
 	// An overflowed session is recovered by deleting messages or starting over,
 	// not by summarising.
-	if c.contextLimit()-estimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
+	if c.contextLimit()-EstimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
 		return "", fmt.Errorf("the context cannot carry a summary")
 	}
 	var lastErr error

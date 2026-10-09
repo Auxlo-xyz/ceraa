@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/memory"
 	"ceraa/harness/scheduler"
@@ -282,8 +283,14 @@ func statusReport(chatID int64) (string, error) {
 	if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 		messages = len(sess.Messages)
 		sessionTitle = sess.DisplayTitle()
+		// The used figure is the context in force, not all the text the session
+		// ever stored: compacting trims the history, so summing every message
+		// reported a session as 137% of its window while the request the provider
+		// actually saw carried 87k. This is the estimate NeedsCompaction compares
+		// against the trigger, so the card and the reason compaction did or did not
+		// run are one number.
+		tokens = compaction.EstimatedContext(sess)
 		for _, message := range sess.Messages {
-			tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
 			usageOutput += message.Usage.OutputTokens
 			usageReasoning += message.Usage.ReasoningTokens
 		}
@@ -313,19 +320,15 @@ func statusReport(chatID int64) (string, error) {
 	// from the menu lives in a profile, so reading cfg.LLM here reported an empty
 	// model and the wrong context limit, which is worse than showing nothing.
 	model := cfg.LLM.Model
-	contextLimit := cfg.LLM.ContextLimit
 	if _, profile, ok := defaultState.activeProviderProfile(); ok {
 		if strings.TrimSpace(profile.Model) != "" {
 			model = profile.Model
 		}
-		if profile.ContextLimit > 0 {
-			contextLimit = profile.ContextLimit
-		}
 	}
 	activeProvider := defaultState.provider()
-	if contextLimit <= 0 {
-		contextLimit = displayContextLimit(cfg)
-	}
+	// One resolver, shared with the runner: the configured limit governs, the
+	// model's advertised window may lower it, and the floor covers an unset one.
+	contextLimit := displayContextLimit(cfg)
 	percent := 0
 	if contextLimit > 0 {
 		percent = tokens * 100 / contextLimit
@@ -801,8 +804,10 @@ func handleCompaction(token string, chatID int64, text string) {
 		tokens, compactions := 0, 0
 		if store != nil {
 			if sess, err := store.Load(currentSessionID(chatID)); err == nil {
+				// The same estimate the trigger uses, so this figure cannot
+				// disagree with whether compaction ran.
+				tokens = compaction.EstimatedContext(sess)
 				for _, message := range sess.Messages {
-					tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
 					if message.Compaction != nil {
 						compactions++
 					}
@@ -1313,23 +1318,49 @@ func handleWebShare(token string, chatID int64, start func() (*miniapp.Server, e
 	}()
 }
 
-// displayContextLimit reports the budget in force for a model whose profile does
-// not state one.
+// displayContextLimit reports the limit in force, resolved by the same rule the
+// runner uses rather than a second copy of the precedence.
 //
-// An unset profile limit means "the catalog decides", so rendering the raw zero
-// would tell the user the model has no context window at all, which is both wrong
-// and alarming. The runner may have recalibrated from live catalog data by now;
-// this mirrors the resolver's fallback for the cases where it has not.
+// An unset profile limit is not "no window": the floor governs, and the model's
+// advertised window may lower it. Rendering the raw zero would tell the user the
+// model has no context window at all, which is both wrong and alarming.
 func displayContextLimit(cfg *config.Config) int {
+	limit, _, _ := resolveContextLimitForDisplay(cfg)
+	return limit
+}
+
+// resolveContextLimitForDisplay resolves the effective context limit exactly as
+// the runner does, including the model's advertised window when the catalog can
+// supply it, so the dashboard cannot report one number while the runner budgets
+// against another. The catalog is only ever allowed to lower the limit, so a
+// catalog that is missing, stale or unreachable leaves the configured limit in
+// force. The advertised window is returned as well, for the row that explains
+// what the model could take.
+func resolveContextLimitForDisplay(cfg *config.Config) (int, llm.ContextWindowSource, int) {
+	configured, model := 0, ""
 	if cfg != nil {
-		if _, profile, ok := defaultState.activeProviderProfile(); ok && profile.ContextLimit > 0 {
-			return profile.ContextLimit
-		}
-		if cfg.LLM.ContextLimit > 0 {
-			return cfg.LLM.ContextLimit
+		active := cfg.ActiveLLM()
+		configured, model = active.ContextLimit, active.Model
+		if _, profile, ok := defaultState.activeProviderProfile(); ok {
+			if profile.ContextLimit > 0 {
+				configured = profile.ContextLimit
+			}
+			if strings.TrimSpace(profile.Model) != "" {
+				model = profile.Model
+			}
 		}
 	}
-	return llm.FallbackContextWindow
+	advertised := 0
+	if cfg != nil && strings.TrimSpace(model) != "" {
+		client := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, time.Duration(cfg.ModelCatalogRefreshHours)*time.Hour)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if meta, err := client.Lookup(ctx, model); err == nil {
+			advertised = meta.ContextWindow
+		}
+	}
+	limit, source := llm.ResolveContextWindow(configured, llm.ModelMetadata{ContextWindow: advertised})
+	return limit, source, advertised
 }
 
 // activeProviderURL is the endpoint of the provider that is actually serving.

@@ -356,14 +356,17 @@ func webRunParams() map[string]any {
 		// one. Reusing llm.ResolveContextWindow keeps the dashboard on the runner's
 		// resolution rule rather than a second one that can disagree with it.
 		//
-		// No catalog metadata is passed, so this is the limit in force before the
-		// first calibration. The source label is what keeps that honest: "default"
-		// says the default was used, not that the model advertises that number.
+		// The model's advertised window is passed so this resolves the same number
+		// the runner budgets against, including a downward correction. The catalog
+		// can only lower a limit, so a missing or stale catalog leaves the
+		// configured value in force rather than changing it. The advertised figure
+		// travels alongside so the row can say what the model could take.
 		active := cfg.ActiveLLM()
-		effective, source := llm.ResolveContextWindow(active.ContextLimit, llm.ModelMetadata{})
+		effective, source, advertised := resolveContextLimitForDisplay(cfg)
 		out["context_limit"] = cfg.LLM.ContextLimit
 		out["context_limit_effective"] = effective
 		out["context_limit_source"] = string(source)
+		out["context_limit_advertised"] = advertised
 		out["max_output_tokens"] = active.MaxOutputTokens
 		out["max_tool_result_chars"] = cfg.MaxToolResultChars
 		out["max_concurrent_tools"] = cfg.MaxConcurrentTools

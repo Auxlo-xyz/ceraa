@@ -372,6 +372,31 @@ func (u UsageInfo) UncachedInputTokens() int {
 	return value
 }
 
+// ContextTokens is the size of the request that produced this usage: the whole
+// prompt the provider counted, cached or not, plus the tokens it returned.
+//
+// This is the figure a context budget must be compared against, and it is not
+// TotalTokens. On a split-reporting endpoint (DeepSeek, native Anthropic)
+// InputTokens holds only the fresh tokens and the cache hit is reported beside
+// it, so TotalTokens drops to a few thousand on a turn that re-read a 76k
+// prefix. Adding the cached figure back is what the CacheReadRatio doc below
+// calls selecting the denominator; everywhere else a cache hit is a subset of
+// the input and adding it would count the same tokens twice.
+func (u UsageInfo) ContextTokens() int {
+	v := u.normalized()
+	prompt := v.InputTokens
+	if v.CachedInputTokens > v.InputTokens {
+		// Split reporting: the cached prefix is reported separately and is not
+		// part of InputTokens.
+		prompt += v.CachedInputTokens
+	}
+	total := prompt + v.OutputTokens + v.ReasoningTokens
+	if v.TotalTokens > total {
+		total = v.TotalTokens
+	}
+	return total
+}
+
 func (u UsageInfo) CacheReadRatio() float64 {
 	if u.InputTokens <= 0 || u.CachedInputTokens <= 0 {
 		return 0

@@ -1730,9 +1730,15 @@
             ? "Ceiling before compaction"
             : "Set by the active provider profile";
         case "catalog":
-          return "From the model catalog";
+          return p.contextLimitAdvertised > 0
+            ? "Lowered to the model's real window"
+            : "From the model catalog";
         default:
-          return "Fallback floor · catalog silent";
+          // The floor governs, but the model may take more. Naming the
+          // advertised window is what tells the user there is room to raise it.
+          return p.contextLimitAdvertised > 0
+            ? "Default floor · model advertises " + Math.round(p.contextLimitAdvertised / 1000) + "k"
+            : "Fallback floor · catalog silent";
       }
     }
 
@@ -2092,6 +2098,7 @@
         contextLimit: 0,
         contextLimitEffective: 0,
         contextLimitSource: "",
+        contextLimitAdvertised: 0,
         maxOutputTokens: 0,
         maxToolResultChars: 0,
         maxConcurrentTools: 1,
@@ -2500,6 +2507,7 @@
 contextLimit: p.context_limit || 0,
           contextLimitEffective: p.context_limit_effective || 0,
           contextLimitSource: p.context_limit_source || "",
+          contextLimitAdvertised: p.context_limit_advertised || 0,
           maxOutputTokens: p.max_output_tokens || 0,
           maxToolResultChars: p.max_tool_result_chars || 0,
           maxConcurrentTools: p.max_concurrent_tools || 1,
