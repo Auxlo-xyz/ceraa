@@ -369,3 +369,24 @@ func newCatalogTestServer(t *testing.T) string {
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
+
+// A switch that reports success must have persisted: the confirmation the menu
+// sends is only true if a re-read agrees. A second process holding the same
+// config.json used to revert the selection between the write and the next run,
+// so the menu confirmed a switch the runs never saw.
+func TestSetActivePersistsTheSelection(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+	if err := providers.setActive("deepseek"); err != nil {
+		t.Fatalf("setActive deepseek: %v", err)
+	}
+	if got := providers.active(); got != "deepseek" {
+		t.Fatalf("active = %q after switching to deepseek; the switch did not stick", got)
+	}
+	if err := providers.setActive("opencode"); err != nil {
+		t.Fatalf("setActive opencode: %v", err)
+	}
+	if got := providers.active(); got != "opencode" {
+		t.Fatalf("active = %q after switching to opencode; the switch did not stick", got)
+	}
+}

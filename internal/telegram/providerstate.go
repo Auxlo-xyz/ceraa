@@ -81,10 +81,36 @@ func (p *providerState) setActive(provider string) error {
 	}
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	return p.store.Update(func(cfg *config.Config) error {
+	if err := p.store.Update(func(cfg *config.Config) error {
 		cfg.ActiveProvider = provider
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	// The write is confirmed, not assumed. A second process holding the same
+	// file can land its own read-modify-write between ours and silently revert
+	// the selection, which used to surface as a switch that confirmed on screen
+	// while runs kept using the old provider. On mismatch retry once, then fail
+	// loudly rather than report a switch that did not stick.
+	for attempt := 0; attempt < 2; attempt++ {
+		cfg, err := p.store.Load()
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(cfg.ActiveProvider) == provider {
+			return nil
+		}
+		if err := p.store.Update(func(cfg *config.Config) error {
+			cfg.ActiveProvider = provider
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if pinned := strings.TrimSpace(envs.Get("PROVIDER")); pinned != "" {
+		return fmt.Errorf("provider switch to %q did not persist: CERAA_PROVIDER pins %q in this process environment", provider, pinned)
+	}
+	return fmt.Errorf("provider switch to %q did not persist: another writer reverted config.json", provider)
 }
 
 func (p *providerState) hasProfile(name string) bool {

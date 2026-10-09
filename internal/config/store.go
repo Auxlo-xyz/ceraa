@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"ceraa/harness/flock"
 	"ceraa/internal/paths"
 )
 
@@ -56,6 +57,19 @@ func (s *Store) loadLocked() (*Config, error) {
 func (s *Store) Update(fn func(*Config) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The in-memory mutex covers goroutines, not a second address space. The CLI
+	// edits this file while the daemon runs, and a second daemon started by hand
+	// holds the same token and the same file, so two read-modify-write cycles
+	// interleaved across processes silently discard one side's change. That is
+	// how a provider switch confirmed on screen never took effect for the next
+	// run. The lock file serialises every holder of this path, whatever process
+	// it lives in; a dead holder releases on process exit, so there is nothing
+	// stale to clean up.
+	lock, err := flock.Acquire(s.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	cfg, err := s.loadLocked()
 	if err != nil {
 		return err
