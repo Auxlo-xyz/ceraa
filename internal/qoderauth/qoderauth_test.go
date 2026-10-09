@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -158,7 +159,7 @@ func TestASuccessfulPollStoresTheToken(t *testing.T) {
 		t.Errorf("stored refresh token = %q, %v", got, err)
 	}
 	// Namespaced, or one variable would wear two vendors' names.
-	for _, key := range []string{keyAccessToken, keyRefreshToken, keyExpiresAt, keyMachineID} {
+	for _, key := range []string{keyAccessToken, keyRefreshToken, keyExpiresAt, keyMachineID, keyUID, keyNickname} {
 		if !strings.HasPrefix(key, "qoder_") {
 			t.Errorf("secret key %q is not namespaced", key)
 		}
@@ -238,5 +239,132 @@ func TestSnapshotDoesNotDeadlock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Snapshot did not return in 5s; a method it calls is probably taking the lock it holds")
+	}
+}
+
+// The token arrives under different names by endpoint version, and identity
+// arrives as user_id/user_name: all three token spellings must authenticate,
+// and the uid must be kept, because inference signing refuses an empty one.
+func TestPollReadsAlternateTokenFieldsAndIdentity(t *testing.T) {
+	isolatedStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"device_token":  "tok_device",
+			"refresh_token": "tok_refresh",
+			"expire_time":   1780000000000,
+			"user_id":       "u-123",
+			"user_name":     "Emperor",
+		})
+	}))
+	defer server.Close()
+
+	mgr := NewManagerWithOptions(
+		Endpoints{DeviceSelect: "https://qoder.com", OpenAPI: server.URL},
+		"test-client",
+		&http.Client{Timeout: 10 * time.Second},
+	)
+	flow, err := mgr.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Poll(t.Context(), flow); err != nil {
+		t.Fatalf("a successful poll reported %v", err)
+	}
+	if got, _ := secret.Get(keyAccessToken); got != "tok_device" {
+		t.Errorf("stored access token = %q, want tok_device", got)
+	}
+	if got := UID(); got != "u-123" {
+		t.Errorf("uid = %q, want u-123", got)
+	}
+	if got := Nickname(); got != "Emperor" {
+		t.Errorf("nickname = %q, want Emperor", got)
+	}
+	// 1780000000000 ms is 1780000000 s.
+	if got, _ := secret.Get(keyExpiresAt); got != "1780000000" {
+		t.Errorf("stored expiry = %q, want 1780000000", got)
+	}
+}
+
+// The refresh body is JSON carrying this machine's id with the vendor's
+// User-Agent, not a form-encoded standard grant: the endpoint binds the grant
+// to the polling machine.
+func TestRefreshSendsJSONWithMachineID(t *testing.T) {
+	isolatedStore(t)
+	mid, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotBody []byte
+	var gotUA, gotCT string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotUA, gotCT = r.Header.Get("User-Agent"), r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"tok_new","refresh_token":"tok_refresh2","expires_in":3600}`))
+	}))
+	defer server.Close()
+	if err := secret.Set(keyRefreshToken, "tok_refresh"); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerWithOptions(
+		Endpoints{DeviceSelect: "https://qoder.com", OpenAPI: server.URL},
+		"test-client",
+		&http.Client{Timeout: 10 * time.Second},
+	)
+	if _, err := mgr.RefreshToken(t.Context()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("refresh body is not JSON: %q", gotBody)
+	}
+	if body["refresh_token"] != "tok_refresh" || body["machine_id"] != mid {
+		t.Errorf("refresh body = %v, want refresh_token and this machine_id", body)
+	}
+	if _, ok := body["grant_type"]; ok {
+		t.Errorf("refresh body carries grant_type: this is not a standard grant: %v", body)
+	}
+	if gotCT != "application/json" {
+		t.Errorf("content-type = %q, want application/json", gotCT)
+	}
+	if gotUA != "qoder/1.0.0" {
+		t.Errorf("user-agent = %q, want qoder/1.0.0", gotUA)
+	}
+	if got, _ := secret.Get(keyAccessToken); got != "tok_new" {
+		t.Errorf("stored access token = %q, want tok_new", got)
+	}
+}
+
+// A refresh that omits identity must not wipe it: uid and nickname established
+// at login stay until a response replaces them, or the signer loses the uid it
+// needs on the very next request.
+func TestRefreshPreservesIdentityItDoesNotReplace(t *testing.T) {
+	isolatedStore(t)
+	for key, value := range map[string]string{keyAccessToken: "tok", keyRefreshToken: "tok_refresh", keyUID: "u-123", keyNickname: "Emperor"} {
+		if err := secret.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"tok_new2","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	mgr := NewManagerWithOptions(
+		Endpoints{DeviceSelect: "https://qoder.com", OpenAPI: server.URL},
+		"test-client",
+		&http.Client{Timeout: 10 * time.Second},
+	)
+	if _, err := mgr.RefreshToken(t.Context()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got := UID(); got != "u-123" {
+		t.Errorf("uid after refresh = %q, want the login value kept", got)
+	}
+	if got := Nickname(); got != "Emperor" {
+		t.Errorf("nickname after refresh = %q, want the login value kept", got)
 	}
 }

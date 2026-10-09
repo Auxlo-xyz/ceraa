@@ -73,6 +73,8 @@ const (
 	keyRefreshToken = "qoder_refresh_token"
 	keyExpiresAt    = "qoder_expires_at"
 	keyMachineID    = "qoder_machine_id"
+	keyUID          = "qoder_uid"
+	keyNickname     = "qoder_nickname"
 )
 
 // Error is a device-flow failure with a code the user can act on.
@@ -148,14 +150,30 @@ type deviceRequest struct {
 	verifier   string
 }
 
-// tokenResponse is the poll's success body. The vendor returns the whole body
-// and checks only that token is a string, so this struct carries the known
-// fields and ignores the rest rather than requiring them.
+// tokenResponse is the poll's success body. The token arrives under one of
+// three names depending on the endpoint version, so all three are read; the
+// identity arrives as user_id/user_name and is needed later, because inference
+// requests are signed with the uid and the signer refuses an empty one.
 type tokenResponse struct {
 	Token        string `json:"token"`
+	DeviceToken  string `json:"device_token"`
+	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
+	ExpireTimeMs int64  `json:"expire_time"`
 	TokenType    string `json:"token_type"`
+	UserID       string `json:"user_id"`
+	UserName     string `json:"user_name"`
+}
+
+// accessToken returns whichever token field the server populated.
+func (t tokenResponse) accessToken() string {
+	for _, s := range []string{t.Token, t.DeviceToken, t.AccessToken} {
+		if strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }
 
 // State is a consistent copy of a flow, taken under the lock.
@@ -366,10 +384,10 @@ func (m *Manager) Poll(ctx context.Context, flow *Flow) error {
 			flow.setStatus("failed", "the token response was not readable")
 			return newError("request_failed", "could not read the token response")
 		}
-		// The vendor's own check: the body is accepted only when token is a
-		// string. Anything else is still pending or a malformed grant, and both
+		// The vendor's own check: the body is accepted only when a token field is
+		// a string. Anything else is still pending or a malformed grant, and both
 		// are reported as failures rather than silently accepted.
-		if tokens.Token == "" {
+		if tokens.accessToken() == "" {
 			flow.setStatus("failed", "the token response contained no token")
 			return newError("request_failed", "the token response contained no token")
 		}
@@ -377,6 +395,12 @@ func (m *Manager) Poll(ctx context.Context, flow *Flow) error {
 			flow.setStatus("failed", err.Error())
 			return err
 		}
+		// Identity follows the token, best effort: the poll response carries no
+		// name, and inference requests are signed with the uid, so a login
+		// without identity can authenticate yet never produce a valid request.
+		// A userinfo failure does not fail the login; the missing uid surfaces
+		// loudly at signing time instead of bricking a good token here.
+		m.fetchIdentity(ctx, tokens.accessToken())
 		flow.setStatus("completed", "signed in")
 		flow.finish()
 		if m.onComplete != nil {
@@ -438,12 +462,14 @@ func (f *Flow) finish() {
 
 // storeTokens writes the token set to the encrypted store. The refresh token is
 // written whenever it is present, because providers rotate on use and the new one
-// must replace the old rather than leaving a stale one beside it.
+// must replace the old rather than leaving a stale one beside it. Identity and
+// machine id are sticky: a refresh response that omits them must not wipe what
+// the login established, because the request signer needs all three.
 func storeTokens(tokens tokenResponse, now time.Time) error {
-	if tokens.Token == "" {
+	if tokens.accessToken() == "" {
 		return newError("request_failed", "the token response contained no token")
 	}
-	if err := secret.Set(keyAccessToken, tokens.Token); err != nil {
+	if err := secret.Set(keyAccessToken, tokens.accessToken()); err != nil {
 		return err
 	}
 	if tokens.RefreshToken != "" {
@@ -451,23 +477,73 @@ func storeTokens(tokens tokenResponse, now time.Time) error {
 			return err
 		}
 	}
-	if tokens.ExpiresIn > 0 {
+	// expire_time arrives as an absolute millisecond timestamp when present;
+	// expires_in is relative seconds. A millisecond value below 1e11 would
+	// predate 1973, so anything above it is a timestamp, not a duration.
+	if tokens.ExpireTimeMs > 1e11 {
+		if err := secret.Set(keyExpiresAt, strconv.FormatInt(tokens.ExpireTimeMs/1000, 10)); err != nil {
+			return err
+		}
+	} else if tokens.ExpiresIn > 0 {
 		expires := now.Add(time.Duration(tokens.ExpiresIn) * time.Second).Unix()
 		if err := secret.Set(keyExpiresAt, strconv.FormatInt(expires, 10)); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(tokens.UserID) != "" {
+		if err := secret.Set(keyUID, strings.TrimSpace(tokens.UserID)); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(tokens.UserName) != "" {
+		if err := secret.Set(keyNickname, strings.TrimSpace(tokens.UserName)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// fetchIdentity pulls user_id and user_name after a token is stored. The poll
+// response carries no name, so without this the credential authenticates but the
+// inference signer has no uid to sign with.
+func (m *Manager) fetchIdentity(ctx context.Context, token string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.endpoints.userInfoURL(), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return
+	}
+	var info tokenResponse
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return
+	}
+	if strings.TrimSpace(info.UserID) != "" {
+		_ = secret.Set(keyUID, strings.TrimSpace(info.UserID))
+	}
+	if strings.TrimSpace(info.UserName) != "" {
+		_ = secret.Set(keyNickname, strings.TrimSpace(info.UserName))
+	}
+}
+
 var refreshMu sync.Mutex
 
 // RefreshToken exchanges the stored refresh token for a new set.
 //
-// The refresh endpoint is /api/v1/deviceToken/refresh, read from the vendor
-// bundle next to the poll construction. Its exact parameters are not known from
-// the bundle text recovered, so this sends the standard shape and reports the
-// server's answer plainly if the shape is wrong.
+// The body is JSON carrying the refresh token and this machine's id, with the
+// vendor's User-Agent: the endpoint binds the grant to the machine that polled,
+// so a standard form-encoded grant is rejected and a refresh from a different
+// machine id orphanages the stored one.
 //
 // Serialised, because a rotated refresh token invalidates its predecessor and
 // two concurrent refreshes leave one of them holding a dead token.
@@ -479,17 +555,25 @@ func (m *Manager) RefreshToken(ctx context.Context) (string, error) {
 	if err != nil || strings.TrimSpace(stored) == "" {
 		return "", newError("no_refresh_token", "no refresh token is stored; sign in again")
 	}
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", strings.TrimSpace(stored))
-	form.Set("client_id", m.clientID)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.endpoints.refreshURL(),
-		bytes.NewReader([]byte(form.Encode())))
+	mid, err := machineID()
+	if err != nil {
+		return "", newError("machine_id_failed", "could not read or generate the device identifier")
+	}
+	body, err := json.Marshal(map[string]string{
+		"refresh_token": strings.TrimSpace(stored),
+		"machine_id":    mid,
+	})
 	if err != nil {
 		return "", newError("request_failed", "could not build the refresh request")
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.endpoints.refreshURL(),
+		bytes.NewReader(body))
+	if err != nil {
+		return "", newError("request_failed", "could not build the refresh request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "qoder/1.0.0")
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return "", newError("request_failed", "could not reach the login server: %v", err)
@@ -509,7 +593,7 @@ func (m *Manager) RefreshToken(ctx context.Context) (string, error) {
 	if err := storeTokens(tokens, m.now()); err != nil {
 		return "", err
 	}
-	return tokens.Token, nil
+	return tokens.accessToken(), nil
 }
 
 func firstLine(raw []byte) string {
@@ -519,6 +603,32 @@ func firstLine(raw []byte) string {
 		return text[:200] + "..."
 	}
 	return text
+}
+
+// UID returns the stored Qoder user id. Inference requests are signed with it
+// and the signer refuses an empty one, so a credential without it authenticates
+// but can never produce a valid request: that state means sign in again.
+func UID() string {
+	uid, err := secret.Get(keyUID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(uid)
+}
+
+// Nickname returns the stored Qoder display name, or "" when userinfo has not
+// been fetched yet.
+func Nickname() string {
+	name, err := secret.Get(keyNickname)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
+// MachineID returns the persisted device identifier the grant is bound to.
+func MachineID() (string, error) {
+	return machineID()
 }
 
 // Authenticated reports whether a usable access token is stored.
