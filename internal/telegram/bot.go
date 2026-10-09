@@ -55,6 +55,7 @@ type update struct {
 		} `json:"from"`
 		MessageID int    `json:"message_id"`
 		Text      string `json:"text"`
+		Caption   string `json:"caption"`
 		Photo     []struct {
 			FileID string `json:"file_id"`
 		} `json:"photo"`
@@ -1020,7 +1021,16 @@ func Run() error {
 				fileID := u.Message.Photo[len(u.Message.Photo)-1].FileID
 				if path, err := downloadTelegramFile(token, fileID); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "photo", path, "")
-					send(token, u.Message.Chat.ID, "📷 Photo saved: "+path+" — send a prompt describing what to do with it, it will be attached via harness/tool view_image")
+					// A photo is a prompt, not a file waiting for one. The caption
+					// is the instruction when there is one; without it the run is
+					// asked to describe what it sees. Either way the user types
+					// once, and withUploadContext hands the saved path to the run
+					// with the instruction to view it via view_image.
+					caption := strings.TrimSpace(u.Message.Caption)
+					if caption == "" {
+						caption = "Describe what you see in this image."
+					}
+					enqueuePrompt(token, u.Message.Chat.ID, caption, u.UpdateID)
 				} else {
 					send(token, u.Message.Chat.ID, "📷 Photo received: "+telegramFilePreview(fileID)+" (download failed: "+err.Error()+")")
 				}
