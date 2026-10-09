@@ -49,13 +49,16 @@
   a { color: inherit; }
 
   .wrap { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  section[id] { scroll-margin-top: 78px; }
 
   /* ---------- nav ---------- */
   /* liquid glass, lifted from make.design via our scraper and re-tinted for
      Ceraa: their #f5f5f7 is a cool grey, ours is the warm #FAF9F7. The blur,
      saturate, isolate and the three-part shadow are theirs unchanged. */
   header.nav {
-    position: sticky; top: 0; z-index: 50;
+    /* fixed, not sticky: the sky band starts at the top of the page and the
+       bar floats over it, so the glass always has the photograph behind it */
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
     isolation: isolate;
     -webkit-backdrop-filter: blur(20px) saturate(180%);
     backdrop-filter: blur(20px) saturate(180%);
@@ -108,7 +111,7 @@
       linear-gradient(100deg, rgba(9, 34, 62, 0.34) 0%, rgba(9, 34, 62, 0.15) 54%, rgba(9, 34, 62, 0.10) 100%),
       linear-gradient(180deg, rgba(9, 34, 62, 0.26) 0%, rgba(9, 34, 62, 0.12) 46%, rgba(9, 34, 62, 0.20) 100%);
   }
-  .sky-inner { position: relative; padding: 76px 24px 64px; }
+  .sky-inner { position: relative; padding: calc(66px + 44px) 24px 64px; }
   .on-sky { color: #FFFFFF; }
   h1.on-sky { text-shadow: 0 2px 30px rgba(6, 26, 48, 0.42), 0 1px 3px rgba(6, 26, 48, 0.30); }
   .btn.on-sky-solid { background: #FFFFFF; color: var(--ink); border-color: #FFFFFF; }
@@ -232,7 +235,7 @@
        headline needs, and the cloud line still reads at the base. */
     .sky { min-height: 0; aspect-ratio: 780 / 1150; }
     .sky img { object-position: center 22%; }
-    .sky-inner { padding: 34px 24px 30px; }
+    .sky-inner { padding: calc(66px + 26px) 24px 30px; }
     /* centre the headline, and the actions with it so the block reads as one */
     .sky-inner h1 { text-align: center; max-width: none; margin-inline: auto; }
     .sky-inner .cta-row { justify-content: center; }
