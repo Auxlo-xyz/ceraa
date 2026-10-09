@@ -287,13 +287,13 @@ func registerCommands(token string) error {
 }
 
 func applyStateOverrides() {
-	model, _ := defaultState.values()
-	if model != "" {
-		_ = envs.Set("MODEL", model)
-	}
-	if provider := defaultState.provider(); provider != "" {
-		_ = envs.Set("PROVIDER", provider)
-	}
+	// Model and provider are deliberately NOT snapshotted into CERAA_MODEL /
+	// CERAA_PROVIDER here. config.Load applies the process environment over the
+	// file, so pinning the boot-time selection froze every later switch: the
+	// menu saved the new provider to config.json and confirmed it, while every
+	// run kept using the provider that was active at boot. The file is the
+	// source of truth; an operator-exported CERAA_PROVIDER still overrides it,
+	// but the process must not override itself.
 	defaultState.mu.RLock()
 	alwaysAllow := make(map[string]bool, len(defaultState.AlwaysAllow))
 	for toolName, allowed := range defaultState.AlwaysAllow {

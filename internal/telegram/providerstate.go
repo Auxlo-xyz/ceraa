@@ -260,8 +260,10 @@ func (p *providerState) setModel(model string) error {
 	}); err != nil {
 		return err
 	}
-	// The env file is kept in step so a fresh process starts from the same answer.
-	return envs.Set("MODEL", model)
+	// No env snapshot: CERAA_MODEL would override the file on every later
+	// config.Load and freeze this switch exactly the way the old provider pin
+	// froze provider switches. The file is the source of truth.
+	return nil
 }
 
 func (p *providerState) setAgent(agent string) error {
