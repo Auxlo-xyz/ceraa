@@ -538,6 +538,8 @@ func handleCallback(token string, q *callbackQuery) {
 				startXaiLogin(token, chatID)
 			case "cline":
 				startClineLogin(token, chatID)
+			case "deepseek":
+				startDeepSeekLogin(token, chatID)
 			case "opencode":
 				// Re-entering the key. There is no token to refresh, so this is
 				// the same onboarding flow the first key went through.

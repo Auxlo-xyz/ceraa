@@ -81,6 +81,29 @@ func TestProviderDeepSeekCallbackReachesTheEntryPoint(t *testing.T) {
 	}
 }
 
+// "Sign in again" must start a fresh login, not silently do nothing. The relogin
+// route resolved but the handler switch had no DeepSeek case, so the tap fell
+// through and the button was dead.
+func TestDeepSeekReloginStartsALogin(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+	seen := captureDeepSeekNotify(t)
+	stubDeepSeekStart(t, testDeepSeekFlow(), nil)
+
+	var query callbackQuery
+	if err := json.Unmarshal([]byte(`{"id":"1","data":"provider:deepseek:relogin","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	handleCallback("test-token", &query)
+
+	if len(*seen) != 1 {
+		t.Fatalf("got %d messages, want the login instructions", len(*seen))
+	}
+	if !strings.Contains((*seen)[0], "https://platform.deepseek.com/dsh/authorize") {
+		t.Errorf("provider:deepseek:relogin did not start a login: %q", (*seen)[0])
+	}
+}
+
 // The model list is scoped to the provider whose button opened it. A DeepSeek
 // list showing another provider's ids would write a profile the endpoint
 // rejects on first use.
