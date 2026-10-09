@@ -518,8 +518,12 @@ func anthropicToolChoice(choice string) any {
 	case "auto", "":
 		return map[string]any{"type": "auto"}
 	case "none":
-		// The Messages API has no "none": omitting tool_choice is how you prevent
-		// a call, and sending the literal string is a 400.
+		// The Messages API has no "none", and sending the literal string is a
+		// 400. Omitting tool_choice is what the API offers, but with tools in
+		// the request it is read as "auto", not as a prohibition: the model may
+		// still answer with a tool call. A caller that must not get one has to
+		// detect it in the reply, the way the in-band compactor does, because
+		// nothing here can forbid it.
 		return nil
 	case "required", "any":
 		return map[string]any{"type": "any"}

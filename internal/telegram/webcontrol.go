@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/harness/coordinator"
+	"ceraa/harness/evaluation"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/harness/permission"
@@ -30,6 +32,7 @@ import (
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
+	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
 )
@@ -586,6 +589,64 @@ func webDeleteMemory(id string) error {
 	return store.Remove(id)
 }
 
+// webLiveRequest returns the request a run would send for this session, so the
+// Mini App's compaction button compacts in-band by default rather than cold.
+//
+// It assembles the same parts the bridge hands the runner: the system prompt,
+// the skill catalogue, the memory block and the same tool registry. Whatever
+// drifts between the two is a place the button's prefix stops matching the
+// runs', which costs cache hits but never correctness. If the session has no
+// project any more, the button compacts the old cold way: a session whose
+// workspace is gone has nothing live to summarise from, and the cold prompt is
+// a serialization that needs none.
+func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *sessionstore.Session) (func(context.Context, *sessionstore.Session) llm.StreamRequest, error) {
+	projectRoot := defaultState.projectForSession(sess.ID)
+	if projectRoot == "" {
+		return nil, nil
+	}
+	providerID := cfg.EffectiveProviderID()
+	providerConfig := activeProviderConfig(cfg, providerID)
+	modelConfig := llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model)
+	modelConfig.PromptCacheMode = providerConfig.PromptCacheMode
+	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
+	modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(providerConfig.Model, providerConfig.URL)
+	memoryStore, err := memory.New(cfg.MemoryFile)
+	if err != nil {
+		return nil, err
+	}
+	skillStore, err := skills.New(cfg.SkillFile)
+	if err != nil {
+		return nil, err
+	}
+	evaluationStore, err := evaluation.New(cfg.EvaluationFile)
+	if err != nil {
+		return nil, err
+	}
+	memoryContext, _ := memoryStore.RenderContext(projectRoot, sess.ID, 2000)
+	liveMemory := memory.Live(memoryStore, projectRoot, sess.ID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
+	skillContext, _ := skillStore.CatalogContext(2000)
+	// No user text reaches this path, so the skill-feedback heuristic stays off
+	// and the proposal tool stays out of the catalogue, which is where it is on
+	// most runs. The tool set only has to be sendable, not bit-identical: where
+	// it differs the request costs a cache miss, never a wrong answer.
+	registry := telegramRegistry(cfg, "", skillStore)
+	builder := coordinator.LiveRequestFor(coordinator.RunnerConfig{
+		SessionID:         sess.ID,
+		SystemPrompt:      prompt.System,
+		Model:             modelConfig,
+		ContextLimit:      providerConfig.ContextLimit,
+		MaxOutputTokens:   providerConfig.MaxOutputTokens,
+		WorkDir:           projectRoot,
+		MemoryContext:     memoryContext,
+		MemoryContextFunc: memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
+		MemoryDelivery:    cfg.MemoryDelivery,
+		MemoryEntries:     memoryEntries(memoryStore, projectRoot, sess.ID),
+		SkillContext:      skillContext,
+		EvaluationStore:   evaluationStore,
+	}, registry, store)
+	return builder, nil
+}
+
 func webTriggerCompaction(sessionID string) (map[string]any, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = currentSessionID(defaultState.allowedUserID())
@@ -614,6 +675,14 @@ func webTriggerCompaction(sessionID string) (map[string]any, error) {
 		tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
 	}
 	compactor := newCompactor(cfg, cfg.EffectiveProviderID(), sessionID)
+	// In-band is the default here as everywhere: the button summarises with the
+	// same request a run would send. When there is no project to build one from,
+	// the compactor falls back to the cold summariser on its own.
+	if builder, err := webLiveRequest(cfg, store, sess); err != nil {
+		return nil, err
+	} else if builder != nil {
+		compactor.LiveRequest = builder
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	compacted, err := compactor.Compact(ctx, sess)

@@ -3,6 +3,7 @@ package telegram
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -263,11 +264,20 @@ func TestManualCompactionPersistsTheSummaryItPaidFor(t *testing.T) {
 	defer restore()
 
 	var requests atomic.Int32
+	const checkpoint = "CHECKPOINT SUMMARY\n\n" +
+		"## Objective\nFix the index.\n" +
+		"## Progress\nRead the index code.\n" +
+		"## In-flight & Blocked\nNothing running.\n" +
+		"## Errors & Fixes\nNone.\n" +
+		"## Relevant Files\ntypes.ts holds the index.\n" +
+		"## Decisions\nFix in place.\n" +
+		"## Next Steps\nRun the tests.\n" +
+		"## Design Lessons Learnt\nName things once.\n"
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		encoded, _ := json.Marshal(map[string]any{
-			"choices": []any{map[string]any{"delta": map[string]any{"content": "CHECKPOINT SUMMARY"}}},
+			"choices": []any{map[string]any{"delta": map[string]any{"content": checkpoint}}},
 		})
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
@@ -342,6 +352,106 @@ func TestManualCompactionPersistsTheSummaryItPaidFor(t *testing.T) {
 	}
 	if len(sess.Messages) >= len(messages) {
 		t.Fatalf("the transcript was not shortened: %d messages, was %d", len(sess.Messages), len(messages))
+	}
+}
+
+// The button compacts in-band by default: over the same request a run would
+// send, so the summary comes from the warm conversation rather than a cold
+// copy of it. The request therefore carries the tool catalogue and ends with
+// the compaction instruction.
+func TestManualCompactionGoesInBandByDefault(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+
+	var bodies []map[string]any
+	const checkpoint = "## Objective\nFix the index.\n" +
+		"## Progress\nRead the index code.\n" +
+		"## In-flight & Blocked\nNothing running.\n" +
+		"## Errors & Fixes\nNone.\n" +
+		"## Relevant Files\ntypes.ts holds the index.\n" +
+		"## Decisions\nFix in place.\n" +
+		"## Next Steps\nRun the tests.\n" +
+		"## Design Lessons Learnt\nName things once.\n"
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Errorf("request is not JSON: %v", err)
+		}
+		bodies = append(bodies, decoded)
+		w.Header().Set("Content-Type", "text/event-stream")
+		encoded, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{"content": checkpoint}}},
+		})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer provider.Close()
+
+	dir := t.TempDir()
+	cfgStore := config.NewStoreAt(filepath.Join(os.Getenv("CERAA_HOME"), "config.json"))
+	if err := cfgStore.Update(func(cfg *config.Config) error {
+		cfg.LLM = config.LLMProvider{
+			URL:             provider.URL,
+			APIKey:          "test",
+			Model:           "test",
+			ContextLimit:    200000,
+			MaxOutputTokens: 4096,
+		}
+		cfg.SessionFile = dir
+		return nil
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	store, err := sessionstore.New(dir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	filler := strings.Repeat("archive this stretch of the conversation. ", 400)
+	messages := []sessionstore.Message{{Role: llm.RoleUser, Content: filler}}
+	for i := 0; i < 4; i++ {
+		messages = append(messages,
+			sessionstore.Message{Role: llm.RoleUser, Content: filler},
+			sessionstore.Message{Role: llm.RoleAssistant, Content: "working on it"},
+		)
+	}
+	if err := store.Save(&sessionstore.Session{ID: "ses-compact-inband", Version: 1, Messages: messages}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	result, err := webTriggerCompaction("ses-compact-inband")
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if result["compacted"] != true {
+		t.Fatalf("compacted = %v, want true", result["compacted"])
+	}
+	if len(bodies) == 0 {
+		t.Fatal("no request reached the provider")
+	}
+	first := bodies[0]
+	tools, hasTools := first["tools"]
+	if !hasTools {
+		t.Fatal("the button compacted cold: the first request carries no tool catalogue")
+	}
+	if toolsList, ok := tools.([]any); !ok || len(toolsList) == 0 {
+		t.Fatalf("the tool catalogue is empty: %v", tools)
+	}
+	sent, _ := first["messages"].([]any)
+	if len(sent) == 0 {
+		t.Fatal("the request carries no messages")
+	}
+	last, _ := sent[len(sent)-1].(map[string]any)
+	content, _ := last["content"].(string)
+	if !strings.Contains(content, "Produce a compaction of this conversation") {
+		t.Errorf("the last message is not the compaction instruction: %.120q", content)
+	}
+	if first["tool_choice"] != "none" {
+		t.Errorf("tool_choice = %v, want none", first["tool_choice"])
 	}
 }
 

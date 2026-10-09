@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/harness/sessionstore"
@@ -42,13 +44,19 @@ const (
 type Settings struct {
 	Auto   bool `json:"auto"`
 	Buffer int  `json:"buffer"`
+	// InBand prefers the in-band summariser: the agent produces its own summary
+	// on its own warm request. It is the default because it is both cheaper and
+	// more faithful, and it falls back on its own, so the only reason to turn it
+	// off is a provider that will not answer a summarisation request with a
+	// summary rather than with more work.
+	InBand bool `json:"in_band"`
 	Keep   struct {
 		Tokens int `json:"tokens"`
 	} `json:"keep"`
 }
 
 func DefaultSettings() Settings {
-	s := Settings{Auto: true, Buffer: DefaultBuffer}
+	s := Settings{Auto: true, Buffer: DefaultBuffer, InBand: true}
 	s.Keep.Tokens = DefaultKeepTokens
 	return s
 }
@@ -207,11 +215,23 @@ func flattenMessages(units []messageUnit) []sessionstore.Message {
 	return messages
 }
 
-// Summary template from soraacode
+// Summary template from soraacode.
+//
+// In-flight & Blocked and Errors & Fixes are ours. The template had nowhere to
+// say that work was still running, paused or held up, or that something had
+// failed and what the error read, which is exactly what the turn after a
+// compaction needs to know: a reader told only "Next Steps" cannot tell a task
+// that was finished from one that was abandoned half-way with a failing build.
+// opencode answers this with a Work State of Completed, Active and Blocked;
+// Hermes with Blocked and Errors & Fixes. Both shapes carry it here.
 const summaryTemplate = `## Objective
 Summarize the main goal and current task.
 ## Progress
 What has been completed so far (terse bullets).
+## In-flight & Blocked
+What is running now, what is paused, and what is held up. Name the blocker for anything waiting on something else.
+## Errors & Fixes
+What failed and the error as it read, what was tried, and what worked. Carry forward anything still unresolved.
 ## Relevant Files
 List files touched and their purpose.
 ## Decisions
@@ -222,6 +242,14 @@ What remains to be done.
 Patterns to preserve.
 
 Rules: keep every section, terse bullets, never mention compaction, no preamble.`
+
+// summaryBoundaryRules is what stops a summariser from doing the work instead.
+//
+// It is appended to both the in-band instruction and the cold prompt, because
+// both ask a model that has been working to stop working, and a model with
+// nothing in front of it but a transcript is the one case where that costs a
+// turn rather than a mistaken edit.
+const summaryBoundaryRules = `Reply with the summary and nothing else: do not call a tool, do not continue the work, do not invent a result.`
 
 const summaryUpdateInstructions = `Combine both summaries: Preserve objectives from <prior-summary> even if absent from <conversation> - <conversation> is newer and wins conflicts. Anything omitted is permanently lost.`
 
@@ -331,6 +359,7 @@ func buildPrompt(previousSummary string, head string, recent string) string {
 			conversation,
 			"Create a new anchored summary of the conversation so far.",
 			summaryTemplate,
+			summaryBoundaryRules,
 		}, "\n\n")
 	}
 	return strings.Join([]string{
@@ -338,7 +367,107 @@ func buildPrompt(previousSummary string, head string, recent string) string {
 		fmt.Sprintf("Here is the prior summary:\n<prior-summary>\n%s\n</prior-summary>", previousSummary),
 		summaryUpdateInstructions,
 		summaryTemplate,
+		summaryBoundaryRules,
 	}, "\n\n")
+}
+
+// compactionInstruction is the user turn an in-band compaction appends.
+//
+// There is nothing to embed: the conversation is the request, so the model has
+// already been sent everything the cold prompt would have wrapped in
+// <conversation> tags. What it has not been sent is a reason to stop, and it
+// needs one, because the instruction arrives at the end of a transcript whose
+// every other user turn asked for work.
+//
+// It is a user turn and never a session message. Appending it to the session,
+// the way the runner's final-answer nudge does, would leave a permanent
+// "summarise now" as the last thing the model reads on every subsequent
+// request.
+func compactionInstruction(attempt int) string {
+	instruction := strings.Join([]string{
+		"Produce a compaction of this conversation: a checkpoint a fresh reader will be given in place of everything above it.",
+		summaryTemplate,
+		summaryBoundaryRules,
+	}, "\n\n")
+	if attempt > 1 {
+		instruction += "\n\nYour previous reply was not in the required format. Reply with only the summary, using every heading above in order."
+	}
+	return instruction
+}
+
+// requiredSummaryHeadings reads the template's own headings rather than
+// restating them, so a section added to the template becomes required on its
+// own. A second list is the kind that goes stale quietly.
+func requiredSummaryHeadings() []string {
+	var headings []string
+	for _, line := range strings.Split(summaryTemplate, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			headings = append(headings, strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")))
+		}
+	}
+	return headings
+}
+
+// minSummaryChars is a floor, not a quality bar. It rejects the refusal and the
+// one-line stub, both of which are shorter than any summary that carries every
+// section at all.
+const minSummaryChars = 200
+
+// validateSummary checks that a reply is a checkpoint.
+//
+// The rule it replaces was "not empty", so a refusal, or a single line, was
+// written as the summary of everything thrown away and the session continued on
+// it. Every heading must appear, in the template's order, and carry a body.
+//
+// What it cannot check is truth: a summary that claims nothing is in flight
+// while a failing build sits in the transcript passes every check here. The
+// section exists to make that visible to the reader, not to prove it.
+func validateSummary(text string) error {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return fmt.Errorf("the summariser returned nothing")
+	}
+	if length := len([]rune(trimmed)); length < minSummaryChars {
+		return fmt.Errorf("the summary is %d chars, want at least %d", length, minSummaryChars)
+	}
+	lines := strings.Split(trimmed, "\n")
+	position := 0
+	for _, heading := range requiredSummaryHeadings() {
+		index := indexOfSummaryHeading(lines, heading, position)
+		if index < 0 {
+			return fmt.Errorf("the summary is missing the %q section", heading)
+		}
+		if summarySectionBody(lines, index) == "" {
+			return fmt.Errorf("the summary has an empty %q section", heading)
+		}
+		position = index + 1
+	}
+	return nil
+}
+
+// indexOfSummaryHeading finds "## heading" at or after from. The order is part
+// of the check: a summary that answered the sections out of order is a reply
+// that was not reading the template.
+func indexOfSummaryHeading(lines []string, heading string, from int) int {
+	want := "## " + heading
+	for i := from; i < len(lines); i++ {
+		if strings.EqualFold(strings.TrimSpace(lines[i]), want) {
+			return i
+		}
+	}
+	return -1
+}
+
+func summarySectionBody(lines []string, from int) string {
+	var body strings.Builder
+	for i := from + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "## ") {
+			break
+		}
+		body.WriteString(lines[i])
+	}
+	return strings.TrimSpace(body.String())
 }
 
 // Compactor performs LLM-based summarization.
@@ -366,7 +495,46 @@ type Compactor struct {
 	// so the cost per turn is zero. A hook that fails must not fail the turnover;
 	// the implementation logs and returns.
 	Learn func(ctx context.Context, sessionID string, discarded []sessionstore.Message, summary string)
+
+	// LiveRequest, when set, returns the request the running agent would send
+	// for this session: the same system prompt, the same pinned context, the
+	// whole history and the tool catalogue. An in-band compaction appends its
+	// instruction to that and lets the agent summarise itself.
+	//
+	// It wins on two things at once. The prefix is byte-identical to the turn
+	// that just ran, so the whole conversation is a cache read rather than a
+	// re-sent copy. And the model sees the conversation as it actually saw it,
+	// rather than a serialization of it where every tool result, reasoning
+	// trace and call's arguments are truncated a second time - which is the
+	// difference between an Errors & Fixes section naming the error and one
+	// guessing at it.
+	//
+	// Nil disables it, and every caller that has a runner sets it. The cold
+	// summariser remains for the overflow trigger, which runs with a history the
+	// provider would refuse, and for a cold prompt is smaller than the
+	// conversation it stands for.
+	LiveRequest func(context.Context, *sessionstore.Session) llm.StreamRequest
+
+	// failureMu guards lastFailure, which the cooldown below reads.
+	failureMu   sync.Mutex
+	lastFailure time.Time
 }
+
+// summaryAttempts is how many in-band summarisation requests one compaction
+// makes before falling back. Two, because the first failure is usually format
+// rather than refusal and a re-ask is cheaper than the cold path, and because
+// the request is a cache read the model has just paid to have open.
+const summaryAttempts = 2
+
+// summaryCooldown stops a summariser that keeps failing from being asked again
+// on every turn.
+//
+// Without it, a model that never produces a valid summary leaves the session
+// over the trigger forever, so each subsequent turn pays for compaction again
+// and the only thing compaction buys it is the bill. The forced path - the
+// Mini App's button - never waits, because an operator pressing it is entitled
+// to the answer.
+var summaryCooldown = 5 * time.Minute
 
 // New creates a compactor with default settings.
 func New(cfg llm.ProviderConfig) *Compactor {
@@ -452,6 +620,9 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 // CompactAfterOverflow performs summarization and rewrites session
 func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
 	c.LastPromptTokens = 0
+	if !c.attemptAllowed() {
+		return false, nil
+	}
 	keepTokens := c.Settings.Keep.Tokens
 	if keepTokens == 0 {
 		keepTokens = DefaultKeepTokens
@@ -479,48 +650,14 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	if head == "" && previousSummary == "" {
 		return false, nil
 	}
-	prompt := buildPrompt(previousSummary, head, recent)
-	summaryOutput := SummaryOutputTokens
-	if c.MaxOutputTokens > 0 && c.MaxOutputTokens < summaryOutput {
-		summaryOutput = c.MaxOutputTokens
-	}
-	if EstimateTokens(prompt) > c.contextLimit()-summaryOutput {
-		return false, fmt.Errorf("prompt too large for compaction")
-	}
-	c.LastPromptTokens = EstimateTokens(prompt)
-	modelConfig := c.LLM
-	if c.ResolveModel != nil {
-		resolved, resolveErr := c.ResolveModel(ctx)
-		if resolveErr != nil {
-			return false, fmt.Errorf("resolve compaction provider: %w", resolveErr)
-		}
-		modelConfig = resolved
-	}
-	client := llm.New(modelConfig)
-	req := llm.StreamRequest{
-		Messages: []llm.Item{
-			{Kind: "text", Role: llm.RoleSystem, Text: "You are a conversation checkpoint compiler. Produce only the requested anchored summary. Do not call tools, continue the task, or invent results."},
-			{Kind: "text", Role: llm.RoleUser, Text: prompt},
-		},
-		Tools:          nil,
-		MaxTokens:      summaryOutput,
-		PromptCacheKey: c.CacheKey,
-	}
-	var summary strings.Builder
-	err := client.Stream(ctx, req, func(delta llm.ProviderResponse) {
-		if delta.Content != "" {
-			summary.WriteString(delta.Content)
-		}
-		if delta.Usage != nil && c.OnUsage != nil {
-			c.OnUsage(*delta.Usage)
-		}
-	})
+	summaryOutput := c.summaryOutputTokens()
+	text, err := c.summarise(ctx, sess, previousSummary, head, recent, summaryOutput)
 	if err != nil {
+		c.noteSummaryFailure()
 		return false, err
 	}
-	text := strings.TrimSpace(summary.String())
 	if text == "" {
-		return false, fmt.Errorf("empty summary from LLM")
+		return false, nil
 	}
 	// Archive before the rewrite, while the head is still in hand. The summary is
 	// the only surviving account of this stretch, and without the head there is no
@@ -545,6 +682,188 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	newMessages = append(newMessages, recentMessages...)
 	sess.Messages = newMessages
 	return true, nil
+}
+
+// summarise produces a validated checkpoint, preferring the in-band summariser
+// and falling back to the cold one.
+//
+// The in-band attempt failing is not itself a failure: it falls through
+// silently, because the cold path is what ran successfully for the whole life of
+// this product and there is no reason to stop the compaction over a preference.
+func (c *Compactor) summarise(ctx context.Context, sess *sessionstore.Session, previousSummary, head, recent string, summaryOutput int) (string, error) {
+	if c.Settings.InBand && c.LiveRequest != nil {
+		text, err := c.summariseInBand(ctx, sess, summaryOutput)
+		if err == nil {
+			return text, nil
+		}
+		cold, coldErr := c.summariseCold(ctx, previousSummary, head, recent, summaryOutput)
+		if coldErr != nil {
+			return "", fmt.Errorf("%w (the in-band summariser also failed: %v)", coldErr, err)
+		}
+		return cold, nil
+	}
+	return c.summariseCold(ctx, previousSummary, head, recent, summaryOutput)
+}
+
+// summariseInBand asks the agent, on its own request, to summarise itself.
+//
+// The instruction is appended to the request the agent would have been sent and
+// to nothing else: it is never written to the session. Writing it there would
+// leave "produce a compaction" as the last thing the model reads on every later
+// turn.
+//
+// A reply that calls a tool fails the attempt rather than being reported as a
+// summary. Compaction runs outside the tool loop, so nothing here can execute
+// the call, and an answer of [tool_use] is the model refusing to stop work,
+// which is the one way this variant is expected to go wrong. The Messages API
+// has no tool_choice "none": a value that maps to nil leaves tools in the
+// request with no tool_choice, which every endpoint reads as "auto" and
+// therefore permits. On this transport a re-ask is the only enforcement
+// available.
+func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Session, summaryOutput int) (string, error) {
+	// The instruction rides on a request the provider has just accepted, so the
+	// only thing that can push it over the window is the instruction and the
+	// summary's own output budget. Checking both is what routes the overflow
+	// trigger to the cold path, where the history is already over the line and a
+	// serialization is smaller than the conversation it stands for.
+	if c.contextLimit()-estimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
+		return "", fmt.Errorf("the context cannot carry an in-band summary")
+	}
+	var lastErr error
+	for attempt := 1; attempt <= summaryAttempts; attempt++ {
+		request := c.LiveRequest(ctx, sess)
+		request.Messages = append(append(make([]llm.Item, 0, len(request.Messages)+1), request.Messages...),
+			llm.Item{Kind: "text", Role: llm.RoleUser, Text: compactionInstruction(attempt)})
+		request.ToolChoice = "none"
+		request.MaxTokens = summaryOutput
+		// A summary is not deliberation, and a reply produced under thinking
+		// would have to carry its thinking blocks back on the next request.
+		request.Reason = ""
+		text, calledTool, usage, err := c.streamSummary(ctx, request)
+		c.LastPromptTokens = usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens
+		if err != nil {
+			return "", err
+		}
+		if calledTool {
+			lastErr = fmt.Errorf("the model called a tool instead of summarising")
+			continue
+		}
+		if err := validateSummary(text); err != nil {
+			lastErr = err
+			continue
+		}
+		return text, nil
+	}
+	return "", lastErr
+}
+
+// summariseCold is the original path: a separate request, its own system
+// message, no tools, and a serialization of the conversation with every tool
+// result, reasoning trace and call argument truncated again.
+//
+// It remains because it is smaller than the conversation, which is what makes
+// it the only path that works when the history is already over the window, and
+// because a provider that refuses to stop working is a thing that exists.
+func (c *Compactor) summariseCold(ctx context.Context, previousSummary, head, recent string, summaryOutput int) (string, error) {
+	prompt := buildPrompt(previousSummary, head, recent)
+	if EstimateTokens(prompt) > c.contextLimit()-summaryOutput {
+		return "", fmt.Errorf("prompt too large for compaction")
+	}
+	request := llm.StreamRequest{
+		Messages: []llm.Item{
+			{Kind: "text", Role: llm.RoleSystem, Text: "You are a conversation checkpoint compiler. Produce only the requested anchored summary. Do not call tools, continue the task, or invent results."},
+			{Kind: "text", Role: llm.RoleUser, Text: prompt},
+		},
+		Tools:          nil,
+		MaxTokens:      summaryOutput,
+		PromptCacheKey: c.CacheKey,
+	}
+	text, calledTool, _, err := c.streamSummary(ctx, request)
+	if err != nil {
+		return "", err
+	}
+	if calledTool {
+		return "", fmt.Errorf("the summariser called a tool")
+	}
+	if err := validateSummary(text); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+// streamSummary sends one summarisation request and returns its text.
+//
+// A tool call in the reply is reported rather than executed. Nothing here can
+// carry out work on the model's behalf, which is the property that makes it
+// safe to send an agent a request asking it to stop working.
+func (c *Compactor) streamSummary(ctx context.Context, request llm.StreamRequest) (string, bool, llm.UsageInfo, error) {
+	var reply strings.Builder
+	var usage llm.UsageInfo
+	var calledTool bool
+	client, err := c.client(ctx)
+	if err != nil {
+		return "", false, usage, err
+	}
+	err = client.Stream(ctx, request, func(delta llm.ProviderResponse) {
+		if delta.Content != "" {
+			reply.WriteString(delta.Content)
+		}
+		if len(delta.ToolCalls) > 0 {
+			calledTool = true
+		}
+		if delta.Usage != nil {
+			usage.Add(*delta.Usage)
+			if c.OnUsage != nil {
+				c.OnUsage(*delta.Usage)
+			}
+		}
+	})
+	if err != nil {
+		return "", calledTool, usage, err
+	}
+	return reply.String(), calledTool, usage, nil
+}
+
+// client resolves the provider for this compaction. A compaction may run on a
+// different model from the one producing the run, which is the whole reason
+// ResolveModel exists.
+func (c *Compactor) client(ctx context.Context) (*llm.StreamingClient, error) {
+	modelConfig := c.LLM
+	if c.ResolveModel != nil {
+		resolved, err := c.ResolveModel(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve compaction provider: %w", err)
+		}
+		modelConfig = resolved
+	}
+	return llm.New(modelConfig), nil
+}
+
+func (c *Compactor) summaryOutputTokens() int {
+	if c.MaxOutputTokens > 0 && c.MaxOutputTokens < SummaryOutputTokens {
+		return c.MaxOutputTokens
+	}
+	return SummaryOutputTokens
+}
+
+// attemptAllowed reports whether a compaction may run now.
+//
+// The cooldown is on the whole compaction rather than on one path, so a session
+// that cannot be summarised by either summariser waits a fixed five minutes
+// instead of paying for it on every turn.
+func (c *Compactor) attemptAllowed() bool {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+	if c.lastFailure.IsZero() {
+		return true
+	}
+	return time.Since(c.lastFailure) >= summaryCooldown
+}
+
+func (c *Compactor) noteSummaryFailure() {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+	c.lastFailure = time.Now()
 }
 
 // ChainLearn returns one hook that runs both, in order.

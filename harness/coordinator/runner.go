@@ -393,6 +393,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	if r.reg == nil {
 		return Result{}, fmt.Errorf("tool registry is required")
 	}
+	// Installed once per run rather than at construction, because the runner is
+	// the thing being constructed and the compactor arrives in the config ahead
+	// of it. From here on, a compaction triggered anywhere inside this run
+	// summarises over the same request the turns are sending.
+	r.attachLiveRequest()
 	release, err := r.store.AcquireRun(r.cfg.SessionID)
 	if err != nil {
 		return Result{}, fmt.Errorf("acquire session run: %w", err)
@@ -1051,6 +1056,56 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
 	return request.Messages
+}
+
+// LiveRequest returns the request the running agent would send for this session
+// right now: the same system prompt, the same pinned context, the same history
+// and the same tool catalogue.
+//
+// It is what an in-band compaction appends its instruction to, so the summary
+// comes from the agent that did the work, over the cache prefix the turn just
+// paid to open. The fields a run needs but a summary does not - the reasoning
+// level, the output cap - are deliberately left out here and set by the
+// compactor.
+func (r *Runner) LiveRequest(sess *sessionstore.Session) llm.StreamRequest {
+	tools := r.toolDefs()
+	return llm.StreamRequest{
+		Messages:        r.messages(sess, tools),
+		Tools:           tools,
+		PromptCacheKey:  sessionPromptCacheKey(r.cfg.Model, r.cfg.SessionID),
+		SystemCacheSeam: r.systemCacheSeam(),
+		SessionID:       r.cfg.SessionID,
+	}
+}
+
+// LiveRequestFor builds the request a runner with this config would send,
+// without a runner.
+//
+// It exists for callers that only ever compact: the Mini App's button has no
+// run in flight, and without this it is stuck on the cold summariser. The
+// store is accepted because request assembly may one day need it; nil is fine
+// today.
+func LiveRequestFor(cfg RunnerConfig, reg *tool.Registry, store *sessionstore.Store) func(context.Context, *sessionstore.Session) llm.StreamRequest {
+	runner := New(cfg, store, reg)
+	return func(_ context.Context, sess *sessionstore.Session) llm.StreamRequest {
+		return runner.LiveRequest(sess)
+	}
+}
+
+// attachLiveRequest gives the compactor the runner's own request assembly, so a
+// compaction triggered from inside a run produces the same bytes the run sends.
+//
+// It is done here rather than at construction because the compactor is built
+// before the runner is - the config carries it in, and the runner is what turns
+// that config into requests. A caller that already installed a builder keeps
+// it, which is what lets a caller wrap or replace the default.
+func (r *Runner) attachLiveRequest() {
+	if r.cfg.Compactor == nil || r.cfg.Compactor.LiveRequest != nil {
+		return
+	}
+	r.cfg.Compactor.LiveRequest = func(_ context.Context, sess *sessionstore.Session) llm.StreamRequest {
+		return r.LiveRequest(sess)
+	}
 }
 
 func normalizeDispatcherMessages(items []llm.Item) []llm.Item {
