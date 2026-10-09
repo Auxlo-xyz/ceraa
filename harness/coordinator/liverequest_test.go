@@ -106,3 +106,16 @@ func TestAttachLiveRequestInstallsOnce(t *testing.T) {
 		t.Fatal("the second install overwrote a caller-installed builder")
 	}
 }
+
+// The spool defaults beside the sessions, not in the OS temp dir: a pointer
+// to a spool file is a promise it survives a reboot.
+func TestSpoolDefaultsBesideTheSessions(t *testing.T) {
+	if got := defaultToolOutputDir("/data/sessions"); got != "/data/sessions/tool-output" {
+		t.Errorf("spool dir = %q, want it beside the sessions", got)
+	}
+	dir := t.TempDir()
+	r := New(RunnerConfig{GoalDir: dir}, nil, tool.NewRegistry())
+	if want := dir + "/tool-output"; r.cfg.ToolOutputDir != want {
+		t.Errorf("spool dir = %q, want %q", r.cfg.ToolOutputDir, want)
+	}
+}

@@ -596,9 +596,9 @@ func webDeleteMemory(id string) error {
 // the skill catalogue, the memory block and the same tool registry. Whatever
 // drifts between the two is a place the button's prefix stops matching the
 // runs', which costs cache hits but never correctness. If the session has no
-// project any more, the button compacts the old cold way: a session whose
-// workspace is gone has nothing live to summarise from, and the cold prompt is
-// a serialization that needs none.
+// project any more the button cannot build one and reports it: a session whose
+// workspace is gone has nothing live to summarise from, and there is no other
+// summariser left.
 func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *sessionstore.Session) (func(context.Context, *sessionstore.Session) llm.StreamRequest, error) {
 	projectRoot := defaultState.projectForSession(sess.ID)
 	if projectRoot == "" {
@@ -675,9 +675,9 @@ func webTriggerCompaction(sessionID string) (map[string]any, error) {
 		tokens += (len(message.Content) + len(message.ToolResult) + len(message.Reasoning)) / 4
 	}
 	compactor := newCompactor(cfg, cfg.EffectiveProviderID(), sessionID)
-	// In-band is the default here as everywhere: the button summarises with the
-	// same request a run would send. When there is no project to build one from,
-	// the compactor falls back to the cold summariser on its own.
+	// In-band is the only way the button summarises: it uses the same request
+	// a run would send. Without a project there is no request to build, so the
+	// button says so instead of summarising from a thinner copy.
 	if builder, err := webLiveRequest(cfg, store, sess); err != nil {
 		return nil, err
 	} else if builder != nil {

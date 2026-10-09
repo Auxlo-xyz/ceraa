@@ -40,6 +40,61 @@ func (b *Builder) Pinned(items ...llm.Item) {
 	b.pinned = append(b.pinned, items...)
 }
 
+// staleResultChars caps a tool result that has fallen behind the immediate
+// exchange. The full text stays in the session and, when it was spooled, under
+// the path its own notice names; what travels on later requests is the head of
+// it plus a pointer back.
+const staleResultChars = 600
+
+// pointerizeStaleResults replaces the bodies of tool results older than the
+// immediate exchange with pointers to themselves.
+//
+// The immediate exchange is everything from the last user message with content
+// onward: the turn the agent is standing in, which renders whole. Anything
+// older has either been digested, in which case the summary carries what it
+// taught, or it has not, in which case re-reading it is one tool call away.
+// Either way re-sending it on every request is paying rent on a house already
+// owned.
+//
+// The copy is shallow and the replaced strings are fresh, so the session's
+// stored messages are never mutated: a result that becomes immediate again
+// renders whole, and the archive keeps what it kept. Thinking blocks are
+// untouched throughout, because a thinking model must replay them verbatim and
+// a pointer is not a block.
+func pointerizeStaleResults(messages []sessionstore.Message) []sessionstore.Message {
+	live := len(messages)
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role == llm.RoleUser && strings.TrimSpace(m.Content) != "" && m.Compaction == nil {
+			live = i
+			break
+		}
+	}
+	if live == 0 {
+		return messages
+	}
+	out := append([]sessionstore.Message(nil), messages...)
+	for i := 0; i < live; i++ {
+		if out[i].ToolResult == "" {
+			continue
+		}
+		out[i].ToolResult = staleResultPointer(out[i].ToolResult)
+	}
+	return out
+}
+
+func staleResultPointer(result string) string {
+	trimmed := strings.TrimSpace(result)
+	if len(trimmed) <= staleResultChars {
+		return result
+	}
+	head := trimmed[:staleResultChars]
+	if i := strings.LastIndex(head, "\n"); i > 0 {
+		head = head[:i]
+	}
+	return head + "\n[older output - the full text is in the session transcript and, when spooled, under the path its notice names; re-read it if you need more than this]"
+}
+
 // Build returns the final Request with a system message prepended.
 //
 // The fallback here is the shared conservative default rather than a
@@ -66,6 +121,10 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 
 	// conversation history - handle compaction messages as synthetic checkpoints
 	// Mirrors soraacode agent/core/src/session/runner/to-llm-message.ts
+	//
+	// Results behind the immediate exchange travel as pointers, not bodies: see
+	// pointerizeStaleResults. The loop below renders from the copied slice, so
+	// the session's stored messages are never mutated by it.
 	toolNames := make(map[string]string)
 	for _, m := range b.sess.Messages {
 		for _, call := range m.AllToolCalls() {
@@ -74,7 +133,8 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 			}
 		}
 	}
-	for _, m := range b.sess.Messages {
+	messages := pointerizeStaleResults(b.sess.Messages)
+	for _, m := range messages {
 		if m.Compaction != nil {
 			// Render compaction as synthetic checkpoint -> maps to soraacode to-llm-message.ts compaction case
 			req.Messages = append(req.Messages, llm.Item{

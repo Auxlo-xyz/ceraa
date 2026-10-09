@@ -144,7 +144,6 @@ func (s *Session) build() error {
 	compactor := compaction.New(modelConfig)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
-	compactor.CacheKey = "ceraa-compaction-cli-" + s.session
 	compactor.ArchiveDir = s.cfg.SessionFile
 
 	resolveModel := func(ctx context.Context) (llm.ProviderConfig, error) {

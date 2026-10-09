@@ -272,6 +272,7 @@ func TestManualCompactionPersistsTheSummaryItPaidFor(t *testing.T) {
 		"## Relevant Files\ntypes.ts holds the index.\n" +
 		"## Decisions\nFix in place.\n" +
 		"## Next Steps\nRun the tests.\n" +
+		"## Handoff\nRun the tests, at harness/coordinator/liverequest_test.go, nothing blocked.\n" +
 		"## Design Lessons Learnt\nName things once.\n"
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -371,6 +372,7 @@ func TestManualCompactionGoesInBandByDefault(t *testing.T) {
 		"## Relevant Files\ntypes.ts holds the index.\n" +
 		"## Decisions\nFix in place.\n" +
 		"## Next Steps\nRun the tests.\n" +
+		"## Handoff\nRun the tests, at harness/coordinator/liverequest_test.go, nothing blocked.\n" +
 		"## Design Lessons Learnt\nName things once.\n"
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)

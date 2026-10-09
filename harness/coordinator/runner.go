@@ -342,7 +342,7 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 		cfg.GoalDir = "sessions"
 	}
 	if cfg.ToolOutputDir == "" {
-		cfg.ToolOutputDir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
+		cfg.ToolOutputDir = defaultToolOutputDir(cfg.GoalDir)
 	}
 	opMgr := cfg.OperationPool
 	if opMgr == nil {
@@ -369,6 +369,20 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 
 type toolRunner struct {
 	reg *tool.Registry
+}
+
+// defaultToolOutputDir keeps spooled tool output beside the sessions rather
+// than in the OS temp dir. A pointer to a spool file is a promise the file
+// will be there when the model follows it, and the temp dir is wiped on reboot
+// and whenever the host feels like it. GoalDir is the sessions directory in
+// every caller that sets one, so the spool sits next to the transcript that
+// points at it. The store only ever reads *.json, so the subdirectory is
+// invisible to it.
+func defaultToolOutputDir(goalDir string) string {
+	if trimmed := strings.TrimSpace(goalDir); trimmed != "" {
+		return filepath.Join(trimmed, "tool-output")
+	}
+	return filepath.Join(os.TempDir(), "ceraa-tool-outputs")
 }
 
 func (r *toolRunner) RunTool(ctx context.Context, spec operation.Spec) (string, error) {
@@ -1917,7 +1931,7 @@ func (r *Runner) formatOutput(runID, operationID, output string) string {
 	}
 	dir := r.cfg.ToolOutputDir
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
+		dir = defaultToolOutputDir(r.cfg.GoalDir)
 	}
 	path := filepath.Join(dir, runID, r.safeResultName(operationID)+".txt")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
@@ -2173,7 +2187,7 @@ func runeSafe(s string) string {
 func (r *Runner) repeatNotice(runID, operationID, output string) string {
 	dir := r.cfg.ToolOutputDir
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "ceraa-tool-outputs")
+		dir = defaultToolOutputDir(r.cfg.GoalDir)
 	}
 	path := filepath.Join(dir, runID, r.safeResultName(operationID)+".txt")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

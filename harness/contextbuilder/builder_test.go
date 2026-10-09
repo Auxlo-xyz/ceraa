@@ -192,3 +192,72 @@ func TestFormatMessagesIntoPrompt(t *testing.T) {
 		t.Fatal("expected USER in output")
 	}
 }
+
+// A result behind the immediate exchange travels as a pointer: its head, so
+// the shape of it survives, plus the marker naming where the full text lives.
+// The immediate exchange itself renders whole.
+func TestStaleToolResultsRenderAsPointers(t *testing.T) {
+	spooled := "Large tool output saved to /sessions/tool-output/run_op.txt (48210 bytes). It is greppable from bash.\nShape: 47.1 kB, 900 lines\nHead:\n" + strings.Repeat("old line\n", 200)
+	sess := &sessionstore.Session{
+		ID: "test",
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "read the log"},
+			{Role: llm.RoleAssistant, Content: "reading", ToolCalls: []sessionstore.ToolCallRef{{ID: "c1", Name: "read", Args: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", ToolName: "read", ToolResult: spooled, ToolResultPresent: true},
+			{Role: llm.RoleUser, Content: "and now this"},
+			{Role: llm.RoleAssistant, Content: "on it", ToolCalls: []sessionstore.ToolCallRef{{ID: "c2", Name: "bash", Args: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c2", ToolName: "bash", ToolResult: "fresh output", ToolResultPresent: true},
+		},
+	}
+	stored := sess.Messages[2].ToolResult
+	req := New(sess, "system prompt").Build()
+	var stale, fresh string
+	for _, item := range req.Messages {
+		if item.Role != llm.RoleTool {
+			continue
+		}
+		if strings.Contains(item.Output, "fresh output") {
+			fresh = item.Output
+		} else {
+			stale = item.Output
+		}
+	}
+	if fresh != "fresh output" {
+		t.Errorf("the immediate result was not rendered whole: %q", fresh)
+	}
+	if !strings.Contains(stale, "/sessions/tool-output/run_op.txt") {
+		t.Errorf("the stale pointer lost the spool path: %.160q", stale)
+	}
+	if got := strings.Count(stale, "old line"); got >= 200 {
+		t.Errorf("the stale body travelled whole: all 200 lines present")
+	}
+	if len(stale) >= len(spooled) {
+		t.Errorf("nothing was saved: %d chars in, %d out", len(spooled), len(stale))
+	}
+	if !strings.Contains(stale, "older output") {
+		t.Errorf("the stale pointer names no recovery: %.160q", stale)
+	}
+	if sess.Messages[2].ToolResult != stored {
+		t.Error("rendering mutated the stored message")
+	}
+}
+
+// Small stale results travel whole: pointerizing them would cost a marker to
+// save nothing.
+func TestSmallStaleResultsTravelWhole(t *testing.T) {
+	sess := &sessionstore.Session{
+		ID: "test",
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "first"},
+			{Role: llm.RoleAssistant, Content: "ok"},
+			{Role: llm.RoleTool, ToolCallID: "c1", ToolName: "read", ToolResult: "tiny", ToolResultPresent: true},
+			{Role: llm.RoleUser, Content: "second"},
+		},
+	}
+	req := New(sess, "system prompt").Build()
+	for _, item := range req.Messages {
+		if item.Role == llm.RoleTool && item.Output != "tiny" {
+			t.Errorf("a small stale result was rewritten: %q", item.Output)
+		}
+	}
+}

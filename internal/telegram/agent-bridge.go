@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -536,11 +535,6 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 	}
 }
 
-func compactionCacheKey(providerURL, model, sessionID string) string {
-	digest := sha256.Sum256([]byte(providerURL + "\x00" + model + "\x00" + sessionID))
-	return fmt.Sprintf("ceraa-compaction-%x", digest)
-}
-
 func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.Compactor {
 	provider := activeProviderConfig(cfg, providerID)
 	pcfg := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
@@ -550,7 +544,6 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	compactor := compaction.New(pcfg)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
-	compactor.CacheKey = compactionCacheKey(provider.URL, provider.Model, sessionID)
 	compactor.ArchiveDir = cfg.SessionFile
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled

@@ -15,7 +15,6 @@ import (
 const (
 	DefaultBuffer       = 20000
 	DefaultKeepTokens   = 8000
-	ToolOutputMaxChars  = 2000
 	SummaryOutputTokens = 4096
 	// MaxTotalTokens is the fallback budget when no model-specific limit has been
 	// supplied. It is the shared conservative default, not a per-model figure: a
@@ -44,19 +43,13 @@ const (
 type Settings struct {
 	Auto   bool `json:"auto"`
 	Buffer int  `json:"buffer"`
-	// InBand prefers the in-band summariser: the agent produces its own summary
-	// on its own warm request. It is the default because it is both cheaper and
-	// more faithful, and it falls back on its own, so the only reason to turn it
-	// off is a provider that will not answer a summarisation request with a
-	// summary rather than with more work.
-	InBand bool `json:"in_band"`
 	Keep   struct {
 		Tokens int `json:"tokens"`
 	} `json:"keep"`
 }
 
 func DefaultSettings() Settings {
-	s := Settings{Auto: true, Buffer: DefaultBuffer, InBand: true}
+	s := Settings{Auto: true, Buffer: DefaultBuffer}
 	s.Keep.Tokens = DefaultKeepTokens
 	return s
 }
@@ -142,70 +135,35 @@ func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head [
 	}
 	flush()
 
-	total := 0
-	for i := len(units) - 1; i >= 0; i-- {
-		if total+units[i].tokens > keepTokens {
-			if len(units) > i+1 {
-				return flattenMessages(units[:i+1]), flattenMessages(units[i+1:])
-			}
-			budget := keepTokens - total
-			if budget <= 0 {
-				return flattenMessages(units[:i+1]), flattenMessages(units[i+1:])
-			}
-			prefix := flattenMessages(units[:i])
-			unitHead, unitRecent := splitMessageUnit(units[i].messages, budget)
-			if len(unitRecent) == 0 {
-				return flattenMessages(units), nil
-			}
-			head = append(prefix, unitHead...)
-			recent = append(unitRecent, flattenMessages(units[i+1:])...)
-			return head, recent
-		}
-		total += units[i].tokens
+	// Structure first: the open exchange and the one before it. A token budget
+	// can only say "this much"; it cannot say "this matters". Two exchanges
+	// back the transcript is either resolved, in which case the summary carries
+	// it, or still open, in which case the handoff carries it.
+	first := len(units) - maxRecentExchanges
+	if first < 0 {
+		first = 0
 	}
-	return nil, flattenMessages(units)
+	// Budget second: drop whole exchanges from the front while the tail exceeds
+	// it, but never the last exchange. A cap that can delete the present is
+	// worse than no cap.
+	for first < len(units)-1 && tailTokens(units[first:]) > keepTokens {
+		first++
+	}
+	return flattenMessages(units[:first]), flattenMessages(units[first:])
 }
 
-func splitMessageUnit(messages []sessionstore.Message, budget int) (head, recent []sessionstore.Message) {
-	if len(messages) == 0 || budget <= 0 {
-		return messages, nil
+func tailTokens(units []messageUnit) int {
+	total := 0
+	for _, unit := range units {
+		total += unit.tokens
 	}
-	assistant := -1
-	for i, message := range messages {
-		if message.Role == llm.RoleAssistant {
-			assistant = i
-		}
-	}
-	if assistant < 0 {
-		return messages, nil
-	}
-	tailTokens := 0
-	for _, message := range messages[assistant:] {
-		tailTokens += estimateMessage(message)
-	}
-	if tailTokens <= budget {
-		return messages[:assistant], messages[assistant:]
-	}
-	last := len(messages) - 1
-	for last > assistant {
-		candidateTokens := 0
-		for _, message := range messages[assistant : last+1] {
-			candidateTokens += estimateMessage(message)
-		}
-		if candidateTokens <= budget {
-			return messages[:assistant], messages[assistant:]
-		}
-		if messages[last].Role == llm.RoleAssistant {
-			last--
-			continue
-		}
-		last--
-	}
-	if assistant < len(messages)-1 {
-		return messages[:assistant], messages[assistant:]
-	}
-	return messages, nil
+	return total
 }
+
+// maxRecentExchanges bounds the verbatim tail by structure: the open exchange
+// and the one before it. See selectMessageUnits for why a budget cannot do
+// this job.
+const maxRecentExchanges = 2
 
 func flattenMessages(units []messageUnit) []sessionstore.Message {
 	var messages []sessionstore.Message
@@ -238,6 +196,8 @@ List files touched and their purpose.
 Key technical decisions made.
 ## Next Steps
 What remains to be done.
+## Handoff
+The next action as one command, the current position as file:line, the open blocker in one line. Written as instructions to the reader, not as history.
 ## Design Lessons Learnt
 Patterns to preserve.
 
@@ -245,139 +205,17 @@ Rules: keep every section, terse bullets, never mention compaction, no preamble.
 
 // summaryBoundaryRules is what stops a summariser from doing the work instead.
 //
-// It is appended to both the in-band instruction and the cold prompt, because
-// both ask a model that has been working to stop working, and a model with
-// nothing in front of it but a transcript is the one case where that costs a
-// turn rather than a mistaken edit.
+// The instruction asks a model that has been working to stop working, and a
+// model with nothing in front of it but a transcript is the one case where
+// that costs a turn rather than a mistaken edit.
 const summaryBoundaryRules = `Reply with the summary and nothing else: do not call a tool, do not continue the work, do not invent a result.`
-
-const summaryUpdateInstructions = `Combine both summaries: Preserve objectives from <prior-summary> even if absent from <conversation> - <conversation> is newer and wins conflicts. Anything omitted is permanently lost.`
-
-func serializeMessage(m sessionstore.Message) string {
-	if m.Compaction != nil {
-		return "" // filtered - compaction messages not serialized into head
-	}
-	switch m.Role {
-	case llm.RoleUser:
-		s := fmt.Sprintf("[User]: %s", m.Content)
-		if m.ToolResult != "" {
-			s += fmt.Sprintf("\n[Tool result]: %s", truncate(m.ToolResult, ToolOutputMaxChars))
-		}
-		return s
-	case llm.RoleAssistant:
-		var parts []string
-		if m.Content != "" {
-			parts = append(parts, fmt.Sprintf("[Assistant]: %s", m.Content))
-		}
-		if m.Reasoning != "" {
-			parts = append(parts, fmt.Sprintf("[Assistant reasoning]: %s", truncate(m.Reasoning, ToolOutputMaxChars)))
-		}
-		for _, call := range m.AllToolCalls() {
-			parts = append(parts, fmt.Sprintf("[Assistant tool call]: %s(%s)", call.Name, truncate(call.Args, ToolOutputMaxChars)))
-		}
-		if m.ToolResult != "" {
-			parts = append(parts, fmt.Sprintf("[Tool result]: %s", truncate(m.ToolResult, ToolOutputMaxChars)))
-		}
-		return strings.Join(parts, "\n")
-	case llm.RoleTool:
-		return fmt.Sprintf("[Tool result]: %s", truncate(m.ToolResult, ToolOutputMaxChars))
-	case llm.RoleSystem:
-		return fmt.Sprintf("[System]: %s", m.Content)
-	default:
-		if m.Content != "" {
-			return fmt.Sprintf("[%s]: %s", m.Role, m.Content)
-		}
-		return ""
-	}
-}
-
-func serializeMessages(messages []sessionstore.Message) string {
-	parts := make([]string, 0, len(messages))
-	for _, message := range messages {
-		if serialized := serializeMessage(message); serialized != "" {
-			parts = append(parts, serialized)
-		}
-	}
-	return strings.Join(parts, "\n\n")
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	headSize := n * 2 / 3
-	tailSize := n - headSize
-	if headSize < 256 {
-		headSize = n / 2
-		tailSize = n - headSize
-	}
-	var b strings.Builder
-	b.WriteString(s[:headSize])
-	b.WriteString("\n...[truncated; salient diagnostics preserved]...\n")
-	seen := make(map[string]struct{})
-	for _, line := range strings.Split(s, "\n") {
-		lower := strings.ToLower(line)
-		if !strings.Contains(lower, "error") && !strings.Contains(lower, "fail") && !strings.Contains(lower, "panic") && !strings.Contains(lower, "traceback") {
-			continue
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if _, exists := seen[line]; exists {
-			continue
-		}
-		seen[line] = struct{}{}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	if tailSize > 0 {
-		b.WriteString(s[len(s)-tailSize:])
-	}
-	return b.String()
-}
-
-// Select splits messages into head (to summarize) and recent (to keep verbatim)
-// Mirrors soraacode select() with keepTokens budget from the tail.
-func Select(sess *sessionstore.Session, keepTokens int) (head string, recent string) {
-	headMessages, recentMessages := selectMessageUnits(sess.Messages, keepTokens)
-	return serializeMessages(headMessages), serializeMessages(recentMessages)
-}
-
-func buildPrompt(previousSummary string, head string, recent string) string {
-	var contextParts []string
-	if head != "" {
-		contextParts = append(contextParts, head)
-	}
-	context := strings.Join(contextParts, "\n\n")
-	conversation := fmt.Sprintf("Current active conversation:\n\n<conversation>\n%s\n</conversation>", context)
-	if recent != "" {
-		conversation += fmt.Sprintf("\n\nRecent context to preserve verbatim:\n%s", recent)
-	}
-	if previousSummary == "" {
-		return strings.Join([]string{
-			conversation,
-			"Create a new anchored summary of the conversation so far.",
-			summaryTemplate,
-			summaryBoundaryRules,
-		}, "\n\n")
-	}
-	return strings.Join([]string{
-		conversation,
-		fmt.Sprintf("Here is the prior summary:\n<prior-summary>\n%s\n</prior-summary>", previousSummary),
-		summaryUpdateInstructions,
-		summaryTemplate,
-		summaryBoundaryRules,
-	}, "\n\n")
-}
 
 // compactionInstruction is the user turn an in-band compaction appends.
 //
 // There is nothing to embed: the conversation is the request, so the model has
-// already been sent everything the cold prompt would have wrapped in
-// <conversation> tags. What it has not been sent is a reason to stop, and it
-// needs one, because the instruction arrives at the end of a transcript whose
-// every other user turn asked for work.
+// already been sent everything above. What it has not been sent is a reason to
+// stop, and it needs one, because the instruction arrives at the end of a
+// transcript whose every other user turn asked for work.
 //
 // It is a user turn and never a session message. Appending it to the session,
 // the way the runner's final-answer nudge does, would leave a permanent
@@ -385,7 +223,7 @@ func buildPrompt(previousSummary string, head string, recent string) string {
 // request.
 func compactionInstruction(attempt int) string {
 	instruction := strings.Join([]string{
-		"Produce a compaction of this conversation: a checkpoint a fresh reader will be given in place of everything above it.",
+		"Produce a compaction of this conversation: a checkpoint a fresh reader will be given in place of everything above it. If the conversation holds a prior checkpoint, carry its unresolved items forward: anything omitted is permanently lost.",
 		summaryTemplate,
 		summaryBoundaryRules,
 	}, "\n\n")
@@ -476,7 +314,6 @@ type Compactor struct {
 	Settings         Settings
 	ContextLimit     int
 	MaxOutputTokens  int
-	CacheKey         string
 	ResolveModel     func(context.Context) (llm.ProviderConfig, error)
 	LastPromptTokens int
 	OnUsage          func(llm.UsageInfo)
@@ -645,13 +482,11 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		candidate = sess.Messages[latestCompaction+1:]
 	}
 	headMessages, recentMessages := selectMessageUnits(candidate, keepTokens)
-	head := serializeMessages(headMessages)
-	recent := serializeMessages(recentMessages)
-	if head == "" && previousSummary == "" {
+	if len(headMessages) == 0 && previousSummary == "" {
 		return false, nil
 	}
 	summaryOutput := c.summaryOutputTokens()
-	text, err := c.summarise(ctx, sess, previousSummary, head, recent, summaryOutput)
+	text, err := c.summarise(ctx, sess, summaryOutput)
 	if err != nil {
 		c.noteSummaryFailure()
 		return false, err
@@ -675,7 +510,6 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		Content: "<conversation-checkpoint>",
 		Compaction: &sessionstore.CompactionInfo{
 			Summary: text,
-			Recent:  recent,
 			Seq:     len(sess.Messages),
 		},
 	})
@@ -684,25 +518,15 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	return true, nil
 }
 
-// summarise produces a validated checkpoint, preferring the in-band summariser
-// and falling back to the cold one.
-//
-// The in-band attempt failing is not itself a failure: it falls through
-// silently, because the cold path is what ran successfully for the whole life of
-// this product and there is no reason to stop the compaction over a preference.
-func (c *Compactor) summarise(ctx context.Context, sess *sessionstore.Session, previousSummary, head, recent string, summaryOutput int) (string, error) {
-	if c.Settings.InBand && c.LiveRequest != nil {
-		text, err := c.summariseInBand(ctx, sess, summaryOutput)
-		if err == nil {
-			return text, nil
-		}
-		cold, coldErr := c.summariseCold(ctx, previousSummary, head, recent, summaryOutput)
-		if coldErr != nil {
-			return "", fmt.Errorf("%w (the in-band summariser also failed: %v)", coldErr, err)
-		}
-		return cold, nil
+// summarise produces a validated checkpoint from the agent's own request.
+// It is the only summariser: there is no fallback, because a fallback that
+// re-serializes the conversation is a second answer to the same question that
+// quietly goes stale, and this product already paid for that lesson once.
+func (c *Compactor) summarise(ctx context.Context, sess *sessionstore.Session, summaryOutput int) (string, error) {
+	if c.LiveRequest == nil {
+		return "", fmt.Errorf("compaction has no live request to summarise over")
 	}
-	return c.summariseCold(ctx, previousSummary, head, recent, summaryOutput)
+	return c.summariseInBand(ctx, sess, summaryOutput)
 }
 
 // summariseInBand asks the agent, on its own request, to summarise itself.
@@ -723,11 +547,14 @@ func (c *Compactor) summarise(ctx context.Context, sess *sessionstore.Session, p
 func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Session, summaryOutput int) (string, error) {
 	// The instruction rides on a request the provider has just accepted, so the
 	// only thing that can push it over the window is the instruction and the
-	// summary's own output budget. Checking both is what routes the overflow
-	// trigger to the cold path, where the history is already over the line and a
-	// serialization is smaller than the conversation it stands for.
+	// summary's own output budget. When even that does not fit, usually on the
+	// overflow trigger where the history is already over the line, the
+	// compaction fails honestly: there is no smaller request left to try, and a
+	// checkpoint must never be faked from a conversation that cannot be sent.
+	// An overflowed session is recovered by deleting messages or starting over,
+	// not by summarising.
 	if c.contextLimit()-estimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
-		return "", fmt.Errorf("the context cannot carry an in-band summary")
+		return "", fmt.Errorf("the context cannot carry a summary")
 	}
 	var lastErr error
 	for attempt := 1; attempt <= summaryAttempts; attempt++ {
@@ -755,40 +582,6 @@ func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Sess
 		return text, nil
 	}
 	return "", lastErr
-}
-
-// summariseCold is the original path: a separate request, its own system
-// message, no tools, and a serialization of the conversation with every tool
-// result, reasoning trace and call argument truncated again.
-//
-// It remains because it is smaller than the conversation, which is what makes
-// it the only path that works when the history is already over the window, and
-// because a provider that refuses to stop working is a thing that exists.
-func (c *Compactor) summariseCold(ctx context.Context, previousSummary, head, recent string, summaryOutput int) (string, error) {
-	prompt := buildPrompt(previousSummary, head, recent)
-	if EstimateTokens(prompt) > c.contextLimit()-summaryOutput {
-		return "", fmt.Errorf("prompt too large for compaction")
-	}
-	request := llm.StreamRequest{
-		Messages: []llm.Item{
-			{Kind: "text", Role: llm.RoleSystem, Text: "You are a conversation checkpoint compiler. Produce only the requested anchored summary. Do not call tools, continue the task, or invent results."},
-			{Kind: "text", Role: llm.RoleUser, Text: prompt},
-		},
-		Tools:          nil,
-		MaxTokens:      summaryOutput,
-		PromptCacheKey: c.CacheKey,
-	}
-	text, calledTool, _, err := c.streamSummary(ctx, request)
-	if err != nil {
-		return "", err
-	}
-	if calledTool {
-		return "", fmt.Errorf("the summariser called a tool")
-	}
-	if err := validateSummary(text); err != nil {
-		return "", err
-	}
-	return text, nil
 }
 
 // streamSummary sends one summarisation request and returns its text.

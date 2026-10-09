@@ -151,15 +151,15 @@ func TestArchiveIsOffWhenUnconfigured(t *testing.T) {
 }
 
 // The archive is a diagnostic, never an input. If anything read it back into a
-// prompt, the thing it is meant to protect — the summary — would be changeable by
-// a sidecar file.
+// request, the thing it is meant to protect (the summary) would be changeable by
+// a sidecar file. The only reader is the appender in archive.go, which carries
+// old entries forward to disk; the instruction below is the only
+// compaction-authored text that reaches a model.
 func TestArchiveDoesNotReachThePrompt(t *testing.T) {
-	previous := "## Objective\nold"
-	// buildPrompt is the only path from archived content into a model request.
-	prompt := buildPrompt(previous, "head text", "recent text")
+	instruction := compactionInstruction(1)
 	for _, leak := range []string{"discarded", ".compacted.json", "read_files"} {
-		if strings.Contains(prompt, leak) {
-			t.Errorf("the compaction prompt mentions %q; the archive must not be readable by the model", leak)
+		if strings.Contains(instruction, leak) {
+			t.Errorf("the compaction instruction mentions %q; the archive must not be readable by the model", leak)
 		}
 	}
 }
