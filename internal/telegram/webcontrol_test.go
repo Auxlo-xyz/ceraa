@@ -458,3 +458,41 @@ func TestTheDashboardNamesTheContextLimitFloorWhenNothingStates(t *testing.T) {
 		t.Errorf("source after configuring a limit = %q, want %q", source, llm.ContextFromProfile)
 	}
 }
+
+// The always-allow list outlives the tools it names: memory, script,
+// fts_search, browser_text and browser_html were all deleted while their
+// entries stayed in bridge-state.json, and the menu showed 29 allowed against
+// 25 registered. Those rows cannot be untoggled from the page either, because
+// webSetToolAllowed refuses unknown names, so they would sit there forever
+// without this filter.
+func TestWebToolsOmitsToolsThatNoLongerExist(t *testing.T) {
+	old := defaultState
+	defaultState = &bridgeState{AlwaysAllow: map[string]bool{
+		"bash": true, "script": true, "memory": true, "fts_search": true,
+		"browser_text": true, "browser_html": true,
+	}}
+	defer func() { defaultState = old }()
+	allowed, inventory, err := webTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dead := range []string{"script", "memory", "fts_search", "browser_text", "browser_html"} {
+		for _, name := range allowed {
+			if name == dead {
+				t.Errorf("%q is allowed but no longer registered", dead)
+			}
+		}
+	}
+	known := map[string]bool{}
+	for _, e := range inventory {
+		known[e.Name] = true
+	}
+	for _, name := range allowed {
+		if !known[name] {
+			t.Errorf("allowed %q is not in the inventory the page builds toggles from", name)
+		}
+	}
+	if len(allowed) == 0 {
+		t.Error("bash is registered and allowed, so the filter dropped everything")
+	}
+}

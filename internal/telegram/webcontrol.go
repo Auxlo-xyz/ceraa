@@ -476,18 +476,27 @@ func webSetRunParams(update map[string]any) error {
 }
 
 func webTools() ([]string, []miniapp.ToolEntry, error) {
+	registry := tool.DefaultRegistryWithStores(nil)
+	known := make(map[string]bool)
+	inventory := []miniapp.ToolEntry{}
+	for _, t := range registry.All() {
+		known[t.Name()] = true
+		inventory = append(inventory, miniapp.ToolEntry{Name: t.Name(), Description: t.Description()})
+	}
 	defaultState.mu.RLock()
 	allowed := make([]string, 0, len(defaultState.AlwaysAllow))
 	for name := range defaultState.AlwaysAllow {
-		allowed = append(allowed, name)
+		// A removed tool must not keep a toggle. The entry is dead state from
+		// before the tool was deleted, and the menu cannot even untoggle it
+		// because webSetToolAllowed refuses unknown names, so it would sit on
+		// the page forever. Filtering here is what stops the next tool removal
+		// from leaving the same four rows behind.
+		if known[name] {
+			allowed = append(allowed, name)
+		}
 	}
 	defaultState.mu.RUnlock()
 	sort.Strings(allowed)
-	registry := tool.DefaultRegistryWithStores(nil)
-	inventory := []miniapp.ToolEntry{}
-	for _, t := range registry.All() {
-		inventory = append(inventory, miniapp.ToolEntry{Name: t.Name(), Description: t.Description()})
-	}
 	return allowed, inventory, nil
 }
 
