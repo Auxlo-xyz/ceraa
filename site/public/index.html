@@ -56,14 +56,16 @@
      Ceraa: their #f5f5f7 is a cool grey, ours is the warm #FAF9F7. The blur,
      saturate, isolate and the three-part shadow are theirs unchanged. */
   header.nav {
-    /* fixed, not sticky: the sky band starts at the top of the page and the
-       bar floats over it, so the glass always has the photograph behind it */
-    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    /* floating pill, measured off make.design: max 826px wide, 12px off the
+       edges on phones and 28px on desktop, white at 0.35 with a 16px blur.
+       Warm-tinted for Ceraa; their cool #f5f5f7 would fight the palette. */
+    position: fixed; top: 12px; left: 12px; right: 12px; z-index: 50;
+    max-width: 826px; margin: 0 auto; border-radius: 999px;
     isolation: isolate;
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    backdrop-filter: blur(20px) saturate(180%);
-    background: rgba(250, 249, 247, 0.62);
-    border-bottom: 1px solid rgba(18, 17, 16, 0.07);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+    background: rgba(250, 249, 247, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.20);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.90),
       inset 0 0 0 1px rgba(255, 255, 255, 0.50),
@@ -76,11 +78,13 @@
   .brand img { width: 30px; height: 30px; border-radius: 8px; }
   .nav-links { display: flex; align-items: center; gap: 26px; margin-left: auto; }
   .nav-links a {
-    text-decoration: none; font-size: 15px; color: #55534F;
+    text-decoration: none; font-size: 15px; color: rgba(255, 255, 255, 0.88);
     padding: 6px 0; border-bottom: 1px solid transparent;
     transition: color .2s var(--ease), border-color .2s var(--ease);
   }
-  .nav-links a:hover { color: var(--ink); border-bottom-color: var(--ink); }
+  .nav-links a:hover { color: #FFFFFF; border-bottom-color: rgba(255, 255, 255, 0.7); }
+  header.nav.solid .nav-links a { color: #55534F; }
+  header.nav.solid .nav-links a:hover { color: var(--ink); border-bottom-color: var(--ink); }
   .btn {
     display: inline-flex; align-items: center; gap: 8px;
     font-family: var(--sf); font-size: 15px; font-weight: 500;
@@ -232,6 +236,13 @@
   }
   .nav-cta { background: #FFFFFF; color: var(--ink); border-color: #FFFFFF; transition: background .3s var(--ease), color .3s var(--ease); }
   header.nav.solid .nav-cta { background: var(--ink); color: var(--ground); border-color: var(--rule-strong); }
+  header.nav.solid {
+    background: rgba(250, 249, 247, 0.82);
+    border-color: rgba(18, 17, 16, 0.08);
+  }
+  @media (min-width: 768px) { header.nav { top: 28px; } }
+  /* the pill carries its own padding now, not the page wrap */
+  header.nav .nav-in { height: auto; max-width: none; padding: 9px 10px 9px 18px; }
   @media (max-width: 767px) {
     /* Halved the dead space the headline was floating in. The band is now
        shorter than the portrait source, so cover trims the lower sky; the
