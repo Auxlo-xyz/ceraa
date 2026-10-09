@@ -444,6 +444,10 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	r.Register(&CreateGoalTool{})
 	r.Register(&GetGoalTool{})
 	r.Register(&UpdateGoalTool{})
+	// Read-only recovery for what compaction summarized away: the archive is
+	// pulled like a fetched page, never injected, so listing it beside the
+	// goals it resembles is honest about what it is.
+	r.Register(&RecallArchiveTool{})
 
 	// WebSearch with config from env
 	provider := envs.Get("WEBSEARCH_PROVIDER")

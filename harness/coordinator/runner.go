@@ -1610,6 +1610,12 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		}
 		spec.Args["session_id"] = r.cfg.SessionID
 		spec.Args["request_id"] = call.ID
+		// The archive sidecar lives beside the session file, so the recall
+		// tool resolves it from the store's own directory: the same rule the
+		// compactor writes by, stated once here instead of once per tool.
+		if r.store != nil {
+			spec.Args["archive_dir"] = r.store.Dir()
+		}
 		if r.cfg.AdjustSpec != nil {
 			r.cfg.AdjustSpec(&spec)
 		}

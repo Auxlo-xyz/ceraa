@@ -20,8 +20,10 @@ import (
 //
 // The archive keeps the discarded messages, structured rather than pre-digest, so
 // the question becomes answerable later without this having to guess which
-// questions those will be. It is a diagnostic, not an input: nothing here reaches
-// the model, and a failure to write it must never fail the compaction.
+// questions those will be. It is written unconditionally and read only when
+// asked: the recall tool pulls an entry on demand, the way a fetch pulls a
+// page, and nothing here is ever injected into a request unasked. A failure to
+// write it must never fail the compaction.
 
 const (
 	// ArchiveKeep is how many compactions are retained per session. Each entry

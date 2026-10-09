@@ -201,7 +201,7 @@ The next action as one command, the current position as file:line, the open bloc
 ## Design Lessons Learnt
 Patterns to preserve.
 
-Rules: keep every section, terse bullets, never mention compaction, no preamble.`
+Rules: keep every section, terse bullets, never mention compaction, no preamble. Keep by value: the user's words closest to verbatim, then lasting effects and failures, then findings, tool steps last. Copy names, numbers, ids, paths and errors exactly. Never make anything look further along than it was.`
 
 // summaryBoundaryRules is what stops a summariser from doing the work instead.
 //

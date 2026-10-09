@@ -225,6 +225,14 @@ func New(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
+// Dir is where this store keeps its files, and the sidecars beside them: the
+// compaction archive lives next to the session it summarises, so a tool that
+// reads the archive resolves it from here rather than being told a second
+// path that can drift from this one.
+func (s *Store) Dir() string {
+	return s.dir
+}
+
 func (s *Store) AcquireRun(id string) (func(), error) {
 	hash := sha256.Sum256([]byte(id))
 	path := filepath.Join(s.dir, ".run-"+hex.EncodeToString(hash[:])+".lock")
