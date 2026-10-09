@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ceraa/internal/config"
+	"ceraa/internal/deepseekauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/opencodeauth"
 )
@@ -205,6 +206,14 @@ func checkSubscriptionCredential(ctx context.Context, provider config.LLMProvide
 			detail += " (project " + credential.ProjectID + ")"
 		}
 		return doctorCheck{"provider", "OK", detail}
+	case llm.DeepSeekSubscription:
+		// Presence, not proof: like the OpenCode key there is nothing to refresh,
+		// and a live call would bill the account. The run path resolves the grant
+		// itself, so this only answers whether a grant is stored at all.
+		if !deepseekauth.SignedIn() {
+			return doctorCheck{"provider", "FAIL", "DeepSeek is not signed in; sign in again"}
+		}
+		return doctorCheck{"provider", "OK", "DeepSeek credential present"}
 	}
 	return doctorCheck{"provider", "WARN", "unknown subscription provider: " + provider.Subscription}
 }
