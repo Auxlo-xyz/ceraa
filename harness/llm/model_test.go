@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -186,4 +187,49 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// The shape this morning's incident actually left in a session: two tool calls
+// fused by a content block that shared an index, stored as one call named read
+// whose arguments were a bash command followed by a read. Before the recovery
+// moved into the shared repair, this reached the executor intact on every
+// transport except Anthropic.
+func TestFusedToolArgumentsKeepTheFirstObject(t *testing.T) {
+	// Taken verbatim from the stored session message.
+	fused := `{"command": "cd /workspace/development/ceraa && echo \"=== compaction_test.go ===\"; cat harness/compaction/compaction_test.go"}{"limit": 40, "offset": 543, "path": "/workspace/development/ceraa/harness/compaction/compaction.go"}`
+	repaired, changed := RepairToolArgumentsJSON(fused)
+	if !changed {
+		t.Fatal("the fused arguments were accepted as-is")
+	}
+	if !json.Valid([]byte(repaired)) {
+		t.Fatalf("the repair is still not one JSON value: %s", repaired)
+	}
+	var got struct {
+		Command string `json:"command"`
+		Limit   int    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(repaired), &got); err != nil {
+		t.Fatalf("the repaired value does not decode: %v", err)
+	}
+	if !strings.Contains(got.Command, "compaction_test.go") {
+		t.Errorf("the first object was not kept: %q", got.Command)
+	}
+	if got.Limit != 0 {
+		t.Errorf("the second object was not dropped: limit=%d", got.Limit)
+	}
+}
+
+func TestTwoObjectsWithTheEmptySeedFirst(t *testing.T) {
+	// The seed-plus-fragments shape that the shared builder no longer produces,
+	// still recoverable in stored history.
+	if got, _ := RepairToolArgumentsJSON(`{}{"command":"ls"}`); got != `{"command":"ls"}` {
+		t.Errorf("repair = %s", got)
+	}
+}
+
+func TestNoJSONAtAllIsLeftAlone(t *testing.T) {
+	original := "this is not json at all"
+	if got, changed := RepairToolArgumentsJSON(original); got != original || changed {
+		t.Errorf("repair = %q changed=%v, want it untouched", got, changed)
+	}
 }

@@ -1594,6 +1594,12 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 			}
 			continue
 		}
+		// Coerced after the registry lookup because it needs the tool's schema,
+		// and before validation because coercion exists to prevent the failures
+		// validation reports. Aliases ran earlier: they need only the name.
+		if coerceToolArguments(t, args) {
+			logger.Debug("coerced tool argument types for " + toolName)
+		}
 		if err := tool.ValidateArguments(t.Schema(), args); err != nil {
 			corrective = true
 			message := "Error: invalid arguments for " + toolName + ": " + err.Error() + "; use arguments " + toolCatalogArguments(t.Schema())

@@ -191,11 +191,8 @@ func (b *toolInputBuilder) arguments() string {
 // <tool>", which is what the model sees. What is left here is to keep the
 // conversation sendable.
 //
-// Recovery walks the top-level values in order and takes the first that carries
-// anything. Two values running together is the shape a fused tool block leaves
-// behind, {"command":"ls"}{"limit":40}, and the meaningful half of it is still
-// an object the endpoint accepts; only a string holding no JSON at all becomes
-// {}.
+// Recovery is FirstMeaningfulJSONValue, shared with the live call path so the
+// fused-block shape cannot reach the executor through a different transport.
 func toolInputJSON(arguments string) json.RawMessage {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
@@ -204,34 +201,10 @@ func toolInputJSON(arguments string) json.RawMessage {
 	if json.Valid([]byte(trimmed)) {
 		return json.RawMessage(trimmed)
 	}
-	if recovered := firstMeaningfulJSONValue(trimmed); recovered != "" {
+	if recovered := FirstMeaningfulJSONValue(trimmed); recovered != "" {
 		return json.RawMessage(recovered)
 	}
 	return json.RawMessage("{}")
-}
-
-// firstMeaningfulJSONValue returns the first top-level JSON value in s that
-// carries something, skipping empty objects and arrays.
-func firstMeaningfulJSONValue(s string) string {
-	decoder := json.NewDecoder(strings.NewReader(s))
-	fallback := ""
-	for {
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			break
-		}
-		trimmed := strings.TrimSpace(string(value))
-		if trimmed == "" {
-			continue
-		}
-		if fallback == "" {
-			fallback = trimmed
-		}
-		if trimmed != "{}" && trimmed != "[]" {
-			return trimmed
-		}
-	}
-	return fallback
 }
 
 // encodeAnthropicMessages converts stored items into Anthropic message turns.

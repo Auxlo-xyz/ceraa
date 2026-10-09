@@ -129,6 +129,18 @@ func MergeReasoningDetails(parts []json.RawMessage) json.RawMessage {
 	return data
 }
 
+// RepairToolArgumentsJSON makes a tool call's arguments usable.
+//
+// Three failures, in the order they are tried. A value that already parses is
+// returned untouched. A value that parses after quotes are escaped and
+// unbalanced braces and strings are closed is repaired. A value carrying more
+// than one JSON object, which is what a fused content block leaves behind, keeps
+// the first object that carries anything: {"command":"ls"}{"limit":40} became a
+// call for a bash command renamed read, and that is the value the endpoint and
+// the executor both want to see rather than a request they cannot parse.
+//
+// The last case used to live only in the Anthropic encoder, so it was repaired on
+// one transport and reached the executor intact on every other.
 func RepairToolArgumentsJSON(value string) (string, bool) {
 	if json.Valid([]byte(value)) {
 		return value, false
@@ -197,10 +209,40 @@ func RepairToolArgumentsJSON(value string) (string, bool) {
 		}
 	}
 	result := repaired.String()
-	if !json.Valid([]byte(result)) {
-		return value, false
+	if json.Valid([]byte(result)) {
+		return result, result != value
 	}
-	return result, result != value
+	// Still not one value, which means it is two values rather than one broken
+	// one. Keep the first that carries something.
+	if recovered := FirstMeaningfulJSONValue(value); recovered != "" {
+		return recovered, recovered != value
+	}
+	return value, false
+}
+
+// FirstMeaningfulJSONValue returns the first top-level JSON value in s that
+// carries something, skipping empty objects and arrays. It returns "" when s
+// holds no JSON at all.
+func FirstMeaningfulJSONValue(s string) string {
+	decoder := json.NewDecoder(strings.NewReader(s))
+	fallback := ""
+	for {
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			break
+		}
+		trimmed := strings.TrimSpace(string(value))
+		if trimmed == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = trimmed
+		}
+		if trimmed != "{}" && trimmed != "[]" {
+			return trimmed
+		}
+	}
+	return fallback
 }
 
 func nextJSONDelimiter(value string, start int) byte {
