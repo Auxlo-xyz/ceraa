@@ -257,6 +257,15 @@ const (
 	DiagVolume DiagnosticKind = "volume"
 )
 
+// DefaultFile is the project instruction file a store reads when a caller names
+// no source, project-relative.
+//
+// It sits beside memory.DefaultMemoryFile rather than replacing it, because the
+// two documents have different owners: that one is the agent's own learned
+// project memory, this one is the project's written rules. A caller that wires
+// everything gets both.
+const DefaultFile = "AGENTS.md"
+
 // Diagnostic is one finding from a compile.
 //
 // Diagnostics are values, not errors, because a malformed instruction file is

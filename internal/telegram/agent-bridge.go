@@ -22,6 +22,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal"
 	"ceraa/internal/buddyauth"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
@@ -194,6 +195,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),
+		InstructionRules:    internal.InstructionRules(projectRoot),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,

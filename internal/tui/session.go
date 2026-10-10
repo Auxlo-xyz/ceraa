@@ -21,6 +21,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
@@ -214,6 +215,7 @@ func (s *Session) build() error {
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      s.cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, s.session),
+		InstructionRules:    internal.InstructionRules(s.workDir),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Reasoning:           llm.ReasonLevel(s.Effort()),

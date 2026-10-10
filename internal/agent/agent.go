@@ -17,6 +17,7 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
@@ -245,12 +246,17 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),
-		SkillContext:        skillContext,
-		EvaluationStore:     evaluationStore,
-		Reasoning:           llm.ReasonLevel(strings.TrimSpace(provider.Reasoning)),
-		ReasoningEfforts:    provider.ReasoningEfforts,
-		ReasoningDefault:    provider.ReasoningDefault,
-		Compactor:           compactor,
+		// The CLI runs in the process working directory: this config sets no
+		// WorkDir, so the runner resolves relative paths against it, and the
+		// instruction store has to resolve against the same place or a project's
+		// AGENTS.md is read from somewhere the commands do not run.
+		InstructionRules: internal.InstructionRules("."),
+		SkillContext:     skillContext,
+		EvaluationStore:  evaluationStore,
+		Reasoning:        llm.ReasonLevel(strings.TrimSpace(provider.Reasoning)),
+		ReasoningEfforts: provider.ReasoningEfforts,
+		ReasoningDefault: provider.ReasoningDefault,
+		Compactor:        compactor,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) { fmt.Print(content) },
 			OnToolStart: func(_, name string, _ map[string]any) {

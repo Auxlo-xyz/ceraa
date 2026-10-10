@@ -50,9 +50,20 @@ type Config struct {
 	// renders a bounded block in the stable, cacheable prefix so a preference is
 	// visible on every turn at cache-hit cost; "prompt" renders the same block
 	// in the varying tail; "sidekick" annotates tool results instead and leaves
-	// the system prompt fully static. The default is safe because the extractor
-	// that writes memory only runs at compaction, so the prefix does not churn
-	// between turns.
+	// the system prompt fully static.
+	//
+	// The default is NOT safe, and an earlier version of this comment said it was
+	// on the strength of a claim that the block was stable, which was false. The
+	// renderer re-reads BOND.md and re-ranks the store from disk on every model
+	// request, and the ranking carries a wall clock, so the bytes change even
+	// when nothing was written. A volatile block sitting ahead of the cache seam
+	// rebuilds the cached prefix on every turn, which is measured at a 49.8%
+	// token-weighted hit rate against 91.8% on the requests where it holds.
+	//
+	// The parse default stays "cached" because changing it here would silently
+	// move every existing install, and a value in config.json is visible and
+	// reversible in a way a compiled default is not. Set memory_delivery to
+	// "sidekick" to take the mode whose prompt is provably static.
 	MemoryDelivery string `json:"memory_delivery,omitempty"`
 	SkillFile      string `json:"skill_file,omitempty"`
 	EvaluationFile string `json:"evaluation_file,omitempty"`

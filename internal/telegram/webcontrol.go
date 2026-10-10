@@ -20,6 +20,7 @@ import (
 	"ceraa/harness/snapshot"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal"
 	"ceraa/internal/build"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
@@ -649,6 +650,7 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 		BondFunc:          bondRenderer,
 		MemoryDelivery:    cfg.MemoryDelivery,
 		MemoryEntries:     memoryEntries(memoryStore, projectRoot, sess.ID),
+		InstructionRules:  internal.InstructionRules(projectRoot),
 		SkillContext:      skillContext,
 		EvaluationStore:   evaluationStore,
 	}, registry, store)
