@@ -301,3 +301,86 @@ func TestLiveReportsAStoreFailureWithoutPartialRender(t *testing.T) {
 		t.Errorf("render = %q, want empty", got)
 	}
 }
+
+// IsImperative decides the lifetime a memory is given, so it is pinned on both
+// sides: the wording that must count as a directive, and the wording that must
+// not. A prefix that starts matching more than it used to does not fail loudly,
+// it silently shortens half a store's lives.
+func TestIsImperativeFindsTheDirectiveAnywhereInIt(t *testing.T) {
+	for _, text := range []string{
+		"never push to main",
+		"always run the gate before pushing",
+		"do not use the vendored SDK",
+		"don't force push",
+		"must keep the response under 200ms",
+		"avoid shelling out for this",
+		"stop adding dependencies",
+		"for this task, always run the gate before pushing",
+		"we agreed on friday, never bypass review",
+		"   always trim the log   ",
+	} {
+		if !IsImperative(text) {
+			t.Errorf("IsImperative(%q) = false, want true", text)
+		}
+	}
+	for _, text := range []string{
+		"",
+		"the repo uses sqlite",
+		"we went with the postgres driver",
+		"it is better to keep functions small",
+		"they never said which database",
+		// The prefix needs its trailing space, so a word that merely ends in one of
+		// the verbs is not a directive. "stopping" and "avoided" are past tense.
+		"we are stopping the nightly job",
+		"this is avoided elsewhere",
+	} {
+		if IsImperative(text) {
+			t.Errorf("IsImperative(%q) = true, want false", text)
+		}
+	}
+}
+
+// The exported classifier has to agree with the list it is defined by, which is
+// the only thing standing between this package and the document compiler
+// carrying a third, slightly different vocabulary.
+//
+// The list is restated in the test rather than imported on purpose: importing it
+// would compare the product against itself and pass forever. This copy is the
+// pin - if a directive is added to either side, this test says so instead of
+// letting the two drift apart unnoticed.
+func TestIsImperativeAgreesWithTheDirectiveVocabulary(t *testing.T) {
+	// Lower case deliberately. See TestIsImperativeIsCaseSensitiveByDesign.
+	reference := []string{"never ", "always ", "do not ", "don't ", "must ", "avoid ", "stop "}
+	for _, prefix := range reference {
+		for _, text := range []string{prefix + "do the thing", "we decided earlier, " + prefix + "do the thing"} {
+			if !IsImperative(text) {
+				t.Errorf("IsImperative(%q) = false, but %q is in the vocabulary", text, prefix)
+			}
+		}
+	}
+	for _, word := range []string{"can", "should", "prefer", "consider"} {
+		text := word + " to do the thing"
+		if IsImperative(text) {
+			t.Errorf("IsImperative(%q) = true, but %q is not a standing-directive prefix", text, word)
+		}
+	}
+}
+
+// The case-sensitivity is the divergence between this package and
+// harness/instruction, which case-folds because documents capitalise their
+// bullets and memory statements do not. It is asserted rather than left to a
+// reader of two comments, because the obvious "fix" is to add strings.ToLower
+// here and that would reclassify every capitalised statement already stored.
+//
+// Whether the two should be unified is the owner's call: folding case is right
+// for hand-written documents and a behaviour change for stores in the field.
+func TestIsImperativeIsCaseSensitiveByDesign(t *testing.T) {
+	for _, text := range []string{"Never push to main", "Do not use the vendored SDK", "Always run the gate"} {
+		if IsImperative(text) {
+			t.Errorf("IsImperative(%q) = true; this package is case-sensitive, and changing that reclassifies stored memories", text)
+		}
+	}
+	if !IsImperative("never push to main") {
+		t.Errorf("the lowercase form stopped matching, so the comparison is broken rather than case-sensitive")
+	}
+}

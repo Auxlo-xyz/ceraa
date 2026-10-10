@@ -221,6 +221,27 @@ func (b Brief) matches(target string) bool {
 	return false
 }
 
+// MatchesScope answers "does this applies glob cover this path" for callers
+// outside the package, by asking the matcher above rather than restating it.
+//
+// It exists as a one-line wrapper so the glob grammar has exactly one
+// implementation in the product. Every clause of matches was a bug found once
+// already - a whole-path glob, a base-name glob, a directory prefix, a relative
+// pattern against the absolute target an operation actually carries - and a
+// caller that reimplemented any of them did not get a second opinion, it got a
+// second thing to keep correct, which is how the two drift until a rule fires
+// for one consumer and silently not for the other. A wrapper cannot go stale
+// against the thing it wraps, and it leaves one place in the tree where the
+// grammar can be wrong.
+//
+// The caller passes strings rather than a Brief because Brief carries the other
+// five fields of a rendered memory, and a scope question about a document rule
+// has none of them. An empty applies matches nothing here, the same as a memory
+// with no applies: general is a delivery mode, not an empty scope.
+func MatchesScope(applies, target string) bool {
+	return Brief{Applies: applies}.matches(target)
+}
+
 // Select returns the targeted memories bearing on any of the given targets,
 // strongest first, skipping any the caller has already delivered.
 //

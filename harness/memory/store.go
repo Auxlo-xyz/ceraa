@@ -818,12 +818,26 @@ func RenderFile(path string, maxBytes int) (string, error) {
 	return entry, nil
 }
 
-// isImperative reports whether a statement is phrased as a standing directive.
+// IsImperative reports whether a statement is phrased as a standing directive.
 //
 // Anywhere in the statement, not only at the front. "for this task, always run the
 // gate" is a one-off phrase followed by a standing rule, and the rule is the part
 // that decides the lifetime.
-func isImperative(text string) bool {
+//
+// Exported so the document-rule compiler can stop carrying its own restatement of
+// this vocabulary: two copies of a directive list is two answers to "is this a
+// rule", and they will not agree.
+//
+// The comparison is case-SENSITIVE and that is load-bearing for existing data,
+// not an oversight. Memory statements are extracted sentences and begin lower
+// case, so folding case would classify nothing new here - but it would change
+// classification for any capitalised statement already in a store, and a store
+// in the field is data this package cannot recompute. harness/instruction reads
+// hand-written documents whose bullets are capitalised and therefore case-folds;
+// the two deliberately disagree. Unifying them is a decision about which
+// classification wins, not a refactor, and it needs a migration for the stores
+// already written.
+func IsImperative(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	for _, prefix := range []string{
 		"never ", "always ", "do not ", "don't ", "must ", "avoid ", "stop ",
@@ -943,7 +957,7 @@ func classifyMemoryType(content string) MemoryType {
 		// A one-off phrase inside a standing rule is still a standing rule.
 		// "for this task, always run the gate" carries both, and taking the shorter
 		// life would forget a directive the user meant to keep.
-		if isImperative(text) {
+		if IsImperative(text) {
 			continue
 		}
 		return Request

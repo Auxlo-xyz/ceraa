@@ -336,3 +336,75 @@ func TestParseDeliveryDefaultsToCache(t *testing.T) {
 		}
 	}
 }
+
+// MatchesScope is the exported entry to the glob grammar, so it is checked two
+// ways at once: against the unexported matcher it wraps, and against the answer
+// each case is supposed to have.
+//
+// The agreement check alone is not enough - a wrapper and the matcher could
+// drift together - and the table alone is not enough either, because a table
+// only pins the cases someone thought of. The cases are the four clauses of the
+// matcher, each of which was a bug found once already, plus the two empties
+// that are the difference between "general memory" and "matches everything".
+func TestMatchesScopeAgreesWithTheMatcherItWraps(t *testing.T) {
+	cases := []struct {
+		name    string
+		applies string
+		target  string
+		want    bool
+	}{
+		{"whole-path glob", "/srv/*/main.go", "/srv/api/main.go", true},
+		{"whole-path glob that does not reach the next segment", "/srv/*/main.go", "/srv/api/deep/main.go", false},
+		{"base-name glob", "*.go", "/srv/app/main.go", true},
+		{"base-name glob that does not match", "*.go", "/srv/app/main.rs", false},
+		{"bare filename reaches any depth", "Makefile", "/srv/app/other/Makefile", true},
+		{"bare filename that is a different file", "Makefile", "/srv/app/other/Dockerfile", false},
+		{"directory prefix covers everything beneath it", "/srv/api", "/srv/api/main.go", true},
+		{"directory prefix with a trailing separator", "/srv/api/", "/srv/api/main.go", true},
+		{"directory prefix is not a string prefix", "/srv/api", "/srv/apix/main.go", false},
+		{"directory matches itself", "/srv/api", "/srv/api", true},
+		{"relative pattern against an absolute target", "src/*", "/srv/app/src/main.go", true},
+		{"relative directory against an absolute target", "harness/memory", "/srv/ceraa/harness/memory/store.go", true},
+		{"relative pattern in the wrong place", "src/*", "/srv/app/lib/main.go", false},
+		// The whole-path match will not cross a separator, and the directory-prefix
+		// branch compares the literal "*" as a string, so a wildcard in a directory
+		// segment of an ABSOLUTE pattern reaches nothing at all. The suffix walk that
+		// rescues "src/*" is skipped for absolute patterns, so the two spellings of
+		// the same idea do not behave the same way. Pinned here because it is real
+		// current behaviour and changing it re-scopes memories that already exist.
+		{"absolute pattern with a wildcard directory segment reaches nothing", "/srv/*", "/srv/api/main.go", false},
+		{"empty applies matches nothing", "", "/srv/app/main.go", false},
+		{"empty applies against an empty target", "", "", false},
+		{"empty target matches nothing", "*.go", "", false},
+		{"an absolute applies does not match a relative target", "/srv/api", "srv/api/main.go", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := Brief{Applies: tc.applies}.matches(tc.target)
+			if want != tc.want {
+				t.Errorf("Brief.matches(%q, %q) = %v, want %v", tc.applies, tc.target, want, tc.want)
+			}
+			if got := MatchesScope(tc.applies, tc.target); got != want {
+				t.Errorf("MatchesScope(%q, %q) = %v, the matcher says %v", tc.applies, tc.target, got, want)
+			}
+		})
+	}
+}
+
+// The wrapper takes only the two strings, so it cannot accidentally answer a
+// scope question about a Brief that carries something else and let that field
+// into the judgement. Only Applies exists, and nothing else in the struct
+// changes the answer.
+func TestMatchesScopeIgnoresTheRestOfTheBrief(t *testing.T) {
+	plain := MatchesScope("*.go", "/srv/app/main.go")
+	if !plain {
+		t.Fatalf("the scope did not match at all, so the rest of this test proves nothing")
+	}
+	brief := Brief{ID: "id", Applies: "*.go", Why: "because", Content: "text", Score: 9, Seen: 40}
+	if got := brief.matches("/srv/app/main.go"); !got {
+		t.Errorf("a populated Brief stopped matching its own applies")
+	}
+	if brief.matches("/srv/app/main.rs") {
+		t.Errorf("a populated Brief matched a path its applies does not cover")
+	}
+}

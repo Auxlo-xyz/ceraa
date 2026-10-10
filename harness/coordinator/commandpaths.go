@@ -153,14 +153,35 @@ func sortedTargets(out []string) []string {
 // Eight tools carry an explicit path. A shell command does not, and it is the
 // majority of real operations, so the command form is the normal case and the
 // explicit path is the convenient one rather than the other way round.
-func (s *sidekickState) targetsForSpec(specType string, args map[string]any) []string {
+//
+// The workDir is a parameter rather than s.workDir because the instruction
+// observer calls this from outside any sidekick state. The sidekick method below
+// is the wrapper, so there is still exactly one implementation.
+//
+// specType is UNUSED, and that is deliberate rather than an oversight to be
+// tidied up. It branches on the shape of args alone: args["path"] if present,
+// otherwise args["command"]. Every caller so far has an operation whose args
+// already say which of the two forms it is in, so a spec-type table here would
+// be a second place that has to be right about how each tool spells its
+// arguments, and it would be a second place to be wrong. If a tool ever arrives
+// with a `path` it does not act on - a destination, a search root - then the
+// dispatch belongs here, and the sidekick's existing tests are what should move
+// when it does.
+func targetsForSpec(specType string, workDir string, args map[string]any) []string {
 	if path, _ := args["path"].(string); strings.TrimSpace(path) != "" {
-		resolved, err := tool.ResolvePathFrom(s.workDir, path)
+		resolved, err := tool.ResolvePathFrom(workDir, path)
 		if err != nil {
 			return nil
 		}
 		return []string{filepath.Clean(resolved)}
 	}
 	command, _ := args["command"].(string)
-	return pathsFromCommand(command, s.workDir)
+	return pathsFromCommand(command, workDir)
+}
+
+// targetsForSpec is the sidekick's own view of an operation's paths. Behaviour is
+// unchanged - it delegates rather than restating, so the memory side and the
+// instruction side cannot drift on which paths an operation is about.
+func (s *sidekickState) targetsForSpec(specType string, args map[string]any) []string {
+	return targetsForSpec(specType, s.workDir, args)
 }
