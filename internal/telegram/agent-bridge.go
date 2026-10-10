@@ -565,19 +565,6 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			model.CodeAssistNative = true
 			model.CodeAssistTokens = geminiauth.NewTokenSource()
 			return model, nil
-		case "buddy":
-			manager := buddyauth.NewManager()
-			if !manager.Authenticated() {
-				return llm.ProviderConfig{}, fmt.Errorf("CodeBuddy account is not signed in: sign in from the provider menu first")
-			}
-			token, err := manager.AccessToken(ctx)
-			if err != nil {
-				return llm.ProviderConfig{}, err
-			}
-			model.BaseURL = firstNonEmptyStr(provider.URL, llm.BuddyBaseURL)
-			model.APIKey = token
-			model.ExtraHeaders = llm.BuddyRequestHeaders()
-			return model, nil
 		case "workbuddy":
 			manager := buddyauth.NewWorkBuddyManager()
 			if !manager.Authenticated() {

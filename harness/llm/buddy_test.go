@@ -8,49 +8,34 @@ import (
 // Wire ids travel verbatim: the endpoint routes on these exact strings, so
 // the picker offers them directly rather than through a display-name mapping
 // that could drift from what the server accepts.
-func TestBuddyModelPools(t *testing.T) {
-	if len(BuddyModels) == 0 || len(WorkBuddyModels) == 0 {
+func TestWorkBuddyModelPool(t *testing.T) {
+	if len(WorkBuddyModels) == 0 {
 		t.Fatal("empty model pool")
 	}
-	seen := map[string]string{}
-	for _, id := range append(append([]string{}, BuddyModels...), WorkBuddyModels...) {
+	seen := map[string]bool{}
+	for _, id := range WorkBuddyModels {
 		if strings.TrimSpace(id) == "" {
-			t.Error("blank model id in a pool")
+			t.Error("blank model id in the pool")
 		}
-	}
-	for _, id := range BuddyModels {
-		if prev, dup := seen[id]; dup {
-			t.Errorf("id %q in both pools (%s); one region serves it", id, prev)
+		if seen[id] {
+			t.Errorf("duplicate id %q", id)
 		}
-		seen[id] = "buddy"
+		seen[id] = true
 	}
-	if !IsBuddyModel("deepseek-v4.1-flash") || !IsBuddyModel("default-model") || !IsBuddyModel("DeepSeek-V4.1-Flash") {
+	if !IsWorkBuddyModel("deepseek-v4.1-flash") || !IsWorkBuddyModel("default-model") || !IsWorkBuddyModel("DeepSeek-V4.1-Flash") {
 		t.Error("known ids not recognised (matching is case-insensitive)")
 	}
-	if IsBuddyModel("gpt-9") || IsBuddyModel("") {
+	if IsWorkBuddyModel("gpt-9") || IsWorkBuddyModel("") {
 		t.Error("unknown or empty id accepted")
 	}
-	if DefaultBuddyModel == "" || DefaultWorkBuddyModel == "" {
+	if DefaultWorkBuddyModel == "" {
 		t.Error("a pool without a default cannot activate with an empty model")
 	}
 }
 
 // Identity headers are exact: the backend attributes usage by them, and a
 // wrong product name bills the conversation to nobody.
-func TestBuddyRequestHeaders(t *testing.T) {
-	domestic := BuddyRequestHeaders()
-	for key, want := range map[string]string{
-		"X-Domain":        "copilot.tencent.com",
-		"X-Product-Code":  "codebuddy",
-		"X-Agent-Purpose": "conversation",
-		"X-IDE-Name":      "CodeBuddy",
-		"X-Product":       "CodeBuddy",
-		"User-Agent":      "CodeBuddyIDE/1.106.1",
-	} {
-		if domestic[key] != want {
-			t.Errorf("domestic %s = %q, want %q", key, domestic[key], want)
-		}
-	}
+func TestWorkBuddyRequestHeaders(t *testing.T) {
 	intl := WorkBuddyRequestHeaders("deepseek-v4.1-flash")
 	if intl["X-Domain"] != "www.workbuddy.ai" || intl["X-Product-Code"] != "workbuddy" {
 		t.Errorf("intl headers = %v", intl)

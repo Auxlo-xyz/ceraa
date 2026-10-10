@@ -2,45 +2,18 @@ package llm
 
 import "strings"
 
-// BuddySubscription identifies a Tencent CodeBuddy profile.
-const BuddySubscription = "buddy"
-
-// WorkBuddySubscription identifies a Tencent WorkBuddy (intl) profile. A
-// separate account system with its own credential, endpoint and model pool:
-// sharing one subscription would route one region's token at the other's
+// WorkBuddySubscription identifies a Tencent WorkBuddy (intl) profile.
+//
+// The domestic CodeBuddy login is China-gated (WeChat/phone/SSO with no
+// alternative path), so only the international product is offered. Its
+// account system, endpoint and model pool are separate from the domestic
+// one: sharing a subscription would route one region's token at the other's
 // host.
 const WorkBuddySubscription = "workbuddy"
 
-// BuddyBaseURL is the domestic chat endpoint root. The transport appends
-// /chat/completions, so this stops at the version prefix.
-const BuddyBaseURL = "https://copilot.tencent.com/v2"
-
-// WorkBuddyBaseURL is the international chat endpoint root.
+// WorkBuddyBaseURL is the international chat endpoint root. The transport
+// appends /chat/completions, so this stops at the version prefix.
 const WorkBuddyBaseURL = "https://www.workbuddy.ai/v2"
-
-// BuddyModels are the domestic directory ids. They travel verbatim: the
-// endpoint routes on these exact strings.
-var BuddyModels = []string{
-	"hy4-preview",
-	"hy3",
-	"hy3-x",
-	"deepseek-v4.1-flash",
-	"deepseek-v4-pro",
-	"deepseek-v4-flash",
-	"glm-5.3",
-	"glm-5.3-flash",
-	"glm-5.2",
-	"glm-5.1",
-	"glm-5v-turbo",
-	"kimi-k3-1",
-	"kimi-k2.8-preview",
-	"kimi-k2.7",
-	"kimi-k2.6",
-	"minimax-m3",
-}
-
-// DefaultBuddyModel is the domestic default.
-const DefaultBuddyModel = "deepseek-v4.1-flash"
 
 // WorkBuddyModels are the international directory ids, in the IDE's display
 // order. Aliases (Auto, Fast, Balanced, Primary, Deep) are real choices that
@@ -74,16 +47,9 @@ var WorkBuddyModels = []string{
 // DefaultWorkBuddyModel is the international default.
 const DefaultWorkBuddyModel = "default-model"
 
-// IsBuddyModel reports whether an id belongs to either Tencent pool. Either,
-// because a model id alone does not say which region serves it; the profile's
-// subscription decides the host, and the host decides.
-func IsBuddyModel(model string) bool {
+// IsWorkBuddyModel reports whether an id belongs to the international pool.
+func IsWorkBuddyModel(model string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(model))
-	for _, known := range BuddyModels {
-		if trimmed == strings.ToLower(known) {
-			return true
-		}
-	}
 	for _, known := range WorkBuddyModels {
 		if trimmed == strings.ToLower(known) {
 			return true
@@ -108,22 +74,6 @@ func workBuddyUserAgent(model string) string {
 		}
 	}
 	return "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2"
-}
-
-// BuddyRequestHeaders returns the product identity headers for domestic
-// inference. Authorization travels separately through the profile key, the
-// way every OpenAI-compatible transport carries it.
-func BuddyRequestHeaders() map[string]string {
-	return map[string]string{
-		"X-Domain":        "copilot.tencent.com",
-		"X-Product-Code":  "codebuddy",
-		"X-Agent-Purpose": "conversation",
-		"X-IDE-Name":      "CodeBuddy",
-		"X-IDE-Type":      "CodeBuddy",
-		"X-IDE-Version":   "1.106.1",
-		"X-Product":       "CodeBuddy",
-		"User-Agent":      "CodeBuddyIDE/1.106.1",
-	}
 }
 
 // WorkBuddyRequestHeaders returns the product identity headers for

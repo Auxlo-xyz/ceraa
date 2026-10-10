@@ -49,7 +49,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission",
 	"snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "buddy", "workbuddy",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "workbuddy",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.
@@ -218,17 +218,15 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("Qoder", "⚡", qoderauth.Authenticated(), selection().ActiveProvider == llm.QoderSubscription, "provider:qoder")
 	case "gemini":
 		return subscriptionMenu("Gemini", "✨", geminiauth.SignedIn(), selection().ActiveProvider == llm.GeminiSubscription, "provider:gemini")
-	case "buddy":
-		return subscriptionMenu("CodeBuddy", "🐧", buddyauth.NewManager().Authenticated(), selection().ActiveProvider == llm.BuddySubscription, "provider:buddy")
 	case "workbuddy":
 		return subscriptionMenu("WorkBuddy", "🌍", buddyauth.NewWorkBuddyManager().Authenticated(), selection().ActiveProvider == llm.WorkBuddySubscription, "provider:workbuddy")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
 		"opencode:models", "deepseek:models", "claude:models", "qoder:models",
-		"gemini:models", "buddy:models", "workbuddy:models",
+		"gemini:models", "workbuddy:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
 		"provider:cline:models", "provider:codex:models", "provider:opencode:models",
 		"provider:deepseek:models", "provider:claude:models", "provider:qoder:models",
-		"provider:gemini:models", "provider:buddy:models", "provider:workbuddy:models":
+		"provider:gemini:models", "provider:workbuddy:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -469,18 +467,8 @@ func ProviderMenu() map[string]any {
 		geminiLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": geminiLabel, "callback_data": "provider:gemini"}})
-	// CodeBuddy and WorkBuddy are separate account systems, so they are
-	// separate rows rather than one row with a region toggle.
-	buddyLabel := "🐧 CodeBuddy Account"
-	switch {
-	case active == llm.BuddySubscription:
-		buddyLabel = "✅ " + buddyLabel
-	case buddyauth.NewManager().Authenticated():
-		buddyLabel += " · switch to it"
-	default:
-		buddyLabel += " · sign in"
-	}
-	rows = append(rows, []map[string]string{{"text": buddyLabel, "callback_data": "provider:buddy"}})
+	// WorkBuddy is the international Tencent account; the domestic CodeBuddy
+	// login is China-gated (WeChat/phone/SSO), so only WorkBuddy is offered.
 	workbuddyLabel := "🌍 WorkBuddy Account"
 	switch {
 	case active == llm.WorkBuddySubscription:
@@ -1102,7 +1090,7 @@ func Hub() map[string]any {
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(), "qoder": qoderHubLabel(),
-		"gemini": geminiHubLabel(), "buddy": buddyHubLabel(), "workbuddy": workbuddyHubLabel(),
+		"gemini": geminiHubLabel(), "workbuddy": workbuddyHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1213,18 +1201,6 @@ func geminiHubLabel() string {
 		return "✨ Gemini · signed in"
 	default:
 		return "✨ Gemini · sign in"
-	}
-}
-
-// buddyHubLabel names the CodeBuddy entry by state.
-func buddyHubLabel() string {
-	switch {
-	case buddyauth.NewManager().Authenticated() && selection().ActiveProvider == llm.BuddySubscription:
-		return "🐧 CodeBuddy · active"
-	case buddyauth.NewManager().Authenticated():
-		return "🐧 CodeBuddy · signed in"
-	default:
-		return "🐧 CodeBuddy · sign in"
 	}
 }
 
@@ -1445,8 +1421,6 @@ func subscriptionForProvider(providerID string) string {
 		return llm.QoderSubscription
 	case "gemini":
 		return llm.GeminiSubscription
-	case "buddy":
-		return llm.BuddySubscription
 	case "workbuddy":
 		return llm.WorkBuddySubscription
 	default:
@@ -1476,8 +1450,6 @@ func subscriptionLabel(providerID string) string {
 		return "Qoder"
 	case "gemini":
 		return "Gemini"
-	case "buddy":
-		return "CodeBuddy"
 	case "workbuddy":
 		return "WorkBuddy"
 	default:

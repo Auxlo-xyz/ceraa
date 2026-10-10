@@ -515,8 +515,6 @@ func handleCallback(token string, q *callbackQuery) {
 				selectQoderProvider(token, chatID)
 			case "gemini":
 				selectGeminiProvider(token, chatID)
-			case "buddy":
-				selectBuddyProvider(token, chatID, buddyauth.BuddyProduct())
 			case "workbuddy":
 				selectBuddyProvider(token, chatID, buddyauth.WorkBuddyProduct())
 			}
@@ -553,8 +551,6 @@ func handleCallback(token string, q *callbackQuery) {
 				startQoderLogin(token, chatID)
 			case "gemini":
 				startGeminiLogin(token, chatID)
-			case "buddy":
-				startBuddyLogin(token, chatID, buddyauth.BuddyProduct())
 			case "workbuddy":
 				startBuddyLogin(token, chatID, buddyauth.WorkBuddyProduct())
 			case "opencode":

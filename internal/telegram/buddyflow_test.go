@@ -37,12 +37,8 @@ func captureBuddyNotify(t *testing.T) *buddyNotifications {
 	return seen
 }
 
-// The button existing and being handled are separate facts, for both regions.
-func TestProviderBuddyCallbacksReachTheEntryPoint(t *testing.T) {
-	type call struct {
-		provider string
-		data     string
-	}
+// The button existing and being handled are separate facts.
+func TestProviderWorkBuddyCallbackReachesTheEntryPoint(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
 	original := buddyEntryPoint
@@ -53,21 +49,16 @@ func TestProviderBuddyCallbacksReachTheEntryPoint(t *testing.T) {
 	}
 	t.Cleanup(func() { buddyEntryPoint = original })
 
-	for _, tc := range []call{
-		{"buddy", "provider:buddy"},
-		{"workbuddy", "provider:workbuddy"},
-	} {
-		var query callbackQuery
-		if err := json.Unmarshal([]byte(`{"id":"1","data":"`+tc.data+`","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
-			t.Fatalf("callback: %v", err)
-		}
-		handleCallback("test-token", &query)
+	var query callbackQuery
+	if err := json.Unmarshal([]byte(`{"id":"1","data":"provider:workbuddy","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
+		t.Fatalf("callback: %v", err)
 	}
+	handleCallback("test-token", &query)
+
 	mu.Lock()
 	defer mu.Unlock()
-	joined := strings.Join(got, ",")
-	if !strings.Contains(joined, "buddy") || !strings.Contains(joined, "workbuddy") {
-		t.Errorf("entry reached for %v; a button is dead", got)
+	if len(got) != 1 || got[0] != "workbuddy" {
+		t.Errorf("entry reached for %v; the button is dead", got)
 	}
 }
 
@@ -82,13 +73,13 @@ func TestBuddyLoginStartFailureNotifies(t *testing.T) {
 	t.Cleanup(func() { buddyBeginLogin = originalBegin })
 
 	var query callbackQuery
-	if err := json.Unmarshal([]byte(`{"id":"1","data":"provider:buddy:relogin","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
+	if err := json.Unmarshal([]byte(`{"id":"1","data":"provider:workbuddy:relogin","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
 	handleCallback("test-token", &query)
 
 	joined := strings.Join(seen.snapshot(), "\n")
-	if !strings.Contains(joined, "Failed to start buddy login") {
+	if !strings.Contains(joined, "Failed to start workbuddy login") {
 		t.Errorf("no failure report; notified:\n%v", seen.snapshot())
 	}
 }
@@ -102,13 +93,13 @@ func TestBuddyLoginSuccessActivates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	trackBuddyFlow("flow-1", 5151, true, "opencode", "buddy")
+	trackBuddyFlow("flow-1", 5151, true, "opencode", "workbuddy")
 	deliverBuddyTerminal("test-token", "flow-1", true, "")
 
-	if got := providers.active(); got != "buddy" {
-		t.Errorf("active = %q after a successful owned login; want buddy", got)
+	if got := providers.active(); got != "workbuddy" {
+		t.Errorf("active = %q after a successful owned login; want workbuddy", got)
 	}
-	if joined := strings.Join(seen.snapshot(), "\n"); !strings.Contains(joined, "buddy provider activated") {
+	if joined := strings.Join(seen.snapshot(), "\n"); !strings.Contains(joined, "workbuddy provider activated") {
 		t.Errorf("no activation confirmation; notified:\n%v", seen.snapshot())
 	}
 	if _, ok := buddyFlowOwnerOf("flow-1"); ok {
@@ -129,34 +120,24 @@ func TestBuddyLoginFailureNotifies(t *testing.T) {
 	}
 }
 
-// The model lists are scoped per region: domestic ids on buddy, intl aliases
-// on workbuddy, each routed back through its own provider.
+// The model list is scoped to the region: intl ids on workbuddy, each
+// routed back through its own provider.
 func TestBuddyModelMenusAreScopedPerRegion(t *testing.T) {
-	buddy := strings.Join(flattenButtons(menus.SubscriptionModelMenu("buddy")), "\n")
 	workbuddy := strings.Join(flattenButtons(menus.SubscriptionModelMenu("workbuddy")), "\n")
-	if !strings.Contains(buddy, "deepseek-v4.1-flash") {
-		t.Errorf("the buddy list misses domestic ids:\n%s", buddy)
-	}
 	if !strings.Contains(workbuddy, "default-model") || !strings.Contains(workbuddy, "gpt-6-astra") {
 		t.Errorf("the workbuddy list misses intl ids:\n%s", workbuddy)
 	}
-	if strings.Contains(buddy, "gpt-6-astra") {
-		t.Errorf("the buddy list contains intl models:\n%s", buddy)
-	}
-	if !strings.Contains(buddy, "provider:buddy:model:") || !strings.Contains(workbuddy, "provider:workbuddy:model:") {
+	if !strings.Contains(workbuddy, "provider:workbuddy:model:") {
 		t.Errorf("model buttons do not route back through their provider")
 	}
 }
 
-// Buddy routes resolve like every other switchable provider.
+// WorkBuddy routes resolve like every other switchable provider.
 func TestBuddyCallbackShapes(t *testing.T) {
 	for data, want := range map[string]struct {
 		provider string
 		kind     providerRouteKind
 	}{
-		"provider:buddy":             {"buddy", providerRouteActivate},
-		"provider:buddy:models":      {"buddy", providerRouteModels},
-		"provider:buddy:relogin":     {"buddy", providerRouteRelogin},
 		"provider:workbuddy":         {"workbuddy", providerRouteActivate},
 		"provider:workbuddy:models":  {"workbuddy", providerRouteModels},
 		"provider:workbuddy:relogin": {"workbuddy", providerRouteRelogin},

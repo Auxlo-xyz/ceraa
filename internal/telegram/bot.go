@@ -2803,23 +2803,17 @@ func startBuddyLogin(token string, chatID int64, product buddyauth.Product) {
 // Reuses the active model only when it is one the product serves, so a model
 // left over from another provider cannot produce a profile the endpoint
 // rejects.
-func buddyModelForAccount(product buddyauth.Product) string {
+func buddyModelForAccount() string {
 	current, _ := defaultState.values()
-	subscription := llm.BuddySubscription
-	def := llm.DefaultBuddyModel
-	if product.ID == "workbuddy" {
-		subscription = llm.WorkBuddySubscription
-		def = llm.DefaultWorkBuddyModel
-	}
-	if llm.IsSubscriptionModel(subscription, current) {
+	if llm.IsSubscriptionModel(llm.WorkBuddySubscription, current) {
 		return current
 	}
-	return def
+	return llm.DefaultWorkBuddyModel
 }
 
 // activateBuddyProvider saves the product profile and makes it active.
 func activateBuddyProvider(token string, chatID int64, product buddyauth.Product) {
-	model, err := guardModel(product.ID, buddyModelForAccount(product))
+	model, err := guardModel(product.ID, buddyModelForAccount())
 	if err != nil {
 		logger.Warn(product.ID + " activate: " + err.Error())
 		buddyNotify(token, chatID, product.ID+" activation failed: "+err.Error(), nil)
@@ -3307,8 +3301,6 @@ func subscriptionMarkerFor(providerID string) string {
 		return llm.QoderSubscription
 	case "gemini":
 		return llm.GeminiSubscription
-	case "buddy":
-		return llm.BuddySubscription
 	case "workbuddy":
 		return llm.WorkBuddySubscription
 	default:
