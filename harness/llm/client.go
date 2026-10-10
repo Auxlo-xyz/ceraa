@@ -56,7 +56,16 @@ type ProviderConfig struct {
 	// subscription profile it is required; for an API-key profile the key is
 	// carried on the profile instead.
 	AnthropicTokens CodexTokenSource
-	MaxRetries      int
+	// QoderNative selects the Qoder subscription transport: the encrypted
+	// agent_chat_generation endpoint with per-request WASM signing, not the
+	// public OpenAI-compatible host.
+	QoderNative bool
+	// QoderCredentials supplies the identity a Qoder signature is bound to:
+	// uid, access token and machine id. Required when QoderNative is set; the
+	// transport refuses the request without it instead of sending one the
+	// server must reject.
+	QoderCredentials QoderCredentialSource
+	MaxRetries       int
 	// RetryBackoff scales the delay between attempts. Zero uses the production
 	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
 	RetryBackoff time.Duration
@@ -917,6 +926,11 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	}
 	if c.cfg.AnthropicNative {
 		return c.streamAnthropic(ctx, req, onDelta)
+	}
+	// Qoder's encrypted endpoint needs per-request signing, so it rides its own
+	// transport rather than the OpenAI-compatible path.
+	if c.cfg.QoderNative {
+		return c.streamQoder(ctx, req, onDelta)
 	}
 	return c.streamWithReasoningRetry(ctx, req, onDelta, c.streamOpenAI)
 }

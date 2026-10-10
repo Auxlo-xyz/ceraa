@@ -33,6 +33,7 @@ import (
 	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
+	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
 )
@@ -431,6 +432,30 @@ func minimaxRegionFor(provider config.LLMProvider) minimaxauth.Region {
 	return minimaxauth.RegionGlobal
 }
 
+// qoderCredentialSource adapts the stored Qoder grant to the transport's
+// credential interface, including the refresh the transport attempts once on
+// an auth rejection.
+type qoderCredentialSource struct{}
+
+func (qoderCredentialSource) QoderUID(context.Context) (string, error) {
+	if uid := qoderauth.UID(); uid != "" {
+		return uid, nil
+	}
+	return "", fmt.Errorf("Qoder account has no stored user id: sign in again")
+}
+
+func (qoderCredentialSource) QoderToken(ctx context.Context) (string, error) {
+	return qoderauth.AccessToken(ctx)
+}
+
+func (qoderCredentialSource) QoderMachineID(context.Context) (string, error) {
+	return qoderauth.MachineID()
+}
+
+func (qoderCredentialSource) RefreshQoderToken(ctx context.Context) (string, error) {
+	return qoderauth.NewManager().RefreshToken(ctx)
+}
+
 // firstNonEmptyStr returns the first non-blank value.
 func firstNonEmptyStr(values ...string) string {
 	for _, value := range values {
@@ -530,6 +555,17 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			}
 			// Zen is OpenAI-compatible, so it needs no transport of its own.
 			return opencodeauth.ApplyCredential(model, credential, sessionID), nil
+		case "qoder":
+			// The encrypted endpoint needs per-request signing, so the
+			// credential source travels with the config and the transport
+			// resolves identity (and refreshes it) per attempt.
+			if !qoderauth.Authenticated() {
+				return llm.ProviderConfig{}, fmt.Errorf("Qoder account is not signed in: sign in from the provider menu first")
+			}
+			model.BaseURL = firstNonEmptyStr(provider.URL, llm.QoderBaseURL)
+			model.QoderNative = true
+			model.QoderCredentials = qoderCredentialSource{}
+			return model, nil
 		case "hermes":
 			store := hermesauth.NewStore()
 			credential, err := store.Resolve(ctx, provider.HermesProvider)
