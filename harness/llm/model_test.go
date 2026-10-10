@@ -233,3 +233,25 @@ func TestNoJSONAtAllIsLeftAlone(t *testing.T) {
 		t.Errorf("repair = %q changed=%v, want it untouched", got, changed)
 	}
 }
+
+func TestSanitizeToolCallNameCandidates(t *testing.T) {
+	for raw, want := range map[string][]string{
+		"bash":     {"bash"},
+		"  read  ": {"read"},
+		"get goal": {"get goal", "get_goal"},
+		"get_goal</tool_call:6124c78e><tool_call:6124c78e>bash": {"get_goal", "bash"},
+		"write<unclosed": {"write"},
+		"<>":             {},
+		"":               {},
+	} {
+		got := SanitizeToolCallNameCandidates(raw)
+		if len(got) != len(want) {
+			t.Fatalf("candidates(%q) = %q, want %q", raw, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("candidates(%q) = %q, want %q", raw, got, want)
+			}
+		}
+	}
+}

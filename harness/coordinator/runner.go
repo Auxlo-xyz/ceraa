@@ -1473,17 +1473,45 @@ var canonicalToolArgumentAliases = map[string]map[string]string{
 	"webfetch":        {"uri": "url", "link": "url"},
 }
 
+// Sanitize the name every tool call carries before the registry lookup, here
+// and nowhere else.
+//
+// This function is the single funnel every tool call on every transport passes
+// through before lookup: direct calls, envelope calls, retries, replays. A
+// model that fuses two calls into one name, leaks <tool_call:...> framing tags
+// into it, or echoes the display spelling with spaces reaches the registry as
+// garbage, and garbage here means every tool fails the same way. Sanitizing at
+// this one point covers all current tools and every tool registered in future:
+// a new tool needs a Register call and nothing else, and its garbled names
+// resolve the day it exists. Do NOT add per-tool or per-transport name handling
+// at call sites; it drifts, it duplicates, and the last copy someone added for
+// one model is the one that breaks the next. Future sessions take note: if a
+// new failure shape appears, extend SanitizeToolCallNameCandidates in
+// harness/llm/model.go and extend the test next to it, not a branch here.
 func canonicalToolName(reg *tool.Registry, requested string) string {
 	requested = strings.TrimSpace(requested)
 	if _, ok := reg.Get(requested); ok {
 		return requested
 	}
-	canonical, ok := canonicalToolAliases[requested]
-	if !ok {
-		return requested
+	if canonical, ok := canonicalToolAliases[requested]; ok {
+		if _, active := reg.Get(canonical); active {
+			return canonical
+		}
 	}
-	if _, active := reg.Get(canonical); active {
-		return canonical
+	// The name the model sent matches nothing: it may be fused, tagged, or
+	// spaced. Each candidate is tried as a name and as an alias, first
+	// registered hit wins, so get_goal</tool_call:6124c78e>...bash resolves
+	// to get_goal while a genuinely unknown name still falls through to the
+	// unknown-tool error below.
+	for _, candidate := range llm.SanitizeToolCallNameCandidates(requested) {
+		if _, ok := reg.Get(candidate); ok {
+			return candidate
+		}
+		if canonical, ok := canonicalToolAliases[candidate]; ok {
+			if _, active := reg.Get(canonical); active {
+				return canonical
+			}
+		}
 	}
 	return requested
 }

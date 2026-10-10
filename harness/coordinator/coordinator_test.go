@@ -1070,3 +1070,17 @@ func TestARunWithNoRequestsHasAnEmptySplit(t *testing.T) {
 		t.Errorf("a run with no requests recorded %d entries", len(got.Runs[0].RequestBreakdown))
 	}
 }
+
+func TestDispatcherSanitizesFusedToolNames(t *testing.T) {
+	reg := tool.DefaultRegistry()
+	for requested, want := range map[string]string{
+		"get_goal</tool_call:6124c78e><tool_call:6124c78e>bash": "get_goal",
+		"get goal":         "get_goal",
+		"read<oops":        "read",
+		"no_such_tool_xyz": "no_such_tool_xyz",
+	} {
+		if got := canonicalToolName(reg, requested); got != want {
+			t.Fatalf("canonicalToolName(%q) = %q, want %q", requested, got, want)
+		}
+	}
+}

@@ -73,6 +73,10 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 func (r *Registry) Register(t Tool) {
+	// Registering is the only step a new tool needs for name resolution,
+	// including garbled names: every call funnels through canonicalToolName
+	// in harness/coordinator, which sanitizes before this lookup. Do not add
+	// name handling here.
 	r.tools[t.Name()] = t
 	delete(r.hidden, t.Name())
 }

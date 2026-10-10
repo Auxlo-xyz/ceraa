@@ -220,7 +220,56 @@ func RepairToolArgumentsJSON(value string) (string, bool) {
 	return value, false
 }
 
-// FirstMeaningfulJSONValue returns the first top-level JSON value in s that
+// SanitizeToolCallNameCandidates splits a tool call name the model garbled
+// into the tool names it may have meant, in order of likelihood.
+//
+// Models sometimes fuse two calls into one name and leak their framing tags
+// into it: get_goal</tool_call:6124c78e><tool_call:6124c78e>bash is one call
+// slot carrying get_goal and bash plus two raw tags. Every <...> span becomes
+// a separator (an unclosed < runs to the end, which is what a truncated reply
+// leaves behind), each part is trimmed, and a spaced part also yields its
+// underscored twin, because the renderer shows get_goal as "get goal" and the
+// model echoes that spelling back. A clean name returns exactly itself, so
+// well-formed calls pass through untouched.
+func SanitizeToolCallNameCandidates(name string) []string {
+	var parts []string
+	current := strings.Builder{}
+	flush := func() {
+		part := strings.TrimSpace(current.String())
+		current.Reset()
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	i := 0
+	for i < len(name) {
+		if name[i] == '<' {
+			flush()
+			end := strings.IndexByte(name[i:], '>')
+			if end < 0 {
+				break
+			}
+			i += end + 1
+			continue
+		}
+		current.WriteByte(name[i])
+		i++
+	}
+	flush()
+	var candidates []string
+	seen := map[string]bool{}
+	for _, part := range parts {
+		for _, variant := range []string{part, strings.ReplaceAll(part, " ", "_")} {
+			if variant == "" || seen[variant] {
+				continue
+			}
+			seen[variant] = true
+			candidates = append(candidates, variant)
+		}
+	}
+	return candidates
+}
+
 // carries something, skipping empty objects and arrays. It returns "" when s
 // holds no JSON at all.
 func FirstMeaningfulJSONValue(s string) string {
