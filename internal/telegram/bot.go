@@ -8,12 +8,14 @@ import (
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/tool"
+	"ceraa/internal/buddyauth"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/deepseekauth"
 	"ceraa/internal/envs"
+	"ceraa/internal/geminiauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/miniapp"
@@ -2574,6 +2576,276 @@ func activateQoderProvider(token string, chatID int64) {
 	qoderNotify(token, chatID, "✅ Qoder provider activated with model "+model+". Send a task to use it.", nil)
 }
 
+// selectGeminiProvider is the Gemini entry point, mirroring the other
+// subscription providers.
+//
+// A stored credential switches provider immediately; otherwise a browser
+// login starts. Reaching Gemini from the provider menu asks to use it, so a
+// completed paste switches provider on its own.
+func selectGeminiProvider(token string, chatID int64) {
+	geminiEntryPoint(token, chatID)
+}
+
+// geminiEntryPoint is the real entry point, indirected so a test can assert
+// the provider menu routes provider:gemini here without starting a login.
+var geminiEntryPoint = func(token string, chatID int64) {
+	signedIn := geminiauth.SignedIn()
+	logger.Info("gemini entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
+		activateGeminiProvider(token, chatID)
+		return
+	}
+	startGeminiLogin(token, chatID)
+}
+
+// startGeminiLogin begins a browser login. There is no localhost listener to
+// catch the redirect, so the operator pastes the callback URL back and the
+// code stage exchanges it. Reachable from provider:gemini when signed out and
+// from the explicit "Sign in again" route.
+func startGeminiLogin(token string, chatID int64) {
+	activeAtStart := defaultState.provider()
+	flow, err := geminiauth.Start()
+	if err != nil {
+		geminiNotify(token, chatID, "Failed to start Gemini login: "+err.Error(), nil)
+		return
+	}
+	trackGeminiFlow(chatID, geminiFlowOwner{
+		chatID: chatID, activate: true, activeAtStart: activeAtStart, flow: flow,
+	})
+	pendingProvider.Store(chatID, providerDraft{ID: llm.GeminiSubscription, Stage: "code"})
+	geminiNotify(token, chatID,
+		"Sign in to Google to use Gemini Code Assist. Open the link, approve, then paste the callback URL from the browser address bar back here — or type cancel. Even the browser's \"unable to connect\" page carries the code in its address.\n\n"+
+			"🔐 Gemini Account Login\n\n1. Open: "+flow.AuthorizeURL+"\n2. Approve, then copy the whole address bar URL\n3. Paste it here and it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": flow.AuthorizeURL}},
+		}})
+}
+
+// geminiModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the subscription serves, so a
+// model left over from another provider cannot produce a profile the endpoint
+// rejects.
+func geminiModelForAccount() string {
+	current, _ := defaultState.values()
+	if llm.IsSubscriptionModel(llm.GeminiSubscription, current) {
+		return current
+	}
+	return llm.DefaultGeminiCodeAssistModel
+}
+
+// activateGeminiProvider saves the Gemini profile and makes it active.
+func activateGeminiProvider(token string, chatID int64) {
+	model, err := guardModel("gemini", geminiModelForAccount())
+	if err != nil {
+		logger.Warn("Gemini activate: " + err.Error())
+		geminiNotify(token, chatID, "Gemini activation failed: "+err.Error(), nil)
+		return
+	}
+	profile := config.ProviderProfile{
+		URL:             llm.CodeAssistBaseURL,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.GeminiSubscription,
+	}
+	if err := defaultState.setProviderProfile("gemini", profile); err != nil {
+		logger.Warn("gemini activate: profile save failed: " + err.Error())
+		geminiNotify(token, chatID, "Gemini profile save failed: "+err.Error(), nil)
+		return
+	}
+	if err := defaultState.setProvider("gemini"); err != nil {
+		logger.Warn("gemini activate: provider set failed: " + err.Error())
+		geminiNotify(token, chatID, "Gemini provider activation failed: "+err.Error(), nil)
+		return
+	}
+	logger.Info("gemini activate: provider=" + defaultState.provider() + " model=" + model)
+	geminiNotify(token, chatID, "✅ Gemini provider activated with model "+model+". Send a task to use it.", nil)
+}
+
+// geminiFlowOwner records which chat started a login and what it wanted.
+type geminiFlowOwner struct {
+	chatID        int64
+	activate      bool
+	activeAtStart string
+	flow          *geminiauth.Flow
+}
+
+var geminiFlows sync.Map
+
+func trackGeminiFlow(chatID int64, owner geminiFlowOwner) {
+	geminiFlows.Store(chatID, owner)
+}
+
+func geminiFlowOwnerOf(chatID int64) (geminiFlowOwner, bool) {
+	value, ok := geminiFlows.Load(chatID)
+	if !ok {
+		return geminiFlowOwner{}, false
+	}
+	owner, ok := value.(geminiFlowOwner)
+	return owner, ok
+}
+
+func clearGeminiFlow(chatID int64) { geminiFlows.Delete(chatID) }
+
+// geminiExchange trades a pasted code for the grant. Indirected so a test can
+// assert the paste-back path without reaching Google.
+var geminiExchange = func(ctx context.Context, flow *geminiauth.Flow, code string) error {
+	return geminiauth.NewManager().Exchange(ctx, flow, code)
+}
+
+// geminiNotify posts a Gemini outcome to a chat. Indirected so a test can
+// assert the user was actually told.
+var geminiNotify = func(token string, chatID int64, text string, kb map[string]any) {
+	sendHTML(token, chatID, text, kb)
+}
+
+// handleGeminiCodeStage exchanges a pasted callback URL or bare code for the
+// grant. It mirrors the DeepSeek paste-back: the text belongs to the flow
+// waiting for this chat, never to a flow from another chat.
+func handleGeminiCodeStage(token string, chatID int64, text string) bool {
+	if strings.EqualFold(strings.TrimSpace(text), "cancel") {
+		pendingProvider.Delete(chatID)
+		clearGeminiFlow(chatID)
+		geminiNotify(token, chatID, "Gemini login cancelled. Nothing was saved.", nil)
+		return true
+	}
+	owner, ok := geminiFlowOwnerOf(chatID)
+	if !ok || owner.flow == nil {
+		pendingProvider.Delete(chatID)
+		geminiNotify(token, chatID, "No Gemini login is waiting for a code. Start one from the provider menu first.", nil)
+		return true
+	}
+	if err := geminiExchange(context.Background(), owner.flow, text); err != nil {
+		pendingProvider.Delete(chatID)
+		clearGeminiFlow(chatID)
+		logger.Warn("gemini exchange failed: " + err.Error())
+		geminiNotify(token, chatID, "❌ Gemini sign-in did not complete: "+err.Error()+"\n\nNothing was saved. Start over from the provider menu.", nil)
+		return true
+	}
+	pendingProvider.Delete(chatID)
+	clearGeminiFlow(chatID)
+	if flowActivationStillWanted("Gemini", owner.activate, owner.activeAtStart) {
+		activateGeminiProvider(token, chatID)
+		return true
+	}
+	geminiNotify(token, chatID, "✅ Gemini sign-in completed. The credential is stored and ready.\n\n"+
+		flowNotActiveReason("Gemini", owner.activate), nil)
+	return true
+}
+
+// buddyManagerFor returns the credential manager for a product. The two
+// regions are separate account systems; sharing one manager would read one
+// region's credential for the other's host.
+func buddyManagerFor(product buddyauth.Product) *buddyauth.Manager {
+	if product.ID == "workbuddy" {
+		return buddyauth.NewWorkBuddyManager()
+	}
+	return buddyauth.NewManager()
+}
+
+// selectBuddyProvider is the CodeBuddy/WorkBuddy entry point.
+//
+// A stored credential switches provider immediately; otherwise a browser
+// login starts. Reaching either product from the provider menu asks to use
+// it, so the flow is tracked with activate set and the background poll
+// switches provider on its own once the approval lands.
+func selectBuddyProvider(token string, chatID int64, product buddyauth.Product) {
+	buddyEntryPoint(token, chatID, product)
+}
+
+// buddyEntryPoint is the real entry point, indirected so a test can assert
+// the provider menu routes here without starting a login against the live
+// service.
+var buddyEntryPoint = func(token string, chatID int64, product buddyauth.Product) {
+	mgr := buddyManagerFor(product)
+	signedIn := mgr.Authenticated()
+	logger.Info(product.ID + " entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
+		activateBuddyProvider(token, chatID, product)
+		return
+	}
+	startBuddyLogin(token, chatID, product)
+}
+
+// startBuddyLogin begins a browser login, whether or not a credential exists.
+// Reachable from the product entry when signed out and from the explicit
+// "Sign in again" route.
+func startBuddyLogin(token string, chatID int64, product buddyauth.Product) {
+	activeAtStart := defaultState.provider()
+	mgr := buddyManagerFor(product)
+	flow, err := buddyBeginLogin(mgr)
+	if err != nil {
+		buddyNotify(token, chatID, "Failed to start "+product.ID+" login: "+err.Error(), nil)
+		return
+	}
+	snapshot := flow.Snapshot()
+	trackBuddyFlow(snapshot.FlowID, chatID, true, activeAtStart, product.ID)
+	go func() {
+		if err := buddyPollLogin(mgr, flow); err != nil {
+			deliverBuddyTerminal(token, snapshot.FlowID, false, err.Error())
+			return
+		}
+		deliverBuddyTerminal(token, snapshot.FlowID, true, "")
+	}()
+	buddyNotify(token, chatID,
+		"Sign in to "+product.ID+" to use it. Open the link, approve, and Ceraa will switch on its own — no need to press Check. The approval expires in 5 minutes.\n\n"+
+			"🔐 "+product.ID+" Login\n\n1. Open: "+snapshot.AuthURL+"\n2. Approve in the browser, then it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": snapshot.AuthURL}},
+		}})
+}
+
+// buddyModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the product serves, so a model
+// left over from another provider cannot produce a profile the endpoint
+// rejects.
+func buddyModelForAccount(product buddyauth.Product) string {
+	current, _ := defaultState.values()
+	subscription := llm.BuddySubscription
+	def := llm.DefaultBuddyModel
+	if product.ID == "workbuddy" {
+		subscription = llm.WorkBuddySubscription
+		def = llm.DefaultWorkBuddyModel
+	}
+	if llm.IsSubscriptionModel(subscription, current) {
+		return current
+	}
+	return def
+}
+
+// activateBuddyProvider saves the product profile and makes it active.
+func activateBuddyProvider(token string, chatID int64, product buddyauth.Product) {
+	model, err := guardModel(product.ID, buddyModelForAccount(product))
+	if err != nil {
+		logger.Warn(product.ID + " activate: " + err.Error())
+		buddyNotify(token, chatID, product.ID+" activation failed: "+err.Error(), nil)
+		return
+	}
+	profile := config.ProviderProfile{
+		URL:             product.Endpoint,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    subscriptionMarkerFor(product.ID),
+	}
+	if err := defaultState.setProviderProfile(product.ID, profile); err != nil {
+		logger.Warn(product.ID + " activate: profile save failed: " + err.Error())
+		buddyNotify(token, chatID, product.ID+" profile save failed: "+err.Error(), nil)
+		return
+	}
+	if err := defaultState.setProvider(product.ID); err != nil {
+		logger.Warn(product.ID + " activate: provider set failed: " + err.Error())
+		buddyNotify(token, chatID, product.ID+" provider activation failed: "+err.Error(), nil)
+		return
+	}
+	logger.Info(product.ID + " activate: provider=" + defaultState.provider() + " model=" + model)
+	buddyNotify(token, chatID, "✅ "+product.ID+" provider activated with model "+model+". Send a task to use it.", nil)
+}
+
 // claudeFlowOwner records which chat started a login and what it wanted.
 type claudeFlowOwner struct {
 	chatID        int64
@@ -3033,6 +3305,12 @@ func subscriptionMarkerFor(providerID string) string {
 		return llm.DeepSeekSubscription
 	case "qoder":
 		return llm.QoderSubscription
+	case "gemini":
+		return llm.GeminiSubscription
+	case "buddy":
+		return llm.BuddySubscription
+	case "workbuddy":
+		return llm.WorkBuddySubscription
 	default:
 		return ""
 	}

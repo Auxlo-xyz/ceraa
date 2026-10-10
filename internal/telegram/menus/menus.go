@@ -8,11 +8,13 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal/buddyauth"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/deepseekauth"
+	"ceraa/internal/geminiauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
@@ -47,7 +49,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission",
 	"snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "buddy", "workbuddy",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.
@@ -214,11 +216,19 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("Claude", "🟠", claudeauth.SignedIn(), selection().ActiveProvider == llm.ClaudeSubscription, "provider:claude")
 	case "qoder":
 		return subscriptionMenu("Qoder", "⚡", qoderauth.Authenticated(), selection().ActiveProvider == llm.QoderSubscription, "provider:qoder")
+	case "gemini":
+		return subscriptionMenu("Gemini", "✨", geminiauth.SignedIn(), selection().ActiveProvider == llm.GeminiSubscription, "provider:gemini")
+	case "buddy":
+		return subscriptionMenu("CodeBuddy", "🐧", buddyauth.NewManager().Authenticated(), selection().ActiveProvider == llm.BuddySubscription, "provider:buddy")
+	case "workbuddy":
+		return subscriptionMenu("WorkBuddy", "🌍", buddyauth.NewWorkBuddyManager().Authenticated(), selection().ActiveProvider == llm.WorkBuddySubscription, "provider:workbuddy")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
 		"opencode:models", "deepseek:models", "claude:models", "qoder:models",
+		"gemini:models", "buddy:models", "workbuddy:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
 		"provider:cline:models", "provider:codex:models", "provider:opencode:models",
-		"provider:deepseek:models", "provider:claude:models", "provider:qoder:models":
+		"provider:deepseek:models", "provider:claude:models", "provider:qoder:models",
+		"provider:gemini:models", "provider:buddy:models", "provider:workbuddy:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -447,6 +457,40 @@ func ProviderMenu() map[string]any {
 		qoderLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": qoderLabel, "callback_data": "provider:qoder"}})
+	// Gemini is a row for the same reason: a subscription profile cannot
+	// appear as a profile row until it exists.
+	geminiLabel := "✨ Gemini Account"
+	switch {
+	case active == llm.GeminiSubscription:
+		geminiLabel = "✅ " + geminiLabel
+	case geminiauth.SignedIn():
+		geminiLabel += " · switch to it"
+	default:
+		geminiLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": geminiLabel, "callback_data": "provider:gemini"}})
+	// CodeBuddy and WorkBuddy are separate account systems, so they are
+	// separate rows rather than one row with a region toggle.
+	buddyLabel := "🐧 CodeBuddy Account"
+	switch {
+	case active == llm.BuddySubscription:
+		buddyLabel = "✅ " + buddyLabel
+	case buddyauth.NewManager().Authenticated():
+		buddyLabel += " · switch to it"
+	default:
+		buddyLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": buddyLabel, "callback_data": "provider:buddy"}})
+	workbuddyLabel := "🌍 WorkBuddy Account"
+	switch {
+	case active == llm.WorkBuddySubscription:
+		workbuddyLabel = "✅ " + workbuddyLabel
+	case buddyauth.NewWorkBuddyManager().Authenticated():
+		workbuddyLabel += " · switch to it"
+	default:
+		workbuddyLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": workbuddyLabel, "callback_data": "provider:workbuddy"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -1058,6 +1102,7 @@ func Hub() map[string]any {
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(), "qoder": qoderHubLabel(),
+		"gemini": geminiHubLabel(), "buddy": buddyHubLabel(), "workbuddy": workbuddyHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1156,6 +1201,42 @@ func qoderHubLabel() string {
 		return "⚡ Qoder · signed in"
 	default:
 		return "⚡ Qoder · sign in"
+	}
+}
+
+// geminiHubLabel names the Gemini entry by state.
+func geminiHubLabel() string {
+	switch {
+	case geminiauth.SignedIn() && selection().ActiveProvider == llm.GeminiSubscription:
+		return "✨ Gemini · active"
+	case geminiauth.SignedIn():
+		return "✨ Gemini · signed in"
+	default:
+		return "✨ Gemini · sign in"
+	}
+}
+
+// buddyHubLabel names the CodeBuddy entry by state.
+func buddyHubLabel() string {
+	switch {
+	case buddyauth.NewManager().Authenticated() && selection().ActiveProvider == llm.BuddySubscription:
+		return "🐧 CodeBuddy · active"
+	case buddyauth.NewManager().Authenticated():
+		return "🐧 CodeBuddy · signed in"
+	default:
+		return "🐧 CodeBuddy · sign in"
+	}
+}
+
+// workbuddyHubLabel names the WorkBuddy entry by state.
+func workbuddyHubLabel() string {
+	switch {
+	case buddyauth.NewWorkBuddyManager().Authenticated() && selection().ActiveProvider == llm.WorkBuddySubscription:
+		return "🌍 WorkBuddy · active"
+	case buddyauth.NewWorkBuddyManager().Authenticated():
+		return "🌍 WorkBuddy · signed in"
+	default:
+		return "🌍 WorkBuddy · sign in"
 	}
 }
 
@@ -1362,6 +1443,12 @@ func subscriptionForProvider(providerID string) string {
 		return llm.ClaudeSubscription
 	case "qoder":
 		return llm.QoderSubscription
+	case "gemini":
+		return llm.GeminiSubscription
+	case "buddy":
+		return llm.BuddySubscription
+	case "workbuddy":
+		return llm.WorkBuddySubscription
 	default:
 		return ""
 	}
@@ -1387,6 +1474,12 @@ func subscriptionLabel(providerID string) string {
 		return "Claude"
 	case "qoder":
 		return "Qoder"
+	case "gemini":
+		return "Gemini"
+	case "buddy":
+		return "CodeBuddy"
+	case "workbuddy":
+		return "WorkBuddy"
 	default:
 		return providerID
 	}

@@ -23,7 +23,7 @@ const HermesSubscription = "hermes"
 // authenticated user back to the provider picker.
 func IsSubscription(subscription string) bool {
 	switch subscription {
-	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription, DeepSeekSubscription, ClaudeSubscription:
+	case HermesSubscription, CodexSubscription, XAISubscription, MiniMaxSubscription, ClineSubscription, QoderSubscription, OpenCodeSubscription, DeepSeekSubscription, ClaudeSubscription, GeminiSubscription, BuddySubscription, WorkBuddySubscription:
 		return true
 	default:
 		return false
@@ -691,6 +691,12 @@ func SubscriptionModels(subscription string) []string {
 		return out
 	case QoderSubscription:
 		return append([]string(nil), QoderModels...)
+	case GeminiSubscription:
+		return append([]string(nil), GeminiCodeAssistModels...)
+	case BuddySubscription:
+		return append([]string(nil), BuddyModels...)
+	case WorkBuddySubscription:
+		return append([]string(nil), WorkBuddyModels...)
 	case OpenCodeSubscription:
 		return append([]string(nil), OpenCodeModels...)
 	default:
@@ -735,6 +741,12 @@ func DefaultModelFor(subscription string) string {
 		return DefaultOpenCodeModel
 	case QoderSubscription:
 		return DefaultQoderModel
+	case GeminiSubscription:
+		return DefaultGeminiCodeAssistModel
+	case BuddySubscription:
+		return DefaultBuddyModel
+	case WorkBuddySubscription:
+		return DefaultWorkBuddyModel
 	default:
 		return ""
 	}

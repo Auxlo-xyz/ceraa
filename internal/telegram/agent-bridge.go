@@ -22,11 +22,13 @@ import (
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
+	"ceraa/internal/buddyauth"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/deepseekauth"
+	"ceraa/internal/geminiauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
@@ -555,6 +557,40 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			}
 			// Zen is OpenAI-compatible, so it needs no transport of its own.
 			return opencodeauth.ApplyCredential(model, credential, sessionID), nil
+		case "gemini":
+			if !geminiauth.SignedIn() {
+				return llm.ProviderConfig{}, fmt.Errorf("Gemini account is not signed in: sign in from the provider menu first")
+			}
+			model.BaseURL = firstNonEmptyStr(provider.URL, llm.CodeAssistBaseURL)
+			model.CodeAssistNative = true
+			model.CodeAssistTokens = geminiauth.NewTokenSource()
+			return model, nil
+		case "buddy":
+			manager := buddyauth.NewManager()
+			if !manager.Authenticated() {
+				return llm.ProviderConfig{}, fmt.Errorf("CodeBuddy account is not signed in: sign in from the provider menu first")
+			}
+			token, err := manager.AccessToken(ctx)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			model.BaseURL = firstNonEmptyStr(provider.URL, llm.BuddyBaseURL)
+			model.APIKey = token
+			model.ExtraHeaders = llm.BuddyRequestHeaders()
+			return model, nil
+		case "workbuddy":
+			manager := buddyauth.NewWorkBuddyManager()
+			if !manager.Authenticated() {
+				return llm.ProviderConfig{}, fmt.Errorf("WorkBuddy account is not signed in: sign in from the provider menu first")
+			}
+			token, err := manager.AccessToken(ctx)
+			if err != nil {
+				return llm.ProviderConfig{}, err
+			}
+			model.BaseURL = firstNonEmptyStr(provider.URL, llm.WorkBuddyBaseURL)
+			model.APIKey = token
+			model.ExtraHeaders = llm.WorkBuddyRequestHeaders(provider.Model)
+			return model, nil
 		case "qoder":
 			// The encrypted endpoint needs per-request signing, so the
 			// credential source travels with the config and the transport

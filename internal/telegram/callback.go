@@ -19,6 +19,7 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
 	"ceraa/harness/tool"
+	"ceraa/internal/buddyauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/logger"
@@ -512,6 +513,12 @@ func handleCallback(token string, q *callbackQuery) {
 				selectClaudeProvider(token, chatID)
 			case "qoder":
 				selectQoderProvider(token, chatID)
+			case "gemini":
+				selectGeminiProvider(token, chatID)
+			case "buddy":
+				selectBuddyProvider(token, chatID, buddyauth.BuddyProduct())
+			case "workbuddy":
+				selectBuddyProvider(token, chatID, buddyauth.WorkBuddyProduct())
 			}
 		case providerRouteModels:
 			label := menus.SubscriptionLabel(providerID)
@@ -544,6 +551,12 @@ func handleCallback(token string, q *callbackQuery) {
 				startDeepSeekLogin(token, chatID)
 			case "qoder":
 				startQoderLogin(token, chatID)
+			case "gemini":
+				startGeminiLogin(token, chatID)
+			case "buddy":
+				startBuddyLogin(token, chatID, buddyauth.BuddyProduct())
+			case "workbuddy":
+				startBuddyLogin(token, chatID, buddyauth.WorkBuddyProduct())
 			case "opencode":
 				// Re-entering the key. There is no token to refresh, so this is
 				// the same onboarding flow the first key went through.

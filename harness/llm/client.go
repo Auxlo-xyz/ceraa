@@ -65,6 +65,13 @@ type ProviderConfig struct {
 	// transport refuses the request without it instead of sending one the
 	// server must reject.
 	QoderCredentials QoderCredentialSource
+	// CodeAssistNative selects the Gemini Code Assist transport: the
+	// v1internal streaming method with an OAuth bearer and the client
+	// identity headers, not the public generateContent endpoint.
+	CodeAssistNative bool
+	// CodeAssistTokens supplies the Google OAuth access token, renewing on
+	// expiry. Required when CodeAssistNative is set.
+	CodeAssistTokens CodexTokenSource
 	MaxRetries       int
 	// RetryBackoff scales the delay between attempts. Zero uses the production
 	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
@@ -931,6 +938,11 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// transport rather than the OpenAI-compatible path.
 	if c.cfg.QoderNative {
 		return c.streamQoder(ctx, req, onDelta)
+	}
+	// Code Assist speaks native generateContent shapes on its own method with
+	// its own envelope, so it rides its own transport too.
+	if c.cfg.CodeAssistNative {
+		return c.streamCodeAssist(ctx, req, onDelta)
 	}
 	return c.streamWithReasoningRetry(ctx, req, onDelta, c.streamOpenAI)
 }

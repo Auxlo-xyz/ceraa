@@ -996,6 +996,11 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			if draft.ID == llm.ClaudeSubscription {
 				return handleClaudeCodeStage(token, chatID, text)
 			}
+			// The Gemini browser-login paste-back: a callback URL or a bare
+			// code, same shape as DeepSeek's.
+			if draft.ID == llm.GeminiSubscription {
+				return handleGeminiCodeStage(token, chatID, text)
+			}
 			// The DeepSeek browser-login paste-back. The text is an
 			// authorization code, not a task, and it belongs to the flow that
 			// is waiting for this chat — never to a flow from another chat.
