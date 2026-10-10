@@ -1084,3 +1084,32 @@ func TestDispatcherSanitizesFusedToolNames(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyFinalFallbackReportsCompletedTools(t *testing.T) {
+	r := &Runner{}
+	sess := &sessionstore.Session{ID: "fallback-test"}
+	sess.Operations = append(sess.Operations,
+		sessionstore.Operation{ID: "op1", Tool: "bash", Status: sessionstore.StatusCompleted, Output: "found the link", RunID: "run-1"},
+		sessionstore.Operation{ID: "op2", Tool: "bash", Status: sessionstore.StatusCompleted, Output: "read the headers", RunID: "run-1"},
+		sessionstore.Operation{ID: "op3", Tool: "read", Status: sessionstore.StatusFailed, RunID: "run-1"},
+		sessionstore.Operation{ID: "op4", Tool: "bash", Status: sessionstore.StatusCompleted, Output: "other run", RunID: "run-9"},
+	)
+	got := r.emptyFinalFallback(sess, "run-1")
+	if !strings.Contains(got, "2 tool call(s) (bash)") {
+		t.Fatalf("fallback = %q, want the completed count and names", got)
+	}
+	if !strings.Contains(got, "read the headers") {
+		t.Fatalf("fallback = %q, want the latest result excerpt", got)
+	}
+	if strings.Contains(got, "other run") || strings.Contains(got, "read)") {
+		t.Fatalf("fallback = %q, must ignore other runs and failed calls", got)
+	}
+}
+
+func TestEmptyFinalFallbackHonestWhenNothingRan(t *testing.T) {
+	r := &Runner{}
+	sess := &sessionstore.Session{ID: "fallback-test"}
+	if got := r.emptyFinalFallback(sess, "run-1"); got != "The model completed without producing a final response." {
+		t.Fatalf("fallback = %q, want the honest nothing-happened line", got)
+	}
+}

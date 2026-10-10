@@ -861,7 +861,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 					step++
 					continue
 				}
-				answer = "The model completed without producing a final response."
+				answer = r.emptyFinalFallback(sess, runID)
 			}
 			forceFinalResponse = false
 			messageReasoning := reasoning.String()
@@ -1549,6 +1549,47 @@ func activeToolNames(reg *tool.Registry) string {
 		names = append(names, item.Name())
 	}
 	return strings.Join(names, ", ")
+}
+
+// emptyFinalFallback reports what a run actually did when the model ends
+// silent: no text, retry exhausted. Tool calls that completed are progress,
+// and telling the user nothing happened when the transcript proves otherwise
+// reads as the agent dying mid-task. The fallback names the completed calls
+// and carries the latest result excerpt; a run with no completed calls keeps
+// the honest nothing-happened line.
+func (r *Runner) emptyFinalFallback(sess *sessionstore.Session, runID string) string {
+	var names []string
+	seen := map[string]bool{}
+	latest := ""
+	for _, op := range sess.Operations {
+		if op.RunID != runID || op.Status != sessionstore.StatusCompleted {
+			continue
+		}
+		if !seen[op.Tool] {
+			seen[op.Tool] = true
+			names = append(names, op.Tool)
+		}
+		if strings.TrimSpace(op.Output) != "" {
+			latest = op.Output
+		}
+	}
+	if len(names) == 0 {
+		return "The model completed without producing a final response."
+	}
+	count := 0
+	for _, op := range sess.Operations {
+		if op.RunID == runID && op.Status == sessionstore.StatusCompleted {
+			count++
+		}
+	}
+	answer := fmt.Sprintf("Worked through %d tool call(s) (%s) with no final summary.", count, strings.Join(names, ", "))
+	if excerpt := strings.TrimSpace(latest); excerpt != "" {
+		if len(excerpt) > 400 {
+			excerpt = excerpt[:400] + "..."
+		}
+		answer += " Latest result: " + excerpt
+	}
+	return answer
 }
 
 func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, runID string, calls []llm.StreamedToolCall) ([]preparedTool, map[string]string, bool, error) {
