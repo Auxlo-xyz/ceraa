@@ -179,6 +179,10 @@ func (s *Session) build() error {
 	// so an edit to memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext("cli", s.session, 2000)
 	liveMemory := memory.Live(memoryStore, "cli", s.session, filepath.Join(s.workDir, memory.DefaultMemoryFile), 4000)
+	// One renderer, two homes. The prompt modes read the bond out of the combined
+	// block below; sidekick mode suppresses that whole block and reads it from
+	// BondFunc instead, which is why it cannot simply be left inside the combine.
+	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
 	skillContext, _ := skillStore.CatalogContext(2000)
 
 	registry := tool.DefaultRegistryForUser("cli", skillStore)
@@ -206,7 +210,8 @@ func (s *Session) build() error {
 		ModelCatalogCache:   s.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(s.cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
-		MemoryContextFunc:   memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
+		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
+		BondFunc:            bondRenderer,
 		MemoryDelivery:      s.cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, s.session),
 		SkillContext:        skillContext,

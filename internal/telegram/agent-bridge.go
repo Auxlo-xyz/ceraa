@@ -135,6 +135,10 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	liveMemory := memory.Live(memoryStore, projectRoot, sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
+	// One renderer, two homes. The prompt modes read the bond out of the combined
+	// block below; sidekick mode suppresses that whole block and reads it from
+	// BondFunc instead, which is why it cannot simply be left inside the combine.
+	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
 	// Recorded because a provider may reject or ignore a level, and the only way
@@ -186,7 +190,8 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
-		MemoryContextFunc:   memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
+		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
+		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),
 		SkillContext:        skillContext,

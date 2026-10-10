@@ -102,6 +102,10 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	// renderer below re-reads the file every turn.
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	liveMemory := memory.Live(memoryStore, "cli", "cli", filepath.Join(cfg.WorkspaceRootPath(), memory.DefaultMemoryFile), 4000)
+	// One renderer, two homes. The prompt modes read the bond out of the combined
+	// block below; sidekick mode suppresses that whole block and reads it from
+	// BondFunc instead, which is why it cannot simply be left inside the combine.
+	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
@@ -237,7 +241,8 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		ModelCatalogCache:   cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
-		MemoryContextFunc:   memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
+		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
+		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),
 		SkillContext:        skillContext,

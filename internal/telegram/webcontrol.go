@@ -627,6 +627,10 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 	}
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sess.ID, 2000)
 	liveMemory := memory.Live(memoryStore, projectRoot, sess.ID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
+	// One renderer, two homes. The prompt modes read the bond out of the combined
+	// block below; sidekick mode suppresses that whole block and reads it from
+	// BondFunc instead, which is why it cannot simply be left inside the combine.
+	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	// No user text reaches this path, so the skill-feedback heuristic stays off
 	// and the proposal tool stays out of the catalogue, which is where it is on
@@ -641,7 +645,8 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 		MaxOutputTokens:   providerConfig.MaxOutputTokens,
 		WorkDir:           projectRoot,
 		MemoryContext:     memoryContext,
-		MemoryContextFunc: memory.Combine(memory.LiveBond(paths.BondFile(), 2000), liveMemory),
+		MemoryContextFunc: memory.Combine(bondRenderer, liveMemory),
+		BondFunc:          bondRenderer,
 		MemoryDelivery:    cfg.MemoryDelivery,
 		MemoryEntries:     memoryEntries(memoryStore, projectRoot, sess.ID),
 		SkillContext:      skillContext,

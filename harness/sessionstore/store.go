@@ -148,10 +148,17 @@ type Run struct {
 	// evaluated: two sessions differing in outcome, one with the block and one
 	// with sidekick notes, are otherwise indistinguishable from a change in the
 	// task.
-	MemoryDelivery     string    `json:"memory_delivery,omitempty"`
-	MemoryGeneralSent  int       `json:"memory_general_sent,omitempty"`
-	MemoryTargetedSent int       `json:"memory_targeted_sent,omitempty"`
-	MemoryBelowGate    int       `json:"memory_below_gate,omitempty"`
+	MemoryDelivery     string `json:"memory_delivery,omitempty"`
+	MemoryGeneralSent  int    `json:"memory_general_sent,omitempty"`
+	MemoryTargetedSent int    `json:"memory_targeted_sent,omitempty"`
+	MemoryBelowGate    int    `json:"memory_below_gate,omitempty"`
+	// MemoryBondSent is the size of the operator's identity block this run
+	// delivered, or zero for a run that had none to deliver.
+	//
+	// Recorded because a sidekick run that dropped the bond looks exactly like a
+	// sidekick run on an install with no BOND.md, and the session file is the only
+	// thing that survives to tell them apart.
+	MemoryBondSent     int       `json:"memory_bond_sent,omitempty"`
 	PricingFetchedAt   time.Time `json:"pricing_fetched_at,omitempty"`
 	ModelContextWindow int       `json:"model_context_window,omitempty"`
 	ModelMaxTokens     int       `json:"model_max_tokens,omitempty"`
@@ -173,6 +180,17 @@ type Session struct {
 	Runs             []Run       `json:"runs,omitempty"`
 	Version          int         `json:"version"`
 	ParentID         string      `json:"parent_id,omitempty"`
+
+	// MemoryDelivered is every memory already annotated into this session's tool
+	// results, by memory.DeliveryID.
+	//
+	// Persisted because the runner is rebuilt for every run and nothing else
+	// outlives one. A set held in memory alone re-fires every memory on the next
+	// message, which is the same copy-per-call cost the in-run guard was added for
+	// with the timing moved outside the run it was scoped to. A fork inherits the
+	// messages and not this list, so a fork re-delivers: one duplicate note beats a
+	// memory that never reaches the model.
+	MemoryDelivered []string `json:"memory_delivered,omitempty"`
 }
 
 func (s *Session) DisplayTitle() string {
@@ -216,6 +234,10 @@ func (s *Session) Clear() error {
 	s.Messages = []Message{}
 	s.Operations = []Operation{}
 	s.Runs = []Run{}
+	// The delivered set goes with the transcript. Clearing empties the context that
+	// carried those notes, so every memory is once again something the model has
+	// not been told.
+	s.MemoryDelivered = nil
 	return nil
 }
 

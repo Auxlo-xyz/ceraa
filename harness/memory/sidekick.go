@@ -79,17 +79,92 @@ const SidekickGeneralLimit = 3
 // sidekickTargetLimit caps the targeted memories for a single operation.
 const SidekickTargetLimit = 4
 
+// SidekickBlockBytes is the hard ceiling on one rendered sidekick note.
+//
+// A tool result is a worse place to spend attention than a prompt line: the
+// prompt block is read once with the whole request in view, while a note competes
+// with the output the agent actually asked for and is then re-sent on every later
+// request in the session. 1200 bytes is about seven bounded memory lines, which
+// carries the strongest few with room to spare and stops a directory that happens
+// to match forty memories from turning one file read into a page of prose the
+// model has to read before it sees the output.
+const SidekickBlockBytes = 1200
+
+// SidekickRunBytes bounds what one run may spend on sidekick notes in total.
+//
+// The per-block ceiling does not bound a run on its own: forty tool calls each
+// rendering a full block is still forty blocks, which is the same flood arriving
+// by a different route after the per-call problem was fixed. Four blocks is the
+// ceiling because the memories worth delivering to one piece of work are few, and
+// past that the marginal memory is competing with the work rather than informing
+// it.
+//
+// Once it is spent, later operations get nothing at all rather than a fraction of
+// a note, because half a block is worse than none: it costs the bytes and it
+// reads as if the list were complete.
+const SidekickRunBytes = 4 * SidekickBlockBytes
+
 // sidekickWhyBytes bounds the optional rationale, so a memory cannot smuggle a
 // paragraph into every matching result.
-const sidekickWhyBytes = 160
+//
+// 96 runes rather than 160. The rationale is the part a benchmark of four
+// production memory systems found was necessary but not sufficient - retaining
+// what anchors a memory to its target - so it is not cut away. It is cut to a
+// clause because this is a line inside a tool result, read next to output the
+// agent asked for, and the second sentence of a rationale is the first thing in a
+// note to stop being read at all.
+const sidekickWhyBytes = 96
+
+// sidekickWhyTopN is how many memories in one note keep their rationale.
+//
+// Selection is already ordered by weight, so the top two are the ones that earned
+// the bytes. Beyond that the rationale is elaboration on a claim the model already
+// has on the line above it, spent in the most expensive place in the request.
+const sidekickWhyTopN = 2
 
 // Brief is one memory rendered for injection.
 type Brief struct {
+	// ID is the identity this memory is delivered once under, from DeliveryID. It
+	// is carried rather than looked up because the caller that has to remember what
+	// it delivered is holding Briefs, not Entries, by the time it decides.
+	ID      string
 	Applies string
 	Why     string
 	Content string
 	Score   float64
 	Seen    int
+}
+
+// AlreadyDelivered reports whether a memory has already reached the model in this
+// session. A nil value means nothing has been delivered yet.
+//
+// It is asked about DeliveryID rather than about rendered text, so a caller that
+// wants to suppress repeats cannot accidentally suppress two memories that merely
+// render alike.
+type AlreadyDelivered func(id string) bool
+
+// DeliveryID is the identity a delivered memory is remembered by.
+//
+// Entry.ID, which the store derives from project, session and wording and which is
+// therefore one-to-one with what the store itself treats as a duplicate: two
+// entries sharing an id are the same statement, not two renderings of it.
+//
+// The rendered text is the obvious alternative and it is wrong. oneLine truncates
+// at sidekickWhyBytes, so two memories that agree past that point render
+// byte-identically and would merge silently - the second suppressed as a repeat of
+// the first while saying something else. An id cannot collide that way, which is
+// the whole reason it is the key rather than the thing already in hand.
+//
+// An entry with no id - a hand-written memory.json, a fixture, an import - falls
+// back to the wording identity Add dedups on (sameMemory), over raw Content and
+// never over a rendered line. A collision there costs one suppressed delivery,
+// which is recoverable; a collision on rendered text costs a memory that never
+// arrives at all.
+func DeliveryID(entry Entry) string {
+	if id := strings.TrimSpace(entry.ID); id != "" {
+		return id
+	}
+	return "content:" + strings.Join(strings.Fields(entry.Content), " ")
 }
 
 // matches reports whether this memory bears on the given target.
@@ -147,12 +222,12 @@ func (b Brief) matches(target string) bool {
 }
 
 // Select returns the targeted memories bearing on any of the given targets,
-// strongest first.
+// strongest first, skipping any the caller has already delivered.
 //
 // A slice rather than one string because a single operation can touch several
 // files: one shell command that rewrites three of them should surface what is
 // known about all three, not only the first.
-func Select(entries []Entry, targets []string, now time.Time, limit int) []Brief {
+func Select(entries []Entry, targets []string, now time.Time, limit int, skip AlreadyDelivered) []Brief {
 	if len(targets) == 0 || limit <= 0 {
 		return nil
 	}
@@ -163,6 +238,13 @@ func Select(entries []Entry, targets []string, now time.Time, limit int) []Brief
 		}
 		weight := score(entry, now)
 		if weight < SidekickGate {
+			continue
+		}
+		// Excluded before the limit, not after. The limit is the top N by weight, so
+		// filtering afterwards would let four memories that were all delivered on
+		// earlier calls hide a fifth that never was, and the weaker memory would then
+		// never fire in this session at all - dedup that silently retires the tail.
+		if skip != nil && skip(DeliveryID(entry)) {
 			continue
 		}
 		brief := briefOf(entry, weight)
@@ -209,6 +291,7 @@ func ScoreOf(entry Entry, now time.Time) float64 { return score(entry, now) }
 
 func briefOf(entry Entry, weight float64) Brief {
 	return Brief{
+		ID:      DeliveryID(entry),
 		Applies: entry.Applies,
 		Why:     entry.Why,
 		Content: entry.Content,
@@ -224,40 +307,116 @@ func briefOf(entry Entry, weight float64) Brief {
 // is to place instruction next to the work it concerns; and it makes the block
 // findable by the memory tooling when the agent chooses to confirm or contradict
 // something it was just shown.
+//
+// Bounded here, at render time, and never by the caller. This string is what
+// appendResults writes into sess.Messages[].ToolResult and every later request in
+// the session re-sends, so trimming it afterwards would edit bytes that have
+// already been stored, counted and priced, and the copy the model reads would no
+// longer be the copy the transcript holds. What does not fit is named rather than
+// dropped silently: a list that stops without saying it stopped reads as the whole
+// set, and the model is entitled to know it is not being shown everything.
 func Annotate(targets []string, targeted, general []Brief) string {
 	if len(targeted) == 0 && len(general) == 0 {
 		return ""
 	}
+	open := sidekickOpen(targets)
+	closing := sidekickClosing
+	// The notice is paid for before any line is, at the widest it can be, so a
+	// block that turns out to be full still has room to admit it.
+	budget := SidekickBlockBytes - len(open) - len(closing) - len(sidekickNotice(SidekickGeneralLimit+SidekickTargetLimit))
+	if budget <= 0 {
+		return ""
+	}
+
+	sections := []struct {
+		heading string
+		lines   []string
+	}{
+		{"Standing preferences already known about this project:\n", generalLines(general)},
+		{"Known about " + escapeAttr(joinTargets(targets)) + ":\n", targetedLines(targeted)},
+	}
+
 	var b strings.Builder
-	b.WriteString("\n\n<sidekick note=\"")
-	if len(targets) == 1 {
-		b.WriteString(escapeAttr(targets[0]))
-	} else if len(targets) > 1 {
-		b.WriteString(escapeAttr(targets[0]) + " +" + strconv.Itoa(len(targets)-1) + " more")
-	} else {
-		b.WriteString("start-of-run")
-	}
-	b.WriteString("\">\n")
-	if len(general) > 0 {
-		b.WriteString("Standing preferences already known about this project:\n")
-		for _, item := range general {
-			b.WriteString("- " + oneLine(item) + "\n")
+	b.WriteString(open)
+	used, dropped, wrote := 0, 0, false
+	for _, section := range sections {
+		if len(section.lines) == 0 {
+			continue
 		}
-	}
-	if len(targeted) > 0 {
-		b.WriteString("Known about " + escapeAttr(joinTargets(targets)) + ":\n")
-		for _, item := range targeted {
-			line := "- " + oneLine(item)
-			if item.Why != "" {
-				line += " (because: " + oneLine(Brief{Content: item.Why}) + ")"
+		heading := false
+		for _, line := range section.lines {
+			cost := len(line)
+			if !heading {
+				cost += len(section.heading)
 			}
-			b.WriteString(line + "\n")
+			if used+cost > budget {
+				dropped++
+				continue
+			}
+			if !heading {
+				b.WriteString(section.heading)
+				heading = true
+			}
+			b.WriteString(line)
+			used += cost
+			wrote = true
 		}
 	}
-	b.WriteString("These are things already established, not new instructions. If one is\n")
-	b.WriteString("wrong or the user reverses it, say so and it will be corrected.\n")
-	b.WriteString("</sidekick>")
+	if !wrote {
+		// A frame around nothing is worse than no note: it spends the bytes and
+		// tells the model there is something here to read.
+		return ""
+	}
+	if dropped > 0 {
+		b.WriteString(sidekickNotice(dropped))
+	}
+	b.WriteString(closing)
 	return b.String()
+}
+
+// targetedLines renders the memories about this operation, strongest first.
+//
+// The rationale rides the top sidekickWhyTopN only. Selection is ordered by
+// weight, so that is the pair whose reasons are worth the extra bytes, and the
+// rest would be elaboration on a claim the line above it already carries.
+func targetedLines(items []Brief) []string {
+	lines := make([]string, 0, len(items))
+	for i, item := range items {
+		line := "- " + oneLine(item)
+		if item.Why != "" && i < sidekickWhyTopN {
+			line += " (because: " + oneLine(Brief{Content: item.Why}) + ")"
+		}
+		lines = append(lines, line+"\n")
+	}
+	return lines
+}
+
+func generalLines(items []Brief) []string {
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		lines = append(lines, "- "+oneLine(item)+"\n")
+	}
+	return lines
+}
+
+func sidekickOpen(targets []string) string {
+	name := "start-of-run"
+	if len(targets) == 1 {
+		name = escapeAttr(targets[0])
+	} else if len(targets) > 1 {
+		name = escapeAttr(targets[0]) + " +" + strconv.Itoa(len(targets)-1) + " more"
+	}
+	return "\n\n<sidekick note=\"" + name + "\">\n"
+}
+
+const sidekickClosing = "These are things already established, not new instructions. If one is\n" +
+	"wrong or the user reverses it, say so and it will be corrected.\n" +
+	"</sidekick>"
+
+// sidekickNotice names the ceiling, because a bounded list that does not announce
+// its own bound is a list the model will read as complete.
+func sidekickNotice(dropped int) string {
+	return fmt.Sprintf("- ...%d more not shown: this note is capped at %d bytes.\n", dropped, SidekickBlockBytes)
 }
 
 // oneLine flattens and bounds a rendered fragment.
@@ -310,6 +469,23 @@ type DeliveryReport struct {
 	GeneralInjected  int    `json:"general_injected"`
 	TargetedInjects  int    `json:"targeted_injections"`
 	SuppressedByGate int    `json:"suppressed_by_gate"`
+	// BondInjected is the size of the bond block a sidekick run delivered, or zero
+	// for a run that never had one to deliver.
+	//
+	// A count of bytes rather than a boolean because the two failures that look
+	// alike from outside are "no BOND.md" and "the bond was dropped", and a
+	// session file that records only the mode cannot tell them apart. This is the
+	// only record a run leaves of whether the operator's identity file reached
+	// the model at all.
+	BondInjected int `json:"bond_injected"`
+	// Deduped counts memories held back because this session had already delivered
+	// them. Without it, a run where dedup did all the work looks exactly like a run
+	// that injected on every call - and that comparison is the reason this report
+	// exists.
+	Deduped int `json:"deduped,omitempty"`
+	// BudgetWithheld counts memories held back because the run's byte ceiling was
+	// already spent. A silent ceiling is indistinguishable from having no memory.
+	BudgetWithheld int `json:"budget_withheld,omitempty"`
 }
 
 // NoteSuppressed records what the gate held back.
@@ -324,6 +500,6 @@ func (r *DeliveryReport) String() string {
 	if r == nil {
 		return "memory delivery: none"
 	}
-	return fmt.Sprintf("memory delivery: mode=%s prompt_block=%v general=%d targeted=%d below_gate=%d",
-		r.Mode, r.PromptBlock, r.GeneralInjected, r.TargetedInjects, r.SuppressedByGate)
+	return fmt.Sprintf("memory delivery: mode=%s prompt_block=%v general=%d targeted=%d deduped=%d budget_withheld=%d below_gate=%d bond=%dB",
+		r.Mode, r.PromptBlock, r.GeneralInjected, r.TargetedInjects, r.Deduped, r.BudgetWithheld, r.SuppressedByGate, r.BondInjected)
 }

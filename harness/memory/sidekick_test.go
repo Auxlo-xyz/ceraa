@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -26,13 +27,13 @@ func TestTargetedMemoryOnlyMatchesItsPath(t *testing.T) {
 		brief("the build needs JAVA_HOME set", "/srv/api", "gradle picked the wrong jdk", 6, 1, now),
 	}
 
-	if got := Select(entries, []string{"/srv/api/build.gradle"}, now, 4); len(got) != 1 {
+	if got := Select(entries, []string{"/srv/api/build.gradle"}, now, 4, nil); len(got) != 1 {
 		t.Errorf("a path under the memory's directory did not match: %#v", got)
 	}
-	if got := Select(entries, []string{"/srv/web/package.json"}, now, 4); len(got) != 0 {
+	if got := Select(entries, []string{"/srv/web/package.json"}, now, 4, nil); len(got) != 0 {
 		t.Errorf("an unrelated path was annotated: %#v", got)
 	}
-	if got := Select(entries, []string{""}, now, 4); len(got) != 0 {
+	if got := Select(entries, []string{""}, now, 4, nil); len(got) != 0 {
 		t.Errorf("an operation with no path was annotated: %#v", got)
 	}
 }
@@ -56,7 +57,7 @@ func TestGlobsAndBareFilenamesMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		entries := []Entry{brief("x", tc.applies, "", 6, 1, now)}
-		got := len(Select(entries, []string{tc.target}, now, 4)) == 1
+		got := len(Select(entries, []string{tc.target}, now, 4, nil)) == 1
 		if got != tc.want {
 			t.Errorf("applies=%q target=%q matched=%v, want %v", tc.applies, tc.target, got, tc.want)
 		}
@@ -73,7 +74,7 @@ func TestGeneralMemoriesAreSelectedSeparately(t *testing.T) {
 		brief("JAVA_HOME is set here", "/srv/api", "", 6, 1, now),
 	}
 
-	if got := Select(entries, []string{"/srv/api/main.go"}, now, 4); len(got) != 1 || got[0].Content != "JAVA_HOME is set here" {
+	if got := Select(entries, []string{"/srv/api/main.go"}, now, 4, nil); len(got) != 1 || got[0].Content != "JAVA_HOME is set here" {
 		t.Errorf("per-operation select returned the wrong set: %#v", got)
 	}
 	general := SelectGeneral(entries, now, 3)
@@ -88,11 +89,11 @@ func TestGeneralMemoriesAreSelectedSeparately(t *testing.T) {
 func TestTheGateHoldsBackWeakMemories(t *testing.T) {
 	now := time.Now()
 	weak := []Entry{brief("barely confirmed", "/srv/api", "", 1, 40, now)}
-	if got := Select(weak, []string{"/srv/api/main.go"}, now, 4); len(got) != 0 {
+	if got := Select(weak, []string{"/srv/api/main.go"}, now, 4, nil); len(got) != 0 {
 		t.Errorf("a below-gate memory was injected: %#v", got)
 	}
 	strong := []Entry{brief("well confirmed", "/srv/api", "", 8, 1, now)}
-	if got := Select(strong, []string{"/srv/api/main.go"}, now, 4); len(got) != 1 {
+	if got := Select(strong, []string{"/srv/api/main.go"}, now, 4, nil); len(got) != 1 {
 		t.Errorf("a strong memory was held back: %#v", got)
 	}
 }
@@ -105,7 +106,7 @@ func TestSelectionIsOrderedByWeightAndBounded(t *testing.T) {
 		brief("strong", "/srv/api", "", 20, 1, now),
 		brief("middle", "/srv/api", "", 8, 1, now),
 	}
-	got := Select(entries, []string{"/srv/api/main.go"}, now, 2)
+	got := Select(entries, []string{"/srv/api/main.go"}, now, 2, nil)
 	if len(got) != 2 {
 		t.Fatalf("got %d, want 2", len(got))
 	}
@@ -152,6 +153,156 @@ func TestTheRationaleIsBounded(t *testing.T) {
 	note := Annotate([]string{"/srv/api"}, []Brief{{Content: "x", Why: long, Score: 0.9}}, nil)
 	if len(note) > sidekickWhyBytes+400 {
 		t.Errorf("the note is %d bytes; the rationale was not bounded", len(note))
+	}
+}
+
+// Only the strongest couple keep their rationale. A fourth line of explanation per
+// memory is the part of the note that stops being read, and it is paid for in the
+// most expensive place in the request.
+func TestOnlyTheTopMemoriesKeepTheirRationale(t *testing.T) {
+	targeted := make([]Brief, 0, 4)
+	for i, why := range []string{"because one", "because two", "because three", "because four"} {
+		targeted = append(targeted, Brief{
+			Content: fmt.Sprintf("memory %d", i), Why: why, Score: 0.9 - float64(i)*0.1,
+		})
+	}
+	note := Annotate([]string{"/srv/api"}, targeted, nil)
+	for i, why := range []string{"because one", "because two"} {
+		if !strings.Contains(note, why) {
+			t.Errorf("the %d strongest memory lost its rationale: %q", i+1, note)
+		}
+	}
+	for _, why := range []string{"because three", "because four"} {
+		if strings.Contains(note, why) {
+			t.Errorf("a rationale past the top %d was rendered: %q", sidekickWhyTopN, note)
+		}
+	}
+}
+
+// The flood is the case the ceiling exists for: a directory that happens to match
+// forty memories must not turn one file read into a page. The bound has to hold,
+// and it has to be visible, because a list that stops without saying so reads as
+// the whole set.
+func TestAFloodOfMatchingMemoriesIsCappedAndSaysSo(t *testing.T) {
+	targeted := make([]Brief, 0, 40)
+	for i := 0; i < 40; i++ {
+		targeted = append(targeted, Brief{
+			ID:      fmt.Sprintf("id%02d", i),
+			Content: fmt.Sprintf("memory number %d about this path", i),
+			Why:     strings.Repeat("reason ", 60),
+			Score:   0.9 - float64(i)*0.01,
+		})
+	}
+	note := Annotate([]string{"/srv/api/main.go"}, targeted, nil)
+	if len(note) > SidekickBlockBytes {
+		t.Errorf("the note is %d bytes, over the %d ceiling", len(note), SidekickBlockBytes)
+	}
+	if !strings.Contains(note, fmt.Sprint(SidekickBlockBytes)) {
+		t.Errorf("the note does not name its own ceiling: %q", note)
+	}
+	if !strings.Contains(note, "not shown") {
+		t.Errorf("a truncated note does not admit what it left out: %q", note)
+	}
+	if !strings.HasSuffix(note, "</sidekick>") {
+		t.Errorf("the note was cut inside its own markup: %q", note)
+	}
+	// The strongest survive: this is a truncation of the tail, not of the ranking.
+	for _, keep := range []string{"memory number 0", "memory number 1"} {
+		if !strings.Contains(note, keep) {
+			t.Errorf("capping dropped %q rather than the weakest memories: %q", keep, note)
+		}
+	}
+	if strings.Contains(note, "memory number 39") {
+		t.Errorf("the weakest memory was kept: %q", note)
+	}
+}
+
+// One memory always fits whole. Only the tail is ever dropped, so the strongest
+// claim on a path cannot be the one that gets cut in half.
+func TestASingleMemoryIsNeverCutDownToFit(t *testing.T) {
+	content := strings.Repeat("word ", 60)
+	why := strings.Repeat("reason ", 60)
+	note := Annotate([]string{"/srv/api/main.go"}, []Brief{{Content: content, Why: why, Score: 0.9}}, nil)
+	if !strings.Contains(note, "word") || !strings.Contains(note, "reason") {
+		t.Fatalf("the only memory was dropped or mangled: %q", note)
+	}
+	if !strings.HasSuffix(note, "</sidekick>") {
+		t.Errorf("the note was cut inside its own markup: %q", note)
+	}
+	if len(note) > SidekickBlockBytes {
+		t.Errorf("the note is %d bytes, over the %d ceiling", len(note), SidekickBlockBytes)
+	}
+}
+
+// The dedup key is the id, and it has to be: the rendered line is truncated, so two
+// memories that agree past the truncation point render identically and would merge
+// silently - the second suppressed as a repeat of the first while saying something
+// else entirely.
+func TestDeliveredMemoriesAreMatchedByIDNotByRenderedText(t *testing.T) {
+	now := time.Now()
+	shared := strings.Repeat("shared prefix ", 40)
+	first := brief(shared+"the backend pins jdk 21", "/srv/api", "", 6, 1, now)
+	first.ID = "id-first"
+	second := brief(shared+"the backend pins jdk 21 for gradle", "/srv/api", "", 6, 1, now)
+	second.ID = "id-second"
+
+	// The two render as the same line, which is exactly the collision to avoid.
+	if oneLine(Brief{Content: first.Content}) != oneLine(Brief{Content: second.Content}) {
+		t.Fatal("the fixture does not collide on rendered text, so it proves nothing")
+	}
+	if len(oneLine(Brief{Content: first.Content})) >= len(first.Content) {
+		t.Fatal("the fixture is not long enough to be truncated, so it proves nothing")
+	}
+
+	seen := map[string]struct{}{"id-first": {}}
+	got := Select([]Entry{first, second}, []string{"/srv/api"}, now, 4, func(id string) bool {
+		_, ok := seen[id]
+		return ok
+	})
+	if len(got) != 1 || got[0].ID != "id-second" {
+		t.Errorf("select returned %#v, want only the undelivered memory", got)
+	}
+}
+
+// An entry with no id - a hand-written memory.json, a fixture - still has to
+// dedup, and it has to do so on the wording the store itself dedups on rather than
+// on the rendered line.
+func TestAnEntryWithNoIDStillDedups(t *testing.T) {
+	now := time.Now()
+	entry := brief("JAVA_HOME is set here", "/srv/api", "", 6, 1, now)
+	if entry.ID != "" {
+		t.Fatal("the fixture is supposed to have no id")
+	}
+	id := DeliveryID(entry)
+	if id == "" || !strings.Contains(id, "JAVA_HOME") {
+		t.Errorf("DeliveryID = %q", id)
+	}
+	if DeliveryID(Entry{ID: "abc123", Content: "anything"}) != "abc123" {
+		t.Error("a stored entry's id was not used verbatim")
+	}
+	if DeliveryID(entry) == DeliveryID(brief("a different claim", "/srv/api", "", 6, 1, now)) {
+		t.Error("two different id-less memories share a delivery key")
+	}
+}
+
+// Excluded before the limit, not after. Filtering afterwards lets four memories
+// that were all delivered earlier hide a fifth that never was, and the weaker
+// memory is then never delivered at all - dedup that silently retires the tail.
+func TestExclusionHappensBeforeTheLimit(t *testing.T) {
+	now := time.Now()
+	entries := []Entry{
+		brief("first", "/srv/api", "", 20, 1, now),
+		brief("second", "/srv/api", "", 18, 1, now),
+		brief("third", "/srv/api", "", 16, 1, now),
+	}
+	got := Select(entries, []string{"/srv/api"}, now, 1, func(string) bool { return true })
+	if len(got) != 0 {
+		t.Errorf("an all-excluded selection returned %#v", got)
+	}
+	delivered := map[string]bool{DeliveryID(entries[0]): true, DeliveryID(entries[1]): true}
+	got = Select(entries, []string{"/srv/api"}, now, 1, func(id string) bool { return delivered[id] })
+	if len(got) != 1 || got[0].Content != "third" {
+		t.Errorf("the undelivered memory was hidden by two delivered ones: %#v", got)
 	}
 }
 

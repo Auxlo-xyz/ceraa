@@ -80,7 +80,16 @@ type RunnerConfig struct {
 	MemoryDelivery string
 	// MemoryEntries lists stored memories for sidekick delivery. Nil disables it,
 	// which is what keeps the prompt path working with nothing configured.
-	MemoryEntries    func() ([]memory.Entry, error)
+	MemoryEntries func() ([]memory.Entry, error)
+	// BondFunc renders the operator's identity file for sidekick delivery, which
+	// is the only mode that sees it.
+	//
+	// It is separate from MemoryContextFunc because that one combines the bond
+	// with project memory, and a combined renderer cannot be taken apart: sidekick
+	// mode suppresses the whole block, so a bond arriving only inside it is a bond
+	// that never arrives. The prompt modes ignore this field entirely and keep
+	// reading the bond out of MemoryContextFunc.
+	BondFunc         func() (string, error)
 	SkillContext     string
 	EvaluationStore  *evaluation.Store
 	Inbox            *inbox.Inbox
@@ -367,8 +376,13 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
 	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
-	if r.delivery == memory.DeliverySidekick && cfg.MemoryEntries != nil {
-		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.WorkDir)
+	// Either half is enough to build the state. Keying it on MemoryEntries alone
+	// meant a caller configured with a bond and no store - which is a legal
+	// configuration, since MemoryEntries is documented as optional - got no
+	// sidekick at all, and the bond went with it. That is the same silent drop,
+	// one indirection further from the cause.
+	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.BondFunc != nil) {
+		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.BondFunc, cfg.WorkDir)
 	}
 	// Seed the budget from what is known without a network call, and push it into
 	// the compactor now. The run refines this from the catalog, but between
@@ -542,6 +556,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].MemoryGeneralSent = delivery.GeneralInjected
 				sess.Runs[i].MemoryTargetedSent = delivery.TargetedInjects
 				sess.Runs[i].MemoryBelowGate = delivery.SuppressedByGate
+				sess.Runs[i].MemoryBondSent = delivery.BondInjected
 			}
 		}
 		if r.evaluation != nil {
@@ -2007,6 +2022,42 @@ func (r *Runner) sidekickNote(sess *sessionstore.Session, result operation.Resul
 		return ""
 	}
 	return r.sidekick.annotate(sess, result)
+}
+
+// ForgetDeliveredMemory releases every memory this session has been annotated
+// with, so each one is eligible again on the next matching operation.
+//
+// This is the seam for a compaction epoch, and it belongs here rather than in the
+// compactor because the compactor owns the transcript, not the knowledge of which
+// notes are still in it: a compaction drops the tool results that carried them, so
+// the memory behind a note is no longer in context and delivering it once more is
+// not a repeat. Call it with the session being compacted, on both sides of the
+// fold, and the delivered list on the session file goes with it.
+func (r *Runner) ForgetDeliveredMemory(sess *sessionstore.Session) {
+	if r.sidekick == nil {
+		return
+	}
+	r.sidekick.mu.Lock()
+	defer r.sidekick.mu.Unlock()
+	r.sidekick.forgetDelivered(sess)
+}
+
+// MarkDeliveredMemory records memories as already delivered without injecting
+// them, for a caller carrying a set across an epoch boundary or a restart.
+//
+// The ids are the same ones Annotate was given: memory.DeliveryID of the entry,
+// which is its store id. Nothing validates them against the store, because a
+// caller restoring state it wrote earlier has nothing to check it against and a
+// remembered delivery that no longer exists costs nothing - the memory simply
+// stays quiet.
+func (r *Runner) MarkDeliveredMemory(sess *sessionstore.Session, ids ...string) {
+	if r.sidekick == nil || sess == nil {
+		return
+	}
+	r.sidekick.mu.Lock()
+	defer r.sidekick.mu.Unlock()
+	r.sidekick.remember(ids...)
+	r.sidekick.persist(sess, ids...)
 }
 
 // DeliveryReport says how memory was delivered for the run that just finished.
