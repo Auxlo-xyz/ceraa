@@ -258,3 +258,53 @@ func TestTierMergeDistillsOldTierOnes(t *testing.T) {
 		t.Error("merged tier-2 block is not at the consumed range position")
 	}
 }
+
+// The growth gate stops every-message folding: a checkpoint followed by a
+// sliver of new conversation must not compact even when the size trigger is
+// over the line from irreducible request costs.
+func TestNeedsCompactionGatedByGrowth(t *testing.T) {
+	c := &Compactor{Settings: DefaultSettings(), ContextLimit: 32000}
+	sess := &sessionstore.Session{ID: "growth-test"}
+	sess.Messages = append(sess.Messages, sessionstore.Message{
+		Role: llm.RoleSystem, Content: "<conversation-checkpoint>",
+		Compaction: &sessionstore.CompactionInfo{Summary: "prior work"},
+	})
+	sess.Messages = append(sess.Messages,
+		sessionstore.Message{Role: llm.RoleUser, Content: "one more thing"},
+		sessionstore.Message{Role: llm.RoleAssistant, Content: "done", Usage: llm.UsageInfo{InputTokens: 100000}},
+	)
+	if c.NeedsCompaction(sess) {
+		t.Fatal("compaction fired on a sliver of new conversation; the growth gate must hold it")
+	}
+}
+
+// Fifteen thousand genuinely new tokens after the checkpoint re-arms folding.
+func TestNeedsCompactionRearmsAfterGrowth(t *testing.T) {
+	c := &Compactor{Settings: DefaultSettings(), ContextLimit: 32000}
+	sess := &sessionstore.Session{ID: "growth-test"}
+	sess.Messages = append(sess.Messages, sessionstore.Message{
+		Role: llm.RoleSystem, Content: "<conversation-checkpoint>",
+		Compaction: &sessionstore.CompactionInfo{Summary: "prior work"},
+	})
+	sess.Messages = append(sess.Messages,
+		sessionstore.Message{Role: llm.RoleUser, Content: strings.Repeat("new work paragraph. ", 4000)},
+		sessionstore.Message{Role: llm.RoleAssistant, Content: "done", Usage: llm.UsageInfo{InputTokens: 100000}},
+	)
+	if !c.NeedsCompaction(sess) {
+		t.Fatal("compaction stayed silent after 15k new tokens; the gate must re-arm")
+	}
+}
+
+// Fold ids must be unique across Compactor instances: one instance is built
+// per run, so a plain sequence restarts at fold-1 every run and each run's
+// retention file overwrites the last.
+func TestFoldIDsUniqueAcrossInstances(t *testing.T) {
+	first := (&Compactor{}).recordFold(0, 5, 1)
+	second := (&Compactor{}).recordFold(0, 5, 1)
+	if first.ID == "" || second.ID == "" {
+		t.Fatal("fold ids must not be empty")
+	}
+	if first.ID == second.ID {
+		t.Fatalf("fold ids collided across instances: %q", first.ID)
+	}
+}

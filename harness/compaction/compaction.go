@@ -252,9 +252,12 @@ func (c *Compactor) FoldLedger() []FoldEntry {
 func (c *Compactor) recordFold(start, end, tier int) FoldEntry {
 	c.foldMu.Lock()
 	defer c.foldMu.Unlock()
+	if c.runSeed == 0 {
+		c.runSeed = time.Now().UnixNano()
+	}
 	c.foldSeq++
 	entry := FoldEntry{
-		ID:         fmt.Sprintf("fold-%d", c.foldSeq),
+		ID:         fmt.Sprintf("fold-%d-%d", c.runSeed, c.foldSeq),
 		Start:      start,
 		End:        end,
 		At:         time.Now().UTC(),
@@ -538,6 +541,44 @@ type Compactor struct {
 	foldMu     sync.Mutex
 	foldLedger []FoldEntry
 	foldSeq    int
+	// runSeed makes fold ids unique across Compactor instances. A Compactor
+	// is built per run, so a plain sequence restarts at fold-1 every run and
+	// each run's retention file overwrites the last. Lazily minted on first
+	// use; zero means unseeded, never a valid seed.
+	runSeed int64
+}
+
+// MinFoldGrowthTokens is how much new content must arrive after the latest
+// checkpoint before another fold may fire.
+//
+// The trigger metric counts the whole request, including costs folding can
+// never remove: the system prompt, the tool catalogue, and fresh reasoning,
+// which alone can sit over the 55% line. Without this gate a session past the
+// line compacts on every message forever, writing a checkpoint per turn while
+// the estimate never drops. Fifteen thousand tokens of genuinely new
+// conversation is the rhythm: folds stay frequent enough to matter and can
+// never spin turn after turn on the same history.
+const MinFoldGrowthTokens = 15000
+
+// growthSinceCheckpoint estimates the tokens arrived after the latest
+// checkpoint message. A session with no checkpoint yet returns the whole
+// session, so first folds are never gated.
+func growthSinceCheckpoint(sess *sessionstore.Session) int {
+	latest := -1
+	for i, message := range sess.Messages {
+		if message.Compaction != nil {
+			latest = i
+		}
+	}
+	// No checkpoint yet means no fold could repeat: first folds stay ungated.
+	if latest < 0 {
+		return int(^uint(0) >> 1)
+	}
+	total := 0
+	for _, message := range sess.Messages[latest+1:] {
+		total += estimateMessage(message)
+	}
+	return total
 }
 
 // summaryAttempts is how many in-band summarisation requests one compaction
@@ -624,7 +665,11 @@ func (c *Compactor) NeedsCompaction(sess *sessionstore.Session) bool {
 		return false
 	}
 	// Estimate request size including system prompt overhead
-	return EstimatedContext(sess) > c.compactAt()
+	if EstimatedContext(sess) <= c.compactAt() {
+		return false
+	}
+	// Growth gate: refuse to fold the same history twice. See MinFoldGrowthTokens.
+	return growthSinceCheckpoint(sess) > MinFoldGrowthTokens
 }
 
 // IsOverflow checks like soraacode overflow.ts isOverflow
