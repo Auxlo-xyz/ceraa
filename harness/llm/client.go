@@ -578,6 +578,10 @@ type StreamRequest struct {
 type StreamingClient struct {
 	cfg  ProviderConfig
 	http *http.Client
+	// prefixMu guards lastPrefixFP: the fingerprint of the previous
+	// OpenAI-compat request prefix, for the byte-stability audit.
+	prefixMu     sync.Mutex
+	lastPrefixFP string
 }
 
 func New(cfg ProviderConfig) *StreamingClient {
@@ -910,18 +914,35 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		writeDebugNote("gemini.log", note)
 		return fmt.Errorf("no provider endpoint configured for model %q: set a base URL via provider onboarding or CERAA_API_URL", c.cfg.Model)
 	}
+	// Per-request cache accounting: the last usage object any transport emits
+	// is recorded with a local estimate when the request returns, so prefix
+	// health is a log query rather than a theory. Log-only; never fails.
+	var lastUsage *UsageInfo
+	accounted := func(delta ProviderResponse) {
+		if delta.Usage != nil {
+			lastUsage = delta.Usage
+		}
+		if onDelta != nil {
+			onDelta(delta)
+		}
+	}
+	defer func() {
+		if lastUsage != nil {
+			RecordTurn(requestHost(c.cfg.BaseURL), c.cfg.Model, *lastUsage, EstimateTokenBreakdown(req.Messages, req.Tools).Total())
+		}
+	}()
 	// Code Assist is checked before the native auto-detection below: its host
 	// and model both match the native heuristics, so detection alone would
 	// route it at the public endpoint (a 404 on /models/...). The explicit
 	// subscription flag wins over the guess.
 	if c.cfg.CodeAssistNative {
-		return c.streamCodeAssist(ctx, req, onDelta)
+		return c.streamCodeAssist(ctx, req, accounted)
 	}
 	// Gemini is served by Google's native API, where a thought signature is a
 	// first-class field rather than an ad-hoc extra_content field. Only an
 	// explicitly configured OpenAI-compatibility URL uses the adapter below.
 	if c.cfg.GeminiNative {
-		return c.streamGemini(ctx, req, onDelta)
+		return c.streamGemini(ctx, req, accounted)
 	}
 	// Codex is served by ChatGPT's own endpoint, which is neither Gemini's native
 	// API nor an OpenAI-compatible chat-completions host, so it gets its own
@@ -930,23 +951,23 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		if strings.TrimSpace(c.cfg.BaseURL) == "" {
 			c.cfg.BaseURL = CodexBaseURL
 		}
-		return c.streamCodex(ctx, req, onDelta)
+		return c.streamCodex(ctx, req, accounted)
 	}
 	if c.cfg.XaiNative {
 		if strings.TrimSpace(c.cfg.BaseURL) == "" {
 			c.cfg.BaseURL = XaiBaseURL
 		}
-		return c.streamXai(ctx, req, onDelta)
+		return c.streamXai(ctx, req, accounted)
 	}
 	if c.cfg.AnthropicNative {
-		return c.streamAnthropic(ctx, req, onDelta)
+		return c.streamAnthropic(ctx, req, accounted)
 	}
 	// Qoder's encrypted endpoint needs per-request signing, so it rides its own
 	// transport rather than the OpenAI-compatible path.
 	if c.cfg.QoderNative {
-		return c.streamQoder(ctx, req, onDelta)
+		return c.streamQoder(ctx, req, accounted)
 	}
-	return c.streamWithReasoningRetry(ctx, req, onDelta, c.streamOpenAI)
+	return c.streamWithReasoningRetry(ctx, req, accounted, c.streamOpenAI)
 }
 
 // streamWithReasoningRetry calls a transport and, if the provider rejected the
@@ -1084,6 +1105,16 @@ func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, o
 	if err != nil {
 		return fmt.Errorf("encode provider request: %w", err)
 	}
+
+	// Prefix-stability audit: consecutive request bodies must share their
+	// first 32KB, or the provider's prefix cache busts. Log-only; a shifted
+	// prefix is a diagnosis, not a failure.
+	c.prefixMu.Lock()
+	if note := CompareFingerprints(c.lastPrefixFP, Fingerprint(encoded)); note != "" && c.lastPrefixFP != "" {
+		diagNote(fmt.Sprintf("prefix-shift model=%s host=%s %s\n", c.cfg.Model, requestHost(c.cfg.BaseURL), note))
+	}
+	c.lastPrefixFP = Fingerprint(encoded)
+	c.prefixMu.Unlock()
 
 	var lastErr error
 	recoveries := 0

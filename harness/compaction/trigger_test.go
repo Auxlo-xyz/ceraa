@@ -19,12 +19,12 @@ func compactorFor(window, maxOutput int) *Compactor {
 // already reduced, so the same reservation was counted twice. The result was not
 // a percentage at all: a 200k model compacted at 80% of its window and a 32k one
 // at 12%, neither of which was ever chosen.
-func TestCompactAtIsNinetyPercentOfAnyGenerousWindow(t *testing.T) {
+func TestCompactAtIsFiftyFivePercentOfAnyGenerousWindow(t *testing.T) {
 	for _, window := range []int{200000, 512000, 1000000, 2000000} {
 		c := compactorFor(window, 8192)
-		want := window * 90 / 100
+		want := window * 55 / 100
 		if got := c.compactAt(); got != want {
-			t.Errorf("window %d: compactAt = %d, want %d (90%%)", window, got, want)
+			t.Errorf("window %d: compactAt = %d, want %d (55%%)", window, got, want)
 		}
 	}
 }
@@ -36,7 +36,7 @@ func TestCompactAtIsNinetyPercentOfAnyGenerousWindow(t *testing.T) {
 // The reported bug, end to end. A split-reporting endpoint reports the cache read
 // beside the fresh input, so the turn's TotalTokens carries the fresh tokens only.
 // This session's last turn re-read a 185k prefix and reported 2,700 tokens; the
-// trigger compared that against 90% of the window and stayed silent while the real
+// trigger compared that against 55% of the window and stayed silent while the real
 // prompt was over 187k.
 func TestNeedsCompactionCountsTheCachedPrefix(t *testing.T) {
 	usage := llm.UsageInfo{InputTokens: 1200, CachedInputTokens: 185000, OutputTokens: 1500, TotalTokens: 2700}
@@ -87,8 +87,8 @@ func TestNeedsCompactionRespectsTheTrigger(t *testing.T) {
 	window := 200000
 	c := compactorFor(window, 8192)
 	at := c.compactAt()
-	if at != 180000 {
-		t.Fatalf("compactAt = %d, want 180000", at)
+	if at != 110000 {
+		t.Fatalf("compactAt = %d, want 110000", at)
 	}
 	// Synthesise usage just under and just over the trigger.
 	under := sessionWithUsage(t, at-1000)
@@ -101,35 +101,54 @@ func TestNeedsCompactionRespectsTheTrigger(t *testing.T) {
 	}
 }
 
-// A 200k window cannot tell the two trigger formulas apart: 90% of 200k and
-// 200k minus the old flat buffer are both 180000, so a test there passes against
-// either implementation. A 512k window separates them by 31k, and this asserts
+// A 200k window cannot tell the two trigger formulas apart: 55% of 200k and
+// 200k minus a large flat buffer can coincide, so a test there passes against
+// either implementation. A 512k window separates them, and this asserts
 // through NeedsCompaction rather than compactAt so that unwiring the helper is
 // caught too.
-func TestNeedsCompactionFiresAtNinetyPercentOnALargeWindow(t *testing.T) {
+func TestNeedsCompactionFiresAtFiftyFivePercentOnALargeWindow(t *testing.T) {
 	const window = 512000
 	c := compactorFor(window, 8192)
-	at := window * 90 / 100
+	at := window * 55 / 100
 	if at == window-DefaultBuffer {
 		t.Fatal("this window no longer distinguishes the trigger formulas; pick another")
 	}
-	// Just past 90%: the old formula would still say there is room, because
-	// 200k of headroom on a 512k window is a third of the model.
+	// Just past 55%: the old 90% formula would still say there is room, because
+	// 90% of a 512k window is far above the 55% line.
 	if !c.NeedsCompaction(sessionWithUsage(t, at+1)) {
-		t.Errorf("did not compact just past 90%% of a %d window; the trigger is not the 90%% one", window)
+		t.Errorf("did not compact just past 55%% of a %d window; the trigger is not the 55%% one", window)
 	}
 	// Just under: still room.
 	if c.NeedsCompaction(sessionWithUsage(t, at-1)) {
-		t.Errorf("compacted just under 90%% of a %d window", window)
+		t.Errorf("compacted just under 55%% of a %d window", window)
 	}
 }
 
-// A larger configured buffer is a deliberate choice and must still be honoured,
-// even though it is above the built-in reserve.
+// The trigger fires at 55%, not 90%: a session at 60% of a large window must
+// already compact, even though the old 90% line would still call it room.
+func TestNeedsCompactionFiresAtFiftyFiveNotNinety(t *testing.T) {
+	const window = 512000
+	c := compactorFor(window, 8192)
+	sixty := window * 60 / 100
+	ninety := window * 90 / 100
+	if sixty >= ninety {
+		t.Fatal("this window no longer separates 60% from 90%; pick another")
+	}
+	if !c.NeedsCompaction(sessionWithUsage(t, sixty)) {
+		t.Errorf("did not compact at 60%% of a %d window; the trigger is not at 55%%", window)
+	}
+	if got := c.compactAt(); got >= ninety {
+		t.Errorf("compactAt = %d, want below 90%% (%d)", got, ninety)
+	}
+}
+
+// A larger configured buffer is a deliberate choice and must still be honoured
+// when it bites. At 55% the proportional line sits below a 40k buffer on a 200k
+// window, so the test uses a 100k buffer that actually undercuts it.
 func TestConfiguredBufferRaisesTheTrigger(t *testing.T) {
 	c := compactorFor(200000, 8192)
-	c.Settings.Buffer = 40000
-	if got, want := c.compactAt(), 200000-40000; got != want {
+	c.Settings.Buffer = 100000
+	if got, want := c.compactAt(), 200000-100000; got != want {
 		t.Errorf("compactAt = %d, want %d to honour the configured buffer", got, want)
 	}
 }

@@ -1,6 +1,8 @@
 package compaction
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -27,5 +29,131 @@ func TestSelectMessageUnitsKeepsToolTurnWhole(t *testing.T) {
 	}
 	if recent[1].AllToolCalls()[0].ID != "call_2" || recent[2].ToolCallID != "call_2" {
 		t.Fatalf("recent unit split tool call boundary: %+v", recent)
+	}
+}
+
+func foldTestSession(n int) *sessionstore.Session {
+	messages := make([]sessionstore.Message, 0, n)
+	for i := 0; i < n; i++ {
+		messages = append(messages, sessionstore.Message{
+			Role:    llm.RoleUser,
+			Content: fmt.Sprintf("msg-%02d task body", i),
+		})
+	}
+	return &sessionstore.Session{ID: "fold-test", Messages: messages}
+}
+
+func sessionContents(sess *sessionstore.Session) string {
+	var b strings.Builder
+	for _, m := range sess.Messages {
+		b.WriteString(m.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func countCheckpoints(sess *sessionstore.Session) int {
+	n := 0
+	for _, m := range sess.Messages {
+		if m.Compaction != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// A fold summarizes the oldest slice only: the newest forty percent of messages
+// stay verbatim, and the checkpoint lands where the folded range was.
+func TestFoldKeepsNewestFortyPercent(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fold"}})
+	c.Settings.Keep.Tokens = 8000
+	sess := foldTestSession(10)
+	ok, err := c.Compact(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !ok {
+		t.Fatal("nothing was folded")
+	}
+	got := sessionContents(sess)
+	// Newest 40% (msg-06 through msg-09) must survive verbatim.
+	for _, want := range []string{"msg-06", "msg-07", "msg-08", "msg-09"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("recent %q was folded; the newest forty percent must stay", want)
+		}
+	}
+	// Oldest folded range must be gone, replaced by exactly one checkpoint.
+	for _, gone := range []string{"msg-00", "msg-01", "msg-02"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("folded %q is still in the session; the fold must replace its range", gone)
+		}
+	}
+	if n := countCheckpoints(sess); n != 1 {
+		t.Fatalf("checkpoints = %d, want 1", n)
+	}
+	// The checkpoint sits where the fold was: first, with the kept tail after it.
+	if sess.Messages[0].Compaction == nil {
+		t.Error("the checkpoint is not at the folded range position")
+	}
+	tail := sessionContents(&sessionstore.Session{Messages: sess.Messages[len(sess.Messages)-4:]})
+	for _, want := range []string{"msg-06", "msg-07", "msg-08", "msg-09"} {
+		if !strings.Contains(tail, want) {
+			t.Errorf("tail does not end with %q; the structural tail moved", want)
+		}
+	}
+	if len(c.FoldLedger()) != 1 {
+		t.Fatalf("ledger entries = %d, want 1 after one fold", len(c.FoldLedger()))
+	}
+}
+
+// Two compactions extend the ledger instead of re summarizing: the second fold
+// starts after the first checkpoint and appends a second entry.
+func TestFoldLedgerGrowsAcrossTwoCompactions(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary(), validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fold"}})
+	c.Settings.Keep.Tokens = 8000
+	sess := foldTestSession(10)
+	if _, err := c.Compact(context.Background(), sess); err != nil {
+		t.Fatalf("first compact: %v", err)
+	}
+	first := c.FoldLedger()
+	if len(first) != 1 {
+		t.Fatalf("ledger entries after one fold = %d, want 1", len(first))
+	}
+	if first[0].Start >= first[0].End {
+		t.Fatalf("ledger range is empty: %+v", first[0])
+	}
+	if first[0].ID == "" || first[0].At.IsZero() {
+		t.Fatalf("ledger entry misses id or timestamp: %+v", first[0])
+	}
+	sess.Messages = append(sess.Messages,
+		sessionstore.Message{Role: llm.RoleUser, Content: "msg-10 task body"},
+		sessionstore.Message{Role: llm.RoleUser, Content: "msg-11 task body"},
+	)
+	ok, err := c.Compact(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("second compact: %v", err)
+	}
+	if !ok {
+		t.Fatal("second fold did nothing; it should extend past the first checkpoint")
+	}
+	second := c.FoldLedger()
+	if len(second) != 2 {
+		t.Fatalf("ledger entries after two folds = %d, want 2", len(second))
+	}
+	if second[0].ID == second[1].ID {
+		t.Errorf("ledger ids did not advance: %+v", second)
+	}
+	if n := countCheckpoints(sess); n != 2 {
+		t.Fatalf("checkpoints = %d, want 2 after two folds", n)
+	}
+	got := sessionContents(sess)
+	for _, want := range []string{"msg-10", "msg-11"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("recent %q was folded on the second pass", want)
+		}
 	}
 }

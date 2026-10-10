@@ -3,6 +3,7 @@ package compaction
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +34,11 @@ const (
 	// CompactAtWindowPercent is the fraction of the window compaction waits for
 	// before starting, on any window large enough to afford the absolute reserve.
 	//
-	// Ninety percent rather than something smaller, because the reserve is already
-	// accounted for separately: holding back another slice of a large window just
-	// discards headroom the model could have used.
-	CompactAtWindowPercent = 90
+	// Fifty five percent rather than something larger, because bounded folding
+	// compacts little and often: an early trigger keeps each fold small and leaves
+	// headroom for the reply, while a late trigger would force a large rewrite at
+	// the point the model can least afford it.
+	CompactAtWindowPercent = 55
 )
 
 // Settings mirrors soraacode Config.Document.info.compaction
@@ -182,12 +184,97 @@ func tailTokens(units []messageUnit) int {
 // this job.
 const maxRecentExchanges = 2
 
+// FoldKeepRecentPercent is the share of the history that folding never touches.
+// The newest forty percent of messages stay verbatim, so a compaction summarizes
+// only the oldest sixty percent. The structural tail from selectMessageUnits (the
+// open exchange and the one before it) is also kept, and the fold is the part of
+// the head that is older than both guards.
+const FoldKeepRecentPercent = 40
+
+// maxFoldLedgerEntries caps the in memory fold ledger. Each entry is a few dozen
+// bytes, so this is a count cap rather than a size cap: enough to show the recent
+// folding pattern, small enough to stay out of the way.
+const maxFoldLedgerEntries = 8
+
+// FoldEntry records one bounded fold: which pre compact range it covered and when.
+// Future compactions start after the latest checkpoint, so they extend this ledger
+// rather than re summarizing a range it already covers. Merge means carrying the
+// prior summary forward through the live request, not re folding its messages.
+type FoldEntry struct {
+	ID    string    `json:"id"`
+	Start int       `json:"start"`
+	End   int       `json:"end"`
+	At    time.Time `json:"at"`
+}
+
 func flattenMessages(units []messageUnit) []sessionstore.Message {
 	var messages []sessionstore.Message
 	for _, unit := range units {
 		messages = append(messages, unit.messages...)
 	}
 	return messages
+}
+
+// FoldLedger returns a copy of the fold ledger, oldest first.
+func (c *Compactor) FoldLedger() []FoldEntry {
+	c.foldMu.Lock()
+	defer c.foldMu.Unlock()
+	out := make([]FoldEntry, len(c.foldLedger))
+	copy(out, c.foldLedger)
+	return out
+}
+
+// recordFold appends one ledger entry and returns it. Callers record only after
+// a validated summary has been written, so the ledger never names a range that
+// was not folded.
+func (c *Compactor) recordFold(start, end int) FoldEntry {
+	c.foldMu.Lock()
+	defer c.foldMu.Unlock()
+	c.foldSeq++
+	entry := FoldEntry{
+		ID:    fmt.Sprintf("fold-%d", c.foldSeq),
+		Start: start,
+		End:   end,
+		At:    time.Now().UTC(),
+	}
+	c.foldLedger = append(c.foldLedger, entry)
+	if len(c.foldLedger) > maxFoldLedgerEntries {
+		c.foldLedger = c.foldLedger[len(c.foldLedger)-maxFoldLedgerEntries:]
+	}
+	return entry
+}
+
+// splitFoldRange bounds one fold to the oldest slice of the head.
+//
+// totalCandidates is the number of candidate messages the head came from. The
+// newest FoldKeepRecentPercent of those stay verbatim by age, and the head
+// already excludes the structural tail, so the fold is the overlap: the part of
+// the head that is also older than the age guard. What is left over (the middle)
+// stays in place beside the recent tail. An empty fold means there is nothing
+// old enough to summarize, which is how the newest messages survive.
+func splitFoldRange(head []sessionstore.Message, totalCandidates int) (fold, rest []sessionstore.Message) {
+	if len(head) == 0 || totalCandidates <= 0 {
+		return nil, head
+	}
+	keep := (totalCandidates*FoldKeepRecentPercent + 99) / 100
+	if keep < 1 {
+		keep = 1
+	}
+	if keep > totalCandidates {
+		keep = totalCandidates
+	}
+	ageFoldEnd := totalCandidates - keep
+	if ageFoldEnd < 0 {
+		ageFoldEnd = 0
+	}
+	n := len(head)
+	if ageFoldEnd < n {
+		n = ageFoldEnd
+	}
+	if n <= 0 {
+		return nil, head
+	}
+	return head[:n], head[n:]
 }
 
 // Summary template from soraacode.
@@ -372,6 +459,12 @@ type Compactor struct {
 	// failureMu guards lastFailure, which the cooldown below reads.
 	failureMu   sync.Mutex
 	lastFailure time.Time
+
+	// foldMu guards the fold ledger below. It is separate from failureMu so a
+	// reader inspecting past folds never blocks the cooldown check.
+	foldMu     sync.Mutex
+	foldLedger []FoldEntry
+	foldSeq    int
 }
 
 // summaryAttempts is how many in-band summarisation requests one compaction
@@ -417,8 +510,8 @@ func (c *Compactor) outputReserve() int {
 // windows: 12% of a 32k window, 80% of a 200k one. Neither figure was chosen;
 // both were the same flat reservation counted twice.
 //
-// The trigger is now the lesser of a 90% fill and the point where the absolute
-// reserve would be consumed. A large window therefore uses 90% of itself, and a
+// The trigger is now the lesser of a 55% fill and the point where the absolute
+// reserve would be consumed. A large window therefore uses 55% of itself, and a
 // window too small to hold the reserve still stops before the model's reply no
 // longer fits.
 func (c *Compactor) compactAt() int {
@@ -472,6 +565,16 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 }
 
 // CompactAfterOverflow performs summarization and rewrites session
+//
+// The rewrite is a bounded fold, not a whole history rewrite. Only the oldest
+// portion of the candidate history is summarized: everything older than the
+// newest forty percent by count, and never the structural tail that
+// selectMessageUnits keeps. The checkpoint replaces the folded range at its own
+// position, so the middle (too new to fold, too old to be the tail) and the
+// recent tail stay where they were. The fold ledger records each covered range,
+// and the next compaction starts after the latest checkpoint, so it extends the
+// ledger rather than re summarizing a folded range. Prior summaries are carried
+// forward because the fold scoped request includes them.
 func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
 	c.LastPromptTokens = 0
 	if !c.attemptAllowed() {
@@ -495,15 +598,53 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		}
 	}
 	candidate := sess.Messages
+	offset := 0
 	if latestCompaction >= 0 {
-		candidate = sess.Messages[latestCompaction+1:]
+		offset = latestCompaction + 1
+		candidate = sess.Messages[offset:]
 	}
 	headMessages, recentMessages := selectMessageUnits(candidate, keepTokens)
 	if len(headMessages) == 0 && previousSummary == "" {
 		return false, nil
 	}
+	foldMessages, middleMessages := splitFoldRange(headMessages, len(candidate))
+	if len(foldMessages) == 0 {
+		return false, nil
+	}
+	// The ledger range is the pre compact span the fold covered, from the first
+	// folded message through the last one. System and checkpoint markers occupy
+	// candidate slots but are never folded, so they are skipped while walking.
+	start := offset
+	end := offset
+	next := 0
+	for i, message := range candidate {
+		if message.Compaction != nil || message.Role == llm.RoleSystem {
+			continue
+		}
+		if next < len(foldMessages) {
+			if next == 0 {
+				start = offset + i
+			}
+			end = offset + i + 1
+			next++
+		}
+	}
+	// Summarize the fold, not the whole history. The prior summary rides along
+	// so its unresolved items are carried forward into the new checkpoint.
+	foldSession := &sessionstore.Session{ID: sess.ID}
+	if previousSummary != "" {
+		foldSession.Messages = append(foldSession.Messages, sessionstore.Message{
+			Role:    llm.RoleSystem,
+			Content: "<conversation-checkpoint>",
+			Compaction: &sessionstore.CompactionInfo{
+				Summary: previousSummary,
+				Seq:     latestCompaction,
+			},
+		})
+	}
+	foldSession.Messages = append(foldSession.Messages, foldMessages...)
 	summaryOutput := c.summaryOutputTokens()
-	text, err := c.summarise(ctx, sess, summaryOutput)
+	text, err := c.summarise(ctx, foldSession, summaryOutput)
 	if err != nil {
 		c.noteSummaryFailure()
 		return false, err
@@ -511,15 +652,17 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	if text == "" {
 		return false, nil
 	}
-	// Archive before the rewrite, while the head is still in hand. The summary is
-	// the only surviving account of this stretch, and without the head there is no
+	// Archive before the rewrite, while the fold is still in hand. The summary is
+	// the only surviving account of this stretch, and without the fold there is no
 	// way to check that account later.
-	c.writeArchive(sess.ID, len(sess.Messages), text, headMessages)
+	c.writeArchive(sess.ID, len(sess.Messages), text, foldMessages)
 	if c.Learn != nil {
-		c.Learn(ctx, sess.ID, headMessages, text)
+		c.Learn(ctx, sess.ID, foldMessages, text)
 	}
-	newMessages := make([]sessionstore.Message, 0, len(recentMessages)+2)
-	if systemMessage != nil {
+	var newMessages []sessionstore.Message
+	if offset > 0 {
+		newMessages = append(newMessages, sess.Messages[:offset]...)
+	} else if systemMessage != nil {
 		newMessages = append(newMessages, *systemMessage)
 	}
 	newMessages = append(newMessages, sessionstore.Message{
@@ -530,8 +673,24 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 			Seq:     len(sess.Messages),
 		},
 	})
+	newMessages = append(newMessages, middleMessages...)
 	newMessages = append(newMessages, recentMessages...)
 	sess.Messages = newMessages
+	entry := c.recordFold(start, end)
+	// Retain the fold source beside the archive: the summary is lossy, and
+	// without the original messages no later turn can decompress or verify
+	// it. Best-effort by design; a retention failure must not fail the fold.
+	if c.ArchiveDir != "" {
+		sources := make([]FoldMessage, 0, len(foldMessages))
+		for _, message := range foldMessages {
+			text := message.Content
+			if message.ToolResult != "" {
+				text += "\n[tool result]\n" + message.ToolResult
+			}
+			sources = append(sources, FoldMessage{Role: string(message.Role), Text: text})
+		}
+		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
+	}
 	return true, nil
 }
 
