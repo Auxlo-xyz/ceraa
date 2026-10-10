@@ -21,11 +21,17 @@ import (
 	"ceraa/harness/tool"
 )
 
-// The cache key identifies the reusable prefix, which is the system prompt plus
-// the whole tool array. Those are byte-identical across sessions on one provider
-// and model, so the key must NOT vary by session: folding the session in gave
-// every session its own cold prefix and re-billed a shared head for nothing.
-func TestPromptCacheKeyIsSharedAcrossSessionsButSeparatesProvidersAndModels(t *testing.T) {
+// This test used to carry a comment asserting the exact opposite of its body:
+// that the key "must NOT vary by session", because a shared head is what a
+// prefix cache wants. That claim was never measured, and the body is the part
+// that runs. The comment is deleted rather than corrected because it is the
+// third time this file has argued the question in prose and lost.
+//
+// What is actually true, and all that is claimed here: the request path scopes
+// the key per session, the key is stable within a session (which is where the
+// saving is), and promptCacheKey() - the session-less variant - has no
+// production caller.
+func TestPromptCacheKeyIsScopedToTheSessionAndSeparatesProvidersAndModels(t *testing.T) {
 	runner := func(sessionID, baseURL, model string) *Runner {
 		return &Runner{cfg: RunnerConfig{SessionID: sessionID, Model: llm.FromProvider(baseURL, "key", model)}}
 	}

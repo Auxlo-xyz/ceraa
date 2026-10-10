@@ -98,13 +98,27 @@ type codeAssistEnvelope struct {
 	UserAgent string            `json:"userAgent"`
 }
 
+// codeAssistRequest is a struct, so encoding/json emits fields in DECLARATION
+// order.
+//
+// The order puts the regions that are stable within a conversation before the
+// one that is not. sessionId is stable per conversation, systemInstruction and
+// tools are stable per install, and contents is the only part that grows. The
+// benefit here is UNVERIFIED: this transport mints a fresh random requestId on
+// every request and still cached at a 91.8% steady state, so the provider is
+// evidently matching parsed structure rather than raw bytes, and JSON key order
+// is unlikely to be what decides a hit. See the note on geminiRequest.
+//
+// It is a struct rather than a map for a concrete reason: encoding/json sorts
+// MAP keys alphabetically, which would put "contents" first regardless of what
+// the code intends. A map cannot express this ordering at all.
 type codeAssistRequest struct {
-	Contents          []geminiContent         `json:"contents"`
 	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
 	Tools             []geminiTool            `json:"tools,omitempty"`
-	ToolConfig        *geminiToolConfig       `json:"toolConfig,omitempty"`
-	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
 	SessionID         string                  `json:"sessionId"`
+	ToolConfig        *geminiToolConfig       `json:"toolConfig,omitempty"`
+	Contents          []geminiContent         `json:"contents"`
+	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 // codeAssistSessionID derives a stable conversation id: same conversation
@@ -142,6 +156,11 @@ func codeAssistUUID() string {
 // thought signatures ride the shared native encoders; only the generation
 // config and the wrapper are Code Assist specific, because the v1internal
 // thinking shape (budget tiers) is not the Interactions shape (levels).
+//
+// The inner request is a codeAssistRequest struct rather than a map[string]any.
+// A map cannot express a deliberate field order at all, because encoding/json
+// sorts map keys alphabetically. The envelope itself stays a map: its keys are
+// routing metadata that callers assert on by name, and it is marshalled whole.
 func buildCodeAssistBody(req StreamRequest, tier string) (map[string]any, error) {
 	inner := buildGeminiRequest(req, "")
 	budget, ok := geminiCodeAssistBudgets[tier]
@@ -159,27 +178,20 @@ func buildCodeAssistBody(req StreamRequest, tier string) (map[string]any, error)
 			ThinkingBudget:  &budget,
 		},
 	}
-	envelope := map[string]any{
+	return map[string]any{
 		"model":   geminiCodeAssistUpstream + "-" + tier,
 		"project": CodeAssistProject,
-		"request": map[string]any{
-			"contents":         inner.Contents,
-			"generationConfig": inner.GenerationConfig,
-			"sessionId":        codeAssistSessionID(req.SessionID, codeAssistFirstUserText(req)),
+		"request": codeAssistRequest{
+			SystemInstruction: inner.SystemInstruction,
+			Tools:             inner.Tools,
+			SessionID:         codeAssistSessionID(req.SessionID, codeAssistFirstUserText(req)),
+			ToolConfig:        inner.ToolConfig,
+			Contents:          inner.Contents,
+			GenerationConfig:  inner.GenerationConfig,
 		},
 		"requestId": codeAssistUUID(),
 		"userAgent": "antigravity",
-	}
-	if inner.SystemInstruction != nil {
-		envelope["request"].(map[string]any)["systemInstruction"] = inner.SystemInstruction
-	}
-	if len(inner.Tools) > 0 {
-		envelope["request"].(map[string]any)["tools"] = inner.Tools
-	}
-	if inner.ToolConfig != nil {
-		envelope["request"].(map[string]any)["toolConfig"] = inner.ToolConfig
-	}
-	return envelope, nil
+	}, nil
 }
 
 // streamCodeAssist is the Gemini Code Assist transport: the v1internal

@@ -101,8 +101,103 @@ func TestExplicitCacheBreakpointsReachTheWire(t *testing.T) {
 	}
 }
 
-// Auto mode must not add breakpoints. Turning a content string into a block array
-// changes the request shape for endpoints that may not accept it.
+// The configured TTL must survive all the way onto the stable block, and the
+// volatile tail must not be marked at all.
+//
+// TestExplicitCacheBreakpointsReachTheWire above cannot catch either failure: its
+// stable region is 12 bytes, far below MinCacheableTokens, so SystemBlocks drops
+// it and returns a single unmarked volatile block that the len==1 fallback then
+// marks. It exercises the degenerate path and passes identically whether or not
+// the TTL is threaded through. This one uses a stable region large enough to
+// actually be marked, which is the production shape.
+//
+// The regression this pins: the stable block was marked with a hardcoded 5m
+// while the configured TTL was applied by a second, redundant mark on the
+// VOLATILE block. Fixing that without also passing the config into SystemBlocks
+// silently downgrades every configured TTL with no error anywhere - a billing
+// change that reads as healthy.
+func TestExplicitModeMarksTheStableBlockWithTheConfiguredTTL(t *testing.T) {
+	stable := strings.Repeat("stable prompt text. ", MinCacheableTokens/4+64)
+	volatile := "\n\n<current-date>Today</current-date>"
+	system := stable + volatile
+	seam := len(stable)
+	cfg := ProviderConfig{PromptCacheMode: "explicit", PromptCacheTTL: "1h"}
+
+	blocks := anthropicSystemBlocks(system, seam, cfg)
+	if len(blocks) != 2 {
+		t.Fatalf("want a stable and a volatile block, got %d: %v", len(blocks), blocks)
+	}
+
+	control, ok := blocks[0]["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("the stable block carries no cache_control: %v", blocks[0])
+	}
+	if control["ttl"] != "1h" {
+		t.Errorf("stable block ttl = %v, want the configured 1h", control["ttl"])
+	}
+	if _, marked := blocks[1]["cache_control"]; marked {
+		t.Errorf("the volatile tail is marked, so a date rollover re-bills the whole prefix: %v", blocks[1])
+	}
+	// The split must be invisible on the wire to a provider that ignores
+	// cache_control, or the split itself becomes the reason the cache misses.
+	if got := FlattenBlocks(blocks); got != system {
+		t.Errorf("flattening the blocks does not reproduce the system prompt byte for byte")
+	}
+}
+
+// A tool result is the last thing in an agent turn and carries most of the
+// conversation's tokens, so it is the message that should end the cached span.
+// A previous attempt added a role check to skip it, which was reverted: that
+// would discard roughly 92% of the cacheable span on exactly the tool-heavy
+// requests that benefit most, and Anthropic's documented multi-turn pattern is a
+// breakpoint on the last tool_result.
+//
+// This pins the reverted behaviour so it cannot be reintroduced by a reader who
+// believes the comment that was removed.
+func TestTheLastToolResultIsMarkedNotSkipped(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "system", "content": "system"},
+		{"role": "user", "content": "do the thing"},
+		{"role": "assistant", "content": ""},
+		{"role": "tool", "content": "result of the last call"},
+	}
+	markLastStableMessage(msgs, CacheTTL5m)
+
+	// applyCacheControl rewrites a string content into a single-block array, so
+	// "marked" means the control is on that message's final content block, not
+	// that the message has a top-level cache_control key.
+	marked := func(msg map[string]any) (map[string]any, bool) {
+		switch content := msg["content"].(type) {
+		case string:
+			return nil, false
+		case []any:
+			if len(content) == 0 {
+				return nil, false
+			}
+			last, ok := content[len(content)-1].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			control, ok := last["cache_control"].(map[string]any)
+			return control, ok
+		}
+		return nil, false
+	}
+
+	for i, msg := range msgs {
+		_, isMarked := marked(msg)
+		if i != len(msgs)-1 && isMarked {
+			t.Errorf("message %d (%v) is marked, but only the last should be", i, msg["role"])
+		}
+	}
+	last, ok := marked(msgs[len(msgs)-1])
+	if !ok {
+		t.Fatalf("the trailing tool result is not marked: %v", msgs[len(msgs)-1])
+	}
+	if last["type"] != "ephemeral" {
+		t.Errorf("cache_control type = %v, want ephemeral", last["type"])
+	}
+}
 func TestAutoModeAddsNoCacheControl(t *testing.T) {
 	items := []Item{{Kind: "text", Role: RoleSystem, Text: "plain"}}
 	blocks := anthropicSystemBlocks(joinSystemText(items), 0, ProviderConfig{PromptCacheMode: "auto"})

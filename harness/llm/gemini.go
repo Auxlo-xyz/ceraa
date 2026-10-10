@@ -80,11 +80,31 @@ type geminiGenerationConfig struct {
 	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
+// geminiRequest is a struct, so encoding/json emits the fields in DECLARATION
+// order.
+//
+// The order below puts the regions that are stable across a conversation ahead of
+// the one that is not: contents grows every turn, while the system instruction
+// and the tool array do not. That is the ordering every prefix cache wants, and
+// it is also the ordering that costs least if the cache does not engage at all.
+//
+// It is not, on the evidence available, a proven cause of any miss we measured.
+// Two facts argue against reading too much into it. The provider demonstrably
+// caches well with this exact order as it stood before, at a 91.8% steady-state
+// hit rate. And this transport mints a fresh random requestId on every single
+// request, so a cache keyed on the raw bytes of the whole body could never hit
+// at all - which means the provider is matching on parsed structure, not on
+// bytes, and JSON key order is very unlikely to be load-bearing.
+//
+// So this is a cheap, safe, plausibly-helpful ordering change and it is NOT a
+// demonstrated fix. The measured misses are tracked in the accounting logs;
+// see the memory-block and toolConfig notes in harness/coordinator/runner.go
+// for the causes that have actual evidence behind them.
 type geminiRequest struct {
-	Contents          []geminiContent         `json:"contents"`
 	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
 	Tools             []geminiTool            `json:"tools,omitempty"`
 	ToolConfig        *geminiToolConfig       `json:"toolConfig,omitempty"`
+	Contents          []geminiContent         `json:"contents"`
 	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 

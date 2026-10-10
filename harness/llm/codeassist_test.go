@@ -91,19 +91,145 @@ func TestBuildCodeAssistBodyEnvelope(t *testing.T) {
 	if body["userAgent"] != "antigravity" {
 		t.Errorf("userAgent = %v", body["userAgent"])
 	}
-	request := body["request"].(map[string]any)
-	if request["sessionId"] != "ceraa-sess-9" {
-		t.Errorf("sessionId = %v, want the stable Ceraa session", request["sessionId"])
+	request := body["request"].(codeAssistRequest)
+	if request.SessionID != "ceraa-sess-9" {
+		t.Errorf("sessionId = %v, want the stable Ceraa session", request.SessionID)
 	}
-	gen, ok := request["generationConfig"].(*geminiGenerationConfig)
-	if !ok || gen.MaxOutputTokens != 1024 {
-		t.Errorf("generationConfig = %#v, want maxOutputTokens 1024", request["generationConfig"])
+	if request.GenerationConfig == nil || request.GenerationConfig.MaxOutputTokens != 1024 {
+		t.Errorf("generationConfig = %#v, want maxOutputTokens 1024", request.GenerationConfig)
 	}
+	gen := request.GenerationConfig
 	if gen.ThinkingConfig == nil || !gen.ThinkingConfig.IncludeThoughts || gen.ThinkingConfig.ThinkingBudget == nil || *gen.ThinkingConfig.ThinkingBudget != 4000 {
 		t.Errorf("thinkingConfig = %#v, want includeThoughts with the medium budget", gen.ThinkingConfig)
 	}
 	if _, err := json.Marshal(body); err != nil {
 		t.Errorf("envelope does not encode: %v", err)
+	}
+}
+
+// Pins the field order: the regions that are stable within a conversation are
+// declared before the one that is not, so contents is last.
+//
+// What this does and does not claim is worth being precise about, because the
+// ordering is easy to "explain" with a mechanism that is probably wrong. The
+// provider cannot be matching raw request bytes: this transport mints a fresh
+// random requestId per request and still cached at a 91.8% steady state, so it is
+// matching parsed structure. This test therefore pins the ORDERING PROPERTY, not
+// a proven cause of any cache miss - it stops the field order drifting back
+// silently, and it is the one thing about the ordering we can actually assert.
+func TestCodeAssistSerialisesTheStablePrefixBeforeTheConversation(t *testing.T) {
+	req := StreamRequest{
+		Messages: []Item{
+			{Kind: "text", Role: RoleSystem, Text: "SYSTEM-PROMPT-MARKER"},
+			{Kind: "text", Role: RoleUser, Text: "hello"},
+		},
+		Tools:     []ToolDef{{Name: "TOOL-ARRAY-MARKER", Description: "d"}},
+		MaxTokens: 1024,
+		SessionID: "sess-9",
+	}
+	body, err := buildCodeAssistBody(req, "medium")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(body["request"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	system := strings.Index(text, "SYSTEM-PROMPT-MARKER")
+	tools := strings.Index(text, "TOOL-ARRAY-MARKER")
+	contents := strings.Index(text, `"contents"`)
+	switch {
+	case system < 0 || tools < 0:
+		t.Fatalf("markers missing from the encoded request: %s", text)
+	case contents < 0:
+		t.Fatal("contents missing from the encoded request")
+	case system > contents:
+		t.Errorf("systemInstruction serialises after contents, so the cache is capped at byte zero:\n%s", text)
+	case tools > contents:
+		t.Errorf("tools serialise after contents, so the largest stable block is never cacheable:\n%s", text)
+	}
+}
+
+// The same ordering property for the native Gemini transport, which is a
+// separate struct and therefore a separate chance to get the order wrong.
+func TestGeminiSerialisesTheStablePrefixBeforeTheConversation(t *testing.T) {
+	req := StreamRequest{
+		Messages: []Item{
+			{Kind: "text", Role: RoleSystem, Text: "SYSTEM-PROMPT-MARKER"},
+			{Kind: "text", Role: RoleUser, Text: "hello"},
+		},
+		Tools:     []ToolDef{{Name: "TOOL-ARRAY-MARKER", Description: "d"}},
+		MaxTokens: 1024,
+	}
+	encoded, err := json.Marshal(buildGeminiRequest(req, "gemini-3.5-flash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	system := strings.Index(text, "SYSTEM-PROMPT-MARKER")
+	tools := strings.Index(text, "TOOL-ARRAY-MARKER")
+	contents := strings.Index(text, `"contents"`)
+	switch {
+	case system < 0 || tools < 0:
+		t.Fatalf("markers missing from the encoded request: %s", text)
+	case contents < 0:
+		t.Fatal("contents missing from the encoded request")
+	case system > contents:
+		t.Errorf("systemInstruction serialises after contents:\n%s", text)
+	case tools > contents:
+		t.Errorf("tools serialise after contents:\n%s", text)
+	}
+}
+
+// Two requests differing only by an appended turn must produce byte-identical
+// bytes for everything ahead of the conversation, which is what makes a prefix
+// reusable as the session grows.
+//
+// The cut point is the index of "contents", and the assertion is on the region
+// before it. An earlier version of this test stripped requestId defensively;
+// that was a no-op, because requestId is a sibling of request in the envelope and
+// therefore can never fall inside a region that ends at contents. This version
+// asserts the markers are actually present, so a body that lost its stable head
+// entirely cannot pass by matching two empty strings.
+func TestGrowingTheConversationLeavesTheStablePrefixByteIdentical(t *testing.T) {
+	base := StreamRequest{
+		Messages: []Item{
+			{Kind: "text", Role: RoleSystem, Text: "SYSTEM-PROMPT-MARKER"},
+			{Kind: "text", Role: RoleUser, Text: "first"},
+		},
+		Tools:     []ToolDef{{Name: "TOOL-ARRAY-MARKER", Description: "d"}},
+		MaxTokens: 1024,
+		SessionID: "sess-9",
+	}
+	grown := base
+	grown.Messages = append(append([]Item(nil), base.Messages...), Item{Kind: "text", Role: RoleUser, Text: "second"})
+
+	head := func(body map[string]any) string {
+		encoded, err := json.Marshal(body["request"])
+		if err != nil {
+			t.Fatalf("encoding the request: %v", err)
+		}
+		s := string(encoded)
+		cut := strings.Index(s, `"contents"`)
+		if cut < 0 {
+			t.Fatalf("contents missing from the encoded request: %s", s)
+		}
+		if !strings.Contains(s, "SYSTEM-PROMPT-MARKER") || !strings.Contains(s, "TOOL-ARRAY-MARKER") {
+			t.Fatalf("the stable head is missing from the body, so there is nothing to compare: %s", s)
+		}
+		return s[:cut]
+	}
+	first, err := buildCodeAssistBody(base, "medium")
+	if err != nil {
+		t.Fatalf("building the first body: %v", err)
+	}
+	second, err := buildCodeAssistBody(grown, "medium")
+	if err != nil {
+		t.Fatalf("building the second body: %v", err)
+	}
+	if a, b := head(first), head(second); a != b {
+		t.Errorf("the stable prefix changed when the conversation grew:\nfirst:  %s\nsecond: %s", a, b)
 	}
 }
 

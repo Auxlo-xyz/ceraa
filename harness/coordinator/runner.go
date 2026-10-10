@@ -280,17 +280,20 @@ func (r *Runner) memoryContext() string {
 	return r.memoryBlock()
 }
 
-// promptCacheKey identifies the reusable prefix for the provider's cache router.
+// promptCacheKey identifies the reusable prefix for the provider's cache router,
+// excluding the session id.
 //
-// It deliberately excludes the session id. The leading system prompt and the
-// whole tool array are byte-identical for every session on a given provider and
-// model, so folding the session in forced a separate cold prefix per session and
-// re-billed that shared head on every cold start. Measured, it bought no
-// isolation either: a brand-new session's first request still reported cached
-// tokens, because the provider reuses the prefix regardless.
+// It has no production caller. The request path builds its key with
+// sessionPromptCacheKey, which DOES include the session, so this variant is dead
+// code that exists only to be asserted on by a test. The two docstrings
+// contradicted each other for long enough that this one was assumed to be the
+// live behaviour, and a cache investigation was then run on that false premise.
 //
-// Session identity is not lost: req.SessionID is sent separately, and OpenRouter's
-// session_id field prefers it over this value.
+// The earlier claim here - that a brand-new session's first request "still
+// reported cached tokens" - was never measured and is not the reason the live
+// provider reports cached=0 on a cold start. Code Assist is the active
+// transport and it does not read this value at all; it routes on req.SessionID
+// via codeAssistSessionID.
 func promptCacheKey(model llm.ProviderConfig) string {
 	return sessionPromptCacheKey(model, "")
 }

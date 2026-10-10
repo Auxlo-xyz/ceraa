@@ -445,7 +445,13 @@ func anthropicSystemBlocks(system string, seam int, cfg ProviderConfig) []map[st
 	// SystemBlocks already splits at the seam and marks the stable end, which is
 	// the whole point of explicit mode: only the stable prefix is cached, and the
 	// volatile tail is re-read every turn.
-	blocks := SystemBlocks(system, seam, CacheTTL5m)
+	//
+	// The TTL must come from the config, not a constant. It used to be
+	// hardcoded CacheTTL5m here while a second, redundant mark on the last block
+	// re-applied cacheTTLFor(cfg); removing that redundant mark without also
+	// fixing this would have silently downgraded every configured TTL to 5
+	// minutes with no error anywhere, which is a billing change made invisibly.
+	blocks := SystemBlocks(system, seam, cacheTTLFor(cfg))
 	if promptCacheMode(cfg) != "explicit" {
 		plain := make([]map[string]any, 0, len(blocks))
 		for _, block := range blocks {
@@ -457,8 +463,27 @@ func anthropicSystemBlocks(system string, seam int, cfg ProviderConfig) []map[st
 		}
 		return plain
 	}
-	if promptCacheMode(cfg) == "explicit" && len(blocks) > 0 {
-		blocks[len(blocks)-1]["cache_control"] = cacheControl(cacheTTLFor(cfg))
+	// Do NOT mark the last block here. SystemBlocks already put cache_control on
+	// the STABLE block (blocks[0]); the last block is the VOLATILE tail - the
+	// date and live memory. Marking it did the exact opposite of what the seam is
+	// for: a date rollover rewrote a cached block and re-billed the entire
+	// system prompt after it, while the stable head it should have protected was
+	// left unmarked. The Anthropic cache walks forward from a breakpoint, so a
+	// breakpoint on volatile text caches volatile text and everything after it.
+	//
+	// Fallback for the case SystemBlocks could not mark a separate stable block:
+	// an empty system, or a stable region under the provider minimum, in which
+	// case it returns a single block. Note that in the sub-minimum-with-a-tail
+	// shape that block is the VOLATILE text, because SystemBlocks only emits the
+	// stable block once it clears the minimum - so this caches volatile text
+	// rather than the system prompt. That is pre-existing behaviour in
+	// SystemBlocks, not introduced here, and it is still better than sending no
+	// breakpoint at all. Production's system.txt is well over the minimum, so the
+	// real request takes the marked-stable path and not this one.
+	if len(blocks) == 1 {
+		if _, marked := blocks[0]["cache_control"]; !marked {
+			blocks[0]["cache_control"] = cacheControl(cacheTTLFor(cfg))
+		}
 	}
 	return blocks
 }

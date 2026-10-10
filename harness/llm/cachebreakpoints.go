@@ -149,21 +149,39 @@ func FlattenBlocks(blocks []map[string]any) string {
 
 // markLastStableMessage puts a breakpoint on the final message of the history.
 //
-// This is the breakpoint that matters. The system prompt is under a thousand
+// This is the breakpoint that matters. The system prompt is a few thousand
 // tokens, but a long session carries tens of thousands in the conversation, and
 // that is the prefix worth not paying for twice. Marking the last message caches
 // everything up to and including it.
+//
+// Two things were wrong here and only one of them is fixed.
+//
+// The `limit` counter has always been effectively one-per-call: it is
+// decremented and then the function returns, because one breakpoint on the newest
+// usable message already covers every earlier position. It is kept honest rather
+// than removed, so the loop reads as what it does.
+//
+// The role check was NOT added, and that is deliberate. Skipping tool messages
+// looks tidier - "a tool result cannot usefully end a cached prefix" - but
+// tool output is roughly 92% of the input tokens in an agent loop, so walking
+// back past them to the last user or assistant turn would discard almost the
+// entire cacheable span on exactly the tool-heavy requests that need it most.
+// Anthropic's documented multi-turn pattern is precisely a breakpoint on the
+// last tool_result. The comment claiming otherwise was wrong.
 func markLastStableMessage(msgs []map[string]any, ttl CacheTTL) {
 	limit := MaxCacheBreakpoints
 	for i := len(msgs) - 1; i >= 0 && limit > 0; i-- {
 		msg := msgs[i]
-		// A tool result cannot end a cached prefix usefully and has no text
-		// content, so walk back to the last message that does.
-		if hasContent(msg) {
-			applyCacheControl(msg, cacheControl(ttl))
-			limit--
-			return
+		if !hasContent(msg) {
+			continue
 		}
+		applyCacheControl(msg, cacheControl(ttl))
+		limit--
+		// One breakpoint on the newest usable message is the one that matters:
+		// the provider caches everything up to a breakpoint, so the most recent
+		// breakpoint already covers every earlier one. Marking older messages
+		// would spend the remaining slots re-caching spans already covered.
+		return
 	}
 }
 
