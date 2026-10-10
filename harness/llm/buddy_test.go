@@ -33,8 +33,25 @@ func TestWorkBuddyModelPool(t *testing.T) {
 	}
 }
 
-// Identity headers are exact: the backend attributes usage by them, and a
-// wrong product name bills the conversation to nobody.
+// A stored bare domain must heal to the versioned API root: it has no chat
+// route, and the WAF in front of it blocks large streaming bodies with a 403
+// page while small ones fall through to a 405.
+func TestNormalizeWorkBuddyURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://www.workbuddy.ai":    WorkBuddyBaseURL,
+		"https://www.workbuddy.ai/":   WorkBuddyBaseURL,
+		"http://www.workbuddy.ai":     WorkBuddyBaseURL,
+		"www.workbuddy.ai":            WorkBuddyBaseURL,
+		"":                            WorkBuddyBaseURL,
+		WorkBuddyBaseURL:              WorkBuddyBaseURL,
+		"https://example.com/v1":      "https://example.com/v1",
+		"https://www.workbuddy.ai/v3": "https://www.workbuddy.ai/v3",
+	} {
+		if got := NormalizeWorkBuddyURL(raw); got != want {
+			t.Errorf("NormalizeWorkBuddyURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
 func TestWorkBuddyRequestHeaders(t *testing.T) {
 	intl := WorkBuddyRequestHeaders("deepseek-v4.1-flash")
 	if intl["X-Domain"] != "www.workbuddy.ai" || intl["X-Product-Code"] != "workbuddy" {

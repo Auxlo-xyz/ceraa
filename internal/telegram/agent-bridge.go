@@ -574,7 +574,7 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			if err != nil {
 				return llm.ProviderConfig{}, err
 			}
-			model.BaseURL = firstNonEmptyStr(provider.URL, llm.WorkBuddyBaseURL)
+			model.BaseURL = llm.NormalizeWorkBuddyURL(firstNonEmptyStr(provider.URL, llm.WorkBuddyBaseURL))
 			model.APIKey = token
 			model.ExtraHeaders = llm.WorkBuddyRequestHeaders(provider.Model)
 			return model, nil

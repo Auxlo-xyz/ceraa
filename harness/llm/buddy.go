@@ -58,6 +58,31 @@ func IsWorkBuddyModel(model string) bool {
 	return false
 }
 
+// NormalizeWorkBuddyURL repairs a stored endpoint that points at the product
+// domain instead of the versioned API root.
+//
+// Activation used to save product.Endpoint (the bare domain, which is the
+// login surface) as the provider URL, shadowing this file's /v2 default. The
+// bare domain has no /chat/completions route: small requests come back 405
+// from nginx while large streaming ones are stopped by the Tencent WAF in
+// front of it, which reads as a provider 403 block page. Anything already
+// versioned, empty, or on another host passes through untouched.
+func NormalizeWorkBuddyURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	bare := strings.TrimRight(trimmed, "/")
+	if bare == "" {
+		return WorkBuddyBaseURL
+	}
+	rest := bare
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
+	}
+	if strings.EqualFold(rest, "www.workbuddy.ai") {
+		return WorkBuddyBaseURL
+	}
+	return trimmed
+}
+
 // workBuddyCNUserAgent is the domestic client shape, used for the CN model
 // families on the international endpoint. The wrong shape does not fail the
 // request; it misattributes usage in the vendor's backend.

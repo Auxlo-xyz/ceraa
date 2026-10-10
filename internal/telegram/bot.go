@@ -2820,7 +2820,7 @@ func activateBuddyProvider(token string, chatID int64, product buddyauth.Product
 		return
 	}
 	profile := config.ProviderProfile{
-		URL:             product.Endpoint,
+		URL:             buddyAPIEndpoint(product),
 		Model:           model,
 		MaxOutputTokens: 8192,
 		PromptCacheMode: "auto",
@@ -2838,6 +2838,16 @@ func activateBuddyProvider(token string, chatID int64, product buddyauth.Product
 	}
 	logger.Info(product.ID + " activate: provider=" + defaultState.provider() + " model=" + model)
 	buddyNotify(token, chatID, "✅ "+product.ID+" provider activated with model "+model+". Send a task to use it.", nil)
+}
+
+// buddyAPIEndpoint is the chat surface, not the login surface. Saving the
+// bare product domain writes a URL with no chat route: small requests 405
+// while large streaming ones are stopped by the domain WAF with a 403 page.
+func buddyAPIEndpoint(product buddyauth.Product) string {
+	if product.ID == "workbuddy" {
+		return llm.WorkBuddyBaseURL
+	}
+	return product.Endpoint
 }
 
 // claudeFlowOwner records which chat started a login and what it wanted.
