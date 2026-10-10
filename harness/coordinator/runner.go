@@ -19,6 +19,7 @@ import (
 	"ceraa/harness/evaluation"
 	"ceraa/harness/goal"
 	"ceraa/harness/inbox"
+	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
@@ -89,7 +90,31 @@ type RunnerConfig struct {
 	// mode suppresses the whole block, so a bond arriving only inside it is a bond
 	// that never arrives. The prompt modes ignore this field entirely and keep
 	// reading the bond out of MemoryContextFunc.
-	BondFunc         func() (string, error)
+	BondFunc func() (string, error)
+	// InstructionRules compiles the project's instruction file into the rules
+	// that tool-result delivery selects from. Nil disables instruction delivery
+	// entirely, which is a configuration rather than a failure.
+	//
+	// It is a loader and not a snapshot because the file on disk has to stay the
+	// source of truth rather than becoming a startup artefact: a caller wires
+	// its instruction store's own refresh here and gets whatever the file says
+	// at the start of the run, including an empty rule set on a project that
+	// has not written one yet.
+	//
+	// It is a function rather than a value because nothing on the hot path is
+	// allowed to read or parse a file. The runner builds one instructionSource
+	// per run from this function, and that source calls it exactly once and
+	// holds the result for the life of the run, so the per-step cost is a
+	// snapshot read rather than an open, a read and a compile. A per-step reload
+	// would be the exact defect this feature exists to remove, and it would
+	// look like a working feature the whole time.
+	//
+	// Once per run, not once per session, is deliberate: a rule file edited
+	// mid-run would otherwise put two revisions of the same project instruction
+	// into one transcript with nothing marking which is current. The next run
+	// picks the edit up, which is the same boundary the sidekick's once-per-run
+	// bond uses and for the same reason.
+	InstructionRules func() instruction.Snapshot
 	SkillContext     string
 	EvaluationStore  *evaluation.Store
 	Inbox            *inbox.Inbox
@@ -172,6 +197,22 @@ type Runner struct {
 	// delivery and sidekick are the memory delivery mode and its per-run state.
 	delivery memory.Delivery
 	sidekick *sidekickState
+
+	// instructions is the instruction delivery state for this run: the compiled
+	// rules, the run's delivered set, and the scope matcher.
+	//
+	// A field beside sidekick rather than inside it, and the two are never
+	// consulted together. They answer different questions - what this agent has
+	// learned about the person and the work, versus what this project says
+	// about these paths - and a caller is entitled to configure exactly one of
+	// them. Keying instruction delivery on the sidekick being present is how a
+	// project with no memory store, which is a legal configuration, silently
+	// stops being told its own rules.
+	//
+	// Nil means no instruction source was configured, and every read below
+	// answers rather than panicking: instruction delivery is optional, and a run
+	// must not fail over a feature it was not given.
+	instructions *instructionSource
 
 	// trimmedSeen remembers, per run, the trimmed tool results already sent, keyed
 	// by a hash of the content. Scoped to the run because that is where the repeat
@@ -383,6 +424,23 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	// one indirection further from the cause.
 	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.BondFunc != nil) {
 		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.BondFunc, cfg.WorkDir)
+	}
+	// The instruction source is built here, once, beside the sidekick and not
+	// inside it. Both are per-run holders of delivery state, and this is the one
+	// place that knows a run has started.
+	//
+	// Built from the loader rather than from an already-compiled snapshot so the
+	// file is read here, at the start of the run, and never again: the holder
+	// loads once on first use and then serves the same snapshot for every
+	// remaining step. Nothing about delivery is allowed to depend on when the
+	// rule file was last written.
+	if cfg.InstructionRules != nil {
+		// instructionMatcher is harness/memory's glob grammar, so a rule's scope
+		// is answered by the same matcher a memory's applies is. newInstructionSource
+		// substitutes this default when handed a nil matcher, so the runner passing
+		// nil would still work - but passing it explicitly keeps the dependency
+		// visible at the construction site rather than three files away.
+		r.instructions = newInstructionSource(cfg.InstructionRules, instructionMatcher)
 	}
 	// Seed the budget from what is known without a network call, and push it into
 	// the compactor now. The run refines this from the catalog, but between
@@ -978,8 +1036,22 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// Annotated only on the model-facing path. persistResult keeps the
 				// bare result in the session file, because that record is what the
 				// tool actually returned and a later reader should not have to know
-				// which memories happened to be in the store at the time.
-				results[result.OpID] = r.resultText(runID, result) + r.sidekickNote(sess, result)
+				// which memories happened to be in the store at the time, or which
+				// of the project's own rules had fired by then.
+				//
+				// The order of the two note calls is fixed and not cosmetic: bond
+				// and memory before project rules, because a reader - and a model -
+				// takes identity and project context before project-specific rules
+				// about the file in front of it. Neither is allowed to see the
+				// other's work, which is what keeps them separately fixable.
+				//
+				// This line runs BEFORE persistResult, on purpose. The note is
+				// rendered from the result that just arrived, not from the session
+				// record, and rendering after the persist would read an operation
+				// row whose Status and Error had already been rewritten from this
+				// same event - two answers to "did this fail" taken a few lines
+				// apart.
+				results[result.OpID] = r.resultText(runID, result) + r.sidekickNote(sess, result) + r.instructionNote(sess, result)
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
@@ -2022,6 +2094,59 @@ func (r *Runner) sidekickNote(sess *sessionstore.Session, result operation.Resul
 		return ""
 	}
 	return r.sidekick.annotate(sess, result)
+}
+
+// instructionNote renders the AGENTS.md rules that bear on the operation that
+// just finished, or "" when nothing applies.
+//
+// Marking comes after the render, and it makes no difference today: Select applies
+// the note ceiling itself, so Selection.Rules is already exactly the set that
+// Annotate renders and there is nothing to mark that was not sent. The order is
+// kept because it is the one that stays correct if that changes - if Select ever
+// hands back every matched rule and leaves the ceiling to Annotate, marking first
+// would retire rules the ceiling then dropped, and they would be delivered
+// nowhere in the session. It costs one statement to keep that from being a bug.
+//
+// TestARuleTheBudgetHeldIsStillDeliveredOnTheNextMatchingOperation is what holds
+// the invariant, from the outside rather than from the call order.
+func (r *Runner) instructionNote(sess *sessionstore.Session, result operation.ResultEvent) string {
+	if r.instructions == nil {
+		return ""
+	}
+	ev := r.instructionTrigger(sess, result)
+	selection := r.instructions.Select(ev)
+	note := instruction.Annotate(ev, selection)
+	if note == "" {
+		return ""
+	}
+	ids := make([]instruction.ID, 0, len(selection.Rules))
+	for _, rule := range selection.Rules {
+		ids = append(ids, rule.ID)
+	}
+	r.instructions.Seen().Mark(ids...)
+	return note
+}
+
+// instructionTrigger reads what the completed operation was about.
+//
+// It shares target extraction with the memory sidekick rather than deriving paths
+// a second time: the shell walk skips the program token, drops flags and globs,
+// and refuses anything outside the workdir, and a second copy of that would drift
+// from the first within a release.
+func (r *Runner) instructionTrigger(sess *sessionstore.Session, result operation.ResultEvent) instruction.Trigger {
+	var op sessionstore.Operation
+	found := false
+	for _, candidate := range sess.Operations {
+		if candidate.ID == result.OpID {
+			op = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return instruction.Trigger{Failed: result.Status != operation.StatusCompleted}
+	}
+	return InstructionTrigger(op.SpecType, op.SpecArgs, op.Tool, r.cfg.WorkDir, result.Status != operation.StatusCompleted)
 }
 
 // ForgetDeliveredMemory releases every memory this session has been annotated

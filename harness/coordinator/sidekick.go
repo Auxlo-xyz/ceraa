@@ -270,6 +270,175 @@ func (s *sidekickState) forgetDelivered(sess *sessionstore.Session) {
 	}
 }
 
+// seedDelivered is the locked half of Runner.SeedDeliveredMemory: the session's own
+// record first, then the newest fold's judgement over it.
+//
+// Both halves, and the second one earns its place on the case where the first is
+// empty and the context is not. A fork copies the parent's messages and not its
+// MemoryDelivered (sessionstore.Store.Fork), so a forked session arrives carrying
+// every checkpoint its parent folded - and therefore carrying the notes those folds
+// decided to keep - with a delivered list that says nothing was told. Reading the
+// fold's set is what stops those from being announced a second time to a context
+// that already holds them.
+func (s *sidekickState) seedDelivered(sess *sessionstore.Session) {
+	s.adoptDelivered(sess)
+	s.carryFromCheckpoint(sess)
+}
+
+// carryFromCheckpoint folds a fold's own account of what it left represented into
+// the delivered set, on both halves.
+//
+// Union, never replace. See Runner.SeedDeliveredMemory for why a replace here
+// cannot express expiry even though it looks like it can; the short form is that
+// the persisted list has no delivery time, so a fold's answer and the list can only
+// be added together without also releasing what arrived after the fold.
+//
+// Persisted only for the ids the session list does not already hold. persist
+// appends unconditionally and a seed runs once per message, so appending a
+// survivor the list already carries would grow the file by the size of the fold's
+// set on every message, until the 512-id cap forgets something that was still
+// wanted.
+func (s *sidekickState) carryFromCheckpoint(sess *sessionstore.Session) {
+	carried := sess.LatestCheckpointDelivered()
+	if len(carried) == 0 {
+		return
+	}
+	s.remember(carried...)
+	s.persistMissing(sess, carried...)
+}
+
+// reseedFromCheckpoint is the locked half of
+// Runner.ReseedDeliveredMemoryFromCheckpoint: the fold's judgement replaces the
+// session's list instead of joining it.
+//
+// An empty fold set is silence, not a decision to release everything.
+// LatestCheckpointDelivered answers nil both for a session that has never folded
+// and for one stored before the field existed, and reading that as "release
+// everything" would reset a session that has delivered anything at all. A caller
+// that means it says so with Runner.ForgetDeliveredMemory, which is explicit.
+func (s *sidekickState) reseedFromCheckpoint(sess *sessionstore.Session) {
+	carried := sess.LatestCheckpointDelivered()
+	if len(carried) == 0 {
+		return
+	}
+	s.forgetDelivered(sess)
+	s.remember(carried...)
+	s.persistMissing(sess, carried...)
+}
+
+// persistMissing appends the ids the session does not already record.
+//
+// The dedup lives here rather than in persist because persist is on the delivery
+// path, where markDelivered has already filtered against the in-memory set, and
+// changing it there would alter a path the running note tests already pin. Here
+// the filter is the point: seeding repeats per message and appending is not
+// idempotent.
+func (s *sidekickState) persistMissing(sess *sessionstore.Session, ids ...string) {
+	if sess == nil {
+		return
+	}
+	held := make(map[string]struct{}, len(sess.MemoryDelivered))
+	for _, id := range sess.MemoryDelivered {
+		held[id] = struct{}{}
+	}
+	missing := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, seen := held[id]; seen {
+			continue
+		}
+		held[id] = struct{}{}
+		missing = append(missing, id)
+	}
+	s.persist(sess, missing...)
+}
+
+// SeedDeliveredMemory adopts the delivered set a session already carries, so a
+// runner built for this message starts from the session's own record rather than
+// from empty.
+//
+// The runner and its sidekick state are built per Telegram message, so an unseeded
+// one re-fires every targeted memory on every message that follows. That is the
+// copy-per-call cost the delivered set was built to stop, arriving one message
+// later, and this is the single call that stops it. Call it once per run, after the
+// session is loaded and recovered and before anything is annotated. It is not
+// required: annotate folds the session's own list in on every call regardless, so
+// seeding is what moves that work off the delivery path and adds the fold's half.
+//
+// Nil in, nil out. A runner in prompt or cached mode has no sidekick state and
+// nothing to seed; a nil session has nothing to read; a session stored before
+// either field existed reads as nothing delivered and delivers normally. An absent
+// field is never a reset, which is why there is no error to return.
+//
+// Neither half of the seed expires anything, and that is the decision rather than
+// an omission. Session.MemoryDelivered says an id reached the transcript; a fold
+// deletes the tool results carrying those notes, so after a fold the list
+// over-reports and the newest checkpoint's Delivered is the fold's own account of
+// what survived, written while the notes were still on the wire. Replacing the
+// list with it is the obvious move and it cannot work: the list records no delivery
+// time, so list-minus-fold cannot be split into "delivered before the fold and
+// dropped by it" and "delivered after the fold and still in context". A replace
+// drops both, and drops the second kind again on every later run, because the
+// newest checkpoint never learns about them. That converts a per-session dedup
+// into a per-fold one - every memory delivered since the last fold re-sent on every
+// message from there on - which is the repeat this mechanism exists to prevent, and
+// it is worse than what an unseeded runner does today.
+//
+// So expiry belongs at the fold, where the evidence exists: ForgetDeliveredMemory
+// on the near side and MarkDeliveredMemory with the Carry hook's answer on the far
+// side. A dropped note and a surviving note are only distinguishable there, and
+// Runner.ForgetDeliveredMemory is already the locked entry point for it - no
+// state-level Reset is added, because sidekickState is unexported and a reset
+// reachable only from this file would be a second name for a method the package
+// already has. A caller that wants the other election gets
+// ReseedDeliveredMemoryFromCheckpoint.
+func (r *Runner) SeedDeliveredMemory(sess *sessionstore.Session) {
+	if r.sidekick == nil {
+		return
+	}
+	r.sidekick.mu.Lock()
+	defer r.sidekick.mu.Unlock()
+	r.sidekick.seedDelivered(sess)
+}
+
+// ReseedDeliveredMemoryFromCheckpoint replaces the session's delivered list with
+// the newest fold's judgement instead of adding to it, so an id whose tool result
+// that fold deleted is offered again.
+//
+// The aggressive half of the pair, kept as a named choice rather than folded into
+// SeedDeliveredMemory, because which one is right is not a technical question and
+// therefore must not be decided by the order two statements happen to sit in. What
+// survives a fold is a judgement only the holder of the memory store can make, and
+// the harness has already written that judgement down: a compaction drops the tool
+// results that carried the notes, so delivering one again is not a repeat. A caller
+// wiring the Compactor.Carry hook owns that decision, and this is where it reads
+// its own answer through.
+//
+// What it costs, in daylight rather than implied: it forgets the whole list, so it
+// also releases every id delivered after that fold, and it does so on every run
+// until the next one, because the newest checkpoint keeps saying the same thing.
+// Those ids are marked again as they are delivered, so the damage is one duplicate
+// note per message for everything delivered since the last fold - which is the
+// repeat the delivered set exists to prevent, and not the unbounded flood a run
+// ceiling would suggest it might be. The recoverable direction is still the
+// duplicate: a note that repeats costs context, a note that never arrives costs the
+// agent the memory.
+//
+// A fold carrying nothing is read as silence rather than as a release. nil from
+// LatestCheckpointDelivered means "this session has never said" as much as it means
+// "nothing survived", and the first reading is a first run. The caller that wants a
+// release says so with ForgetDeliveredMemory, which is unambiguous about doing it.
+func (r *Runner) ReseedDeliveredMemoryFromCheckpoint(sess *sessionstore.Session) {
+	if r.sidekick == nil {
+		return
+	}
+	r.sidekick.mu.Lock()
+	defer r.sidekick.mu.Unlock()
+	r.sidekick.reseedFromCheckpoint(sess)
+}
+
 // bondBlock is the bond for the run's first tool result, and "" on every later one.
 //
 // LiveBond re-reads the file on every call, so the flag is what makes the second
