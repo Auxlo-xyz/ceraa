@@ -102,3 +102,57 @@ func TestRequestHeadersCarryClientIdentity(t *testing.T) {
 		t.Errorf("identity headers = %v", h)
 	}
 }
+
+// The paste-back accepts a redirect URL: the refresh token rides a query
+// param or inside the userJwt JSON blob.
+func TestExtractRefreshToken(t *testing.T) {
+	for raw, want := range map[string]string{
+		"http://127.0.0.1:18787/trae/callback?refreshToken=abc123":                            "abc123",
+		"https://x.test/cb?refresh_token=zz9":                                                 "zz9",
+		"http://127.0.0.1:18787/trae/callback?userJwt=%7B%22RefreshToken%22%3A%22jwt-r%22%7D": "jwt-r",
+		"plain-pat-no-url-shape":                                                              "",
+		"":                                                                                    "",
+	} {
+		if got := ExtractRefreshToken(raw); got != want {
+			t.Errorf("ExtractRefreshToken(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// The verification URI must carry the client id, the PKCE challenge, and the
+// paste-back callback, or the approval page cannot complete the login.
+func TestBuildVerificationURI(t *testing.T) {
+	uri, err := buildVerificationURI("login.trae.ai", "trace-1", "http://127.0.0.1:18787/trae/callback", "challenge-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"client_id=" + loginClientID, "code_challenge=challenge-x", "code_challenge_method=S256", "auth_callback_url="} {
+		if !strings.Contains(uri, want) {
+			t.Errorf("verification URI missing %q: %s", want, uri)
+		}
+	}
+}
+
+// StartLogin resolves the login host through guidance and returns an
+// openable URI.
+func TestStartLoginUsesGuidanceHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Result":{"LoginHost":"login.test.invalid"}}`))
+	}))
+	defer srv.Close()
+	original := loginGuidanceHosts
+	loginGuidanceHosts = []string{srv.URL}
+	defer func() { loginGuidanceHosts = original }()
+
+	flow, err := StartLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(flow.VerificationURI, "login.test.invalid/authorization") {
+		t.Errorf("verification URI = %q", flow.VerificationURI)
+	}
+	if flow.CodeVerifier == "" {
+		t.Error("no PKCE verifier minted")
+	}
+}

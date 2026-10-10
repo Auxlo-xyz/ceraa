@@ -25,11 +25,11 @@ func captureTraeNotify(t *testing.T) *[]string {
 	return seen
 }
 
-func stubTraeSavePAT(t *testing.T, err error) {
+func stubTraeSaveCallback(t *testing.T, err error) {
 	t.Helper()
-	original := traeSavePAT
-	traeSavePAT = func(ctx context.Context, pat string) error { return err }
-	t.Cleanup(func() { traeSavePAT = original })
+	original := traeSaveCallback
+	traeSaveCallback = func(ctx context.Context, text string) error { return err }
+	t.Cleanup(func() { traeSaveCallback = original })
 }
 
 // The button existing and being handled are separate facts.
@@ -50,16 +50,16 @@ func TestProviderTraeCallbackReachesTheEntryPoint(t *testing.T) {
 	}
 }
 
-// A pasted PAT that exchanges activates the provider and reports it.
+// A pasted redirect URL that exchanges activates the provider and reports it.
 func TestTraePATStageExchangesAndActivates(t *testing.T) {
 	restore := stubBothState(t)
 	defer restore()
 	seen := captureTraeNotify(t)
-	stubTraeSavePAT(t, nil)
+	stubTraeSaveCallback(t, nil)
 	pendingProvider.Store(int64(79), providerDraft{ID: llm.TraeSubscription, URL: llm.TraeBaseURL, Stage: "pat"})
 	defer pendingProvider.Delete(int64(79))
 
-	if !handlePendingInput("test-token", int64(79), "pasted-pat-value") {
+	if !handlePendingInput("test-token", int64(79), "http://127.0.0.1:18787/trae/callback?refreshToken=pasted-refresh") {
 		t.Fatal("the pat stage did not consume the message")
 	}
 	joined := strings.Join(*seen, "\n")
@@ -77,7 +77,7 @@ func TestTraePATStageFailureExplainsItself(t *testing.T) {
 	restore := stubBothState(t)
 	defer restore()
 	seen := captureTraeNotify(t)
-	stubTraeSavePAT(t, errors.New("code 4001: invalid token"))
+	stubTraeSaveCallback(t, errors.New("code 4001: invalid token"))
 	pendingProvider.Store(int64(80), providerDraft{ID: llm.TraeSubscription, URL: llm.TraeBaseURL, Stage: "pat"})
 	defer pendingProvider.Delete(int64(80))
 

@@ -991,10 +991,10 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			send(token, chatID, "✅ "+draft.ID+" is configured. Choose another control or send a task.")
 			return true
 		case "pat":
-			// The Trae PAT paste-back. The text is a personal access token,
-			// not a task. SavePAT exchanges it before storing, so a PAT the
-			// endpoint rejects is reported here rather than on the first
-			// real task.
+			// The Trae paste-back. The text is either the redirect URL from
+			// the verification link or a raw PAT, and the saver accepts
+			// both: SaveCallbackURL falls back to the PAT path when the
+			// text has no callback shape.
 			if draft.ID != llm.TraeSubscription {
 				pendingProvider.Delete(chatID)
 				return true
@@ -1005,17 +1005,18 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 				return true
 			}
 			if strings.TrimSpace(text) == "" {
-				traeNotify(token, chatID, "PAT cannot be empty.")
+				traeNotify(token, chatID, "Send the redirect URL or a PAT.")
 				return true
 			}
-			if err := traeSavePAT(context.Background(), strings.TrimSpace(text)); err != nil {
+			saveErr := traeSaveCallback(context.Background(), strings.TrimSpace(text))
+			if saveErr != nil {
 				pendingProvider.Delete(chatID)
-				logger.Warn("trae PAT exchange failed: " + err.Error())
-				traeNotify(token, chatID, "❌ That PAT did not work: "+err.Error()+"\n\nNothing was saved. Start over from the provider menu.")
+				logger.Warn("trae login failed: " + saveErr.Error())
+				traeNotify(token, chatID, "❌ That login did not work: "+saveErr.Error()+"\n\nNothing was saved. Start over from the provider menu.")
 				return true
 			}
 			pendingProvider.Delete(chatID)
-			logger.Info("trae onboarding: PAT accepted")
+			logger.Info("trae onboarding: credential accepted")
 			activateTraeProvider(token, chatID)
 			return true
 		case "code":

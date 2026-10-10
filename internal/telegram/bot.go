@@ -2606,19 +2606,31 @@ var traeNotify = func(token string, chatID int64, text string) {
 	send(token, chatID, text)
 }
 
-// traeSavePAT trades a pasted PAT for the grant. Indirected so the paste-back
-// stage is provable without reaching the live platform.
-var traeSavePAT = func(ctx context.Context, pat string) error {
-	return traeauth.SavePAT(ctx, pat)
+// traeSaveCallback trades a pasted redirect URL (or raw PAT) for the grant.
+// Indirected for the same reason.
+var traeSaveCallback = func(ctx context.Context, text string) error {
+	return traeauth.SaveCallbackURL(ctx, text)
 }
 
-// startTraePATLogin asks for a PAT and nothing else, reusing the shared
-// provider onboarding state machine at a dedicated stage. The base URL is
-// filled in rather than prompted for: the raw-chat endpoint has one
-// documented root and asking invites a near-miss on the path.
+// traeStartLogin mints the verification link. Indirected so the entry path
+// is provable without reaching the live login service.
+var traeStartLogin = func(ctx context.Context) (*traeauth.LoginFlow, error) {
+	return traeauth.StartLogin(ctx)
+}
+
+// startTraePATLogin opens the browser login and asks for the redirect back.
+// Trae's UI has no PAT to copy, so the menu mints a verification link
+// instead: approve it, then paste the redirect URL here. A raw PAT still
+// works at the same prompt for anyone who already holds one.
 func startTraePATLogin(token string, chatID int64) {
 	pendingProvider.Store(chatID, providerDraft{ID: llm.TraeSubscription, URL: llm.TraeBaseURL, Stage: "pat"})
-	traeNotify(token, chatID, "Send your Trae PAT (personal access token from your Trae account), or type cancel.\n\nPick the model afterwards from the Model menu.")
+	flow, err := traeStartLogin(context.Background())
+	if err != nil {
+		logger.Warn("trae login start failed: " + err.Error())
+		traeNotify(token, chatID, "Could not reach the Trae login service ("+err.Error()+"). If you already hold a Trae PAT, paste it here, or type cancel.")
+		return
+	}
+	traeNotify(token, chatID, "Sign in to Trae to use it. Open the link, approve, then paste the redirect URL from the browser address bar back here — or type cancel. The browser will show an unreachable page; its address bar still carries the login.\n\n"+flow.VerificationURI+"\n\nAlready hold a Trae PAT? Paste that instead.")
 }
 
 // traeModelForAccount reuses the active model only when it is one Trae
