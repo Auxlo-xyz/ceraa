@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -9,6 +10,16 @@ import (
 
 	"ceraa/internal/telegram/menus"
 )
+
+// isolateRestartNotice points the back-online notice at a temp file: the
+// notice crosses the exec in the data directory, and a test must neither read
+// the live install's notice nor leave one behind for the next boot.
+func isolateRestartNotice(t *testing.T) {
+	t.Helper()
+	previous := restartNoticeFile
+	restartNoticeFile = filepath.Join(t.TempDir(), "restart-notice")
+	t.Cleanup(func() { restartNoticeFile = previous })
+}
 
 // /restart must appear in the menu and help catalog, because that catalog is
 // what setMyCommands and /help render from. A handler without a catalog entry
@@ -30,8 +41,8 @@ func TestRestartArmsAndReports(t *testing.T) {
 		restartState.armed = false
 		restartState.chatID = 0
 		restartState.Unlock()
-		os.Unsetenv(restartNoticeEnv)
 	})
+	isolateRestartNotice(t)
 	if RestartRequested() {
 		t.Fatal("restart reported as requested before anything armed it")
 	}
@@ -51,7 +62,7 @@ func TestRestartArmsAndReports(t *testing.T) {
 // boot side must consume it exactly once: a notice that survives would greet
 // the chat again on every later boot.
 func TestRestartNoticeRoundTrip(t *testing.T) {
-	t.Cleanup(func() { os.Unsetenv(restartNoticeEnv) })
+	isolateRestartNotice(t)
 	armRestart(67890)
 	chatID, ok := takeRestartNotice()
 	if !ok || chatID != 67890 {
@@ -63,9 +74,11 @@ func TestRestartNoticeRoundTrip(t *testing.T) {
 }
 
 func TestRestartNoticeRejectsGarbage(t *testing.T) {
-	t.Cleanup(func() { os.Unsetenv(restartNoticeEnv) })
+	isolateRestartNotice(t)
 	for _, raw := range []string{"", "not-a-number", "0"} {
-		os.Setenv(restartNoticeEnv, raw)
+		if err := os.WriteFile(noticePath(), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if _, ok := takeRestartNotice(); ok {
 			t.Errorf("notice %q accepted, want rejection", raw)
 		}
@@ -82,9 +95,9 @@ func TestRestartSignalArmsRestart(t *testing.T) {
 		restartState.armed = false
 		restartState.chatID = 0
 		restartState.Unlock()
-		os.Unsetenv(restartNoticeEnv)
 		restartShutdown = func() { stopSignals() }
 	})
+	isolateRestartNotice(t)
 	var stopped atomic.Bool
 	restartShutdown = func() { stopped.Store(true) }
 	WatchRestartSignal()

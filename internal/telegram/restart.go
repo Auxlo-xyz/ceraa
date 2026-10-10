@@ -3,16 +3,32 @@ package telegram
 import (
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"ceraa/internal/paths"
 )
 
-// restartNoticeEnv carries the chat that asked for the restart across the exec,
-// so the new process can report that it is back. The environment survives
-// syscall.Exec; package state does not.
-const restartNoticeEnv = "CERAA_RESTART_NOTICE_CHAT"
+// restartNoticeFile overrides the notice path in tests. Empty means the data
+// directory, beside the config it already owns.
+var restartNoticeFile string
+
+func noticePath() string {
+	if restartNoticeFile != "" {
+		return restartNoticeFile
+	}
+	return filepath.Join(paths.DataDir(), "restart-notice")
+}
+
+// The back-online notice crosses the exec in a file, not the environment.
+// os.Setenv and os.Unsetenv share one process-wide map with no lock, so a
+// boot that read the environment while the notice goroutine cleared it died
+// in a SIGSEGV inside Getenv. A file survives syscall.Exec just as well and
+// touches no shared map.
 
 // /restart shuts the bot down cleanly and starts it again as the same binary
 // with the same arguments and environment.
@@ -56,9 +72,34 @@ func armRestart(chatID int64) {
 	defer restartState.Unlock()
 	restartState.armed = true
 	restartState.chatID = chatID
-	// Set here rather than at exec time so nothing between Run returning and
-	// the exec can lose it. The boot side consumes and unsets it.
-	os.Setenv(restartNoticeEnv, strconv.FormatInt(chatID, 10))
+	// Written here rather than at exec time so nothing between Run returning
+	// and the exec can lose it. The boot side consumes and deletes it. Best
+	// effort: a restart that cannot leave a notice is still a restart.
+	writeRestartNotice(chatID)
+}
+
+// writeRestartNotice records the chat atomically: temp file plus rename, so a
+// crash mid-write leaves the previous state rather than a torn number.
+func writeRestartNotice(chatID int64) {
+	path := noticePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".restart-notice-*.tmp")
+	if err != nil {
+		return
+	}
+	name := tmp.Name()
+	if _, err := tmp.WriteString(strconv.FormatInt(chatID, 10)); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return
+	}
+	_ = os.Rename(name, path)
 }
 
 // RestartRequested reports whether the last Run ended by restart. cmd/root.go
@@ -72,12 +113,14 @@ func RestartRequested() bool {
 // takeRestartNotice consumes the pending back-online notice, if any. Called
 // once, at boot, after the bot token is known.
 func takeRestartNotice() (int64, bool) {
-	raw := os.Getenv(restartNoticeEnv)
-	if raw == "" {
+	raw, err := os.ReadFile(noticePath())
+	if err != nil {
 		return 0, false
 	}
-	os.Unsetenv(restartNoticeEnv)
-	chatID, err := strconv.ParseInt(raw, 10, 64)
+	// Consumed even when garbage: a notice that survives would greet the chat
+	// again on every later boot.
+	_ = os.Remove(noticePath())
+	chatID, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
 	if err != nil || chatID == 0 {
 		return 0, false
 	}
