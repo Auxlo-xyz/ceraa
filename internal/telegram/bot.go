@@ -29,6 +29,7 @@ import (
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/keyboard"
 	"ceraa/internal/telegram/menus"
+	"ceraa/internal/traeauth"
 	"ceraa/internal/xaiauth"
 	"context"
 	"encoding/json"
@@ -2574,6 +2575,90 @@ func activateQoderProvider(token string, chatID int64) {
 	}
 	logger.Info("qoder activate: provider=" + defaultState.provider() + " model=" + model)
 	qoderNotify(token, chatID, "✅ Qoder provider activated with model "+model+". Send a task to use it.", nil)
+}
+
+// selectTraeProvider is the Trae entry point, mirroring the other
+// subscription providers.
+//
+// A stored PAT switches provider immediately; otherwise the menu asks for
+// one. Trae has no browser-login path here: the PAT comes from the user's
+// own Trae account (Trae CLI or IDE after signing in), pasted back in chat.
+func selectTraeProvider(token string, chatID int64) {
+	traeEntryPoint(token, chatID)
+}
+
+// traeEntryPoint is the real entry point, indirected so a test can assert the
+// provider menu routes provider:trae here without touching the secret store.
+var traeEntryPoint = func(token string, chatID int64) {
+	signedIn := traeauth.Authenticated()
+	logger.Info("trae entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
+		activateTraeProvider(token, chatID)
+		return
+	}
+	startTraePATLogin(token, chatID)
+}
+
+// traeNotify posts a Trae outcome to a chat. Indirected so tests can observe
+// the PAT paste-back path without sending anything to Telegram.
+var traeNotify = func(token string, chatID int64, text string) {
+	send(token, chatID, text)
+}
+
+// traeSavePAT trades a pasted PAT for the grant. Indirected so the paste-back
+// stage is provable without reaching the live platform.
+var traeSavePAT = func(ctx context.Context, pat string) error {
+	return traeauth.SavePAT(ctx, pat)
+}
+
+// startTraePATLogin asks for a PAT and nothing else, reusing the shared
+// provider onboarding state machine at a dedicated stage. The base URL is
+// filled in rather than prompted for: the raw-chat endpoint has one
+// documented root and asking invites a near-miss on the path.
+func startTraePATLogin(token string, chatID int64) {
+	pendingProvider.Store(chatID, providerDraft{ID: llm.TraeSubscription, URL: llm.TraeBaseURL, Stage: "pat"})
+	traeNotify(token, chatID, "Send your Trae PAT (personal access token from your Trae account), or type cancel.\n\nPick the model afterwards from the Model menu.")
+}
+
+// traeModelForAccount reuses the active model only when it is one Trae
+// serves, so a model left over from another provider cannot produce a
+// profile the endpoint rejects.
+func traeModelForAccount() string {
+	current, _ := defaultState.values()
+	if llm.IsSubscriptionModel(llm.TraeSubscription, current) {
+		return current
+	}
+	return llm.DefaultTraeModel
+}
+
+// activateTraeProvider saves the Trae profile and makes it active.
+func activateTraeProvider(token string, chatID int64) {
+	model, err := guardModel(llm.TraeSubscription, traeModelForAccount())
+	if err != nil {
+		logger.Warn("Trae activate: " + err.Error())
+		traeNotify(token, chatID, "Trae activation failed: "+err.Error())
+		return
+	}
+	profile := config.ProviderProfile{
+		URL:             llm.TraeBaseURL,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.TraeSubscription,
+	}
+	if err := defaultState.setProviderProfile(llm.TraeSubscription, profile); err != nil {
+		logger.Warn("trae activate: profile save failed: " + err.Error())
+		traeNotify(token, chatID, "Trae profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider(llm.TraeSubscription); err != nil {
+		logger.Warn("trae activate: provider set failed: " + err.Error())
+		traeNotify(token, chatID, "Trae provider activation failed: "+err.Error())
+		return
+	}
+	logger.Info("trae activate: provider=" + defaultState.provider() + " model=" + model)
+	traeNotify(token, chatID, "✅ Trae provider activated with model "+model+". Send a task to use it.")
 }
 
 // selectGeminiProvider is the Gemini entry point, mirroring the other

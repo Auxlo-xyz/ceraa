@@ -990,6 +990,34 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			}
 			send(token, chatID, "✅ "+draft.ID+" is configured. Choose another control or send a task.")
 			return true
+		case "pat":
+			// The Trae PAT paste-back. The text is a personal access token,
+			// not a task. SavePAT exchanges it before storing, so a PAT the
+			// endpoint rejects is reported here rather than on the first
+			// real task.
+			if draft.ID != llm.TraeSubscription {
+				pendingProvider.Delete(chatID)
+				return true
+			}
+			if strings.EqualFold(strings.TrimSpace(text), "cancel") {
+				pendingProvider.Delete(chatID)
+				traeNotify(token, chatID, "Trae login cancelled. Nothing was saved.")
+				return true
+			}
+			if strings.TrimSpace(text) == "" {
+				traeNotify(token, chatID, "PAT cannot be empty.")
+				return true
+			}
+			if err := traeSavePAT(context.Background(), strings.TrimSpace(text)); err != nil {
+				pendingProvider.Delete(chatID)
+				logger.Warn("trae PAT exchange failed: " + err.Error())
+				traeNotify(token, chatID, "❌ That PAT did not work: "+err.Error()+"\n\nNothing was saved. Start over from the provider menu.")
+				return true
+			}
+			pendingProvider.Delete(chatID)
+			logger.Info("trae onboarding: PAT accepted")
+			activateTraeProvider(token, chatID)
+			return true
 		case "code":
 			// The Claude browser-login paste-back goes to its own stage
 			// handler; the DeepSeek path below must not see it.

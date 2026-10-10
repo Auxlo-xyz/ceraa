@@ -22,6 +22,7 @@ import (
 	"ceraa/internal/paths"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
+	"ceraa/internal/traeauth"
 	"ceraa/internal/xaiauth"
 	"context"
 	"encoding/json"
@@ -49,7 +50,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission",
 	"snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "workbuddy",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "workbuddy", "trae",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.
@@ -220,13 +221,15 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("Gemini", "✨", geminiauth.SignedIn(), selection().ActiveProvider == llm.GeminiSubscription, "provider:gemini")
 	case "workbuddy":
 		return subscriptionMenu("WorkBuddy", "🌍", buddyauth.NewWorkBuddyManager().Authenticated(), selection().ActiveProvider == llm.WorkBuddySubscription, "provider:workbuddy")
+	case "trae":
+		return subscriptionMenu("Trae", "🌀", traeauth.Authenticated(), selection().ActiveProvider == llm.TraeSubscription, "provider:trae")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
 		"opencode:models", "deepseek:models", "claude:models", "qoder:models",
-		"gemini:models", "workbuddy:models",
+		"gemini:models", "workbuddy:models", "trae:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
 		"provider:cline:models", "provider:codex:models", "provider:opencode:models",
 		"provider:deepseek:models", "provider:claude:models", "provider:qoder:models",
-		"provider:gemini:models", "provider:workbuddy:models":
+		"provider:gemini:models", "provider:workbuddy:models", "provider:trae:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -479,6 +482,18 @@ func ProviderMenu() map[string]any {
 		workbuddyLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": workbuddyLabel, "callback_data": "provider:workbuddy"}})
+	// Trae is a row for the same reason: a subscription profile cannot
+	// appear as a profile row until it exists.
+	traeLabel := "🌀 Trae Account"
+	switch {
+	case active == llm.TraeSubscription:
+		traeLabel = "✅ " + traeLabel
+	case traeauth.Authenticated():
+		traeLabel += " · switch to it"
+	default:
+		traeLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": traeLabel, "callback_data": "provider:trae"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -1090,7 +1105,7 @@ func Hub() map[string]any {
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(), "qoder": qoderHubLabel(),
-		"gemini": geminiHubLabel(), "workbuddy": workbuddyHubLabel(),
+		"gemini": geminiHubLabel(), "workbuddy": workbuddyHubLabel(), "trae": traeHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1213,6 +1228,17 @@ func workbuddyHubLabel() string {
 		return "🌍 WorkBuddy · signed in"
 	default:
 		return "🌍 WorkBuddy · sign in"
+	}
+}
+
+func traeHubLabel() string {
+	switch {
+	case traeauth.Authenticated() && selection().ActiveProvider == llm.TraeSubscription:
+		return "🌀 Trae · active"
+	case traeauth.Authenticated():
+		return "🌀 Trae · signed in"
+	default:
+		return "🌀 Trae · sign in"
 	}
 }
 
@@ -1452,6 +1478,8 @@ func subscriptionLabel(providerID string) string {
 		return "Gemini"
 	case "workbuddy":
 		return "WorkBuddy"
+	case "trae":
+		return "Trae"
 	default:
 		return providerID
 	}
