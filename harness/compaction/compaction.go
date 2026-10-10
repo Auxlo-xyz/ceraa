@@ -205,7 +205,29 @@ type FoldEntry struct {
 	Start int       `json:"start"`
 	End   int       `json:"end"`
 	At    time.Time `json:"at"`
+	// Tier and Generation mirror the checkpoint the fold wrote: tier 1 young
+	// at creation, promoted and merged by the tier machinery below.
+	Tier       int    `json:"tier"`
+	Generation string `json:"generation"`
 }
+
+// Tier distillation mirrors billion-context's acp-kernel: folds land at tier
+// 1, survivors promote to old, and old blocks of one tier merge into a single
+// block of the next. Ancient history keeps shrinking instead of stacking.
+// There is deliberately no age-based deletion: a merged summary still carries
+// its span, while a deleted one carries nothing.
+//
+// One adaptation is forced: there, the model executes merges by calling
+// compress over block ranges; here no compress tool exists, so the compactor
+// executes a merge itself while it is already running. The count triggers
+// keep their upstream defaults (effectively off); MergeMinOldGenBlocks is the
+// live floor that makes merging actually fire during a compaction.
+const TiersEnabled = true
+const Tier2Trigger = 1000
+const Tier3Trigger = 2000
+const TierPromotionThreshold = 5
+const MergeMaxSummaryLength = 20000
+const MergeMinOldGenBlocks = 2
 
 func flattenMessages(units []messageUnit) []sessionstore.Message {
 	var messages []sessionstore.Message
@@ -227,21 +249,72 @@ func (c *Compactor) FoldLedger() []FoldEntry {
 // recordFold appends one ledger entry and returns it. Callers record only after
 // a validated summary has been written, so the ledger never names a range that
 // was not folded.
-func (c *Compactor) recordFold(start, end int) FoldEntry {
+func (c *Compactor) recordFold(start, end, tier int) FoldEntry {
 	c.foldMu.Lock()
 	defer c.foldMu.Unlock()
 	c.foldSeq++
 	entry := FoldEntry{
-		ID:    fmt.Sprintf("fold-%d", c.foldSeq),
-		Start: start,
-		End:   end,
-		At:    time.Now().UTC(),
+		ID:         fmt.Sprintf("fold-%d", c.foldSeq),
+		Start:      start,
+		End:        end,
+		At:         time.Now().UTC(),
+		Tier:       tier,
+		Generation: "young",
 	}
 	c.foldLedger = append(c.foldLedger, entry)
 	if len(c.foldLedger) > maxFoldLedgerEntries {
 		c.foldLedger = c.foldLedger[len(c.foldLedger)-maxFoldLedgerEntries:]
 	}
 	return entry
+}
+
+// tierOf reads a checkpoint's tier, treating pre-tier checkpoints as tier 1
+// so nothing written before tiers needs migration.
+func tierOf(info *sessionstore.CompactionInfo) int {
+	if info == nil || info.Tier < 1 {
+		return 1
+	}
+	if info.Tier > 3 {
+		return 3
+	}
+	return info.Tier
+}
+
+// generationOf reads a checkpoint's generation, defaulting to young.
+func generationOf(info *sessionstore.CompactionInfo) string {
+	if info == nil || info.Generation == "" {
+		return "young"
+	}
+	return info.Generation
+}
+
+// tickSurvivors promotes checkpoints that outlive compactions: every survivor
+// gains one count per Compact call, and TierPromotionThreshold survivals flip
+// it to old, which is what makes it eligible for merging. Upstream counts
+// every turn; here compactions are the survival ticks, which is the closest
+// this architecture gets to per-turn ageing.
+func tickSurvivors(messages []sessionstore.Message) {
+	for i := range messages {
+		info := messages[i].Compaction
+		if info == nil {
+			continue
+		}
+		info.Survived++
+		if info.Survived >= TierPromotionThreshold && generationOf(info) == "young" {
+			info.Generation = "old"
+		}
+	}
+}
+
+// firstUserIndex returns the session's opening user message, or -1. The pin
+// below keeps it verbatim no matter what range covers it.
+func firstUserIndex(messages []sessionstore.Message) int {
+	for i, message := range messages {
+		if message.Role == llm.RoleUser {
+			return i
+		}
+	}
+	return -1
 }
 
 // splitFoldRange bounds one fold to the oldest slice of the head.
@@ -575,10 +648,91 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 // and the next compaction starts after the latest checkpoint, so it extends the
 // ledger rather than re summarizing a folded range. Prior summaries are carried
 // forward because the fold scoped request includes them.
+// mergeTier distills old blocks of one tier into a single block of the next.
+// It fires on the count trigger (upstream default, effectively off) or on the
+// live floor MergeMinOldGenBlocks. The merged summary goes through the same
+// template and validation as a fold; a merge that fails is skipped without
+// touching the fold, the cooldown, or the session, because merging is hygiene
+// and must never endanger the compaction it rides on.
+func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, fromTier, countTrigger int) {
+	var indices []int
+	for i := range sess.Messages {
+		info := sess.Messages[i].Compaction
+		if info == nil || tierOf(info) != fromTier || generationOf(info) != "old" {
+			continue
+		}
+		indices = append(indices, i)
+	}
+	if len(indices) < countTrigger && len(indices) < MergeMinOldGenBlocks {
+		return
+	}
+	var parts []string
+	for _, i := range indices {
+		parts = append(parts, sess.Messages[i].Compaction.Summary)
+	}
+	joined := strings.Join(parts, "\n\n---\n\n")
+	if len(joined) > MergeMaxSummaryLength {
+		joined = joined[len(joined)-MergeMaxSummaryLength:]
+	}
+	mergeSession := &sessionstore.Session{ID: sess.ID}
+	mergeSession.Messages = append(mergeSession.Messages, sessionstore.Message{
+		Role:    llm.RoleUser,
+		Content: joined,
+	})
+	text, err := c.summarise(ctx, mergeSession, c.summaryOutputTokens())
+	if err != nil || text == "" {
+		return
+	}
+	merged := sessionstore.Message{
+		Role:    llm.RoleSystem,
+		Content: "<conversation-checkpoint>",
+		Compaction: &sessionstore.CompactionInfo{
+			Summary:    text,
+			Seq:        len(sess.Messages),
+			Tier:       fromTier + 1,
+			Generation: "young",
+		},
+	}
+	first := indices[0]
+	kept := sess.Messages[:0:0]
+	for i, message := range sess.Messages {
+		consumed := false
+		for _, j := range indices {
+			if i == j {
+				consumed = true
+				break
+			}
+		}
+		if !consumed {
+			kept = append(kept, message)
+		}
+	}
+	out := append(kept[:first], append([]sessionstore.Message{merged}, kept[first:]...)...)
+	sess.Messages = out
+	entry := c.recordFold(first, first+1, fromTier+1)
+	if c.ArchiveDir != "" {
+		sources := make([]FoldMessage, 0, len(parts))
+		for _, summary := range parts {
+			sources = append(sources, FoldMessage{Role: "system", Text: summary})
+		}
+		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
+	}
+}
+
 func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
 	c.LastPromptTokens = 0
 	if !c.attemptAllowed() {
 		return false, nil
+	}
+	// Survival ticks first: every checkpoint still standing gains one, and
+	// five survivals promote it to old age and merge eligibility.
+	tickSurvivors(sess.Messages)
+	// Tier distillation before the new fold: old blocks of one tier merge
+	// into a single block of the next, so ancient history shrinks instead of
+	// stacking one checkpoint per fold forever.
+	if TiersEnabled {
+		c.mergeTier(ctx, sess, 1, Tier2Trigger)
+		c.mergeTier(ctx, sess, 2, Tier3Trigger)
 	}
 	keepTokens := c.Settings.Keep.Tokens
 	if keepTokens == 0 {
@@ -669,14 +823,24 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		Role:    llm.RoleSystem,
 		Content: "<conversation-checkpoint>",
 		Compaction: &sessionstore.CompactionInfo{
-			Summary: text,
-			Seq:     len(sess.Messages),
+			Summary:    text,
+			Seq:        len(sess.Messages),
+			Tier:       1,
+			Generation: "young",
 		},
 	})
+	// First-user-message pin: the session's opening user message survives the
+	// fold verbatim even when the folded range covers it. The summary above
+	// still describes the whole span including it; the raw stays right after
+	// the checkpoint so the wire keeps a user message no range can strip.
+	pinned := firstUserIndex(sess.Messages)
+	if pinned >= start && pinned < end {
+		newMessages = append(newMessages, sess.Messages[pinned])
+	}
 	newMessages = append(newMessages, middleMessages...)
 	newMessages = append(newMessages, recentMessages...)
 	sess.Messages = newMessages
-	entry := c.recordFold(start, end)
+	entry := c.recordFold(start, end, 1)
 	// Retain the fold source beside the archive: the summary is lossy, and
 	// without the original messages no later turn can decompress or verify
 	// it. Best-effort by design; a retention failure must not fail the fold.

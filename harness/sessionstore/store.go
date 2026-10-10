@@ -85,6 +85,13 @@ type CompactionInfo struct {
 	Summary string `json:"summary"`
 	Recent  string `json:"recent,omitempty"`
 	Seq     int    `json:"seq"`
+	// Tier and Generation drive tier distillation: new folds land at tier 1
+	// young, survivors promote to old, and old blocks of one tier merge into
+	// the next. Zero values read as tier 1 young, so checkpoints written
+	// before tiers existed need no migration.
+	Tier       int    `json:"tier,omitempty"`
+	Generation string `json:"generation,omitempty"`
+	Survived   int    `json:"survived,omitempty"`
 }
 
 type ToolCallRef struct {

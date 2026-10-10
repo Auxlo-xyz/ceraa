@@ -84,8 +84,13 @@ func TestFoldKeepsNewestFortyPercent(t *testing.T) {
 			t.Errorf("recent %q was folded; the newest forty percent must stay", want)
 		}
 	}
+	// The first user message is pinned: it survives even though the folded
+	// range covers it.
+	if !strings.Contains(got, "msg-00 task body") {
+		t.Error("msg-00 is gone; the first user message must survive every fold")
+	}
 	// Oldest folded range must be gone, replaced by exactly one checkpoint.
-	for _, gone := range []string{"msg-00", "msg-01", "msg-02"} {
+	for _, gone := range []string{"msg-01", "msg-02"} {
 		if strings.Contains(got, gone) {
 			t.Errorf("folded %q is still in the session; the fold must replace its range", gone)
 		}
@@ -155,5 +160,101 @@ func TestFoldLedgerGrowsAcrossTwoCompactions(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("recent %q was folded on the second pass", want)
 		}
+	}
+}
+
+// The first user message is pinned: a fold covering it keeps it verbatim
+// right after the checkpoint, while the rest of its range is replaced.
+func TestFirstUserMessagePinSurvivesFold(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fold"}})
+	c.Settings.Keep.Tokens = 8000
+	sess := foldTestSession(10)
+	ok, err := c.Compact(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !ok {
+		t.Fatal("nothing was folded")
+	}
+	if sess.Messages[0].Compaction == nil {
+		t.Fatal("no checkpoint at the folded range position")
+	}
+	if len(sess.Messages) < 2 || sess.Messages[1].Content != "msg-00 task body" {
+		t.Fatalf("pinned first user message is not right after the checkpoint: %+v", sess.Messages[1])
+	}
+	if n := countCheckpoints(sess); n != 1 {
+		t.Fatalf("checkpoints = %d, want 1", n)
+	}
+}
+
+// Survival ticks promote checkpoints to old age: five compactions survived
+// flips young to old, which is what makes a block merge eligible.
+func TestTickSurvivorsPromotesAtFive(t *testing.T) {
+	messages := []sessionstore.Message{
+		{Role: llm.RoleSystem, Content: "<conversation-checkpoint>", Compaction: &sessionstore.CompactionInfo{Summary: "old work"}},
+	}
+	for i := 0; i < 4; i++ {
+		tickSurvivors(messages)
+		if generationOf(messages[0].Compaction) != "young" {
+			t.Fatalf("promoted after %d ticks, want young until five", i+1)
+		}
+	}
+	tickSurvivors(messages)
+	if generationOf(messages[0].Compaction) != "old" {
+		t.Fatal("still young after five ticks; promotion never fired")
+	}
+	if messages[0].Compaction.Survived != 5 {
+		t.Fatalf("survived = %d, want 5", messages[0].Compaction.Survived)
+	}
+}
+
+// Tier distillation merges old tier-1 checkpoints into one tier-2 block while
+// a compaction is already running, and the fresh fold still lands at tier 1.
+func TestTierMergeDistillsOldTierOnes(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary(), validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fold"}})
+	c.Settings.Keep.Tokens = 8000
+	old := func(summary string) sessionstore.Message {
+		return sessionstore.Message{
+			Role:    llm.RoleSystem,
+			Content: "<conversation-checkpoint>",
+			Compaction: &sessionstore.CompactionInfo{
+				Summary: summary, Tier: 1, Generation: "old", Survived: 9,
+			},
+		}
+	}
+	sess := &sessionstore.Session{ID: "tier-test"}
+	sess.Messages = append(sess.Messages, old("ancient work one"), old("ancient work two"))
+	for i := 0; i < 10; i++ {
+		sess.Messages = append(sess.Messages, sessionstore.Message{
+			Role: llm.RoleUser, Content: fmt.Sprintf("msg-%02d task body", i),
+		})
+	}
+	ok, err := c.Compact(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !ok {
+		t.Fatal("nothing was folded")
+	}
+	var tiers []int
+	for _, message := range sess.Messages {
+		if message.Compaction == nil {
+			continue
+		}
+		tiers = append(tiers, tierOf(message.Compaction))
+		if strings.Contains(message.Compaction.Summary, "ancient work") {
+			t.Errorf("consumed old summary still on the wire: %q", message.Compaction.Summary)
+		}
+	}
+	if len(tiers) != 2 || tiers[0] != 2 || tiers[1] != 1 {
+		t.Fatalf("checkpoint tiers = %v, want [2 1] (merged old block then fresh fold)", tiers)
+	}
+	// The merged tier-2 block must sit where the consumed blocks were: first.
+	if sess.Messages[0].Compaction == nil || tierOf(sess.Messages[0].Compaction) != 2 {
+		t.Error("merged tier-2 block is not at the consumed range position")
 	}
 }
