@@ -513,6 +513,22 @@ type Compactor struct {
 	// the implementation logs and returns.
 	Learn func(ctx context.Context, sessionID string, discarded []sessionstore.Message, summary string)
 
+	// Carry reports the sidekick/memory ids that should survive this checkpoint.
+	// Optional; nil carries nothing, which is correct for every caller with no sidekick.
+	//
+	// The judgement lives on the owner and not in here because the compactor does
+	// not know what an id means. It cannot reach the memory store, cannot score a
+	// memory against memory.SidekickGate, and cannot tell a delivered note from
+	// a delivered bond; the owner holds the store, the gate and the typed decay
+	// the score is computed from. So the compactor asks who still holds and
+	// carries the answer verbatim, and a fold never decides on its own which
+	// notes are worth telling again.
+	//
+	// nil forwards previous unchanged. That is the safe direction - nothing
+	// expires silently - and for a caller with no sidekick previous is empty, so
+	// it is the same as carrying nothing.
+	Carry func(sess *sessionstore.Session, previous []string) []string
+
 	// LiveRequest, when set, returns the request the running agent would send
 	// for this session: the same system prompt, the same pinned context, the
 	// whole history and the tool catalogue. An in-band compaction appends its
@@ -712,8 +728,19 @@ func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, f
 		return
 	}
 	var parts []string
+	// The delivered ids come off the consumed blocks alongside their summaries,
+	// and this is the one place in the package where they can be dropped without
+	// anything noticing. A merge is a mechanical rewrite of N checkpoints into
+	// one; the fold that follows calls Carry over the union, but the fold is not
+	// guaranteed - it aborts on a summariser failure and on an empty fold range,
+	// and the merge has already rewritten the messages by then. So the union is
+	// written here and now: an id that is only on a block this merge consumed has
+	// no other copy in the session, and losing it is the silent version of the
+	// bug this field exists to prevent.
+	var delivered []string
 	for _, i := range indices {
 		parts = append(parts, sess.Messages[i].Compaction.Summary)
+		delivered = appendUnique(delivered, sess.Messages[i].Compaction.Delivered...)
 	}
 	joined := strings.Join(parts, "\n\n---\n\n")
 	if len(joined) > MergeMaxSummaryLength {
@@ -736,6 +763,7 @@ func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, f
 			Seq:        len(sess.Messages),
 			Tier:       fromTier + 1,
 			Generation: "young",
+			Delivered:  delivered,
 		},
 	}
 	first := indices[0]
@@ -796,6 +824,11 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 			systemMessage = &copy
 		}
 	}
+	// What the standing checkpoints say the model has been told, read here while
+	// the tool results carrying those notes are still on the wire. The same walk
+	// that read previousSummary reads this, because a set kept anywhere else is
+	// a second answer to the same question that goes stale quietly.
+	previousDelivered := sess.CheckpointDelivered()
 	candidate := sess.Messages
 	offset := 0
 	if latestCompaction >= 0 {
@@ -872,6 +905,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 			Seq:        len(sess.Messages),
 			Tier:       1,
 			Generation: "young",
+			Delivered:  c.carry(sess, previousDelivered),
 		},
 	})
 	// First-user-message pin: the session's opening user message survives the
@@ -901,6 +935,38 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
 	}
 	return true, nil
+}
+
+// carry asks the owner which delivered ids this checkpoint keeps.
+//
+// It is asked here, at the instant the fold is written, while the discarded
+// head is still on the wire and the session's own delivered list still stands:
+// that is the only moment at which "what was the model told, and does it still
+// hold" is answerable at all. Afterwards the fold has already deleted the tool
+// results that were the only copies, and an owner asking then would be reading
+// its own guess back.
+func (c *Compactor) carry(sess *sessionstore.Session, previous []string) []string {
+	if c.Carry == nil {
+		return previous
+	}
+	return c.Carry(sess, previous)
+}
+
+// appendUnique appends ids, dropping blanks and repeats in first-seen order, so
+// the same input always writes the same set to the session file.
+func appendUnique(dst []string, ids ...string) []string {
+	seen := make(map[string]bool, len(dst)+len(ids))
+	for _, id := range dst {
+		seen[id] = true
+	}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		dst = append(dst, id)
+	}
+	return dst
 }
 
 // summarise produces a validated checkpoint from the agent's own request.

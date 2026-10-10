@@ -92,6 +92,23 @@ type CompactionInfo struct {
 	Tier       int    `json:"tier,omitempty"`
 	Generation string `json:"generation,omitempty"`
 	Survived   int    `json:"survived,omitempty"`
+	// Delivered is the delivered set as this fold judged it: one
+	// memory.DeliveryID per entry, the same ids Session.MemoryDelivered holds.
+	//
+	// It is carried because the fold deletes the copies the model actually read.
+	// A sidekick annotation reaches the model as text appended to a tool result,
+	// and that text IS the delivery; the delivered set on the session says what
+	// was told and outlives the transcript that carried it. So after a fold the
+	// session can hold ids whose every copy has been folded away - the harness
+	// believes it told the model X while the context says nothing about X, and
+	// the agent will never ask again. That is worse than never having told it,
+	// and nothing errors, nothing logs, and the transcript simply looks short.
+	//
+	// omitempty so a checkpoint with nothing to say writes the bytes it always
+	// wrote and a session stored before this field loads unchanged: an absent
+	// key is an empty set, schemaVersion stays 3, loadUnlocked needs no default
+	// and Recover needs no branch.
+	Delivered []string `json:"delivered,omitempty"`
 }
 
 type ToolCallRef struct {
@@ -107,6 +124,62 @@ func (m Message) AllToolCalls() []ToolCallRef {
 	}
 	if m.ToolCall != nil {
 		return []ToolCallRef{*m.ToolCall}
+	}
+	return nil
+}
+
+// CheckpointDelivered is every delivered id the standing checkpoints carry, in
+// first-seen order with blanks and repeats dropped.
+//
+// It is the union across checkpoints rather than the newest set because a fold
+// keeps every earlier checkpoint standing, and the newest one is not always the
+// one holding an id: a checkpoint written before this field existed carries
+// none, and a later fold can decline to carry. Taking the union is what makes
+// the result monotone, which is the direction that loses nothing silently.
+func (s *Session) CheckpointDelivered() []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, message := range s.Messages {
+		if message.Compaction == nil {
+			continue
+		}
+		for _, id := range message.Compaction.Delivered {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// LatestCheckpointDelivered is the newest checkpoint's delivered set, or nil.
+//
+// This is the read-back seam for the runner, after sessionstore.Recover. The
+// newest standing checkpoint is the last fold's own account of what it left
+// represented, so seeding the delivered set from it restores that judgement
+// instead of trusting Session.MemoryDelivered, which also holds every id whose
+// tool result the fold deleted. It is meant to feed MarkDeliveredMemory.
+//
+// Empty is a real answer and not a failure: nothing was carried, or the session
+// predates the field. A caller must not read nil as "keep everything marked".
+// The result is a copy, because the caller appends to it.
+func (s *Session) LatestCheckpointDelivered() []string {
+	if s == nil {
+		return nil
+	}
+	for i := len(s.Messages) - 1; i >= 0; i-- {
+		info := s.Messages[i].Compaction
+		if info == nil || len(info.Delivered) == 0 {
+			continue
+		}
+		out := make([]string, len(info.Delivered))
+		copy(out, info.Delivered)
+		return out
 	}
 	return nil
 }
