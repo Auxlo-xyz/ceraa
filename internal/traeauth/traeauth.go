@@ -152,9 +152,13 @@ func RequestHeaders(token string) map[string]string {
 // instead: Ceraa builds a verification URI, the user opens it, approves, and
 // pastes the redirect URL back. The redirect carries a refresh token, which
 // is stored as the PAT — from there the durable-credential path above takes
-// over unchanged. Values captured from the live client.
+// over unchanged.
+//
+// The client id is Trae's own IDE client, taken from their shipped binaries.
+// A third-party-reconstructed id was tried first and the approval page
+// rejected it; nothing Trae ships references that id anywhere.
 const (
-	loginClientID = "ono9krqynydwx5"
+	loginClientID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 	loginAppVer   = "3.5.54"
 	loginTimeout  = 600
 	loginChannel  = "native_ide"
