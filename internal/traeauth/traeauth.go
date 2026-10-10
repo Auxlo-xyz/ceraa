@@ -184,6 +184,7 @@ var loginExchangeHosts = []string{
 type LoginFlow struct {
 	VerificationURI string
 	CodeVerifier    string
+	LoginHost       string
 }
 
 // StartLogin asks the login service where to authorize and builds the
@@ -196,13 +197,14 @@ func StartLogin(ctx context.Context) (*LoginFlow, error) {
 	if err != nil {
 		return nil, err
 	}
+	loginHost = strings.TrimSpace(loginHost)
 	verifier, challenge := newPKCEPair()
 	callbackURL := "http://127.0.0.1:" + callbackPort + callbackPath
-	uri, err := buildVerificationURI(loginHost, traceID, callbackURL, challenge)
+	uri, err := buildVerificationURI(loginHost, traceID, callbackURL, challenge, randomHexID(), randomHexID())
 	if err != nil {
 		return nil, err
 	}
-	return &LoginFlow{VerificationURI: uri, CodeVerifier: verifier}, nil
+	return &LoginFlow{VerificationURI: uri, CodeVerifier: verifier, LoginHost: loginHost}, nil
 }
 
 // SaveCallbackURL parses a pasted redirect URL, extracts the refresh token,
@@ -295,7 +297,7 @@ func requestLoginGuidance(ctx context.Context, traceID string) (string, error) {
 	return "", fmt.Errorf("trae login guidance: %s", strings.Join(errs, " | "))
 }
 
-func buildVerificationURI(loginHost, traceID, callbackURL, challenge string) (string, error) {
+func buildVerificationURI(loginHost, traceID, callbackURL, challenge, machineID, deviceID string) (string, error) {
 	rest := strings.TrimSpace(loginHost)
 	if !strings.HasPrefix(rest, "http://") && !strings.HasPrefix(rest, "https://") {
 		rest = "https://" + rest
@@ -315,10 +317,10 @@ func buildVerificationURI(loginHost, traceID, callbackURL, challenge string) (st
 	q.Set("redirect", "0")
 	q.Set("login_trace_id", traceID)
 	q.Set("auth_callback_url", callbackURL)
-	q.Set("machine_id", "0")
-	q.Set("device_id", "0")
-	q.Set("x_device_id", "0")
-	q.Set("x_machine_id", "0")
+	q.Set("machine_id", machineID)
+	q.Set("device_id", deviceID)
+	q.Set("x_device_id", deviceID)
+	q.Set("x_machine_id", machineID)
 	q.Set("x_device_brand", "PC")
 	q.Set("x_device_type", "Windows")
 	q.Set("x_os_version", "Windows 11 Pro")
@@ -474,4 +476,13 @@ func traeUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	h := hex.EncodeToString(b)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// randomHexID mints a 32-hex-char device/machine id. The authorize page keys
+// device identity off these: zeros fail the token call outright, while fresh
+// random ids are what every native client sends on first login.
+func randomHexID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

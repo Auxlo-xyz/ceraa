@@ -122,7 +122,7 @@ func TestExtractRefreshToken(t *testing.T) {
 // The verification URI must carry the client id, the PKCE challenge, and the
 // paste-back callback, or the approval page cannot complete the login.
 func TestBuildVerificationURI(t *testing.T) {
-	uri, err := buildVerificationURI("login.trae.ai", "trace-1", "http://127.0.0.1:18787/trae/callback", "challenge-x")
+	uri, err := buildVerificationURI("login.trae.ai", "trace-1", "http://127.0.0.1:18787/trae/callback", "challenge-x", "machine-1", "device-1")
 	if err != nil {
 		t.Fatal(err)
 	}
