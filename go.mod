@@ -6,6 +6,7 @@ require (
 	github.com/go-rod/rod v0.116.2
 	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/cobra v1.8.1
+	github.com/tetratelabs/wazero v1.9.0
 	golang.org/x/sys v0.48.0
 )
 
