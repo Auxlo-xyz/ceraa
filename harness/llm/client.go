@@ -910,6 +910,13 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 		writeDebugNote("gemini.log", note)
 		return fmt.Errorf("no provider endpoint configured for model %q: set a base URL via provider onboarding or CERAA_API_URL", c.cfg.Model)
 	}
+	// Code Assist is checked before the native auto-detection below: its host
+	// and model both match the native heuristics, so detection alone would
+	// route it at the public endpoint (a 404 on /models/...). The explicit
+	// subscription flag wins over the guess.
+	if c.cfg.CodeAssistNative {
+		return c.streamCodeAssist(ctx, req, onDelta)
+	}
 	// Gemini is served by Google's native API, where a thought signature is a
 	// first-class field rather than an ad-hoc extra_content field. Only an
 	// explicitly configured OpenAI-compatibility URL uses the adapter below.
@@ -938,11 +945,6 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// transport rather than the OpenAI-compatible path.
 	if c.cfg.QoderNative {
 		return c.streamQoder(ctx, req, onDelta)
-	}
-	// Code Assist speaks native generateContent shapes on its own method with
-	// its own envelope, so it rides its own transport too.
-	if c.cfg.CodeAssistNative {
-		return c.streamCodeAssist(ctx, req, onDelta)
 	}
 	return c.streamWithReasoningRetry(ctx, req, onDelta, c.streamOpenAI)
 }

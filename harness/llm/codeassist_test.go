@@ -86,6 +86,39 @@ func geminiSSE() string {
 		"data: {\"candidates\": [{\"finishReason\": \"STOP\"}], \"usageMetadata\": {\"promptTokenCount\": 10, \"candidatesTokenCount\": 5, \"totalTokenCount\": 15}}\n\n"
 }
 
+// The explicit subscription flag beats native auto-detection: this host and
+// model match the native heuristics, so detection alone routes at the public
+// endpoint and the server 404s on /models/.... This is the exact misroute
+// that shipped.
+func TestCodeAssistNativeWinsOverAutoDetection(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(geminiSSE()))
+	}))
+	defer srv.Close()
+
+	cfg := FromProvider("https://daily-cloudcode-pa.googleapis.com", "", "Gemini 3.8 Flash")
+	if !cfg.GeminiNative {
+		t.Fatal("test setup wrong: this host+model must trip auto-detection")
+	}
+	// Redirect at the stub: the flags mirror production, the traffic stays local.
+	cfg.BaseURL = srv.URL
+	cfg.CodeAssistNative = true
+	cfg.CodeAssistTokens = stubCodeAssistCreds{token: "tok-test", refreshed: new(int32)}
+	client := New(cfg)
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	}, func(ProviderResponse) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !strings.HasPrefix(path, "/v1internal:") {
+		t.Errorf("path = %q, want the v1internal method, not the public models path", path)
+	}
+}
+
 // A full signed round trip against a stub: the URL is the v1internal method,
 // auth is a bearer plus the client identity, and the envelope carries the
 // tiered model, the project and a session.
