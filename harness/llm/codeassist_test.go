@@ -10,6 +10,46 @@ import (
 	"testing"
 )
 
+// The v1internal method wraps chunks as {"response": {...}}; the public
+// method sends them bare. Without the unwrap every frame parses empty: no
+// content, no finish reason, and the stream dies with "ended without
+// finish_reason" on a perfectly good reply. Usage-only frames keep reading
+// rather than terminating.
+func TestCodeAssistStreamUnwrapsResponseEnvelopes(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "hello"}]}}]}}`,
+		`data: {"response": {"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15}}}`,
+		`data: {"response": {"candidates": [{"finishReason": "STOP"}]}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	var content, finish string
+	var usage *UsageInfo
+	client := &StreamingClient{}
+	err := client.readGeminiStream(strings.NewReader(stream), func(delta ProviderResponse) {
+		content += delta.Content
+		if delta.FinishReason != "" {
+			finish = delta.FinishReason
+		}
+		if delta.Usage != nil {
+			usage = delta.Usage
+		}
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if content != "hello" {
+		t.Errorf("content = %q, want hello", content)
+	}
+	if finish != "stop" {
+		t.Errorf("finish = %q, want stop", finish)
+	}
+	if usage == nil || usage.TotalTokens != 15 {
+		t.Errorf("usage = %+v, want the usage-only frame counted", usage)
+	}
+}
+
 // Reasoning levels land on upstream tiers, and unknown levels take the
 // reference default rather than failing the turn.
 func TestCodeAssistTierMapping(t *testing.T) {

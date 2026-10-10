@@ -548,6 +548,20 @@ func (c *StreamingClient) readGeminiStream(r io.Reader, onDelta func(ProviderRes
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return &StreamError{Err: fmt.Errorf("decode gemini stream event: %w", err), Retryable: false, Partial: emitted}
 		}
+		// The v1internal method wraps chunks as {"response": {...}}; the
+		// public method sends them bare. The original client accepts both in
+		// this order, so a wrapped frame unwraps here while a bare one never
+		// matches and passes through untouched.
+		if len(event.Candidates) == 0 && event.UsageMetadata == nil {
+			var envelope struct {
+				Response json.RawMessage `json:"response"`
+			}
+			if err := json.Unmarshal([]byte(data), &envelope); err == nil && len(bytes.TrimSpace(envelope.Response)) > 0 {
+				if err := json.Unmarshal(envelope.Response, &event); err != nil {
+					return &StreamError{Err: fmt.Errorf("decode gemini stream event: %w", err), Retryable: false, Partial: emitted}
+				}
+			}
+		}
 		if event.ResponseID != "" {
 			responseID = event.ResponseID
 		}
