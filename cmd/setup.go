@@ -23,6 +23,7 @@ import (
 	"ceraa/internal/deepseekauth"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/opencodeauth"
+	"ceraa/internal/qoderauth"
 )
 
 type doctorCheck struct {
@@ -214,6 +215,11 @@ func checkSubscriptionCredential(ctx context.Context, provider config.LLMProvide
 			return doctorCheck{"provider", "FAIL", "DeepSeek is not signed in; sign in again"}
 		}
 		return doctorCheck{"provider", "OK", "DeepSeek credential present"}
+	case llm.QoderSubscription:
+		if !qoderauth.Authenticated() {
+			return doctorCheck{"provider", "FAIL", "Qoder is not signed in; sign in again"}
+		}
+		return doctorCheck{"provider", "OK", "Qoder credential present"}
 	}
 	return doctorCheck{"provider", "WARN", "unknown subscription provider: " + provider.Subscription}
 }
