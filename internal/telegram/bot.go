@@ -23,6 +23,7 @@ import (
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
 	"ceraa/internal/provision"
+	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/keyboard"
 	"ceraa/internal/telegram/menus"
@@ -2471,6 +2472,108 @@ func activateDeepSeekProvider(token string, chatID int64) {
 	deepseekNotify(token, chatID, "✅ DeepSeek provider activated with model "+model+". Send a task to use it.", nil)
 }
 
+// selectQoderProvider is the Qoder entry point, mirroring the other
+// subscription providers.
+//
+// A stored credential switches provider immediately; otherwise a device login
+// starts. Reaching Qoder from the provider menu asks to use it, so the flow is
+// tracked with activate set and the background poll switches provider on its
+// own once the approval lands.
+func selectQoderProvider(token string, chatID int64) {
+	qoderEntryPoint(token, chatID)
+}
+
+// qoderEntryPoint is the real entry point, indirected so a test can assert the
+// provider menu routes provider:qoder here without starting a device login
+// against the live service.
+var qoderEntryPoint = func(token string, chatID int64) {
+	signedIn := qoderauth.Authenticated()
+	logger.Info("qoder entry: signed_in=" + strconv.FormatBool(signedIn) +
+		" active_before=" + defaultState.provider())
+	if signedIn {
+		activateQoderProvider(token, chatID)
+		return
+	}
+	startQoderLogin(token, chatID)
+}
+
+// startQoderLogin begins a device login, whether or not a credential exists.
+// Reachable from provider:qoder when signed out and from the explicit
+// "Sign in again" route, for the same reason the other providers split those
+// routes: silently re-activating on "sign in again" would make
+// re-authentication unreachable.
+func startQoderLogin(token string, chatID int64) {
+	activeAtStart := defaultState.provider()
+	mgr, flow, err := qoderBeginLogin()
+	if err != nil {
+		qoderNotify(token, chatID, "Failed to start Qoder login: "+err.Error(), nil)
+		return
+	}
+	snapshot := flow.Snapshot()
+	trackQoderFlow(snapshot.FlowID, chatID, true, activeAtStart)
+	go func() {
+		if err := qoderPollLogin(mgr, flow); err != nil {
+			deliverQoderTerminal(token, snapshot.FlowID, false, err.Error())
+			return
+		}
+		deliverQoderTerminal(token, snapshot.FlowID, true, "")
+	}()
+	qoderNotify(token, chatID,
+		"Sign in to Qoder to use it. Open the link, approve, and Ceraa will switch to Qoder on its own — no need to press Check. The approval expires in 5 minutes.\n\n"+
+			"🔐 Qoder Device Login\n\n1. Open: "+snapshot.AuthURL+"\n2. Approve in the browser, then it activates by itself",
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text": "🔗 Open Authorization URL", "url": snapshot.AuthURL}},
+		}})
+}
+
+// qoderModelForAccount picks the model to activate.
+//
+// Reuses the active model only when it is one the subscription serves, so a
+// model left over from another provider cannot produce a profile the endpoint
+// rejects.
+func qoderModelForAccount() string {
+	current, _ := defaultState.values()
+	if llm.IsSubscriptionModel(llm.QoderSubscription, current) {
+		return current
+	}
+	return llm.DefaultQoderModel
+}
+
+// activateQoderProvider saves the Qoder profile and makes it active.
+//
+// The model is always chosen, never inherited: a model left over from another
+// provider cannot produce a profile the endpoint rejects, and guardModel is
+// what enforces that rather than trust.
+func activateQoderProvider(token string, chatID int64) {
+	model, err := guardModel("qoder", qoderModelForAccount())
+	if err != nil {
+		logger.Warn("Qoder activate: " + err.Error())
+		qoderNotify(token, chatID, "Qoder activation failed: "+err.Error(), nil)
+		return
+	}
+	// The profile URL is for display: the transport signs against the encrypted
+	// host regardless, which is the same host.
+	profile := config.ProviderProfile{
+		URL:             llm.QoderBaseURL,
+		Model:           model,
+		MaxOutputTokens: 8192,
+		PromptCacheMode: "auto",
+		Subscription:    llm.QoderSubscription,
+	}
+	if err := defaultState.setProviderProfile("qoder", profile); err != nil {
+		logger.Warn("qoder activate: profile save failed: " + err.Error())
+		qoderNotify(token, chatID, "Qoder profile save failed: "+err.Error(), nil)
+		return
+	}
+	if err := defaultState.setProvider("qoder"); err != nil {
+		logger.Warn("qoder activate: provider set failed: " + err.Error())
+		qoderNotify(token, chatID, "Qoder provider activation failed: "+err.Error(), nil)
+		return
+	}
+	logger.Info("qoder activate: provider=" + defaultState.provider() + " model=" + model)
+	qoderNotify(token, chatID, "✅ Qoder provider activated with model "+model+". Send a task to use it.", nil)
+}
+
 // claudeFlowOwner records which chat started a login and what it wanted.
 type claudeFlowOwner struct {
 	chatID        int64
@@ -2928,6 +3031,8 @@ func subscriptionMarkerFor(providerID string) string {
 		return llm.OpenCodeSubscription
 	case "deepseek":
 		return llm.DeepSeekSubscription
+	case "qoder":
+		return llm.QoderSubscription
 	default:
 		return ""
 	}

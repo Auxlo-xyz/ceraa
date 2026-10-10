@@ -733,6 +733,8 @@ func DefaultModelFor(subscription string) string {
 		return DefaultClineModel
 	case OpenCodeSubscription:
 		return DefaultOpenCodeModel
+	case QoderSubscription:
+		return DefaultQoderModel
 	default:
 		return ""
 	}

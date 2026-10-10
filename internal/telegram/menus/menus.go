@@ -18,6 +18,7 @@ import (
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
 	"ceraa/internal/paths"
+	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
 	"context"
@@ -46,7 +47,7 @@ var All = []string{
 	"context", "compaction_level", "file_browser", "settings", "permission",
 	"snapshots", "message_history", "skills_catalog", "worktree",
 	"memory", "skill", "schedule", "secrets",
-	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude",
+	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder",
 }
 
 // runtimeState is the bot's own state, read from bridge-state.json.
@@ -211,11 +212,13 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return subscriptionMenu("DeepSeek", "🐋", deepseekauth.SignedIn(), selection().ActiveProvider == llm.DeepSeekSubscription, "provider:deepseek")
 	case "claude":
 		return subscriptionMenu("Claude", "🟠", claudeauth.SignedIn(), selection().ActiveProvider == llm.ClaudeSubscription, "provider:claude")
+	case "qoder":
+		return subscriptionMenu("Qoder", "⚡", qoderauth.Authenticated(), selection().ActiveProvider == llm.QoderSubscription, "provider:qoder")
 	case "hermes:models", "xai:models", "minimax:models", "cline:models", "codex:models",
-		"opencode:models", "deepseek:models", "claude:models",
+		"opencode:models", "deepseek:models", "claude:models", "qoder:models",
 		"provider:hermes:models", "provider:xai:models", "provider:minimax:models",
 		"provider:cline:models", "provider:codex:models", "provider:opencode:models",
-		"provider:deepseek:models", "provider:claude:models":
+		"provider:deepseek:models", "provider:claude:models", "provider:qoder:models":
 		// Both spellings. The bare "<id>:models" is the menu name, and the prefixed
 		// form is the callback data subscriptionMenu emits. Only the menu name was
 		// here, which is the same gap the callback had: the button's data resolved
@@ -432,6 +435,18 @@ func ProviderMenu() map[string]any {
 		claudeLabel += " · sign in"
 	}
 	rows = append(rows, []map[string]string{{"text": claudeLabel, "callback_data": "provider:claude"}})
+	// Qoder is a row for the same reason: a subscription profile cannot
+	// appear as a profile row until it exists.
+	qoderLabel := "⚡ Qoder Account"
+	switch {
+	case active == llm.QoderSubscription:
+		qoderLabel = "✅ " + qoderLabel
+	case qoderauth.Authenticated():
+		qoderLabel += " · switch to it"
+	default:
+		qoderLabel += " · sign in"
+	}
+	rows = append(rows, []map[string]string{{"text": qoderLabel, "callback_data": "provider:qoder"}})
 	rows = append(rows, []map[string]string{{"text": "➕ Custom provider", "callback_data": "provider:custom"}})
 	rows = append(rows, []map[string]string{{"text": "🗑 Remove provider", "callback_data": "provider:remove_menu"}})
 	rows = append(rows, []map[string]string{{"text": "◀️ Back", "callback_data": "menu:hub"}, {"text": "✕ Close", "callback_data": "close"}})
@@ -1042,7 +1057,7 @@ func Hub() map[string]any {
 		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
-		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(),
+		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(), "qoder": qoderHubLabel(),
 	}
 	rows := [][]map[string]string{}
 	placed := 0
@@ -1129,6 +1144,18 @@ func deepseekHubLabel() string {
 		return "🐋 DeepSeek · signed in"
 	default:
 		return "🐋 DeepSeek · sign in"
+	}
+}
+
+// qoderHubLabel names the Qoder entry by state.
+func qoderHubLabel() string {
+	switch {
+	case qoderauth.Authenticated() && selection().ActiveProvider == llm.QoderSubscription:
+		return "⚡ Qoder · active"
+	case qoderauth.Authenticated():
+		return "⚡ Qoder · signed in"
+	default:
+		return "⚡ Qoder · sign in"
 	}
 }
 
@@ -1333,6 +1360,8 @@ func subscriptionForProvider(providerID string) string {
 		return llm.DeepSeekSubscription
 	case "claude":
 		return llm.ClaudeSubscription
+	case "qoder":
+		return llm.QoderSubscription
 	default:
 		return ""
 	}
@@ -1356,6 +1385,8 @@ func subscriptionLabel(providerID string) string {
 		return "DeepSeek"
 	case "claude":
 		return "Claude"
+	case "qoder":
+		return "Qoder"
 	default:
 		return providerID
 	}

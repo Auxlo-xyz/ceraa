@@ -510,6 +510,8 @@ func handleCallback(token string, q *callbackQuery) {
 				selectDeepSeekProvider(token, chatID)
 			case "claude":
 				selectClaudeProvider(token, chatID)
+			case "qoder":
+				selectQoderProvider(token, chatID)
 			}
 		case providerRouteModels:
 			label := menus.SubscriptionLabel(providerID)
@@ -540,6 +542,8 @@ func handleCallback(token string, q *callbackQuery) {
 				startClineLogin(token, chatID)
 			case "deepseek":
 				startDeepSeekLogin(token, chatID)
+			case "qoder":
+				startQoderLogin(token, chatID)
 			case "opencode":
 				// Re-entering the key. There is no token to refresh, so this is
 				// the same onboarding flow the first key went through.
