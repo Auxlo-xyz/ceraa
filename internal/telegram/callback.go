@@ -517,8 +517,6 @@ func handleCallback(token string, q *callbackQuery) {
 				selectGeminiProvider(token, chatID)
 			case "workbuddy":
 				selectBuddyProvider(token, chatID, buddyauth.WorkBuddyProduct())
-			case "trae":
-				selectTraeProvider(token, chatID)
 			}
 		case providerRouteModels:
 			label := menus.SubscriptionLabel(providerID)

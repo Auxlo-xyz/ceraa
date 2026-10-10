@@ -695,8 +695,6 @@ func SubscriptionModels(subscription string) []string {
 		return append([]string(nil), GeminiCodeAssistModels...)
 	case WorkBuddySubscription:
 		return append([]string(nil), WorkBuddyModels...)
-	case TraeSubscription:
-		return append([]string(nil), TraeModels...)
 	case OpenCodeSubscription:
 		return append([]string(nil), OpenCodeModels...)
 	default:
@@ -745,8 +743,6 @@ func DefaultModelFor(subscription string) string {
 		return DefaultGeminiCodeAssistModel
 	case WorkBuddySubscription:
 		return DefaultWorkBuddyModel
-	case TraeSubscription:
-		return DefaultTraeModel
 	default:
 		return ""
 	}

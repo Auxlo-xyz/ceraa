@@ -72,11 +72,7 @@ type ProviderConfig struct {
 	// CodeAssistTokens supplies the Google OAuth access token, renewing on
 	// expiry. Required when CodeAssistNative is set.
 	CodeAssistTokens CodexTokenSource
-	// TraeNative selects the Trae international subscription transport: the
-	// raw-chat SSE endpoint behind a PAT-exchanged ide token, not an
-	// OpenAI-compatible host.
-	TraeNative bool
-	MaxRetries int
+	MaxRetries       int
 	// RetryBackoff scales the delay between attempts. Zero uses the production
 	// 1s/3s/8s schedule; tests set it to keep the retry path fast to exercise.
 	RetryBackoff time.Duration
@@ -949,11 +945,6 @@ func (c *StreamingClient) Stream(ctx context.Context, req StreamRequest, onDelta
 	// transport rather than the OpenAI-compatible path.
 	if c.cfg.QoderNative {
 		return c.streamQoder(ctx, req, onDelta)
-	}
-	// Trae's raw-chat endpoint is SSE with its own event names, so it rides
-	// its own transport rather than the OpenAI-compatible path.
-	if c.cfg.TraeNative {
-		return c.streamTrae(ctx, req, onDelta)
 	}
 	return c.streamWithReasoningRetry(ctx, req, onDelta, c.streamOpenAI)
 }

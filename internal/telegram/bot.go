@@ -29,7 +29,6 @@ import (
 	"ceraa/internal/secret"
 	"ceraa/internal/telegram/keyboard"
 	"ceraa/internal/telegram/menus"
-	"ceraa/internal/traeauth"
 	"ceraa/internal/xaiauth"
 	"context"
 	"encoding/json"
@@ -2575,102 +2574,6 @@ func activateQoderProvider(token string, chatID int64) {
 	}
 	logger.Info("qoder activate: provider=" + defaultState.provider() + " model=" + model)
 	qoderNotify(token, chatID, "✅ Qoder provider activated with model "+model+". Send a task to use it.", nil)
-}
-
-// selectTraeProvider is the Trae entry point, mirroring the other
-// subscription providers.
-//
-// A stored PAT switches provider immediately; otherwise the menu asks for
-// one. Trae has no browser-login path here: the PAT comes from the user's
-// own Trae account (Trae CLI or IDE after signing in), pasted back in chat.
-func selectTraeProvider(token string, chatID int64) {
-	traeEntryPoint(token, chatID)
-}
-
-// traeEntryPoint is the real entry point, indirected so a test can assert the
-// provider menu routes provider:trae here without touching the secret store.
-var traeEntryPoint = func(token string, chatID int64) {
-	signedIn := traeauth.Authenticated()
-	logger.Info("trae entry: signed_in=" + strconv.FormatBool(signedIn) +
-		" active_before=" + defaultState.provider())
-	if signedIn {
-		activateTraeProvider(token, chatID)
-		return
-	}
-	startTraePATLogin(token, chatID)
-}
-
-// traeNotify posts a Trae outcome to a chat. Indirected so tests can observe
-// the PAT paste-back path without sending anything to Telegram.
-var traeNotify = func(token string, chatID int64, text string) {
-	send(token, chatID, text)
-}
-
-// traeSaveCallback trades a pasted redirect URL (or raw PAT) for the grant.
-// Indirected for the same reason.
-var traeSaveCallback = func(ctx context.Context, text string) error {
-	return traeauth.SaveCallbackURL(ctx, text)
-}
-
-// traeStartLogin mints the verification link. Indirected so the entry path
-// is provable without reaching the live login service.
-var traeStartLogin = func(ctx context.Context) (*traeauth.LoginFlow, error) {
-	return traeauth.StartLogin(ctx)
-}
-
-// startTraePATLogin opens the browser login and asks for the redirect back.
-// Trae's UI has no PAT to copy, so the menu mints a verification link
-// instead: approve it, then paste the redirect URL here. A raw PAT still
-// works at the same prompt for anyone who already holds one.
-func startTraePATLogin(token string, chatID int64) {
-	pendingProvider.Store(chatID, providerDraft{ID: llm.TraeSubscription, URL: llm.TraeBaseURL, Stage: "pat"})
-	flow, err := traeStartLogin(context.Background())
-	if err != nil {
-		logger.Warn("trae login start failed: " + err.Error())
-		traeNotify(token, chatID, "Could not reach the Trae login service ("+err.Error()+"). If you already hold a Trae PAT, paste it here, or type cancel.")
-		return
-	}
-	traeNotify(token, chatID, "Sign in to Trae to use it. Open the link, approve, then paste the redirect URL from the browser address bar back here — or type cancel. The browser will show an unreachable page; its address bar still carries the login.\n\n"+flow.VerificationURI+"\n\nAlready hold a Trae PAT? Paste that instead.")
-}
-
-// traeModelForAccount reuses the active model only when it is one Trae
-// serves, so a model left over from another provider cannot produce a
-// profile the endpoint rejects.
-func traeModelForAccount() string {
-	current, _ := defaultState.values()
-	if llm.IsSubscriptionModel(llm.TraeSubscription, current) {
-		return current
-	}
-	return llm.DefaultTraeModel
-}
-
-// activateTraeProvider saves the Trae profile and makes it active.
-func activateTraeProvider(token string, chatID int64) {
-	model, err := guardModel(llm.TraeSubscription, traeModelForAccount())
-	if err != nil {
-		logger.Warn("Trae activate: " + err.Error())
-		traeNotify(token, chatID, "Trae activation failed: "+err.Error())
-		return
-	}
-	profile := config.ProviderProfile{
-		URL:             llm.TraeBaseURL,
-		Model:           model,
-		MaxOutputTokens: 8192,
-		PromptCacheMode: "auto",
-		Subscription:    llm.TraeSubscription,
-	}
-	if err := defaultState.setProviderProfile(llm.TraeSubscription, profile); err != nil {
-		logger.Warn("trae activate: profile save failed: " + err.Error())
-		traeNotify(token, chatID, "Trae profile save failed: "+err.Error())
-		return
-	}
-	if err := defaultState.setProvider(llm.TraeSubscription); err != nil {
-		logger.Warn("trae activate: provider set failed: " + err.Error())
-		traeNotify(token, chatID, "Trae provider activation failed: "+err.Error())
-		return
-	}
-	logger.Info("trae activate: provider=" + defaultState.provider() + " model=" + model)
-	traeNotify(token, chatID, "✅ Trae provider activated with model "+model+". Send a task to use it.")
 }
 
 // selectGeminiProvider is the Gemini entry point, mirroring the other

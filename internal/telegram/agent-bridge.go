@@ -37,7 +37,6 @@ import (
 	"ceraa/internal/prompt"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
-	"ceraa/internal/traeauth"
 	"ceraa/internal/xaiauth"
 )
 
@@ -578,21 +577,6 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			model.BaseURL = llm.NormalizeWorkBuddyURL(firstNonEmptyStr(provider.URL, llm.WorkBuddyBaseURL))
 			model.APIKey = token
 			model.ExtraHeaders = llm.WorkBuddyRequestHeaders(provider.Model)
-			return model, nil
-		case "trae":
-			// The ide token is short-lived, so it is resolved per run rather
-			// than stored on the profile. The PAT behind it never leaves the
-			// secret store.
-			if !traeauth.Authenticated() {
-				return llm.ProviderConfig{}, fmt.Errorf("Trae account is not signed in: paste a PAT from the provider menu first")
-			}
-			token, err := traeauth.AccessToken(ctx)
-			if err != nil {
-				return llm.ProviderConfig{}, err
-			}
-			model.BaseURL = llm.NormalizeTraeURL(firstNonEmptyStr(provider.URL, llm.TraeBaseURL))
-			model.APIKey = token
-			model.TraeNative = true
 			return model, nil
 		case "qoder":
 			// The encrypted endpoint needs per-request signing, so the
