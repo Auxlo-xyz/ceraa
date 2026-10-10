@@ -1,6 +1,7 @@
 package instruction
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -62,6 +63,10 @@ type entry struct {
 	snap  Snapshot
 	diags Diagnostics
 	stamp fileStamp
+	// Withheld is retained alongside the snapshot because it is a compile-time
+	// finding and must survive a cache read, not just a recompile: a finding that
+	// disappears when the file stops changing is a finding nobody reads.
+	withheld []ScopeWithheld
 }
 
 // Store holds compiled project instructions and keeps them current.
@@ -104,6 +109,24 @@ type Store struct {
 	// newer compile with an older one.
 	started   uint64
 	published uint64
+
+	// propose, when set, is asked to scope rules that declared none and named
+	// nothing the filesystem could confirm. It is a field rather than a
+	// parameter so a caller wires it once and every refresh uses it, and it is
+	// nil by default because the deterministic pass alone is worth most of the
+	// coverage and a model call must stay opt-in.
+	propose Proposer
+}
+
+// WithProposer returns the store with a model pass installed.
+//
+// A builder rather than a second constructor so existing callers keep
+// constructing the store in one expression. The proposer runs off the hot path:
+// a refresh happens when the file's stamp or digest moved, and the compiled
+// result is cached, so a model call costs one per edit rather than one per run.
+func (s *Store) WithProposer(propose Proposer) *Store {
+	s.propose = propose
+	return s
 }
 
 // NewStore returns a store over project-relative sources resolved against root.
@@ -294,8 +317,37 @@ func (s *Store) refreshOne(source string) (*entry, bool) {
 	s.mu.Lock()
 	s.stats.Compiles++
 	s.mu.Unlock()
-	s.writeCache(s.root, source, snap, diags)
-	return &entry{snap: snap, diags: diags, stamp: stamp}, true
+
+	// Scoping runs before the cache write so a tagged snapshot is what gets
+	// persisted and the model is not asked again on the next run for a file that
+	// has not changed.
+	tagged := TagScopes(context.Background(), s.root, source, snap, s.propose)
+	diags = append(diags, scopeDiagnostics(source, tagged.Withheld)...)
+
+	s.writeCache(s.root, source, tagged.Snapshot, diags)
+	return &entry{snap: tagged.Snapshot, diags: diags, stamp: stamp, withheld: tagged.Withheld}, true
+}
+
+// scopeDiagnostics renders withheld scopes as findings.
+//
+// Hard findings rather than warnings, and the distinction matters: a warning is
+// read by nobody at the moment it counts, while a finding is reported beside the
+// line that caused it and has to be dealt with.
+func scopeDiagnostics(source string, withheld []ScopeWithheld) Diagnostics {
+	if len(withheld) == 0 {
+		return nil
+	}
+	out := make(Diagnostics, 0, len(withheld))
+	for _, item := range withheld {
+		out = append(out, Diagnostic{
+			Kind:    DiagUnresolvedScope,
+			Source:  source,
+			Line:    item.Line,
+			EndLine: item.Line,
+			Message: item.Reason + ": " + item.Applies,
+		})
+	}
+	return out
 }
 
 // writeCache stores a snapshot beside the rest of Ceraa's data.

@@ -253,6 +253,10 @@ const (
 	// DiagBroadScope is an Applies value with no separator and no dot, which is
 	// the shape that matches a base name anywhere in the tree.
 	DiagBroadScope DiagnosticKind = "broad-scope"
+	// DiagUnresolvedScope is a rule whose proposed scope did not resolve against
+	// the project. The rule is withheld rather than delivered unscoped, because
+	// unscoped is indistinguishable from a rule that never wanted a scope.
+	DiagUnresolvedScope DiagnosticKind = "unresolved-scope"
 	// DiagVolume is more rules than a single file should carry.
 	DiagVolume DiagnosticKind = "volume"
 )
