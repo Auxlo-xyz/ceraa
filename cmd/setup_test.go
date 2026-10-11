@@ -43,6 +43,9 @@ func TestCheckDirectory(t *testing.T) {
 func TestRunSetupPersistsConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// TestMain pins CERAA_HOME at a scratch dir, and DataDir honours it over HOME.
+	// Cleared here so the write lands in the default location this test is about.
+	t.Setenv("CERAA_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("CERAA_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
