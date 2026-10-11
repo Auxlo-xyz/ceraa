@@ -93,9 +93,16 @@ func TestQoderReloginStartsALogin(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		// The poll runs in the background, so the login message arrives
-		// after the callback returns.
-		joined := strings.Join(seen.snapshot(), "\n")
-		if strings.Contains(joined, "qoder.com/device/selectAccounts") {
+		// after the callback returns, and so does the terminal report.
+		// Waiting for both is what keeps restore() from racing that
+		// goroutine: the terminal notify is the last thing it sends, and it
+		// reads the provider state before sending it, so seeing it here
+		// orders that read ahead of the restore. Without this the test
+		// returns while the goroutine is still reading providers, and the
+		// cleanup write races it.
+		notified := seen.snapshot()
+		joined := strings.Join(notified, "\n")
+		if strings.Contains(joined, "qoder.com/device/selectAccounts") && len(notified) >= 2 {
 			return
 		}
 		if time.Now().After(deadline) {
