@@ -518,8 +518,8 @@ type Compactor struct {
 	//
 	// The judgement lives on the owner and not in here because the compactor does
 	// not know what an id means. It cannot reach the memory store, cannot score a
-	// memory against memory.SidekickGate, and cannot tell a delivered note from
-	// a delivered bond; the owner holds the store, the gate and the typed decay
+	// memory against memory.SidekickGate, and cannot tell one delivered memory
+	// note from another; the owner holds the store, the gate and the typed decay
 	// the score is computed from. So the compactor asks who still holds and
 	// carries the answer verbatim, and a fold never decides on its own which
 	// notes are worth telling again.
@@ -1126,11 +1126,11 @@ func (c *Compactor) noteSummaryFailure() {
 //
 // Consequence for a caller adding a second learner: keep it cheap or hand it
 // off to its own goroutine. Memory extraction is one model call and stays
-// inline. The bond runs two and is dispatched asynchronously by its own hook.
+// inline; the log writer is cheap and stays inline.
 //
 // A hook that fails must not fail the turnover: each of these logs and returns.
-// Order is memory then bond, because the bond reads the same checkpoint and
-// neither one's result feeds the other.
+// Order is memory extraction and then the memory-log summary, because the log
+// reads the same checkpoint and neither one's result feeds the other.
 func ChainLearn(first, second func(context.Context, string, []sessionstore.Message, string)) func(context.Context, string, []sessionstore.Message, string) {
 	if first == nil {
 		return second

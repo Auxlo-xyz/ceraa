@@ -78,12 +78,6 @@ func FilesDir() string {
 // file that does not exist is not an error.
 func ConfigFile() string { return filepath.Join(DataDir(), "config.json") }
 
-// BondFile is the one place BOND.md lives: beside the config, user-level
-// rather than per-project. Project files describe the work; the bond
-// describes the person. Same anchoring rule as ConfigFile for the same
-// reason: exactly one, in the data directory, never beside a checkout.
-func BondFile() string { return filepath.Join(DataDir(), "BOND.md") }
-
 // LegacyConfigCandidates are the pre-consolidation read locations, in the order
 // they used to win.
 //

@@ -221,17 +221,10 @@ type Run struct {
 	// evaluated: two sessions differing in outcome, one with the block and one
 	// with sidekick notes, are otherwise indistinguishable from a change in the
 	// task.
-	MemoryDelivery     string `json:"memory_delivery,omitempty"`
-	MemoryGeneralSent  int    `json:"memory_general_sent,omitempty"`
-	MemoryTargetedSent int    `json:"memory_targeted_sent,omitempty"`
-	MemoryBelowGate    int    `json:"memory_below_gate,omitempty"`
-	// MemoryBondSent is the size of the operator's identity block this run
-	// delivered, or zero for a run that had none to deliver.
-	//
-	// Recorded because a sidekick run that dropped the bond looks exactly like a
-	// sidekick run on an install with no BOND.md, and the session file is the only
-	// thing that survives to tell them apart.
-	MemoryBondSent     int       `json:"memory_bond_sent,omitempty"`
+	MemoryDelivery     string    `json:"memory_delivery,omitempty"`
+	MemoryGeneralSent  int       `json:"memory_general_sent,omitempty"`
+	MemoryTargetedSent int       `json:"memory_targeted_sent,omitempty"`
+	MemoryBelowGate    int       `json:"memory_below_gate,omitempty"`
 	PricingFetchedAt   time.Time `json:"pricing_fetched_at,omitempty"`
 	ModelContextWindow int       `json:"model_context_window,omitempty"`
 	ModelMaxTokens     int       `json:"model_max_tokens,omitempty"`

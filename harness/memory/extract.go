@@ -18,7 +18,7 @@ import (
 //
 // Gemini, served through its OpenAI-compatible surface at /v1beta/openai, so
 // the existing chat-completions client drives it with no adapter. It replaced a
-// Poolside laguna default after the bond probe: on the same prompt and the same
+// Poolside laguna default after an identity probe: on the same prompt and the
 // transcript, Poolside returned three different documents across runs at the
 // same temperature with zero overlap between them, while Gemini held a correct
 // document on every run and on both temperatures tested. Extraction runs off the

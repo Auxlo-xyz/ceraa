@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"ceraa/harness/bond"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -84,8 +83,7 @@ func memoryLogReader(root string) *memory.MemoryFile {
 // renderer the prompt modes read, and the reader for the append-only log.
 //
 // One value rather than fields written into the literal, so the wiring can be
-// asserted without a turn. The bond renderer that used to be woven into the
-// context function is gone; its content rides the log instead.
+// asserted without a turn.
 type memoryWiring struct {
 	// MemoryContextFunc renders the memory block the prompt modes read.
 	MemoryContextFunc func() (string, error)
@@ -101,12 +99,8 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 }
 
 // cliLearnChain assembles the compaction learn hooks for one turn: the memory
-// extractor when a credential is configured, and nothing else.
-//
-// cliLearnChain assembles the compaction learn hooks for one turn: the memory
-// extractor when a credential is configured, the identity learner that used to
-// maintain a file of its own, and the append-only log last so it records what the
-// checkpoint produced rather than feeding anything.
+// extractor when a credential is configured, followed by the append-only log,
+// so the log records what the checkpoint produced rather than feeding anything.
 //
 // Nil when nothing is enabled. A non-nil no-op would read as wired while doing
 // nothing, which is the failure a credential-gated hook exists to avoid, and
@@ -117,13 +111,8 @@ func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, me
 	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
 		chain = learn
 	}
-	if identity, enabled := bond.MakeLearner(modelConfig, memoryLog); enabled {
-		chain = compaction.ChainLearn(chain, identity)
-	}
 	if memoryLog != nil {
-		if memoryLog != nil {
-			chain = compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
-		}
+		chain = compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
 	}
 	return chain
 }
@@ -234,7 +223,7 @@ func (s *Session) build() error {
 	}
 	evaluationStore, err := newEvaluationStore(s.cfg)
 	// One learn hook for the turn: the extractor when a credential is
-	// configured. The bond learner that used to be chained on here is gone.
+	// configured.
 	compactor.Learn = cliLearnChain(modelConfig, memoryStore, memoryLog)
 	if err != nil {
 		return err
@@ -301,9 +290,7 @@ type sessionRunnerDeps struct {
 // runnerConfig builds the RunnerConfig for a turn.
 //
 // Extracted whole so the memory wiring can be asserted on the config a turn
-// actually receives rather than on a copy assembled in a test. The bond
-// renderer that used to be a member of that wiring is gone: what it rendered
-// rides the append-only log this same config reads.
+// actually receives rather than on a copy assembled in a test.
 func (s *Session) runnerConfig(d sessionRunnerDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:           s.session,

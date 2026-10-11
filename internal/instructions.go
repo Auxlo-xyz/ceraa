@@ -22,7 +22,7 @@ import (
 // The loader is called exactly once per run by the runner, so the refresh here is
 // once per run too: an edit made mid-run is picked up by the next run rather than
 // landing two revisions of the same rule in one transcript. That is the same
-// boundary the sidekick's once-per-run bond uses and for the same reason.
+// boundary the memory sidekick uses for delivery it should not repeat.
 //
 // A proposer is optional. Without one the deterministic pass alone runs, which
 // scopes every rule that names a real path and needs no model and no network at

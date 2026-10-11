@@ -628,7 +628,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].MemoryGeneralSent = delivery.GeneralInjected
 				sess.Runs[i].MemoryTargetedSent = delivery.TargetedInjects
 				sess.Runs[i].MemoryBelowGate = delivery.SuppressedByGate
-				sess.Runs[i].MemoryBondSent = delivery.BondInjected
 			}
 		}
 		if r.evaluation != nil {

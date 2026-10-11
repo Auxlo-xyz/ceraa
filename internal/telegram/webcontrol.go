@@ -619,9 +619,7 @@ type webLiveDeps struct {
 // from.
 //
 // Extracted for the same reason the bridge's is: the memory wiring can then be
-// asserted on the config a preview actually uses. The bond renderer that used
-// to be woven into the context function is gone, and the log the reader names
-// carries what it rendered.
+// asserted on the config a preview actually uses.
 func webLiveRunnerConfig(d webLiveDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:         d.sessionID,

@@ -490,15 +490,6 @@ type DeliveryReport struct {
 	GeneralInjected  int    `json:"general_injected"`
 	TargetedInjects  int    `json:"targeted_injections"`
 	SuppressedByGate int    `json:"suppressed_by_gate"`
-	// BondInjected is the size of the bond block a sidekick run delivered, or zero
-	// for a run that never had one to deliver.
-	//
-	// A count of bytes rather than a boolean because the two failures that look
-	// alike from outside are "no BOND.md" and "the bond was dropped", and a
-	// session file that records only the mode cannot tell them apart. This is the
-	// only record a run leaves of whether the operator's identity file reached
-	// the model at all.
-	BondInjected int `json:"bond_injected"`
 	// Deduped counts memories held back because this session had already delivered
 	// them. Without it, a run where dedup did all the work looks exactly like a run
 	// that injected on every call - and that comparison is the reason this report
@@ -521,6 +512,6 @@ func (r *DeliveryReport) String() string {
 	if r == nil {
 		return "memory delivery: none"
 	}
-	return fmt.Sprintf("memory delivery: mode=%s prompt_block=%v general=%d targeted=%d deduped=%d budget_withheld=%d below_gate=%d bond=%dB",
-		r.Mode, r.PromptBlock, r.GeneralInjected, r.TargetedInjects, r.Deduped, r.BudgetWithheld, r.SuppressedByGate, r.BondInjected)
+	return fmt.Sprintf("memory delivery: mode=%s prompt_block=%v general=%d targeted=%d deduped=%d budget_withheld=%d below_gate=%d",
+		r.Mode, r.PromptBlock, r.GeneralInjected, r.TargetedInjects, r.Deduped, r.BudgetWithheld, r.SuppressedByGate)
 }

@@ -54,7 +54,7 @@ type Config struct {
 	//
 	// The default is NOT safe, and an earlier version of this comment said it was
 	// on the strength of a claim that the block was stable, which was false. The
-	// renderer re-reads BOND.md and re-ranks the store from disk on every model
+	// renderer re-reads the memory store from disk on every model
 	// request, and the ranking carries a wall clock, so the bytes change even
 	// when nothing was written. A volatile block sitting ahead of the cache seam
 	// rebuilds the cached prefix on every turn, which is measured at a 49.8%

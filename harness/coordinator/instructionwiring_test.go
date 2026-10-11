@@ -64,9 +64,9 @@ const rulesBody = `## Outbound network
 // instructionSeamRun drives a whole run against a fake provider and returns the
 // tool results the model actually read, the session, and the compiled source.
 //
-// It follows bondSeamRun deliberately: every assertion in this file is about the
+// It follows memoryLogSeamRun deliberately: every assertion in this file is about the
 // bytes on the wire, because instructionNote is one more term in the same sum at
-// runner.go:1049, and that is the seam that can lose it.
+// runner.go:1077, and that is the seam that can lose it.
 func instructionSeamRun(t *testing.T, sessionID string, cfg func(*RunnerConfig)) ([]string, *sessionstore.Session, *ruleSource) {
 	t.Helper()
 	work := t.TempDir()

@@ -21,11 +21,9 @@ import (
 	"ceraa/harness/tool"
 )
 
-// Memory.md is now the only sidekick source. It was the second of two, alongside
-// the ranked store, and the bond was a third channel riding ahead of both on the
-// first tool result. That third channel is gone: its content and its mechanism
-// moved into the append-only log, so a separate delivery path would have been
-// dead weight rather than a spare.
+// Memory.md is the sidekick source. It was the second of two sources, alongside
+// the ranked store. A separate delivery path would be dead weight rather than a
+// spare.
 //
 // What is left has to be proven at the wire, not at annotate. annotate is one term
 // in a sum at the runner's result loop, and a sum can lose a term: every unit test
@@ -120,7 +118,7 @@ func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig))
 }
 
 // The log alone, at the wire. This is the configuration production has now: one
-// source, no store, no bond. If the log stopped reaching the model - because the
+// source, no store. If the log stopped reaching the model - because the
 // construction condition no longer builds the state, because the note was dropped
 // from the result line, or because the tail read stopped - the run would still
 // succeed and the agent would silently lose everything it had learned.
@@ -166,18 +164,11 @@ func TestTheMemoryLogAloneReachesTheModelOnTheToolResult(t *testing.T) {
 	if report.Mode != string(memory.DeliverySidekick) || report.TargetedInjects == 0 {
 		t.Errorf("the run recorded no log delivery: %+v", report)
 	}
-	// A sidekick run must record nothing on the bond field: the channel is gone,
-	// so a non-zero figure would mean a path survived that should not exist.
-	if report.BondInjected != 0 {
-		t.Errorf("the delivery report still reports %d bond bytes after the channel was deleted", report.BondInjected)
-	}
 }
 
 // The state is built from the log alone, with no store configured. MemoryEntries
-// is documented as optional, so this is a legal caller - and it is exactly the one
-// that the old construction condition had to be widened for, with a bond standing
-// in for "a source that is not the store". The log now has to be worth the same
-// widening on its own.
+// is documented as optional, so this is a legal caller. The log has to be worth
+// the same widening on its own.
 func TestTheSidekickIsBuiltAndDeliversWithOnlyTheMemoryFileSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Memory.md")
 	appendLog(t, memory.OpenMemoryFile(path),
@@ -238,23 +229,20 @@ func TestTheStorePathStillReachesTheModelWithoutTheLog(t *testing.T) {
 	}
 }
 
-// Nothing configured means nothing built and nothing delivered, and the deletion
-// removed the early returns that used to answer for a channel that no longer
-// exists. A nil source has to fall all the way through to "" rather than returning
-// a half-answer: the only callers that ever got a non-empty block with no source
-// were the ones carrying a bond.
+// Nothing configured means nothing built and nothing delivered. A nil source has
+// to fall all the way through to "" rather than returning a half-answer.
 func TestASidekickWithNoSourceAtAllDeliversNothing(t *testing.T) {
 	runner := New(RunnerConfig{
 		MemoryDelivery: string(memory.DeliverySidekick),
 	}, nil, tool.NewRegistry())
 	if runner.sidekick != nil {
-		t.Error("sidekick state was built with no store, no log and no bond channel")
+		t.Error("sidekick state was built with no store and no log")
 	}
 	if got := runner.sidekickNote(sessionWithOp("a", "read", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
 		t.Errorf("a run with no source delivered: %q", got)
 	}
 	// The state itself, constructed the way a test or a future caller might: no
-	// lookup, no log. This is the guard the bond used to short-circuit.
+	// lookup, no log.
 	bare := newSidekickState(nil, "/srv")
 	if got := bare.annotate(sessionWithOp("a", "read", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
 		t.Errorf("a state with neither source delivered %q", got)

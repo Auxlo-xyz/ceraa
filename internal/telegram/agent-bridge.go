@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"ceraa/harness/bond"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -35,7 +34,6 @@ import (
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
-	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
@@ -104,9 +102,7 @@ func memoryLogReader(root string) *memory.MemoryFile {
 // the prompt modes read, and the reader for the append-only log.
 //
 // One value rather than fields written into each literal, so the wiring can be
-// asserted without starting a run, which is the only way a deleted renderer
-// stays deleted. The bond renderer that used to be woven into the context
-// function is gone; its content rides the log instead.
+// asserted without starting a run.
 type memoryWiring struct {
 	// MemoryContextFunc renders the memory block the prompt modes read.
 	MemoryContextFunc func() (string, error)
@@ -124,47 +120,10 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // agentLearnChain assembles the compaction learn hooks for one run: the memory
 // extractor when a credential is configured, and the append-only log last, so
 // the log records what the checkpoint produced rather than feeding anything.
-//
-// The identity learner that used to maintain a file of its own now appends to
-// the same log. It returns a Document rather than a Tip, so the log is the only
-// destination, and a compaction feeds exactly one file rather than three.
-//
-// It is chained rather than folded into the extractor because it has its own
-// credential gate and its own prompt, and a failure there must not take the
-// memory extractor down with it.
-// migrateLegacyBond carries an existing BOND.md into the append-only log once.
-//
-// The renderer that used to read it is deleted, so without this the identity
-// details an install accumulated - the user, the role, the stack, the goals -
-// would be stranded in a file nothing reads any more. Migrate is idempotent by
-// the log itself: if an identity entry is already there, it has run.
-//
-// A failure is logged rather than returned because a run must not be lost to a
-// migration step, and the operator can re-run it by deleting the log.
-// legacyBondName is the file the identity document used to live in. Kept as a
-// constant beside its only reader rather than exported from the bond package,
-// because the bond package no longer owns a path - it owns a log.
-const legacyBondName = "BOND.md"
-
-func migrateLegacyBond(memoryLog *memory.MemoryFile, dataDir string) {
-	if memoryLog == nil {
-		return
-	}
-	if migrated, err := bond.Migrate(memoryLog, filepath.Join(dataDir, legacyBondName)); err != nil {
-		logger.Warn("bond migration: " + err.Error())
-		return
-	} else if migrated {
-		logger.Info("carried the legacy bond into the memory log")
-	}
-}
-
 func agentLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, projectRoot string, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
 	var chain func(context.Context, string, []sessionstore.Message, string)
 	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
 		chain = learn
-	}
-	if identity, enabled := bond.MakeLearner(modelConfig, memoryLog); enabled {
-		chain = compaction.ChainLearn(chain, identity)
 	}
 	return compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
 }
@@ -199,9 +158,7 @@ type agentRunDeps struct {
 // agentRunnerConfig builds the RunnerConfig for one Telegram run.
 //
 // Extracted whole from the run path so the memory wiring can be asserted on the
-// config a run actually receives rather than on a copy assembled in a test. The
-// bond renderer that used to be a member of that wiring is gone: what it
-// rendered rides the append-only log this same config reads.
+// config a run actually receives rather than on a copy assembled in a test.
 func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:           d.sessionID,
@@ -410,8 +367,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// constructed once and shared by both.
 	memoryLog := memoryLogReader(projectRoot)
 	// One learn chain for the run: the extractor when a credential is
-	// configured, then the append-only log. The bond learner that used to sit
-	// between the two is gone, because what the bond carried now rides the log.
+	// configured, then the append-only log.
 	compactor.Learn = agentLearnChain(modelConfig, memoryStore, projectRoot, memoryLog)
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
@@ -421,11 +377,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	// The memory half of the runner config, built beside the stores it reads so
 	// it is constructed once and shared with the learn chain above.
-	// The legacy identity file is carried across once, before the first run reads
-	// the log. Without this the content an install accumulated is stranded in a
-	// file nothing opens any more, and the loss is silent - the log simply starts
-	// from empty and reads like a project that never learned anything.
-	migrateLegacyBond(memoryLog, paths.DataDir())
 	wiring := newMemoryWiring(memoryStore, projectRoot, sessionID, memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))

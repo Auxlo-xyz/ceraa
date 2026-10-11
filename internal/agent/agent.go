@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"ceraa/harness/bond"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -62,8 +61,7 @@ func memoryLogReader(root string) *memory.MemoryFile {
 // renderer the prompt modes read, and the reader for the append-only log.
 //
 // One value rather than fields written into the literal, so the wiring can be
-// asserted without running a turn. The bond renderer that used to be woven
-// into the context function is gone; its content rides the log instead.
+// asserted without running a turn.
 type memoryWiring struct {
 	// MemoryContextFunc renders the memory block the prompt modes read.
 	MemoryContextFunc func() (string, error)
@@ -81,12 +79,8 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 }
 
 // cliLearnChain assembles the compaction learn hooks for one run: the memory
-// extractor when a credential is configured, and nothing else.
-//
-// cliLearnChain assembles the compaction learn hooks for one turn: the memory
-// extractor when a credential is configured, the identity learner that used to
-// maintain a file of its own, and the append-only log last so it records what the
-// checkpoint produced rather than feeding anything.
+// extractor when a credential is configured, followed by the append-only log,
+// so the log records what the checkpoint produced rather than feeding anything.
 //
 // Nil when nothing is enabled. A non-nil no-op would read as wired while doing
 // nothing, which is the failure a credential-gated hook exists to avoid, and
@@ -96,9 +90,6 @@ func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, me
 	var chain func(context.Context, string, []sessionstore.Message, string)
 	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
 		chain = learn
-	}
-	if identity, enabled := bond.MakeLearner(modelConfig, memoryLog); enabled {
-		chain = compaction.ChainLearn(chain, identity)
 	}
 	// The log writer is always chained when a log exists. It is not
 	// credential-gated, so an install with no extractor key still accumulates the
@@ -167,7 +158,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	memoryLog := memoryLogReader(".")
 	compactor := compaction.New(pcfg)
 	// One learn hook for the run: the extractor when a credential is configured.
-	// The bond learner that used to be chained on here is gone.
 	compactor.Learn = cliLearnChain(pcfg, memoryStore, memoryLog)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
@@ -344,9 +334,7 @@ type agentRunDeps struct {
 // agentRunnerConfig builds the RunnerConfig for one CLI run.
 //
 // Extracted whole so the memory wiring can be asserted on the config a run
-// actually receives rather than on a copy assembled in a test. The bond
-// renderer that used to be a member of that wiring is gone: what it rendered
-// rides the append-only log this same config reads.
+// actually receives rather than on a copy assembled in a test.
 func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:           "cli",
