@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Explicit prompt-cache breakpoints.
@@ -70,6 +71,26 @@ func ParseCacheTTL(raw string) (CacheTTL, error) {
 	default:
 		return "", fmt.Errorf("unsupported prompt cache ttl %q: use %q or %q", raw, CacheTTL5m, CacheTTL1h)
 	}
+}
+
+// Duration returns the wall-clock lifetime a TTL represents.
+func (t CacheTTL) Duration() time.Duration {
+	if t == CacheTTL1h {
+		return time.Hour
+	}
+	return 5 * time.Minute
+}
+
+// PromptCacheTTLFor is how long a cached prefix is expected to survive for a
+// provider. It is what the keepalive refreshes against, so it has to be the
+// same number the breakpoints were written with rather than a second opinion.
+//
+// The TTL is provider-shaped rather than purely configured: a Messages endpoint
+// whose profile named none gets an hour (see cacheTTLFor for why), and every
+// other provider gets the five-minute default. A profile that named one always
+// wins.
+func PromptCacheTTLFor(cfg ProviderConfig) time.Duration {
+	return cacheTTLFor(cfg).Duration()
 }
 
 // MinCacheableTokens is the smallest block several providers will cache. A

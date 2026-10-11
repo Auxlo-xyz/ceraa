@@ -452,7 +452,7 @@ func anthropicSystemBlocks(system string, seam int, cfg ProviderConfig) []map[st
 	// fixing this would have silently downgraded every configured TTL to 5
 	// minutes with no error anywhere, which is a billing change made invisibly.
 	blocks := SystemBlocks(system, seam, cacheTTLFor(cfg))
-	if promptCacheMode(cfg) != "explicit" {
+	if anthropicCacheMode(cfg) != "explicit" {
 		plain := make([]map[string]any, 0, len(blocks))
 		for _, block := range blocks {
 			text, _ := block["text"].(string)
@@ -488,6 +488,40 @@ func anthropicSystemBlocks(system string, seam int, cfg ProviderConfig) []map[st
 	return blocks
 }
 
+// markAnthropicLastStableMessage puts the conversation breakpoint on the last
+// message the next request is guaranteed to repeat.
+//
+// This is the breakpoint that pays. The system prompt is a few thousand tokens;
+// a long session carries tens of thousands in the conversation, and that is the
+// span worth not paying for twice. A breakpoint caches everything up to and
+// including the message it sits on, so the newest usable one covers every
+// earlier position and only one slot is spent.
+//
+// The newest message is deliberately skipped. The runner appends a volatile
+// tail to the newest user message once per turn - the memory line - and a
+// breakpoint sitting on text that changes every turn caches that turn and is
+// dead by the next one. It is the same mistake the system-blocks seam exists to
+// prevent, made on a larger span of the request.
+//
+// Walking back rather than skipping by role is deliberate, for the same reason
+// markLastStableMessage does it: tool results are most of the input in an agent
+// loop, and a rule that skipped them would discard the cacheable span on
+// exactly the requests where it is largest.
+func markAnthropicLastStableMessage(messages []anthropicMessage, ttl CacheTTL) {
+	for i := len(messages) - 2; i >= 0; i-- {
+		content := messages[i].Content
+		if len(content) == 0 {
+			continue
+		}
+		last := content[len(content)-1]
+		if _, marked := last["cache_control"]; marked {
+			return
+		}
+		last["cache_control"] = cacheControl(ttl)
+		return
+	}
+}
+
 // anthropicTools converts tool definitions, adding a cache breakpoint to the last
 // one so the tool schemas are cached along with the prompt prefix.
 func anthropicTools(tools []ToolDef, cfg ProviderConfig) []map[string]any {
@@ -502,7 +536,7 @@ func anthropicTools(tools []ToolDef, cfg ProviderConfig) []map[string]any {
 			"input_schema": tool.Parameters,
 		})
 	}
-	if promptCacheMode(cfg) == "explicit" && len(converted) > 0 {
+	if anthropicCacheMode(cfg) == "explicit" && len(converted) > 0 {
 		// The tool schemas are the largest stable block in the request, so the
 		// breakpoint goes on the last one to cache all of them.
 		converted[len(converted)-1]["cache_control"] = cacheControl(cacheTTLFor(cfg))
@@ -532,17 +566,60 @@ func anthropicToolChoice(choice string) any {
 	}
 }
 
-// cacheTTLFor returns the configured TTL, falling back to the provider default.
+// cacheTTLFor returns the TTL an Anthropic Messages request caches for.
 //
 // An unparseable value falls back rather than being sent, because the endpoint
 // rejects a TTL it does not recognise and the whole request fails on a field the
 // user never sees.
+//
+// The fallback is one hour rather than the five-minute provider default, and
+// that is a deliberate correction rather than a preference. A Messages prompt
+// runs to tens of thousands of tokens, a five-minute entry dies in the gap
+// between two messages of a Telegram conversation, and every later turn then
+// re-bills the whole prompt at write price. The 1-hour write premium, 2x base
+// input against 1.25x for 5 minutes, is bought back on the second turn and kept
+// on every one after it. cachewarm refreshes the entry at 90% of whichever TTL
+// is in force, so a one-hour entry does not need the owner to reply within the
+// hour to stay warm - only to reply at all.
+//
+// An explicit PromptCacheTTL on the profile always wins. This is the default
+// for a profile that named none, not an override of one that did.
 func cacheTTLFor(cfg ProviderConfig) CacheTTL {
-	ttl, err := ParseCacheTTL(cfg.PromptCacheTTL)
-	if err != nil {
-		return CacheTTL5m
+	if strings.TrimSpace(cfg.PromptCacheTTL) != "" {
+		if ttl, err := ParseCacheTTL(cfg.PromptCacheTTL); err == nil {
+			return ttl
+		}
 	}
-	return ttl
+	return CacheTTL1h
+}
+
+// anthropicCacheMode is promptCacheMode with the Messages default corrected.
+//
+// An unset mode parses to "auto", and auto on Anthropic is not automatic
+// caching: the Messages API caches only what a breakpoint marks, so a profile
+// that named no mode sends no cache_control anywhere and silently re-bills the
+// entire prompt, tools included, on every single turn. That is the one default
+// in this package that is wrong rather than merely conservative, so it is
+// corrected here rather than left for every profile to discover.
+//
+// Only Anthropic proper is corrected. MiniMax's /anthropic endpoint is a
+// compatibility layer, and a field it does not understand is a 400 rather than
+// a saving, so it keeps whatever the profile said - including nothing.
+func anthropicCacheMode(cfg ProviderConfig) string {
+	if mode := strings.ToLower(strings.TrimSpace(cfg.PromptCacheMode)); mode != "" {
+		return mode
+	}
+	if isAnthropicProper(cfg.BaseURL) {
+		return "explicit"
+	}
+	return "auto"
+}
+
+// isAnthropicProper reports whether the base URL is Anthropic's own endpoint
+// rather than another vendor's Messages-compatible one.
+func isAnthropicProper(baseURL string) bool {
+	base := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(base, "anthropic.com")
 }
 
 // streamAnthropic runs a Messages API request and reports deltas.
@@ -559,6 +636,9 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 	messages := encodeAnthropicMessages(req.Messages)
 	if len(messages) == 0 {
 		return fmt.Errorf("no messages to send to the messages API")
+	}
+	if anthropicCacheMode(c.cfg) == "explicit" {
+		markAnthropicLastStableMessage(messages, cacheTTLFor(c.cfg))
 	}
 
 	maxTokens := req.MaxTokens

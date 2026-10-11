@@ -726,6 +726,54 @@ func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, f
 	if len(indices) < countTrigger && len(indices) < MergeMinOldGenBlocks {
 		return
 	}
+	c.mergeCheckpoints(ctx, sess, indices, fromTier+1)
+}
+
+// MaxCheckpointChain bounds how many checkpoints stand ahead of the live turns
+// before they are collapsed into one.
+const MaxCheckpointChain = 6
+
+// collapseChain rolls the standing checkpoint chain into a single checkpoint
+// once it passes MaxCheckpointChain. It reports whether it rewrote anything.
+//
+// The chain is append-only by design: each fold adds a checkpoint and leaves the
+// ones behind it standing, so the bytes ahead of the newest checkpoint never move
+// and the provider keeps reading that whole stretch warm. That is the right
+// trade while the chain is short.
+//
+// Past the cap it stops being free. The chain is a growing share of the request,
+// it is history the model has been told more than once, and every later fold
+// re-summarizes it. So the chain is collapsed in one operation: exactly one full
+// prefix miss, paid here instead of spread across every future turn, and
+// append-only again afterwards. That is the epoch roll.
+//
+// It runs inside Compact, ahead of the fold, so a Compact that both rolls and
+// folds still produces a single request and therefore a single rewrite on the
+// wire: the two rewrites of the in-memory slice cost one cache invalidation
+// between them.
+func (c *Compactor) collapseChain(ctx context.Context, sess *sessionstore.Session) bool {
+	indices := make([]int, 0, len(sess.Messages))
+	for i := range sess.Messages {
+		if sess.Messages[i].Compaction != nil {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) <= MaxCheckpointChain {
+		return false
+	}
+	c.mergeCheckpoints(ctx, sess, indices, 1)
+	return true
+}
+
+// mergeCheckpoints rewrites the checkpoints at indices into one, placed at the
+// position of the first. It is the body both mergeTier and collapseChain share.
+//
+// A merge that fails is a no-op: the summaries it would have carried are still
+// standing, and nothing about the fold that follows depends on it having run.
+func (c *Compactor) mergeCheckpoints(ctx context.Context, sess *sessionstore.Session, indices []int, nextTier int) {
+	if len(indices) == 0 {
+		return
+	}
 	var parts []string
 	// The delivered ids come off the consumed blocks alongside their summaries,
 	// and this is the one place in the package where they can be dropped without
@@ -760,7 +808,7 @@ func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, f
 		Compaction: &sessionstore.CompactionInfo{
 			Summary:    text,
 			Seq:        len(sess.Messages),
-			Tier:       fromTier + 1,
+			Tier:       nextTier,
 			Generation: "young",
 			Delivered:  delivered,
 		},
@@ -781,7 +829,11 @@ func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, f
 	}
 	out := append(kept[:first], append([]sessionstore.Message{merged}, kept[first:]...)...)
 	sess.Messages = out
-	entry := c.recordFold(first, first+1, fromTier+1)
+	// A merge rewrites the front of the prompt, so it counts as a prefix rewrite
+	// for the same reason a fold does: the next request re-bills everything after
+	// the position it moved.
+	sess.PrefixRewrites++
+	entry := c.recordFold(first, first+1, nextTier)
 	if c.ArchiveDir != "" {
 		sources := make([]FoldMessage, 0, len(parts))
 		for _, summary := range parts {
@@ -806,6 +858,9 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		c.mergeTier(ctx, sess, 1, Tier2Trigger)
 		c.mergeTier(ctx, sess, 2, Tier3Trigger)
 	}
+	// The epoch roll, ahead of the fold so that a Compact which does both still
+	// produces one request and therefore one rewrite on the wire.
+	c.collapseChain(ctx, sess)
 	keepTokens := c.Settings.Keep.Tokens
 	if keepTokens == 0 {
 		keepTokens = DefaultKeepTokens
@@ -918,6 +973,10 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	newMessages = append(newMessages, middleMessages...)
 	newMessages = append(newMessages, recentMessages...)
 	sess.Messages = newMessages
+	// A fold is the one rewrite an epoch pays for: everything from the checkpoint
+	// onward is re-billed at full price on the next request, which is why the
+	// pointerize boundary is tied to the checkpoint rather than to the turn.
+	sess.PrefixRewrites++
 	entry := c.recordFold(start, end, 1)
 	// Retain the fold source beside the archive: the summary is lossy, and
 	// without the original messages no later turn can decompress or verify

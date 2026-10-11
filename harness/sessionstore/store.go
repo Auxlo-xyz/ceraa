@@ -259,6 +259,39 @@ type Session struct {
 	// messages and not this list, so a fork re-delivers: one duplicate note beats a
 	// memory that never reaches the model.
 	MemoryDelivered []string `json:"memory_delivered,omitempty"`
+
+	// PrefixRewrites counts how many times this session has rewritten the front
+	// of the prompt: a fold, a tier merge, or a checkpoint-chain roll.
+	//
+	// It is the observable half of the cache contract. Everything inside an
+	// epoch is append-only, so a request is the previous request with a suffix
+	// and the provider reads the whole prefix warm; a rewrite is the one event
+	// that breaks that, and it should be rare, deliberate and countable. A
+	// number that climbs faster than the number of folds is a second writer
+	// touching the front of the history, which is the bug this exists to make
+	// visible.
+	//
+	// omitempty so a session that has never rewritten writes the bytes it always
+	// wrote and loads unchanged with schemaVersion 3.
+	PrefixRewrites int `json:"prefix_rewrites,omitempty"`
+
+	// PrefixSignature is the shape of the last request this session sent: one
+	// entry per message, its kind and its length. It exists so the first request
+	// of the next run can be compared against the last request of the previous
+	// one.
+	//
+	// The comparison cannot live in the client, because a client is built per
+	// run and its in-memory prefix state dies with it. It cannot live in a
+	// process global either, because a subagent session interleaving with the
+	// main one corrupts it: the audit then reports a divergence at item1 for a
+	// conversation whose prefix never moved. Per session is the only scope where
+	// the thing being compared is actually the same conversation.
+	PrefixSignature string `json:"prefix_signature,omitempty"`
+	// PrefixSignatureEpoch is PrefixRewrites as of the moment PrefixSignature
+	// was written. A divergence is only a regression when the epoch matches: a
+	// fold or a chain roll is supposed to change the front of the history, and
+	// warning about it would bury the warning that matters.
+	PrefixSignatureEpoch int `json:"prefix_signature_epoch,omitempty"`
 }
 
 func (s *Session) DisplayTitle() string {
@@ -306,6 +339,11 @@ func (s *Session) Clear() error {
 	// carried those notes, so every memory is once again something the model has
 	// not been told.
 	s.MemoryDelivered = nil
+	// The rewrite counter goes with the transcript: an empty session has rewritten
+	// nothing.
+	s.PrefixRewrites = 0
+	s.PrefixSignature = ""
+	s.PrefixSignatureEpoch = 0
 	return nil
 }
 

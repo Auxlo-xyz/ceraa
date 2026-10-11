@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"ceraa/harness/cachewarm"
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
@@ -55,6 +57,58 @@ import (
 //
 // The root is also what keeps the log out of /tmp. This host has wiped /tmp three
 // times in one day, and a memory that vanishes on reboot is not memory.
+// cacheWarmer keeps the active session's prompt cache alive between messages.
+//
+// One for the daemon rather than one per run, because the thing being kept warm
+// outlives the run that wrote it: the runner is rebuilt for every turn, and the
+// cache entry it wrote dies with the provider's TTL rather than with the process
+// that made it.
+//
+// A Telegram conversation is the case this exists for. The owner reads, thinks,
+// and replies minutes later, and a five-minute entry is gone by then, so every
+// message re-bills the whole prompt at write price. The refresh is a real
+// request with a one-token output budget: a cache read and a token, against the
+// full rewrite the next turn would otherwise pay.
+var cacheWarmer = cachewarm.New(refreshAgentCache, func(format string, args ...any) {
+	logger.Info(fmt.Sprintf(format, args...))
+})
+
+// cacheWarmRecipe is the config one keepalive replays.
+//
+// Guarded, because the timer that consumes it fires on its own goroutine while
+// the next run may already be writing a new one. A stale recipe is safe rather
+// than dangerous: the signature check refuses it, which costs a keepalive and
+// nothing else. Two sessions interleaving therefore lose keepalives rather than
+// corrupting each other, which is the right trade for a single-user bot.
+var (
+	cacheWarmMu       sync.Mutex
+	cacheWarmRecipe   coordinator.RunnerConfig
+	cacheWarmStore    *sessionstore.Store
+	cacheWarmRegistry *tool.Registry
+)
+
+// recordCacheWarmRecipe keeps the config a keepalive needs, with the callbacks
+// already stripped by the caller.
+func recordCacheWarmRecipe(rc coordinator.RunnerConfig, store *sessionstore.Store, registry *tool.Registry) {
+	cacheWarmMu.Lock()
+	defer cacheWarmMu.Unlock()
+	cacheWarmRecipe = rc
+	cacheWarmStore = store
+	cacheWarmRegistry = registry
+}
+
+// refreshAgentCache is the keepalive itself. It refuses when the recipe is
+// missing or the conversation moved on, which is the whole safety property.
+func refreshAgentCache(ctx context.Context, signature string) error {
+	cacheWarmMu.Lock()
+	rc, store, registry := cacheWarmRecipe, cacheWarmStore, cacheWarmRegistry
+	cacheWarmMu.Unlock()
+	if store == nil || registry == nil || rc.SessionID == "" {
+		return cachewarm.ErrStale
+	}
+	return coordinator.RefreshPromptCache(ctx, rc, registry, store, signature)
+}
+
 func memoryLogPath(root string) string {
 	return filepath.Join(root, "Memory.md")
 }
@@ -386,7 +440,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
 	attachVisionToRegistry(registry, resolveModel)
-	runner := coordinator.New(agentRunnerConfig(agentRunDeps{
+	runConfig := agentRunnerConfig(agentRunDeps{
 		sessionID:           sessionID,
 		cfg:                 cfg,
 		providerConfig:      providerConfig,
@@ -404,7 +458,22 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		onTool:              onTool,
 		onAnswer:            onAnswer,
 		onStepReasoningOnly: onStepReasoningOnly,
-	}), store, registry)
+	})
+	// The warmer is attached here rather than inside agentRunnerConfig: it is a
+	// daemon-level object, not a property of the config a test asserts on, and
+	// the recipe recorded beside it is the thing the keepalive actually replays.
+	runConfig.CacheWarmer = cacheWarmer
+	runner := coordinator.New(runConfig, store, registry)
+	// A keepalive has no observer. The callbacks publish content and tool events
+	// to the bus, and a ghost turn that emitted them would look like a real one
+	// on every surface including the Mini App. The recipe keeps the config that
+	// shapes the request and drops the config that reports it.
+	//
+	// It is a copy on purpose: the runner above must keep its callbacks, or the
+	// live turn stops reporting and the answer never reaches the user.
+	recipe := runConfig
+	recipe.Callbacks = coordinator.Callbacks{}
+	recordCacheWarmRecipe(recipe, store, registry)
 	_, err = runner.Run(parent, userText)
 	if err != nil {
 		event.Default.Publish(event.Event{Type: event.TypeError, SessionID: sessionID, Data: map[string]any{"message": err.Error()}})

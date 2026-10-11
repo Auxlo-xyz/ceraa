@@ -1760,3 +1760,90 @@ func TestEncodeIgnoresForeignReasoningDetails(t *testing.T) {
 		t.Fatalf("foreign details leaked into the message: %+v", msgs)
 	}
 }
+
+func TestCacheTTLForDefaultsToHourOnAnthropic(t *testing.T) {
+	// A Messages prompt is tens of thousands of tokens, and a five-minute entry
+	// dies in the gap between two messages. The profile that named nothing gets
+	// the TTL that survives it.
+	if got := cacheTTLFor(ProviderConfig{BaseURL: "https://api.anthropic.com"}); got != CacheTTL1h {
+		t.Fatalf("ttl = %q, want %q", got, CacheTTL1h)
+	}
+	if got := PromptCacheTTLFor(ProviderConfig{BaseURL: "https://api.anthropic.com"}); got != time.Hour {
+		t.Fatalf("duration = %s, want 1h", got)
+	}
+}
+
+func TestCacheTTLForKeepsConfiguredValue(t *testing.T) {
+	got := cacheTTLFor(ProviderConfig{BaseURL: "https://api.anthropic.com", PromptCacheTTL: "5m"})
+	if got != CacheTTL5m {
+		t.Fatalf("ttl = %q, want the configured 5m", got)
+	}
+	// An unparseable value is not sent; it falls back rather than failing the
+	// request on a field the user never sees.
+	if got := cacheTTLFor(ProviderConfig{BaseURL: "https://api.anthropic.com", PromptCacheTTL: "2h"}); got != CacheTTL1h {
+		t.Fatalf("ttl = %q, want the fallback", got)
+	}
+}
+
+func TestAnthropicCacheModeDefaultsToExplicit(t *testing.T) {
+	// Auto on Anthropic is not automatic caching: the Messages API caches only
+	// what a breakpoint marks, so an unset profile re-bills the whole prompt on
+	// every turn. Anthropic proper is corrected; MiniMax's compatibility layer
+	// is not, because a field it does not understand is a 400.
+	if got := anthropicCacheMode(ProviderConfig{BaseURL: "https://api.anthropic.com/v1"}); got != "explicit" {
+		t.Fatalf("mode = %q, want explicit", got)
+	}
+	if got := anthropicCacheMode(ProviderConfig{BaseURL: "https://api.minimax.io/anthropic"}); got != "auto" {
+		t.Fatalf("mode = %q on a compatibility host, want auto", got)
+	}
+	if got := anthropicCacheMode(ProviderConfig{BaseURL: "https://api.anthropic.com", PromptCacheMode: "off"}); got != "off" {
+		t.Fatalf("mode = %q, want the configured off", got)
+	}
+}
+
+func TestMarkAnthropicLastStableMessageSkipsNewest(t *testing.T) {
+	messages := []anthropicMessage{
+		{Role: "user", Content: []map[string]any{{"type": "text", "text": "one"}}},
+		{Role: "assistant", Content: []map[string]any{{"type": "text", "text": "two"}}},
+		// The newest message carries whatever the caller appended this turn,
+		// and a breakpoint sitting on text that changes every turn is dead by
+		// the next one.
+		{Role: "user", Content: []map[string]any{{"type": "text", "text": "volatile tail"}}},
+	}
+	markAnthropicLastStableMessage(messages, CacheTTL1h)
+	if _, marked := messages[2].Content[0]["cache_control"]; marked {
+		t.Fatal("the newest message was marked, so a volatile tail kills the entry")
+	}
+	control, marked := messages[1].Content[0]["cache_control"].(map[string]any)
+	if !marked {
+		t.Fatal("the last stable message was not marked")
+	}
+	if control["ttl"] != "1h" {
+		t.Fatalf("ttl = %v, want 1h", control["ttl"])
+	}
+	if _, marked := messages[0].Content[0]["cache_control"]; marked {
+		t.Fatal("an older message was marked; one breakpoint already covers it")
+	}
+}
+
+func TestMarkAnthropicLastStableMessageSingleMessage(t *testing.T) {
+	messages := []anthropicMessage{
+		{Role: "user", Content: []map[string]any{{"type": "text", "text": "only"}}},
+	}
+	markAnthropicLastStableMessage(messages, CacheTTL5m)
+	if _, marked := messages[0].Content[0]["cache_control"]; marked {
+		t.Fatal("a lone message was marked; there is no stable prefix to protect")
+	}
+}
+
+func TestMarkAnthropicLastStableMessageWalksBackOverEmpty(t *testing.T) {
+	messages := []anthropicMessage{
+		{Role: "user", Content: []map[string]any{{"type": "text", "text": "real"}}},
+		{Role: "user", Content: nil},
+		{Role: "user", Content: []map[string]any{{"type": "text", "text": "newest"}}},
+	}
+	markAnthropicLastStableMessage(messages, CacheTTL5m)
+	if _, marked := messages[0].Content[0]["cache_control"]; !marked {
+		t.Fatal("an empty newest message stopped the walk; nothing was marked")
+	}
+}

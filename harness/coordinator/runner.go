@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ceraa/harness/cachewarm"
 	"ceraa/harness/compaction"
 	"ceraa/harness/contextbuilder"
 	"ceraa/harness/evaluation"
@@ -119,6 +120,16 @@ type RunnerConfig struct {
 	Inbox            *inbox.Inbox
 	OperationPool    *operation.LocalManager
 	Compactor        *compaction.Compactor
+	// CacheWarmer keeps this session's prompt cache alive after a run finishes.
+	//
+	// One warmer per daemon, handed to every runner that shares a session, and
+	// nil for any caller that does not construct one - a CLI process that exits
+	// after a turn has nothing left to keep warm.
+	//
+	// The runner arms it at the end of a successful run and disarms it at the
+	// start of the next, so a keepalive can never land in front of a real turn
+	// for the same session.
+	CacheWarmer      *cachewarm.Warmer
 	ResolveModel     func(context.Context) (llm.ProviderConfig, error)
 	ForcedCompaction func() bool
 	// OnFileMutated is called once per successfully completed file mutation, with
@@ -453,6 +464,10 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		return Result{}, fmt.Errorf("acquire session run: %w", err)
 	}
 	defer release()
+	// A keepalive armed for this session is about to be superseded by a real
+	// request for the same bytes. Two requests for one prefix is the cost this
+	// feature exists to avoid, so it is cancelled before anything is loaded.
+	r.disarmCacheWarm()
 	sess, err := r.store.Load(r.cfg.SessionID)
 	if err != nil {
 		return Result{}, fmt.Errorf("load session: %w", err)
@@ -589,6 +604,17 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if err := r.store.Save(sess); err != nil {
 			return err
 		}
+		// A completed run leaves a warm prefix that dies with the provider's
+		// TTL. A keepalive is armed only when one is worth sending, and only for
+		// a run that finished: a failed run's history may be half-written, and
+		// the next turn has to repair it anyway.
+		if runErr == nil {
+			warmTokens := 0
+			if n := len(runRequests); n > 0 {
+				warmTokens = runRequests[n-1].Breakdown.Total()
+			}
+			r.armCacheWarm(sess, pricingMetadata, warmTokens)
+		}
 		if runErr != nil && r.cb.OnError != nil {
 			r.cb.OnError(runErr)
 		}
@@ -724,7 +750,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
 		countRequestBeforeUse(&runBreakdown, breakdown)
 		if traceCache {
-			logCachePrefix(step, request.Messages, request.Tools, breakdown)
+			logCachePrefix(sess, step, request.Messages, request.Tools, breakdown)
 		}
 		// Kept per request rather than only summed into the run total. The sum
 		// sizes the problem; the list says which request created it, which is what
@@ -2492,9 +2518,7 @@ func (r *Runner) budgetPoints() (soft, yieldAt, hardAt int) {
 // system prompt, a break at the last element is the provider refusing to extend
 // its own cache. Guessing between those two produced one confident wrong answer
 // already, so the instrument reports the position instead.
-var lastCachePrefix string
-
-func logCachePrefix(step int, items []llm.Item, tools []llm.ToolDef, bd llm.TokenBreakdown) {
+func logCachePrefix(sess *sessionstore.Session, step int, items []llm.Item, tools []llm.ToolDef, bd llm.TokenBreakdown) {
 	// The comparable prefix is everything up to and including the last message
 	// that is identical to the previous request. Tool definitions are hashed
 	// separately because they change on their own schedule.
@@ -2505,32 +2529,165 @@ func logCachePrefix(step int, items []llm.Item, tools []llm.ToolDef, bd llm.Toke
 	}
 	toolSum := sha256.Sum256([]byte(sb.String()))
 	toolHash := fmt.Sprintf("%x", toolSum[:4])
-	roles := make([]string, 0, len(items))
-	for _, it := range items {
-		roles = append(roles, fmt.Sprintf("%s/%d", it.Kind, len(it.Text)+len(it.Output)+len(it.Args)))
-	}
-	cur := strings.Join(roles, ",")
+	cur := cacheSignature(items)
 	diverged := "n/a"
-	if lastCachePrefix != "" {
-		diverged = "?"
-		a, b := strings.Split(lastCachePrefix, ","), strings.Split(cur, ",")
-		n := len(a)
-		if len(b) < n {
-			n = len(b)
-		}
-		for i := 0; i < n; i++ {
-			if a[i] != b[i] {
-				diverged = fmt.Sprintf("item%d", i)
-				break
-			}
-		}
-		if diverged == "?" {
-			diverged = fmt.Sprintf("none(first %d identical)", n)
+	// Compared against the last request this session sent rather than against
+	// whatever session ran last in the process. The process global stays as a
+	// second opinion for within-run steps, but it is cross-session: a subagent
+	// interleaving with the main conversation reports a divergence at item1 for
+	// a prefix that never moved, and that false positive is what made it
+	// untrustworthy for the one comparison that pays.
+	if sess != nil && sess.PrefixSignature != "" {
+		note := firstShapeChange(sess.PrefixSignature, cur)
+		switch {
+		case note == "":
+			diverged = "none"
+		case sess.PrefixSignatureEpoch != sess.PrefixRewrites:
+			// A fold, a tier merge or a chain roll rewrote the front of the
+			// history since this signature was written. That is the rewrite the
+			// session is allowed to make, and reporting it as a regression would
+			// bury the one that matters.
+			diverged = note + " (expected: prefix rewritten this epoch)"
+		default:
+			diverged = note
+			logger.Warn(fmt.Sprintf("prefix regression session=%s step=%d %s: the front of the history changed inside an epoch, so the provider's cached prefix is dead and the next turn pays the full write",
+				sess.ID, step, note))
 		}
 	}
-	lastCachePrefix = cur
+	if sess != nil {
+		sess.PrefixSignature = cur
+		sess.PrefixSignatureEpoch = sess.PrefixRewrites
+	}
 	logger.Info(fmt.Sprintf("pfx step=%d items=%d tools=%d toolhash=%s sys=%d conv=%d toolout=%d divergence=%s",
 		step, len(items), len(tools), toolHash, bd.System, bd.Conversation, bd.ToolOutput, diverged))
+}
+
+// cacheSignature is a cheap identity for the shape of a request: one entry per
+// message naming its kind and its length.
+//
+// Length rather than content, because the question it answers is whether
+// anything earlier in the conversation changed, and a changed string almost
+// always changed length. This is the same instrument logCachePrefix has always
+// printed, turned into something that can be stored and compared across runs.
+func cacheSignature(items []llm.Item) string {
+	var sb strings.Builder
+	for i, item := range items {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "%s/%d", item.Kind, len(item.Text)+len(item.Output)+len(item.Args))
+	}
+	return sb.String()
+}
+
+// sessionSignature identifies the conversation state a keepalive was armed
+// against, in a form the refresh can recompute and refuse on.
+//
+// Message count plus a hash of the last message rather than the full shape: the
+// refresh is on the hot path of a waiting daemon, and anything that changes the
+// conversation either appends a message or rewrites the newest one.
+func sessionSignature(sess *sessionstore.Session) string {
+	if sess == nil || len(sess.Messages) == 0 {
+		return "empty"
+	}
+	last := sess.Messages[len(sess.Messages)-1]
+	sum := sha256.Sum256([]byte(string(last.Role) + "\x00" + last.Content))
+	return fmt.Sprintf("%d:%x", len(sess.Messages), sum[:6])
+}
+
+// firstShapeChange reports the position at which two request shapes part ways,
+// or "" when one is a pure extension of the other.
+//
+// It is the comparison logCachePrefix has always made inline, extracted so the
+// persisted, per-session form can make the same one. Both sides are already
+// signature strings, so this is a string walk and not a re-derivation.
+func firstShapeChange(prev, cur string) string {
+	if prev == cur {
+		return ""
+	}
+	a, b := strings.Split(prev, ","), strings.Split(cur, ",")
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return fmt.Sprintf("item%d", i)
+		}
+	}
+	return fmt.Sprintf("none(first %d identical)", n)
+}
+
+// disarmCacheWarm cancels any keepalive pending for this session.
+//
+// Called at the start of a run, because a keepalive for the same session is
+// about to be superseded by a real request for the same bytes, and paying for
+// both is the cost this feature exists to avoid.
+func (r *Runner) disarmCacheWarm() {
+	if r.cfg.CacheWarmer != nil {
+		r.cfg.CacheWarmer.Disarm()
+	}
+}
+
+// armCacheWarm decides whether a keepalive is worth sending and schedules it.
+//
+// Runs at the end of a successful run with the request that just completed
+// still in hand, because that is the only moment the size of the prefix and the
+// price of the tokens are both known. A run that failed arms nothing: its
+// history may be half-written, and the next turn has to repair it anyway.
+func (r *Runner) armCacheWarm(sess *sessionstore.Session, meta llm.ModelMetadata, tokens int) {
+	warmer := r.cfg.CacheWarmer
+	if warmer == nil {
+		return
+	}
+	inputPerMTok, readPerMTok, ok := meta.CacheEconomics()
+	if !ok {
+		logger.Info("cachewarm skipped reason=pricing unusable tokens=" + fmt.Sprint(tokens))
+		return
+	}
+	decision := cachewarm.Decide(time.Now(), time.Now(), llm.PromptCacheTTLFor(r.cfg.Model), tokens,
+		cachewarm.Economics{InputPerMTok: inputPerMTok, CacheReadPerMTok: readPerMTok})
+	if !decision.Warm {
+		logger.Info(fmt.Sprintf("cachewarm skipped reason=%s tokens=%d", decision.Reason, tokens))
+		return
+	}
+	warmer.Arm(sessionSignature(sess), decision.Delay)
+}
+
+// RefreshPromptCache replays a session's live request with a one-token output
+// budget so its cached prefix outlives the gap until the owner's next message.
+//
+// It refuses when the conversation has moved on since the keepalive was armed,
+// which is the whole safety property: a real turn arriving in the meantime is
+// about to pay for the write itself, and a second request for the same bytes in
+// front of it would be the exact cost the feature exists to prevent.
+func RefreshPromptCache(ctx context.Context, cfg RunnerConfig, reg *tool.Registry, store *sessionstore.Store, signature string) error {
+	if store == nil || reg == nil {
+		return cachewarm.ErrStale
+	}
+	sess, err := store.Load(cfg.SessionID)
+	if err != nil {
+		return err
+	}
+	if got := sessionSignature(sess); got != signature {
+		return fmt.Errorf("%w: conversation advanced to %s", cachewarm.ErrStale, got)
+	}
+	req := New(cfg, store, reg).LiveRequest(sess)
+	// One token is enough to touch every breakpoint in the request. The reply
+	// itself is discarded; what is bought is the write.
+	req.MaxTokens = 1
+	usageSeen := false
+	if err := llm.New(cfg.Model).Stream(ctx, req, func(delta llm.ProviderResponse) {
+		if delta.Usage != nil {
+			usageSeen = true
+		}
+	}); err != nil {
+		return err
+	}
+	if !usageSeen {
+		return errors.New("refresh returned no usage, so nothing is known to be cached")
+	}
+	return nil
 }
 
 // splitLegacyBrowserCall rewrites a recorded combined-browser call into the

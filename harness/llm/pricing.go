@@ -182,6 +182,28 @@ func (m ModelMetadata) PricingUsable() bool {
 	return inputOK && outputOK
 }
 
+// CacheEconomics returns the input and cache-read rates for a model in dollars
+// per million tokens, and whether they can be used at all.
+//
+// ok is false when pricing is not current, when it varies by provider, or when
+// the model bills no separate cache-read rate. The third case is the one worth
+// naming: a provider that does not distinguish a read bills the whole prompt at
+// input price, so a keepalive would cost the same as the rewrite it prevents and
+// the decision downstream has to be free to refuse it.
+func (m ModelMetadata) CacheEconomics() (inputPerMTok, cacheReadPerMTok float64, ok bool) {
+	if !m.PricingUsable() {
+		return 0, 0, false
+	}
+	input, inputOK := m.Pricing.inputPrice().rate(0)
+	read, readOK := m.Pricing.cacheReadPrice().rate(0)
+	if !inputOK || !readOK {
+		return 0, 0, false
+	}
+	// Catalog rates are dollars per token; the keepalive works in per million so
+	// its arithmetic stays in readable numbers.
+	return input * 1e6, read * 1e6, true
+}
+
 func (m ModelMetadata) PricingStatus(err error) string {
 	if err != nil {
 		if errors.Is(err, ErrModelNotFound) {

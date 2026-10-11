@@ -308,3 +308,45 @@ func TestFoldIDsUniqueAcrossInstances(t *testing.T) {
 		t.Fatalf("fold ids collided across instances: %q", first.ID)
 	}
 }
+
+func TestCollapseChainLeavesShortChainAlone(t *testing.T) {
+	// The cap is the whole trade: while the chain is short it is free, because
+	// nothing ahead of the newest checkpoint has moved. Rolling early would pay
+	// a prefix rewrite for nothing.
+	c := &Compactor{Settings: DefaultSettings(), ContextLimit: 32000}
+	sess := &sessionstore.Session{ID: "s"}
+	for i := 0; i < MaxCheckpointChain; i++ {
+		sess.Messages = append(sess.Messages, sessionstore.Message{
+			Role:    llm.RoleSystem,
+			Content: "<conversation-checkpoint>",
+			Compaction: &sessionstore.CompactionInfo{
+				Summary: "summary",
+				Seq:     i,
+				Tier:    0,
+			},
+		})
+	}
+	before := len(sess.Messages)
+	rewrites := sess.PrefixRewrites
+	if c.collapseChain(t.Context(), sess) {
+		t.Fatal("a chain at the cap was collapsed")
+	}
+	if len(sess.Messages) != before {
+		t.Fatalf("messages changed: %d -> %d", before, len(sess.Messages))
+	}
+	if sess.PrefixRewrites != rewrites {
+		t.Fatal("a no-op collapse counted a prefix rewrite")
+	}
+}
+
+func TestMergeCheckpointsWithNoIndicesIsNoOp(t *testing.T) {
+	c := &Compactor{Settings: DefaultSettings(), ContextLimit: 32000}
+	sess := &sessionstore.Session{ID: "s", Messages: []sessionstore.Message{{Role: llm.RoleUser, Content: "hi"}}}
+	c.mergeCheckpoints(t.Context(), sess, nil, 1)
+	if len(sess.Messages) != 1 {
+		t.Fatalf("an empty merge rewrote the session: %d messages", len(sess.Messages))
+	}
+	if sess.PrefixRewrites != 0 {
+		t.Fatal("an empty merge counted a prefix rewrite")
+	}
+}

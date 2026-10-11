@@ -204,6 +204,10 @@ func TestStaleToolResultsRenderAsPointers(t *testing.T) {
 			{Role: llm.RoleUser, Content: "read the log"},
 			{Role: llm.RoleAssistant, Content: "reading", ToolCalls: []sessionstore.ToolCallRef{{ID: "c1", Name: "read", Args: `{}`}}},
 			{Role: llm.RoleTool, ToolCallID: "c1", ToolName: "read", ToolResult: spooled, ToolResultPresent: true},
+			// The fold that ends the epoch. Everything behind this point has
+			// been summarised, so its bodies are worth shipping as pointers;
+			// everything after it has not, and travels whole.
+			{Role: llm.RoleSystem, Content: "<conversation-checkpoint>", Compaction: &sessionstore.CompactionInfo{Summary: "the log was read"}},
 			{Role: llm.RoleUser, Content: "and now this"},
 			{Role: llm.RoleAssistant, Content: "on it", ToolCalls: []sessionstore.ToolCallRef{{ID: "c2", Name: "bash", Args: `{}`}}},
 			{Role: llm.RoleTool, ToolCallID: "c2", ToolName: "bash", ToolResult: "fresh output", ToolResultPresent: true},
@@ -259,5 +263,72 @@ func TestSmallStaleResultsTravelWhole(t *testing.T) {
 		if item.Role == llm.RoleTool && item.Output != "tiny" {
 			t.Errorf("a small stale result was rewritten: %q", item.Output)
 		}
+	}
+}
+
+func TestPointerizeEpochBoundaryIsZeroWithoutCheckpoint(t *testing.T) {
+	messages := []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{Role: llm.RoleAssistant, Content: "hi"},
+		{Role: llm.RoleTool, ToolResult: strings.Repeat("x", staleResultChars*2)},
+	}
+	if got := pointerizeEpochBoundary(messages); got != 0 {
+		t.Fatalf("boundary = %d on a session with no checkpoint, want 0", got)
+	}
+	if out := pointerizeStaleResults(messages); out[2].ToolResult != messages[2].ToolResult {
+		t.Fatal("a result ahead of an absent checkpoint was rewritten")
+	}
+}
+
+func TestPointerizeEpochBoundarySitsAfterNewestCheckpoint(t *testing.T) {
+	behind := strings.Repeat("y", staleResultChars*2)
+	inside := strings.Repeat("z", staleResultChars*2)
+	messages := []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "old"},
+		{Role: llm.RoleTool, ToolResult: behind},
+		{Role: llm.RoleSystem, Content: "<conversation-checkpoint>", Compaction: &sessionstore.CompactionInfo{Summary: "s1"}},
+		{Role: llm.RoleUser, Content: "recent"},
+		{Role: llm.RoleTool, ToolResult: inside},
+	}
+	if got := pointerizeEpochBoundary(messages); got != 3 {
+		t.Fatalf("boundary = %d, want 3 (one past the checkpoint)", got)
+	}
+	out := pointerizeStaleResults(messages)
+	if len(out) != len(messages) {
+		t.Fatalf("length changed: %d", len(out))
+	}
+	if out[1].ToolResult == behind {
+		t.Fatal("a result behind the boundary was left whole")
+	}
+	if out[4].ToolResult != inside {
+		t.Fatal("a result inside the epoch was rewritten")
+	}
+	if messages[1].ToolResult != behind || messages[4].ToolResult != inside {
+		t.Fatal("the stored messages were mutated")
+	}
+}
+
+func TestPointerizeIsStableAcrossTurns(t *testing.T) {
+	// The boundary must not follow the conversation. Appending a turn has to
+	// leave every already-sent byte alone, or the provider's prefix cache stops
+	// matching from the flip point on every run start.
+	body := strings.Repeat("z", staleResultChars*2)
+	messages := []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "old"},
+		{Role: llm.RoleTool, ToolResult: body},
+		{Role: llm.RoleSystem, Content: "<conversation-checkpoint>", Compaction: &sessionstore.CompactionInfo{Summary: "s1"}},
+	}
+	first := pointerizeStaleResults(messages)
+	appended := append(append([]sessionstore.Message(nil), messages...),
+		sessionstore.Message{Role: llm.RoleUser, Content: "new turn"})
+	second := pointerizeStaleResults(appended)
+	if first[1].ToolResult == body {
+		t.Fatal("the result behind the boundary was not pointerized")
+	}
+	if first[1].ToolResult != second[1].ToolResult {
+		t.Fatal("an already-sent result flipped between turns")
+	}
+	if second[3].Content != "new turn" {
+		t.Fatal("the appended turn did not survive")
 	}
 }

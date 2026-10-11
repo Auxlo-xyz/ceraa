@@ -40,36 +40,57 @@ func (b *Builder) Pinned(items ...llm.Item) {
 	b.pinned = append(b.pinned, items...)
 }
 
-// staleResultChars caps a tool result that has fallen behind the immediate
-// exchange. The full text stays in the session and, when it was spooled, under
+// staleResultChars caps a tool result that sits behind the session's newest
+// checkpoint. The full text stays in the session and, when it was spooled, under
 // the path its own notice names; what travels on later requests is the head of
 // it plus a pointer back.
 const staleResultChars = 600
 
-// pointerizeStaleResults replaces the bodies of tool results older than the
-// immediate exchange with pointers to themselves.
+// pointerizeEpochBoundary reports how many leading messages render their tool
+// results as pointers: one past the newest checkpoint, or zero when the session
+// has none.
 //
-// The immediate exchange is everything from the last user message with content
-// onward: the turn the agent is standing in, which renders whole. Anything
-// older has either been digested, in which case the summary carries what it
-// taught, or it has not, in which case re-reading it is one tool call away.
-// Either way re-sending it on every request is paying rent on a house already
-// owned.
+// It is a pure function of the stored messages and deliberately does not track
+// the newest user message, which is what it used to do. A boundary that follows
+// the conversation moves on every turn: the results of the turn just finished
+// flip from whole to pointer, so the bytes of an already-sent prefix change and
+// the provider's cache stops matching from that point. Live runs measured that
+// flip as the dominant per-turn invalidation - inside a run the prefix was
+// otherwise append-only, and every run start re-billed the previous exchange
+// because of it.
 //
-// The copy is shallow and the replaced strings are fresh, so the session's
-// stored messages are never mutated: a result that becomes immediate again
-// renders whole, and the archive keeps what it kept. Thinking blocks are
-// untouched throughout, because a thinking model must replay them verbatim and
-// a pointer is not a block.
-func pointerizeStaleResults(messages []sessionstore.Message) []sessionstore.Message {
-	live := len(messages)
+// A checkpoint only moves when a fold rewrites the session, and a fold is
+// already paying for a prefix rewrite. Tying the boundary to it buys one
+// invariant for free: within an epoch nothing that has been sent changes again,
+// so every request is the previous request with a suffix, and the cache reads
+// all of it. The cost is that results in the current epoch travel whole until
+// the next fold. That is bounded by the epoch, which the compaction trigger
+// already bounds, and whole results are what the model is asked to reason over
+// anyway.
+func pointerizeEpochBoundary(messages []sessionstore.Message) int {
 	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.Role == llm.RoleUser && strings.TrimSpace(m.Content) != "" && m.Compaction == nil {
-			live = i
-			break
+		if messages[i].Compaction != nil {
+			return i + 1
 		}
 	}
+	return 0
+}
+
+// pointerizeStaleResults replaces the bodies of tool results ahead of the
+// session's newest checkpoint with pointers to themselves.
+//
+// Past the boundary is the current epoch: those turns are too recent to have
+// been summarized, and their results render whole so the model still has what
+// it just read. Behind it the summary carries what the range taught, or a
+// re-read is one tool call away. Either way re-sending the bodies on every
+// request is paying rent on a house already owned.
+//
+// The copy is shallow and the replaced strings are fresh, so the session's
+// stored messages are never mutated and the archive keeps what it kept.
+// Thinking blocks are untouched throughout, because a thinking model must
+// replay them verbatim and a pointer is not a block.
+func pointerizeStaleResults(messages []sessionstore.Message) []sessionstore.Message {
+	live := pointerizeEpochBoundary(messages)
 	if live == 0 {
 		return messages
 	}
