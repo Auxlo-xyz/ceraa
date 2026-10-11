@@ -2513,8 +2513,12 @@ func startQoderLogin(token string, chatID int64) {
 	}
 	snapshot := flow.Snapshot()
 	trackQoderFlow(snapshot.FlowID, chatID, true, activeAtStart)
+	// Resolved on the caller's goroutine before the poll starts. A test swaps
+	// qoderPollLogin and restores it on cleanup; reading the variable inside the
+	// goroutine raced that restore.
+	poll := qoderPollLogin
 	go func() {
-		if err := qoderPollLogin(mgr, flow); err != nil {
+		if err := poll(mgr, flow); err != nil {
 			deliverQoderTerminal(token, snapshot.FlowID, false, err.Error())
 			return
 		}

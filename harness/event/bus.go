@@ -56,20 +56,25 @@ const Wildcard = "*"
 
 // Publish sends event to all subscribers of sessionID, non-blocking
 func (b *Bus) Publish(e Event) {
-	b.mu.RLock()
-	cp := make([]chan Event, 0, len(b.subs[e.SessionID])+len(b.subs[Wildcard]))
-	cp = append(cp, b.subs[e.SessionID]...)
-	if e.SessionID != Wildcard {
-		cp = append(cp, b.subs[Wildcard]...)
-	}
-	// copy to avoid holding lock while sending
-	b.mu.RUnlock()
 	e.Time = time.Now()
-	for _, ch := range cp {
-		select {
-		case ch <- e:
-		default:
+	// Sends happen under the write lock rather than a read lock over a copy.
+	// Unsubscribe closes the channel under the same lock, so a copy taken before
+	// the close would let Publish send on a channel that was already closed. Every
+	// send is non-blocking, so holding the lock cannot stall a publisher behind a
+	// slow reader.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	send := func(chs []chan Event) {
+		for _, ch := range chs {
+			select {
+			case ch <- e:
+			default:
+			}
 		}
+	}
+	send(b.subs[e.SessionID])
+	if e.SessionID != Wildcard {
+		send(b.subs[Wildcard])
 	}
 }
 

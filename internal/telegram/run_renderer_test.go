@@ -579,8 +579,8 @@ func TestRunningToolEarnsADurationOnlyAfterTheThreshold(t *testing.T) {
 	renderer := &runRenderer{messageID: 1}
 	renderer.tool("run-1", "🔄 >_ Run command · find /x -name f0")
 
-	oldThreshold := toolElapsedThreshold
-	toolElapsedThreshold = time.Hour
+	oldThreshold, oldTick, _ := toolTimings()
+	setToolTimings(time.Hour, oldTick)
 	if renderer.tickToolElapsed() {
 		t.Fatal("a call that had barely started showed a duration it had not earned")
 	}
@@ -588,7 +588,7 @@ func TestRunningToolEarnsADurationOnlyAfterTheThreshold(t *testing.T) {
 		t.Fatalf("duration before the threshold: %q", formatToolActivity(renderer.tools))
 	}
 
-	toolElapsedThreshold = 0
+	setToolTimings(0, oldTick)
 	if !renderer.tickToolElapsed() {
 		t.Fatal("crossing the threshold produced no duration")
 	}
@@ -609,20 +609,16 @@ func TestRunningToolEarnsADurationOnlyAfterTheThreshold(t *testing.T) {
 	if elapsed == "" {
 		t.Fatal("a call that showed a duration did not keep one on completion")
 	}
-	toolElapsedThreshold = oldThreshold
-	t.Cleanup(func() { toolElapsedThreshold = oldThreshold })
+	setToolTimings(oldThreshold, oldTick)
+	t.Cleanup(func() { setToolTimings(oldThreshold, oldTick) })
 }
 
 // The ticker has to reach the message, not just the struct: without a signal
 // the duration would sit in memory while the chat showed nothing.
 func TestRunningToolTickerReachesThePreview(t *testing.T) {
-	oldThreshold, oldTick := toolElapsedThreshold, toolElapsedTick
-	toolElapsedThreshold = 0
-	toolElapsedTick = 5 * time.Millisecond
-	t.Cleanup(func() {
-		toolElapsedThreshold = oldThreshold
-		toolElapsedTick = oldTick
-	})
+	oldThreshold, oldTick, _ := toolTimings()
+	setToolTimings(0, 5*time.Millisecond)
+	t.Cleanup(func() { setToolTimings(oldThreshold, oldTick) })
 
 	var mu sync.Mutex
 	var seen []string
@@ -772,8 +768,12 @@ func TestEveryThoughtBlockAndToolCallGetsItsOwnMessage(t *testing.T) {
 		case "sendRichMessage", "sendMessage":
 			nextID++
 			created = append(created, text)
+			// Read the id into a local under the lock: evaluating 100+nextID in the
+			// formatter below happens after the unlock, where a concurrent request is
+			// incrementing it.
+			id := 100 + nextID
 			mu.Unlock()
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, 100+nextID)))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
 			return
 		case "editMessageText":
 			if n, ok := body["message_id"].(float64); ok {

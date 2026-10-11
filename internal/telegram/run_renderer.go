@@ -450,11 +450,34 @@ var (
 	// toolElapsedMax stops tracking. Past this the line reads ">2h" and stays
 	// there, rather than growing a digit nobody reads.
 	toolElapsedMax = 2 * time.Hour
+
+	// toolTimingsMu guards the three knobs above. Each renderer's ticker reads
+	// them on its own goroutine, and a ticker can outlive the test that started
+	// it, so a test restoring a value raced the read. Every access, tests
+	// included, goes through the lock.
+	toolTimingsMu sync.Mutex
 )
+
+// toolTimings reads the elapsed-time knobs as one consistent set.
+func toolTimings() (threshold, tick, max time.Duration) {
+	toolTimingsMu.Lock()
+	defer toolTimingsMu.Unlock()
+	return toolElapsedThreshold, toolElapsedTick, toolElapsedMax
+}
+
+// setToolTimings writes the two values tests tune, and returns the previous
+// ones so a test can restore them without touching the variables directly.
+func setToolTimings(threshold, tick time.Duration) (oldThreshold, oldTick time.Duration) {
+	toolTimingsMu.Lock()
+	defer toolTimingsMu.Unlock()
+	oldThreshold, oldTick = toolElapsedThreshold, toolElapsedTick
+	toolElapsedThreshold, toolElapsedTick = threshold, tick
+	return oldThreshold, oldTick
+}
 
 func (r *runRenderer) runToolTicker() {
 	for {
-		interval := toolElapsedTick
+		_, interval, _ := toolTimings()
 		if interval <= 0 {
 			interval = time.Second
 		}
@@ -482,6 +505,7 @@ func (r *runRenderer) runToolTicker() {
 // a repeated signal costs no call.
 func (r *runRenderer) tickToolElapsed() bool {
 	now := time.Now()
+	threshold, _, max := toolTimings()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range r.tools {
@@ -490,17 +514,17 @@ func (r *runRenderer) tickToolElapsed() bool {
 			continue
 		}
 		elapsed := now.Sub(tool.startedAt)
-		if elapsed < toolElapsedThreshold {
+		if elapsed < threshold {
 			continue
 		}
 		bucket := int64(-2)
-		if elapsed < toolElapsedMax {
+		if elapsed < max {
 			bucket = int64(bucketElapsed(elapsed) / time.Millisecond)
 		}
 		if bucket != tool.shownBucket {
 			tool.shownBucket = bucket
 			if bucket == -2 {
-				tool.elapsed = ">" + formatElapsed(toolElapsedMax)
+				tool.elapsed = ">" + formatElapsed(max)
 			} else {
 				tool.elapsed = formatElapsed(time.Duration(bucket) * time.Millisecond)
 			}

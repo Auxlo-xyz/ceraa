@@ -110,7 +110,12 @@ type taskRecord struct {
 	budget int
 }
 
+// ensure lazily creates the maps under the tool's lock: run is entered from one
+// goroutine per child, and two of them initialising the same map at once is a
+// race the concurrency test caught.
 func (t *TaskTool) ensure() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.live == nil {
 		t.live = map[string]struct{}{}
 	}
