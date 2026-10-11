@@ -159,7 +159,7 @@ type Instruction struct {
 	Section string
 
 	// Applies is a path glob narrowing where this rule is delivered, in exactly
-	// the grammar memory.Entry.Applies uses.
+	// the grammar memory.MatchesScope implements.
 	//
 	// Empty means the rule is general and matches every operation. The grammar
 	// is enforced by the host's matcher rather than by this package, which is

@@ -3,10 +3,8 @@ package memory
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Delivery selects how memory reaches the model.
@@ -58,18 +56,9 @@ func ParseDelivery(value string) Delivery {
 	}
 }
 
-// SidekickGate is the weight a memory must reach to be injected at all.
-//
-// Higher than the render floor on purpose, because a tool result is a worse place
-// to spend attention than a prompt line. The prompt block is read once with full
-// context; an annotation competes with the tool output the agent actually asked
-// for, and every unnecessary line there is a distraction paid for on every
-// subsequent turn because it lands in the transcript.
-const SidekickGate = 0.40
-
 // sidekickGeneralLimit caps the always-applicable preferences delivered per run.
 //
-// General preferences have no `applies`, so they match every operation. Injecting
+// General preferences name no path, so they match every operation. Injecting
 // them on every tool result would repeat them into the transcript once per call -
 // forty copies in a long run, against a prompt block that carried them once. They
 // are therefore delivered once per run, on the first tool result, and this is that
@@ -104,7 +93,7 @@ const SidekickBlockBytes = 1200
 // reads as if the list were complete.
 const SidekickRunBytes = 4 * SidekickBlockBytes
 
-// sidekickWhyBytes bounds the optional rationale, so a memory cannot smuggle a
+// sidekickWhyBytes bounds one rendered line, so a memory cannot smuggle a
 // paragraph into every matching result.
 //
 // 96 runes rather than 160. The rationale is the part a benchmark of four
@@ -115,63 +104,21 @@ const SidekickRunBytes = 4 * SidekickBlockBytes
 // note to stop being read at all.
 const sidekickWhyBytes = 96
 
-// sidekickWhyTopN is how many memories in one note keep their rationale.
-//
-// Selection is already ordered by weight, so the top two are the ones that earned
-// the bytes. Beyond that the rationale is elaboration on a claim the model already
-// has on the line above it, spent in the most expensive place in the request.
-const sidekickWhyTopN = 2
-
 // Brief is one memory rendered for injection.
 type Brief struct {
-	// ID is the identity this memory is delivered once under, from DeliveryID. It
-	// is carried rather than looked up because the caller that has to remember what
-	// it delivered is holding Briefs, not Entries, by the time it decides.
+	// ID is the identity this memory is delivered once under. It is carried
+	// rather than looked up because the caller that has to remember what it
+	// delivered is holding Briefs, not log lines, by the time it decides.
 	ID      string
 	Applies string
-	Why     string
 	Content string
-	Score   float64
-	Seen    int
-}
-
-// AlreadyDelivered reports whether a memory has already reached the model in this
-// session. A nil value means nothing has been delivered yet.
-//
-// It is asked about DeliveryID rather than about rendered text, so a caller that
-// wants to suppress repeats cannot accidentally suppress two memories that merely
-// render alike.
-type AlreadyDelivered func(id string) bool
-
-// DeliveryID is the identity a delivered memory is remembered by.
-//
-// Entry.ID, which the store derives from project, session and wording and which is
-// therefore one-to-one with what the store itself treats as a duplicate: two
-// entries sharing an id are the same statement, not two renderings of it.
-//
-// The rendered text is the obvious alternative and it is wrong. oneLine truncates
-// at sidekickWhyBytes, so two memories that agree past that point render
-// byte-identically and would merge silently - the second suppressed as a repeat of
-// the first while saying something else. An id cannot collide that way, which is
-// the whole reason it is the key rather than the thing already in hand.
-//
-// An entry with no id - a hand-written memory.json, a fixture, an import - falls
-// back to the wording identity Add dedups on (sameMemory), over raw Content and
-// never over a rendered line. A collision there costs one suppressed delivery,
-// which is recoverable; a collision on rendered text costs a memory that never
-// arrives at all.
-func DeliveryID(entry Entry) string {
-	if id := strings.TrimSpace(entry.ID); id != "" {
-		return id
-	}
-	return "content:" + strings.Join(strings.Fields(entry.Content), " ")
 }
 
 // matches reports whether this memory bears on the given target.
 //
 // A memory with no `applies` is general and matches nothing here; general
-// memories are delivered once per run by SelectGeneral rather than on every
-// operation, because a standing preference is not a response to any one call.
+// memories are delivered once per run rather than on every operation, because a
+// standing preference is not a response to any one call.
 //
 // The match is a path prefix or a glob, evaluated lexically. It is deliberately
 // not semantic: finding memories by meaning similarity is the mechanism a
@@ -235,90 +182,11 @@ func (b Brief) matches(target string) bool {
 // grammar can be wrong.
 //
 // The caller passes strings rather than a Brief because Brief carries the other
-// five fields of a rendered memory, and a scope question about a document rule
+// fields of a rendered memory, and a scope question about a document rule
 // has none of them. An empty applies matches nothing here, the same as a memory
 // with no applies: general is a delivery mode, not an empty scope.
 func MatchesScope(applies, target string) bool {
 	return Brief{Applies: applies}.matches(target)
-}
-
-// Select returns the targeted memories bearing on any of the given targets,
-// strongest first, skipping any the caller has already delivered.
-//
-// A slice rather than one string because a single operation can touch several
-// files: one shell command that rewrites three of them should surface what is
-// known about all three, not only the first.
-func Select(entries []Entry, targets []string, now time.Time, limit int, skip AlreadyDelivered) []Brief {
-	if len(targets) == 0 || limit <= 0 {
-		return nil
-	}
-	var out []Brief
-	for _, entry := range entries {
-		if entry.Applies == "" {
-			continue
-		}
-		weight := score(entry, now)
-		if weight < SidekickGate {
-			continue
-		}
-		// Excluded before the limit, not after. The limit is the top N by weight, so
-		// filtering afterwards would let four memories that were all delivered on
-		// earlier calls hide a fifth that never was, and the weaker memory would then
-		// never fire in this session at all - dedup that silently retires the tail.
-		if skip != nil && skip(DeliveryID(entry)) {
-			continue
-		}
-		brief := briefOf(entry, weight)
-		for _, target := range targets {
-			if brief.matches(target) {
-				out = append(out, brief)
-				break
-			}
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out
-}
-
-// SelectGeneral returns the strongest always-applicable memories, for delivery
-// once per run.
-func SelectGeneral(entries []Entry, now time.Time, limit int) []Brief {
-	if limit <= 0 {
-		return nil
-	}
-	var out []Brief
-	for _, entry := range entries {
-		if entry.Applies != "" {
-			continue
-		}
-		weight := score(entry, now)
-		if weight < SidekickGate {
-			continue
-		}
-		out = append(out, briefOf(entry, weight))
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out
-}
-
-// ScoreOf exposes an entry's current weight to callers outside this package.
-func ScoreOf(entry Entry, now time.Time) float64 { return score(entry, now) }
-
-func briefOf(entry Entry, weight float64) Brief {
-	return Brief{
-		ID:      DeliveryID(entry),
-		Applies: entry.Applies,
-		Why:     entry.Why,
-		Content: entry.Content,
-		Score:   weight,
-		Seen:    entry.Seen,
-	}
 }
 
 // Annotate renders the block appended to a tool result.
@@ -395,19 +263,10 @@ func Annotate(targets []string, targeted, general []Brief) string {
 	return b.String()
 }
 
-// targetedLines renders the memories about this operation, strongest first.
-//
-// The rationale rides the top sidekickWhyTopN only. Selection is ordered by
-// weight, so that is the pair whose reasons are worth the extra bytes, and the
-// rest would be elaboration on a claim the line above it already carries.
 func targetedLines(items []Brief) []string {
 	lines := make([]string, 0, len(items))
-	for i, item := range items {
-		line := "- " + oneLine(item)
-		if item.Why != "" && i < sidekickWhyTopN {
-			line += " (because: " + oneLine(Brief{Content: item.Why}) + ")"
-		}
-		lines = append(lines, line+"\n")
+	for _, item := range items {
+		lines = append(lines, "- "+oneLine(item)+"\n")
 	}
 	return lines
 }
@@ -442,10 +301,10 @@ func sidekickNotice(dropped int) string {
 
 // oneLine flattens and bounds a rendered fragment.
 //
-// The bound lives here rather than in briefOf because Annotate accepts a Brief
-// from any caller, and a bound applied only at construction is a bound a caller
-// can walk straight past. Bounding at the point the text becomes output is the
-// only place it cannot be bypassed.
+// The bound lives here rather than at Brief construction because Annotate accepts
+// a Brief from any caller, and a bound applied only at construction is a bound a
+// caller can walk straight past. Bounding at the point the text becomes output is
+// the only place it cannot be bypassed.
 func oneLine(b Brief) string {
 	value := strings.Join(strings.Fields(b.Content), " ")
 	if value == "" {
@@ -485,11 +344,10 @@ func escapeAttr(value string) string {
 // DeliveryReport records what a run actually delivered, which is the only way the
 // two delivery modes can later be told apart in a session file.
 type DeliveryReport struct {
-	Mode             string `json:"mode"`
-	PromptBlock      bool   `json:"prompt_block"`
-	GeneralInjected  int    `json:"general_injected"`
-	TargetedInjects  int    `json:"targeted_injections"`
-	SuppressedByGate int    `json:"suppressed_by_gate"`
+	Mode            string `json:"mode"`
+	PromptBlock     bool   `json:"prompt_block"`
+	GeneralInjected int    `json:"general_injected"`
+	TargetedInjects int    `json:"targeted_injections"`
 	// Deduped counts memories held back because this session had already delivered
 	// them. Without it, a run where dedup did all the work looks exactly like a run
 	// that injected on every call - and that comparison is the reason this report
@@ -500,18 +358,10 @@ type DeliveryReport struct {
 	BudgetWithheld int `json:"budget_withheld,omitempty"`
 }
 
-// NoteSuppressed records what the gate held back.
-func (r *DeliveryReport) NoteSuppressed(gate int) {
-	if r == nil {
-		return
-	}
-	r.SuppressedByGate = gate
-}
-
 func (r *DeliveryReport) String() string {
 	if r == nil {
 		return "memory delivery: none"
 	}
-	return fmt.Sprintf("memory delivery: mode=%s prompt_block=%v general=%d targeted=%d deduped=%d budget_withheld=%d below_gate=%d",
-		r.Mode, r.PromptBlock, r.GeneralInjected, r.TargetedInjects, r.Deduped, r.BudgetWithheld, r.SuppressedByGate)
+	return fmt.Sprintf("memory delivery: mode=%s prompt_block=%v general=%d targeted=%d deduped=%d budget_withheld=%d",
+		r.Mode, r.PromptBlock, r.GeneralInjected, r.TargetedInjects, r.Deduped, r.BudgetWithheld)
 }

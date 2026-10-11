@@ -57,24 +57,19 @@ func memoryLogReader(root string) *memory.MemoryFile {
 	return memory.OpenMemoryFile(memoryLogPath(root))
 }
 
-// memoryWiring is the memory-related half of the runner config: the live
-// renderer the prompt modes read, and the reader for the append-only log.
+// memoryWiring is the memory-related half of the runner config: the reader for
+// the append-only log.
 //
 // One value rather than fields written into the literal, so the wiring can be
 // asserted without running a turn.
 type memoryWiring struct {
-	// MemoryContextFunc renders the memory block the prompt modes read.
-	MemoryContextFunc func() (string, error)
 	// MemoryFile is the runner's reader for the append-only log.
 	MemoryFile func() *memory.MemoryFile
 }
 
-func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, memoryLog *memory.MemoryFile) memoryWiring {
+func newMemoryWiring(memoryLog *memory.MemoryFile) memoryWiring {
 	return memoryWiring{
-		// The project id is "cli" for this surface, the same one the store is
-		// read against everywhere else in the file.
-		MemoryContextFunc: memory.Live(memoryStore, "cli", sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000),
-		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
+		MemoryFile: func() *memory.MemoryFile { return memoryLog },
 	}
 }
 
@@ -88,9 +83,9 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // nothing, which is the failure a credential-gated hook exists to avoid, and
 // compaction.ChainLearn treats nil as absent so the distinction is preserved all
 // the way to the call site.
-func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+func cliLearnChain(modelConfig llm.ProviderConfig, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
 	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli", memoryLog); enabled {
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryLog); enabled {
 		chain = learn
 	}
 	// The log writer is always chained when a log exists. It is not
@@ -127,9 +122,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	if err := secret.Init(filepath.Join(paths.DataDir(), "secret.key"), filepath.Join(paths.DataDir(), "secrets.json")); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
-	if cfg.MemoryFile == "" {
-		cfg.MemoryFile = "memory"
-	}
 	if cfg.SkillFile == "" {
 		cfg.SkillFile = "skills"
 	}
@@ -139,10 +131,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	store, err := sessionstore.New(cfg.SessionFile)
 	if err != nil {
 		return fmt.Errorf("session store: %w", err)
-	}
-	memoryStore, err := memory.New(cfg.MemoryFile)
-	if err != nil {
-		return fmt.Errorf("memory store: %w", err)
 	}
 	skillStore, err := skills.New(cfg.SkillFile)
 	if err != nil {
@@ -160,17 +148,12 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	memoryLog := memoryLogReader(".")
 	compactor := compaction.New(pcfg)
 	// One learn hook for the run: the extractor when a credential is configured.
-	compactor.Learn = cliLearnChain(pcfg, memoryStore, memoryLog)
+	compactor.Learn = cliLearnChain(pcfg, memoryLog)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.ArchiveDir = cfg.SessionFile
-	// Startup snapshot, kept as a fallback and as the first render. The live
-	// renderer below re-reads the file every turn.
-	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	// The append-only log for this run. Flat at the root, never /tmp.
-	// The memory half of the runner config, built beside the store and the log
-	// it reads so the two are constructed once and shared.
-	wiring := newMemoryWiring(memoryStore, cfg.WorkspaceRootPath(), "cli", memoryLog)
+	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
@@ -302,9 +285,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		provider:            provider,
 		modelConfig:         modelConfig,
 		resolveModel:        resolveModel,
-		memoryContext:       memoryContext,
 		memory:              wiring,
-		memoryStore:         memoryStore,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,
@@ -324,9 +305,7 @@ type agentRunDeps struct {
 	provider            config.LLMProvider
 	modelConfig         llm.ProviderConfig
 	resolveModel        func(context.Context) (llm.ProviderConfig, error)
-	memoryContext       string
 	memory              memoryWiring
-	memoryStore         *memory.Store
 	instructionProposer instruction.Proposer
 	skillContext        string
 	evaluationStore     *evaluation.Store
@@ -352,11 +331,8 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 		ModelCatalogURL:     d.cfg.ModelCatalogURL,
 		ModelCatalogCache:   d.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(d.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       d.memoryContext,
-		MemoryContextFunc:   d.memory.MemoryContextFunc,
 		MemoryFile:          d.memory.MemoryFile,
 		MemoryDelivery:      d.cfg.MemoryDelivery,
-		MemoryEntries:       memoryEntries(d.memoryStore, "cli", "cli"),
 		// The CLI runs in the process working directory: this config sets no
 		// WorkDir, so the runner resolves relative paths against it, and the
 		// instruction store has to resolve against the same place or a project's
@@ -403,18 +379,4 @@ func regionForProvider(provider config.LLMProvider) minimaxauth.Region {
 		return minimaxauth.RegionCN
 	}
 	return minimaxauth.RegionGlobal
-}
-
-// memoryEntries lists the store for sidekick delivery.
-//
-// A closure rather than a slice, because the store is the source of truth and a
-// snapshot taken here would be a copy taken before the first tool call. That is
-// the same divergence the live prompt renderer was rewritten to avoid.
-func memoryEntries(store *memory.Store, projectID, sessionID string) func() ([]memory.Entry, error) {
-	if store == nil {
-		return nil
-	}
-	return func() ([]memory.Entry, error) {
-		return store.List(projectID, sessionID)
-	}
 }

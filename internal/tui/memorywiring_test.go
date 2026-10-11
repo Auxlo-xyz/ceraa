@@ -2,72 +2,20 @@ package tui
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
-	"ceraa/harness/coordinator"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/internal/config"
 )
 
-// memoryWiringFixture builds the pieces a turn builds: a project root with a
-// memory file, a store, and the reader for the root's append-only log.
-//
-// The memory file is written for real, because "MemoryContextFunc still works"
-// is a claim about rendered text: a config whose renderer answers with nothing
-// would pass a nil check and fail the model.
-func memoryWiringFixture(t *testing.T, projectRoot string) (store *memory.Store, log *memory.MemoryFile) {
+// memoryWiringFixture builds the pieces a turn builds: a project root and the
+// reader for the root's append-only log.
+func memoryWiringFixture(t *testing.T, projectRoot string) *memory.MemoryFile {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(projectRoot, "memory"), 0o755); err != nil {
-		t.Fatalf("mkdir memory dir: %v", err)
-	}
-	const note = "The gate is the local check, never CI."
-	if err := os.WriteFile(filepath.Join(projectRoot, "memory", "AGENTS.md"), []byte(note+"\n"), 0o644); err != nil {
-		t.Fatalf("write memory file: %v", err)
-	}
-	store, err := memory.New(filepath.Join(t.TempDir(), "memory"))
-	if err != nil {
-		t.Fatalf("memory store: %v", err)
-	}
-	log = memoryLogReader(projectRoot)
-	return store, log
-}
-
-// assertNoExtraRenderer walks a constructed RunnerConfig for any live renderer
-// that is not the memory context.
-func assertNoExtraRenderer(t *testing.T, cfg coordinator.RunnerConfig) {
-	t.Helper()
-	rendererType := reflect.TypeOf((func() (string, error))(nil))
-	value := reflect.ValueOf(cfg)
-	typ := value.Type()
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		if field.Type != rendererType || value.Field(i).IsNil() {
-			continue
-		}
-		if field.Name == "MemoryContextFunc" {
-			continue
-		}
-		t.Errorf("RunnerConfig.%s is set: only the memory renderer may reach the prompt", field.Name)
-	}
-}
-
-func assertRendersMemoryOnly(t *testing.T, cfg coordinator.RunnerConfig) {
-	t.Helper()
-	if cfg.MemoryContextFunc == nil {
-		t.Fatal("MemoryContextFunc is nil, so the prompt modes have no memory to read")
-	}
-	rendered, err := cfg.MemoryContextFunc()
-	if err != nil {
-		t.Fatalf("MemoryContextFunc: %v", err)
-	}
-	if !strings.Contains(rendered, "The gate is the local check, never CI.") {
-		t.Errorf("memory context does not carry the project's memory:\n%s", rendered)
-	}
+	return memoryLogReader(projectRoot)
 }
 
 // newMemoryWiringSession builds a session whose workspace root is a temporary
@@ -80,7 +28,6 @@ func newMemoryWiringSession(t *testing.T) *Session {
 	cfg := &config.Config{
 		WorkspaceRoot:  dir,
 		SessionFile:    filepath.Join(dir, "sessions"),
-		MemoryFile:     filepath.Join(dir, "memory"),
 		SkillFile:      filepath.Join(dir, "skills"),
 		EvaluationFile: filepath.Join(dir, "evals.json"),
 		ToolOutputDir:  filepath.Join(dir, "toolout"),
@@ -104,36 +51,15 @@ func newMemoryWiringSession(t *testing.T) *Session {
 	return s
 }
 
-// TestSessionRunnerConfigCarriesMemoryWiring pins the config a turn actually
-// receives: the only renderer left is the memory one, and it renders memory
-// and nothing else.
-func TestSessionRunnerConfigCarriesMemoryWiring(t *testing.T) {
-	s := newMemoryWiringSession(t)
-	store, log := memoryWiringFixture(t, s.workDir)
-
-	provider := s.cfg.ActiveLLM()
-	cfg := s.runnerConfig(sessionRunnerDeps{
-		provider:      provider,
-		modelConfig:   llm.FromProvider(provider.URL, provider.APIKey, provider.Model),
-		memoryStore:   store,
-		memoryContext: "startup snapshot",
-		memory:        newMemoryWiring(store, s.workDir, s.session, log),
-		skillContext:  "skill catalogue",
-	})
-
-	assertNoExtraRenderer(t, cfg)
-	assertRendersMemoryOnly(t, cfg)
-}
-
-// TestSessionRunnerConfigKeepsTheMemoryFileWiring pins what this deletion must
-// not touch: the reader for the append-only log, on the same config, at the
-// session's workdir.
+// TestSessionRunnerConfigKeepsTheMemoryFileWiring pins the reader for the
+// append-only log, on the config a turn actually receives, at the session's
+// workdir.
 func TestSessionRunnerConfigKeepsTheMemoryFileWiring(t *testing.T) {
 	s := newMemoryWiringSession(t)
-	store, log := memoryWiringFixture(t, s.workDir)
+	log := memoryWiringFixture(t, s.workDir)
 
 	cfg := s.runnerConfig(sessionRunnerDeps{
-		memory: newMemoryWiring(store, s.workDir, s.session, log),
+		memory: newMemoryWiring(log),
 	})
 
 	if cfg.MemoryFile == nil {
@@ -157,19 +83,15 @@ func TestSessionRunnerConfigKeepsTheMemoryFileWiring(t *testing.T) {
 // behind a disabled extractor; with one configured it runs the extractor and
 // nothing else.
 func TestCliLearnChainIsMemoryOnly(t *testing.T) {
-	store, err := memory.New(filepath.Join(t.TempDir(), "memory"))
-	if err != nil {
-		t.Fatalf("memory store: %v", err)
-	}
-	if chain := cliLearnChain(llm.ProviderConfig{}, store, nil); chain != nil {
+	if chain := cliLearnChain(llm.ProviderConfig{}, nil); chain != nil {
 		t.Errorf("chain is non-nil with no credential and no log, so a caller cannot tell wired from unwired")
 	}
-	if chain := cliLearnChain(llm.ProviderConfig{}, store, memory.OpenMemoryFile(filepath.Join(t.TempDir(), "Memory.md"))); chain == nil {
+	if chain := cliLearnChain(llm.ProviderConfig{}, memory.OpenMemoryFile(filepath.Join(t.TempDir(), "Memory.md"))); chain == nil {
 		t.Error("chain is nil with a log configured, so checkpoint summaries would never be recorded")
 	}
 
 	t.Setenv("CERAA_EXTRACT_KEY", "test-extract-key")
-	chain := cliLearnChain(llm.ProviderConfig{BaseURL: "http://127.0.0.1:1", Model: "unused"}, store, memory.OpenMemoryFile(filepath.Join(t.TempDir(), "Memory.md")))
+	chain := cliLearnChain(llm.ProviderConfig{BaseURL: "http://127.0.0.1:1", Model: "unused"}, memory.OpenMemoryFile(filepath.Join(t.TempDir(), "Memory.md")))
 	if chain == nil {
 		t.Fatal("chain is nil with an extraction credential configured, so the extractor is no longer wired")
 	}

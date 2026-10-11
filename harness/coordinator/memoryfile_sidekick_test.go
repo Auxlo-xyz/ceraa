@@ -49,7 +49,7 @@ func logSidekick(t *testing.T, tail int, entries ...string) (*sidekickState, str
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "Memory.md")
 	appendLog(t, memory.OpenMemoryFile(path), entries...)
-	state := newSidekickState(nil, "/srv")
+	state := newSidekickState("/srv")
 	state.useMemoryFile(logMemoryFile(path), tail)
 	return state, path
 }
@@ -239,7 +239,7 @@ func TestStandingLogEntriesFireOncePerRunAndRearmOnTheNext(t *testing.T) {
 	}
 	// A new runner over the same log, which is what the next Telegram message
 	// builds: the standing set re-arms with it.
-	next := newSidekickState(nil, "/srv")
+	next := newSidekickState("/srv")
 	next.useMemoryFile(logMemoryFile(pathOf(t, state)), 0)
 	if got := next.annotate(sessionWithOp("c", "read", "/srv/web/index.js"), operation.ResultEvent{OpID: "c"}); !strings.Contains(got, "STANDING_MD") {
 		t.Errorf("the standing entry was not re-armed on the next run: %q", got)
@@ -301,7 +301,7 @@ func TestTheDefaultTailIsTheRunBudgetInEntries(t *testing.T) {
 func TestAnEmptyOrMissingMemoryFileDeliversNothing(t *testing.T) {
 	states := map[string]*sidekickState{}
 	// No file at all: a project with no memory yet is a state, not an error.
-	missing := newSidekickState(nil, "/srv")
+	missing := newSidekickState("/srv")
 	missing.useMemoryFile(logMemoryFile(filepath.Join(t.TempDir(), "absent", "Memory.md")), 0)
 	states["missing"] = missing
 	// A file that exists and is empty.
@@ -309,11 +309,11 @@ func TestAnEmptyOrMissingMemoryFileDeliversNothing(t *testing.T) {
 	if err := os.WriteFile(empty, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	blank := newSidekickState(nil, "/srv")
+	blank := newSidekickState("/srv")
 	blank.useMemoryFile(logMemoryFile(empty), 0)
 	states["empty"] = blank
 	// A reader that hands back nothing at all.
-	none := newSidekickState(nil, "/srv")
+	none := newSidekickState("/srv")
 	none.useMemoryFile(func() *memory.MemoryFile { return nil }, 0)
 	states["nil reader"] = none
 
@@ -420,21 +420,21 @@ func TestTheRunCeilingStillStopsLogDeliveryRatherThanTrimmingIt(t *testing.T) {
 	}
 }
 
-// The other two modes are untouched by any of this: the log is a sidekick source
-// and a runner in prompt or cached mode must not build one from it.
+// The other two modes build no sidekick from the log: the log is a sidekick
+// source, and memory reaches the model through tool-result notes in sidekick
+// mode only.
 func TestTheLogDoesNotReachAPromptOrCachedRun(t *testing.T) {
 	for _, mode := range []memory.Delivery{memory.DeliveryPrompt, memory.DeliveryCached} {
 		runner := New(RunnerConfig{
 			SessionID:      "mode",
-			MemoryContext:  "<memory>block</memory>",
 			MemoryDelivery: string(mode),
 			MemoryFile:     logMemoryFile(filepath.Join(t.TempDir(), "Memory.md")),
 		}, nil, tool.NewRegistry())
 		if runner.sidekick != nil {
 			t.Errorf("mode %q built sidekick state from a log, so a tool result can be annotated in a mode that has no notes", mode)
 		}
-		if got := runner.memoryContext(); (mode == memory.DeliveryPrompt) != (got != "") {
-			t.Errorf("mode %q put %q in the varying tail", mode, got)
+		if got := runner.systemPrompt(); strings.Contains(got, "<memory>") {
+			t.Errorf("mode %q carries a memory block in the system prompt: %q", mode, got)
 		}
 	}
 }

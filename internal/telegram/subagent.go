@@ -11,6 +11,7 @@ import (
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
 	"ceraa/harness/llm"
+	"ceraa/harness/memory"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -66,9 +67,10 @@ type subagentFactory struct {
 	reasoning    llm.ReasonLevel
 	parentPrompt string
 	skillStore   *skills.Store
-	// Rendered once, from the parent's project and session, so a child inherits the
-	// same memory and skills the agent that spawned it had.
-	memoryContext   string
+	// The child reads the same append-only log as its parent, so it inherits
+	// what the project has learned rather than starting blank. The parent's
+	// MemoryDelivery decides whether it is delivered; a child never renders a
+	// prompt block of its own.
 	skillContext    string
 	evaluationStore *evaluation.Store
 	store           *sessionstore.Store
@@ -199,7 +201,8 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		ModelCatalogURL:     f.cfg.ModelCatalogURL,
 		ModelCatalogCache:   f.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(f.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       f.memoryContext,
+		MemoryDelivery:      f.cfg.MemoryDelivery,
+		MemoryFile:          childMemoryFile(f.projectRoot),
 		SkillContext:        f.skillContext,
 		EvaluationStore:     f.evaluationStore,
 		// The budget is the point of the child, and it is enforced in the loop rather
@@ -255,6 +258,18 @@ func isBudgetStop(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "abandoned after") || strings.Contains(msg, "budget")
+}
+
+// childMemoryFile is the reader for the parent project's log, or nil when the
+// factory was built without a project root. A nil reader means no sidekick and
+// no turn record, which is what keeps a test factory from appending to a
+// Memory.md resolved against the test's working directory - the source tree,
+// where a log must never land.
+func childMemoryFile(projectRoot string) func() *memory.MemoryFile {
+	if strings.TrimSpace(projectRoot) == "" {
+		return nil
+	}
+	return func() *memory.MemoryFile { return memory.OpenMemoryFile(memoryLogPath(projectRoot)) }
 }
 
 // childSystemPrompt is the parent's prompt plus this child's role. The parent's is

@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Ceraa — Dashboard</title>
-  <meta name="description" content="Ceraa control plane: provider profiles, reasoning effort, memory half-life, encrypted secret store, session ledger, and token cache telemetry." />
+  <meta name="description" content="Ceraa control plane: provider profiles, reasoning effort, append-only memory log, encrypted secret store, session ledger, and token cache telemetry." />
   <meta property="og:title" content="Ceraa — Control Plane & Telemetry" />
-  <meta property="og:description" content="Ceraa control plane: provider profiles, reasoning effort, memory half-life, encrypted secret store, session ledger, and token cache telemetry." />
+  <meta property="og:description" content="Ceraa control plane: provider profiles, reasoning effort, append-only memory log, encrypted secret store, session ledger, and token cache telemetry." />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -747,7 +747,7 @@
 
     /* Resource cards: icon plus title plus status pill, a description line,
        and pill actions. Reserved for content with identity: skill proposals,
-       provider profiles, schedules, subscriptions, memory types, run history.
+       provider profiles, schedules, subscriptions, memory log, run history.
        Ledgers, toggles, forms and secrets stay rows. */
     .card-list {
       display: flex;
@@ -1980,7 +1980,6 @@
       const [envWorkspaceRoot, setEnvWorkspaceRoot] = useState("");
       const [forbiddenSourceTreePrefix, setForbiddenSourceTreePrefix] = useState("/workspace/development/ceraa");
       const [toolInventory, setToolInventory] = useState([]);
-      const [memoryTypes, setMemoryTypes] = useState([]);
       const [snapshots, setSnapshots] = useState([]);
       const [inspect, setInspect] = useState({});
       const [chartPoints, setChartPoints] = useState([]);
@@ -2310,15 +2309,6 @@
         }
       };
 
-      const deleteMemory = async (id) => {
-        try {
-          await Api.call("/api/memories/" + encodeURIComponent(id), "DELETE");
-          await refreshMemories();
-        } catch (err) {
-          setApiError("Memory delete failed: " + (err.message || err));
-        }
-      };
-
       // =======================================================================
       // 7. SKILLS AND SCHEDULES
       // =======================================================================
@@ -2395,23 +2385,6 @@
           setToolInventory(inv);
           setAlwaysAllow((toolsBody && toolsBody.always_allow) || []);
         }
-        if (m.memory_types) {
-          setMemoryTypes(m.memory_types.map((t) => ({
-            type: t.type,
-            halfLife: fmtHalfLife(t.half_life_days),
-            rationale: ""
-          })));
-        }
-      }
-
-      function fmtHalfLife(days) {
-        days = Number(days) || 0;
-        if (days >= 365) {
-          const yrs = days / 365;
-          return days + "d (" + (Number.isInteger(yrs) ? yrs : yrs.toFixed(1)) + " yr)";
-        }
-        if (days >= 7) return days + "d (" + Math.round(days / 7) + " wk)";
-        return days + "d";
       }
 
       async function refreshStatus() {
@@ -2588,10 +2561,7 @@ contextLimit: p.context_limit || 0,
       async function refreshMemories() {
         const body = await Api.call("/api/memories");
         setMemories(((body && body.memories) || []).map((m) => ({
-          id: m.id, type: m.type || "preference", text: m.content || "",
-          provenance: (m.veracity || "unknown") +
-            (m.seen > 1 ? " · confirmed " + m.seen + "x" : "") +
-            (m.applies ? " · " + m.applies : "")
+          id: m.id, text: m.content || ""
         })));
       }
 
@@ -4074,11 +4044,11 @@ contextLimit: p.context_limit || 0,
                 </div>
               </section>
 
-              {/* COLUMN 2: 6. MEMORY STORE + COMPACTION + READ-ONLY HALF-LIFE TABLE */}
+              {/* COLUMN 2: 6. MEMORY LOG + COMPACTION */}
               <section className="col col-center">
                 <div className="hero-band">
                   <div>
-                    <div className="t-mono" style={{ marginBottom: 8 }}>TYPED MEMORY VECTORS</div>
+                    <div className="t-mono" style={{ marginBottom: 8 }}>MEMORY LOG</div>
                     <div className="t-hero tnum">
                       <AnimatedNumber value={memories.length} padStart={2} />
                       <span className="hero-unit">ENTRIES</span>
@@ -4103,7 +4073,7 @@ contextLimit: p.context_limit || 0,
                     <span className={`dot ${autoCompaction ? "" : "idle"}`} />
                     <div>
                       <div className="t-row">Auto-Compaction</div>
-                      <div className="t-body">Automatically consolidate episodic & request memories when threshold is reached</div>
+                      <div className="t-body">Automatically compact the transcript and record the summary to the memory log when threshold is reached</div>
                     </div>
                   </div>
                   <div className="h-right">
@@ -4111,10 +4081,10 @@ contextLimit: p.context_limit || 0,
                   </div>
                 </div>
 
-                {/* Memory Entries List with Type, Provenance & Delete */}
+                {/* Memory Log Entries, newest last, read-only */}
                 <div className="sec-head">
-                  <h2 className="t-sec">Stored Memories</h2>
-                  <span className="t-mono">PER-ENTRY PROVENANCE</span>
+                  <h2 className="t-sec">Memory Log</h2>
+                  <span className="t-mono">APPEND-ONLY</span>
                 </div>
 
                 <div className="hairline-list">
@@ -4124,49 +4094,8 @@ contextLimit: p.context_limit || 0,
                         <span className="dot" />
                         <div>
                           <div className="t-row">{m.text}</div>
-                          <div className="t-body" style={{ marginTop: 2 }}>
-                            <span className="t-mono" style={{ color: "var(--accent)" }}>[{m.type.toUpperCase()}]</span>
-                            {" · "}
-                            {m.provenance}
-                          </div>
                         </div>
                       </div>
-                      <div className="h-right">
-                        <button
-                          type="button"
-                          className="mini-btn danger"
-                          onClick={() => deleteMemory(m.id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Read-Only Typed Half-Life Table */}
-                <div className="sec-head">
-                  <h2 className="t-sec">Memory Extractor Closed Type Set & Half-Life Table</h2>
-                  <span className="t-mono">READ-ONLY SPEC</span>
-                </div>
-                <div className="t-body" style={{ marginBottom: 12 }}>
-                  Ceraa's memory extractor assigns every observation to a closed type with a mathematical decay half-life, explaining why a <code>profile</code> or <code>preference</code> persists for years while a <code>request</code> decays in weeks.
-                </div>
-
-                <div className="card-list">
-                  {memoryTypes.map((row) => (
-                    <div key={row.type} className="card">
-                      <div className="card-top">
-                        <svg className="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 22h14" />
-                          <path d="M5 2h14" />
-                          <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12 7.586 16.414A2 2 0 0 0 7 17.828V22" />
-                          <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
-                        </svg>
-                        <span className="card-title t-mono">{row.type}</span>
-                        <span className="card-pill">t½ = {row.halfLife}</span>
-                      </div>
-                      {row.rationale ? <div className="card-desc">{row.rationale}</div> : null}
                     </div>
                   ))}
                 </div>

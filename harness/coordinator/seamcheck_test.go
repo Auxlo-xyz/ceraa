@@ -14,8 +14,7 @@ import (
 func TestSystemCacheSeamLandsOnTheStableBoundary(t *testing.T) {
 	static := strings.Repeat("instruction line. ", 400)
 	r := &Runner{cfg: RunnerConfig{
-		SystemPrompt:      static,
-		MemoryContextFunc: func() (string, error) { return "<memory>note</memory>", nil },
+		SystemPrompt: static,
 	}}
 
 	full := r.systemPrompt()

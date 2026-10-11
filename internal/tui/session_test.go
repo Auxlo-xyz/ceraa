@@ -63,7 +63,6 @@ func newTestSession(t *testing.T, srv *httptest.Server) *Session {
 	t.Setenv("CERAA_DATA_DIR", filepath.Join(dir, "data"))
 	cfg := &config.Config{
 		SessionFile:    filepath.Join(dir, "sessions"),
-		MemoryFile:     filepath.Join(dir, "memory"),
 		SkillFile:      filepath.Join(dir, "skills"),
 		EvaluationFile: filepath.Join(dir, "evals.json"),
 		ToolOutputDir:  filepath.Join(dir, "toolout"),
@@ -188,7 +187,6 @@ func TestSessionIsResumableByID(t *testing.T) {
 	mk := func() *Session {
 		cfg := &config.Config{
 			SessionFile: filepath.Join(dir, "sessions"),
-			MemoryFile:  filepath.Join(dir, "memory"),
 			SkillFile:   filepath.Join(dir, "skills"),
 			// Every store path is absolute and inside the temp dir. A relative one
 			// resolves against the package directory, so a test that omits it writes

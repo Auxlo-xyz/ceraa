@@ -59,7 +59,6 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 			MaxOutputTokens: 1024,
 		},
 		SessionFile:    dir,
-		MemoryFile:     dir + "/memory",
 		SkillFile:      dir + "/skills",
 		EvaluationFile: dir + "/evaluations.json",
 	}

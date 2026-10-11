@@ -917,27 +917,32 @@ func worktreeMenu() map[string]any {
 }
 
 func memoryMenu(chatID int64, sessionID string) map[string]any {
-	cfg, _ := config.Load()
-	project := projectForChat(chatID)
-	store, err := memory.New(cfg.MemoryFile)
-	if err != nil {
-		return simpleMenu("Memory", "Memory store unavailable")
-	}
-	entries, _ := store.List(project, sessionID)
-	rows := make([][]map[string]string, 0, len(entries)+2)
-	for i, entry := range entries {
-		if i >= 8 {
-			break
+	root := projectForChat(chatID)
+	tail := memory.OpenMemoryFile(filepath.Join(root, "Memory.md")).Tail(8)
+	rows := make([][]map[string]string, 0, len(tail)+2)
+	for _, raw := range tail {
+		body := strings.TrimSpace(raw)
+		if line := strings.IndexByte(raw, '\n'); line >= 0 {
+			body = strings.TrimSpace(raw[line+1:])
 		}
-		label := entry.Content
-		if len(label) > 36 {
-			label = label[:36] + "..."
+		if body == "" {
+			continue
 		}
-		rows = append(rows, []map[string]string{{"text": "🗑 " + label, "callback_data": "memory:remove:" + entry.ID}})
+		rows = append(rows, []map[string]string{{"text": "✔ " + truncateMenuLabel(body, 36), "callback_data": "memory:view"}})
 	}
 	rows = append(rows, []map[string]string{{"text": "➕ Add memory", "callback_data": "memory:add"}, {"text": "🔄 Refresh", "callback_data": "memory:view"}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
+}
+
+// truncateMenuLabel bounds a button label without splitting a rune, so a log
+// line with wide characters does not become a broken one on the button.
+func truncateMenuLabel(body string, n int) string {
+	runes := []rune(body)
+	if len(runes) <= n {
+		return body
+	}
+	return string(runes[:n]) + "..."
 }
 
 func skillMenu() map[string]any {

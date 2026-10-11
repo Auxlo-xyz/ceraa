@@ -517,11 +517,10 @@ type Compactor struct {
 	// Optional; nil carries nothing, which is correct for every caller with no sidekick.
 	//
 	// The judgement lives on the owner and not in here because the compactor does
-	// not know what an id means. It cannot reach the memory store, cannot score a
-	// memory against memory.SidekickGate, and cannot tell one delivered memory
-	// note from another; the owner holds the store, the gate and the typed decay
-	// the score is computed from. So the compactor asks who still holds and
-	// carries the answer verbatim, and a fold never decides on its own which
+	// not know what an id means. It cannot read the memory log and cannot tell
+	// one delivered memory note from another; the owner holds the log tail the
+	// score-free selection is read from. So the compactor asks who still holds
+	// and carries the answer verbatim, and a fold never decides on its own which
 	// notes are worth telling again.
 	//
 	// nil forwards previous unchanged. That is the safe direction - nothing

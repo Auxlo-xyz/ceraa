@@ -274,7 +274,6 @@ func checkTelegram(cfg *config.Config, timeout time.Duration) doctorCheck {
 func checkStorage(cfg *config.Config) []doctorCheck {
 	checks := make([]doctorCheck, 0, 5)
 	checks = append(checks, checkDirectory("sessions", cfg.SessionFile))
-	checks = append(checks, checkDirectory("memory", cfg.MemoryFile))
 	checks = append(checks, checkDirectory("skills", cfg.SkillFile))
 	checks = append(checks, checkParent("evaluation", cfg.EvaluationFile))
 	checks = append(checks, checkParent("scheduler", cfg.SchedulerFile))

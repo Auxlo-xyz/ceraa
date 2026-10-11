@@ -45,25 +45,13 @@ type Config struct {
 	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
 	TitleAPIURL              string         `json:"title_api_url,omitempty"`
 	TitleModel               string         `json:"title_model,omitempty"`
-	MemoryFile               string         `json:"memory_file,omitempty"`
-	// MemoryDelivery selects where memory reaches the model: "cached" (default)
-	// renders a bounded block in the stable, cacheable prefix so a preference is
-	// visible on every turn at cache-hit cost; "prompt" renders the same block
-	// in the varying tail; "sidekick" annotates tool results instead and leaves
-	// the system prompt fully static.
-	//
-	// The default is NOT safe, and an earlier version of this comment said it was
-	// on the strength of a claim that the block was stable, which was false. The
-	// renderer re-reads the memory store from disk on every model
-	// request, and the ranking carries a wall clock, so the bytes change even
-	// when nothing was written. A volatile block sitting ahead of the cache seam
-	// rebuilds the cached prefix on every turn, which is measured at a 49.8%
-	// token-weighted hit rate against 91.8% on the requests where it holds.
-	//
-	// The parse default stays "cached" because changing it here would silently
-	// move every existing install, and a value in config.json is visible and
-	// reversible in a way a compiled default is not. Set memory_delivery to
-	// "sidekick" to take the mode whose prompt is provably static.
+	// MemoryDelivery selects where memory reaches the model. "sidekick" annotates
+	// tool results at the point of use from the project's append-only Memory.md
+	// log and leaves the system prompt fully static, which is the only mode that
+	// delivers anything. "prompt" and "cached" are accepted and deliver nothing:
+	// memory no longer rides the prompt in any mode, because the ranked store
+	// that rendered the block re-ranked itself against a wall clock on every
+	// request and rebuilt the cached prefix on every turn.
 	MemoryDelivery string `json:"memory_delivery,omitempty"`
 	SkillFile      string `json:"skill_file,omitempty"`
 	EvaluationFile string `json:"evaluation_file,omitempty"`
@@ -239,7 +227,6 @@ func DefaultConfig() *Config {
 		ModelCatalogRefreshHours: 24,
 		TitleAPIURL:              "https://generativelanguage.googleapis.com/v1beta",
 		TitleModel:               "gemini-3.5-flash-lite",
-		MemoryFile:               filepath.Join(base, "memory"),
 		SkillFile:                filepath.Join(base, "skills"),
 		EvaluationFile:           filepath.Join(base, "evaluations.json"),
 		SchedulerFile:            filepath.Join(base, "scheduler.json"),
@@ -535,9 +522,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v := env("TITLE_MODEL"); v != "" {
 		cfg.TitleModel = v
-	}
-	if v := env("MEMORY_FILE"); v != "" {
-		cfg.MemoryFile = v
 	}
 	if v := env("MEMORY_DELIVERY"); v != "" {
 		cfg.MemoryDelivery = v

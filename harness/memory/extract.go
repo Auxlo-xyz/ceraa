@@ -132,8 +132,9 @@ func ExtractConfigFromENV(main llm.ProviderConfig) (llm.ProviderConfig, bool) {
 // returning the candidate statements.
 //
 // It performs exactly one LLM call. No tool calls, no persistence: the caller
-// decides what gets stored. This separation keeps the store's approval model
-// honest, because the model cannot write memory without going through Commit.
+// decides what gets written. This separation keeps the log's approval model
+// honest, because the model cannot write memory without going through the
+// writer the caller chose.
 func Extract(ctx context.Context, cfg llm.ProviderConfig, discarded []sessionstore.Message, summary string) ([]Extracted, error) {
 	if len(discarded) == 0 {
 		return nil, nil
@@ -201,41 +202,6 @@ func parseExtracted(text string) ([]Extracted, error) {
 	return cleaned, nil
 }
 
-// Commit writes the high-confidence statements, and treats "contradict" as a
-// candidate for removal that is reported rather than acted on automatically.
-//
-// We deliberately do not auto-delete: removals are the one mutation that cannot
-// be un-done by adding the statement back, so a wrong "contradict" would
-// silently erase a correct preference. The model's job is to nominate; the
-// store's explicit contradict-by-id entry point stays the only thing that
-// deletes.
-func Commit(store *Store, projectID, sessionID string, statements []Extracted) (added int, contradicted int, err error) {
-	for _, s := range statements {
-		veracity := VeracityForConfidence(s.Confidence)
-		if veracity == "" {
-			// An unrecognised confidence is dropped rather than guessed at. Storing
-			// it as Unknown would launder a value this build does not understand
-			// into the middle of the table, which is worse than losing it.
-			continue
-		}
-		if strings.EqualFold(s.Kind, "contradict") {
-			contradicted++
-			continue
-		}
-		if strings.EqualFold(s.Kind, "add") || strings.EqualFold(s.Kind, "confirm") {
-			// The model's type wins when it is one we recognise, and the classifier
-			// decides otherwise. It is asked for because the kind of claim is
-			// semantic and the wording is not always enough: "we went with SQLite"
-			// is a decision to a reader and a preference to a pattern matcher.
-			if _, err := store.AddTyped(projectID, sessionID, s.Statement, s.Applies, "learned at compaction", veracity, MemoryTypeFromName(s.Type)); err != nil {
-				return added, contradicted, err
-			}
-			added++
-		}
-	}
-	return added, contradicted, nil
-}
-
 // personalMemoryLogLookback is how far back the log is checked before appending
 // extracted personal facts. It bounds the duplicate check at compaction, which
 // is rare, without letting one unchecked older copy turn into a new copy on
@@ -281,9 +247,9 @@ func personalMemoryLabel(kind MemoryType) string {
 // AppendPersonalMemories writes newly extracted durable user facts to the
 // append-only log, without any extra model call.
 //
-// It uses the statements Extract already returned for the store, so the log and
-// the store stay different views of the same extraction. Only high- and
-// medium-confidence profile, preference, goal and constraint claims are
+// It uses the statements Extract already returned, so the one model call pays
+// for both the summary the compactor keeps and the durable facts the log
+// keeps. Only high- and medium-confidence profile, preference, goal and constraint claims are
 // carried: task state, requests, decisions, errors and context belong in the
 // turn ledger or the checkpoint summary rather than in a durable picture of the
 // person. A claim already present in the recent log is not repeated, because the
@@ -377,12 +343,12 @@ func VeracityForConfidence(confidence string) Veracity {
 // attached to a compactor directly.
 type LearnFunc func(context.Context, string, []sessionstore.Message, string)
 
-// MakeLearner ties extraction to a memory store, a project and the append-only
-// log. It returns a compaction.Learn hook, or nil when no extraction credential
-// is configured, which makes the "zero-cost model" opt-in rather than a hard
-// requirement. An empty config does not disable compaction; it just skips the
-// memory-mining step that follows it.
-func MakeLearner(main llm.ProviderConfig, store *Store, projectID string, log *MemoryFile) (LearnFunc, bool) {
+// MakeLearner ties extraction to the append-only log. It returns a
+// compaction.Learn hook, or nil when no extraction credential is configured,
+// which makes the "zero-cost model" opt-in rather than a hard requirement. An
+// empty config does not disable compaction; it just skips the memory-mining
+// step that follows it.
+func MakeLearner(main llm.ProviderConfig, log *MemoryFile) (LearnFunc, bool) {
 	cfg, enabled := ExtractConfigFromENV(main)
 	if !enabled {
 		return nil, false
@@ -393,18 +359,12 @@ func MakeLearner(main llm.ProviderConfig, store *Store, projectID string, log *M
 			logger.Warn("memory extractor: " + err.Error())
 			return
 		}
-		added, contradicted, err := Commit(store, projectID, sessionID, extracted)
-		if err != nil {
-			logger.Warn("memory extractor commit: " + err.Error())
-			return
-		}
 		// The same extraction already paid for the model call, so the log gets
 		// the personal subset without a second one. Durable facts about the user
 		// belong in the log the sidekick actually reads; task-scoped claims stay
-		// in the store and the turn ledger.
-		AppendPersonalMemories(log, sessionID, extracted)
-		if added > 0 || contradicted > 0 {
-			logger.Info(fmt.Sprintf("memory extractor: added=%d contradicted=%d", added, contradicted))
+		// in the turn ledger and the checkpoint summary.
+		if added := AppendPersonalMemories(log, sessionID, extracted); added > 0 {
+			logger.Info(fmt.Sprintf("memory extractor: logged=%d", added))
 		}
 	}, true
 }

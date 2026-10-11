@@ -39,18 +39,13 @@ type ToolEntry struct {
 	Description string `json:"description"`
 }
 
-// MemoryEntry is one stored memory with the fields the dashboard shows. No
-// score is included: scores decay with time and differ per retrieval, so a
-// stored number would be stale on arrival.
+// MemoryEntry is one recent entry of the project's append-only memory log, as
+// the dashboard shows it. The log has no rewrite operation, so there is no id
+// to delete by and no metadata to show: the newest entries, oldest first, are
+// the whole account.
 type MemoryEntry struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Content   string `json:"content"`
-	Veracity  string `json:"veracity"`
-	Seen      int    `json:"seen"`
-	Applies   string `json:"applies,omitempty"`
-	Project   string `json:"project,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	ID      string `json:"id"`
+	Content string `json:"content"`
 }
 
 // SubscriptionEntry is one subscription provider's sign-in state. There is
@@ -340,23 +335,6 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 		entries = []MemoryEntry{}
 	}
 	writeJSON(w, map[string]any{"memories": entries})
-}
-
-func (s *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.DeleteMemory == nil {
-		http.Error(w, "memories cannot be changed on this surface", http.StatusServiceUnavailable)
-		return
-	}
-	id := strings.TrimSpace(r.PathValue("id"))
-	if id == "" {
-		http.Error(w, "no memory named", http.StatusBadRequest)
-		return
-	}
-	if err := s.cfg.DeleteMemory(id); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, map[string]any{"id": id, "deleted": true})
 }
 
 func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {

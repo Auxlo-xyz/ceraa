@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"ceraa/harness/memory"
 	"ceraa/harness/permission"
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
@@ -285,7 +284,7 @@ func handleCallback(token string, q *callbackQuery) {
 		return
 	}
 	if data == "memory:view" {
-		editCallback(token, chatID, q.Message.MessageID, "🧠 Compact memory", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
+		editCallback(token, chatID, q.Message.MessageID, "🧠 Memory log", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if data == "memory:add" {
@@ -294,17 +293,10 @@ func handleCallback(token string, q *callbackQuery) {
 		return
 	}
 	if strings.HasPrefix(data, "memory:remove:") {
-		cfg, err := config.Load()
-		if err == nil {
-			store, storeErr := memory.New(cfg.MemoryFile)
-			if storeErr == nil {
-				if err := store.Remove(strings.TrimPrefix(data, "memory:remove:")); err != nil {
-					send(token, chatID, "Memory removal failed: "+err.Error())
-					return
-				}
-			}
-		}
-		editCallback(token, chatID, q.Message.MessageID, "Memory removed", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
+		// Kept for keyboards built before the log replaced the store: the log
+		// is append-only, so removal became adding a correction instead.
+		send(token, chatID, "The memory log is append-only, so entries are never removed. Add a correction with /memory add and the newer line wins.")
+		editCallback(token, chatID, q.Message.MessageID, "🧠 Memory log", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
 		return
 	}
 	if data == "skill:view" {

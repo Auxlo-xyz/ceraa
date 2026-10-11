@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
@@ -524,13 +523,13 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	sess := &sessionstore.Session{ID: "ind", Version: 3}
 
 	// Both configured: both notes render.
+	logPath := filepath.Join(work, "Memory.md")
+	appendLog(t, memory.OpenMemoryFile(logPath), "memory only, recorded at "+work)
 	both := New(RunnerConfig{
 		WorkDir:          work,
 		InstructionRules: compilingSource(rulesBody).loader(),
 		MemoryDelivery:   string(memory.DeliverySidekick),
-		MemoryEntries: func() ([]memory.Entry, error) {
-			return []memory.Entry{{ID: "m1", Content: "memory only", Applies: work, Seen: 8, SeenAt: time.Now(), Veracity: "stated"}}, nil
-		},
+		MemoryFile:       logMemoryFile(logPath),
 	}, nil, tool.DefaultRegistry())
 	result := operation.ResultEvent{OpID: "op1", Status: operation.StatusCompleted}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
@@ -556,9 +555,7 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	memoryRunner := New(RunnerConfig{
 		WorkDir:        work,
 		MemoryDelivery: string(memory.DeliverySidekick),
-		MemoryEntries: func() ([]memory.Entry, error) {
-			return []memory.Entry{{ID: "m1", Content: "memory only", Applies: work, Seen: 8, SeenAt: time.Now(), Veracity: "stated"}}, nil
-		},
+		MemoryFile:     logMemoryFile(logPath),
 	}, nil, tool.DefaultRegistry())
 	if note := memoryRunner.instructionNote(sessionFor(sess), result); note != "" {
 		t.Errorf("a runner with no rule file produced an instruction note: %q", note)

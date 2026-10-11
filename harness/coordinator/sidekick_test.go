@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
@@ -21,43 +20,46 @@ import (
 	"ceraa/harness/tool"
 )
 
-// A memory that did not arrive is worse than one that arrived uselessly, so the
-// prompt block and the sidekick note have to reach the model through different
-// paths, and only one may be live at a time.
-func TestSidekickModeSuppressesThePromptBlock(t *testing.T) {
-	entries := func() ([]memory.Entry, error) {
-		return []memory.Entry{{
-			Content: "prefers dark mode", Seen: 6,
-			SeenAt: time.Now(), Applies: "/srv/api",
-		}}, nil
-	}
-
-	prompt := &Runner{cfg: RunnerConfig{
-		MemoryContextFunc: func() (string, error) { return "<memory>block</memory>", nil },
-	}}
-	prompt.delivery = memory.DeliveryPrompt
-	if got := prompt.memoryContext(); !strings.Contains(got, "<memory>") {
-		t.Errorf("prompt mode lost the memory block: %q", got)
-	}
-
-	sidekick := &Runner{cfg: RunnerConfig{
-		MemoryContextFunc: func() (string, error) { return "<memory>block</memory>", nil },
-	}}
-	sidekick.delivery = memory.DeliverySidekick
-	sidekick.sidekick = newSidekickState(entries, "/srv/api")
-	if got := sidekick.memoryContext(); got != "" {
-		t.Errorf("sidekick mode still rendered the prompt block: %q", got)
+// No mode renders a memory block anymore. Memory reaches the model through
+// sidekick annotations on tool results only, so the system prompt carries no
+// memory in any mode and the report never claims a prompt block.
+func TestNoModeRendersAMemoryBlock(t *testing.T) {
+	for _, mode := range []memory.Delivery{memory.DeliveryPrompt, memory.DeliveryCached, memory.DeliverySidekick} {
+		path := filepath.Join(t.TempDir(), "Memory.md")
+		appendLog(t, memory.OpenMemoryFile(path), "MODE_CHECK: /srv/api is the backend")
+		r := New(RunnerConfig{
+			SessionID:      "mode",
+			MemoryDelivery: string(mode),
+			MemoryFile:     logMemoryFile(path),
+		}, nil, tool.NewRegistry())
+		if r.delivery != mode {
+			t.Fatalf("mode %q parsed as %q", mode, r.delivery)
+		}
+		if (r.sidekick != nil) != (mode == memory.DeliverySidekick) {
+			t.Errorf("mode %q built sidekick state = %v, want it only in sidekick mode", mode, r.sidekick != nil)
+		}
+		if got := r.systemPrompt(); strings.Contains(got, "<memory>") || strings.Contains(got, "MODE_CHECK") {
+			t.Errorf("mode %q carries memory in the system prompt: %q", mode, got)
+		}
+		if report := r.DeliveryReport(); report.PromptBlock {
+			t.Errorf("mode %q reported prompt_block, so a later analysis cannot trust it", mode)
+		}
+		if report := r.DeliveryReport(); report.Mode != string(mode) {
+			t.Errorf("mode = %q, want %q", report.Mode, mode)
+		}
 	}
 }
 
-// The point of suppressing the block: the system prompt becomes fully static, so
-// the whole thing is one cached prefix.
+// The point of keeping memory out of the prompt: the system prompt becomes
+// fully static, so the whole thing is one cached prefix.
 func TestSidekickModeIsReportedForMeasurement(t *testing.T) {
-	sidekick := &Runner{cfg: RunnerConfig{
-		MemoryContextFunc: func() (string, error) { return "<memory>x</memory>", nil },
-	}}
-	sidekick.delivery = memory.DeliverySidekick
-	sidekick.sidekick = newSidekickState(func() ([]memory.Entry, error) { return nil, nil }, "/srv")
+	path := filepath.Join(t.TempDir(), "Memory.md")
+	appendLog(t, memory.OpenMemoryFile(path), "MODE_REPORT: /srv/api is the backend")
+	sidekick := New(RunnerConfig{
+		SessionID:      "mode",
+		MemoryDelivery: string(memory.DeliverySidekick),
+		MemoryFile:     logMemoryFile(path),
+	}, nil, tool.NewRegistry())
 
 	report := sidekick.DeliveryReport()
 	if report.Mode != string(memory.DeliverySidekick) {
@@ -80,341 +82,11 @@ func sessionWithOp(id, specType, path string) *sessionstore.Session {
 	return sess
 }
 
-// The injection is a per-operation trigger, not a repeat of the prompt block. The
-// general set fires once per run, because a pathless memory matches every
-// operation and would otherwise be written into the transcript once per call.
-func TestGeneralMemoryFiresOncePerRunNotOncePerCall(t *testing.T) {
-	general := []memory.Entry{{
-		Content: "prefers dark mode", Seen: 8, SeenAt: time.Now(),
-	}}
-	state := newSidekickState(func() ([]memory.Entry, error) { return general, nil }, "/srv")
-
-	first := state.annotate(sessionWithOp("a", "write", "/srv/a.txt"), operation.ResultEvent{OpID: "a"})
-	second := state.annotate(sessionWithOp("b", "write", "/srv/b.txt"), operation.ResultEvent{OpID: "b"})
-
-	if !strings.Contains(first, "prefers dark mode") {
-		t.Fatalf("the first call delivered nothing: %q", first)
-	}
-	if strings.Contains(second, "prefers dark mode") {
-		t.Errorf("the standing preference repeated on a later call, which is a copy per tool call in the transcript: %q", second)
-	}
-}
-
-// Once per run, not once per session, and that asymmetry is deliberate. A standing
-// preference has no trigger to fire on, so the only question is how often to repeat
-// it; the targeted set is the one that repeats on a trigger of its own. Folding the
-// general set into the session-scoped delivered set would stop re-delivering the
-// baseline exactly when a compacted transcript has dropped it, which is the one
-// moment it is worth having.
-func TestGeneralMemoriesFireAgainOnTheNextRun(t *testing.T) {
-	general := []memory.Entry{{
-		ID: "id-dark", Content: "prefers dark mode", Seen: 8, SeenAt: time.Now(),
-	}}
-	lookup := func() ([]memory.Entry, error) { return general, nil }
-
-	first := &sessionstore.Session{ID: "runs", Version: 3}
-	first.Operations = append(first.Operations, sessionstore.Operation{
-		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/a.txt"},
-	})
-	if got := newSidekickState(lookup, "/srv").annotate(first, operation.ResultEvent{OpID: "a"}); !strings.Contains(got, "dark mode") {
-		t.Fatalf("the first run delivered nothing: %q", got)
-	}
-	// Same session, next run: the runner is rebuilt, and the general set re-arms
-	// with it. The targeted set does not, and that difference is the point.
-	second := &sessionstore.Session{ID: "runs", Version: 3, MemoryDelivered: first.MemoryDelivered}
-	second.Operations = append(second.Operations, sessionstore.Operation{
-		ID: "b", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/b.txt"},
-	})
-	if got := newSidekickState(lookup, "/srv").annotate(second, operation.ResultEvent{OpID: "b"}); !strings.Contains(got, "dark mode") {
-		t.Errorf("the standing preference was not re-armed on the next run: %q", got)
-	}
-}
-
-// A targeted memory reaches the operation that touches its path, and only that
-// one. This is the whole mechanism: the paper's finding was that uniform
-// injection is what hurts, so relocating memory without gating it would have
-// changed where the noise appears rather than how much of it there is.
-func TestTargetedMemoryReachesOnlyItsOperation(t *testing.T) {
-	entries := []memory.Entry{{
-		Content: "JAVA_HOME is set here", Why: "gradle picked the wrong jdk",
-		Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
-	}}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
-
-	match := state.annotate(sessionWithOp("a", "write", "/srv/api/main.go"), operation.ResultEvent{OpID: "a"})
-	if !strings.Contains(match, "JAVA_HOME is set here") {
-		t.Errorf("the matching operation was not annotated: %q", match)
-	}
-	if !strings.Contains(match, "gradle picked the wrong jdk") {
-		t.Errorf("the rationale was dropped: %q", match)
-	}
-
-	other := state.annotate(sessionWithOp("b", "write", "/srv/web/index.js"), operation.ResultEvent{OpID: "b"})
-	if strings.Contains(other, "JAVA_HOME") {
-		t.Errorf("an unrelated operation was annotated: %q", other)
-	}
-
-	// The half that shipped. A second operation that also matches the same memory
-	// used to be annotated with the same text again, and that copy was written into
-	// the tool result and re-sent on every request for the rest of the session. The
-	// test above could never catch it because it only ever drove one matching
-	// operation.
-	again := state.annotate(sessionWithOp("c", "write", "/srv/api/server.go"), operation.ResultEvent{OpID: "c"})
-	if strings.Contains(again, "JAVA_HOME") {
-		t.Errorf("a second matching operation repeated the memory: %q", again)
-	}
-	if report := state.deliveryReport(); report.Deduped != 1 {
-		t.Errorf("the deduped delivery was not recorded, so a session where it did all the work is indistinguishable: %+v", report)
-	}
-}
-
-// The same rule with ids, which is how a real store hands memories over. The entry
-// above has none, so this is the path production actually takes.
-func TestATargetedMemoryIsDeliveredOncePerID(t *testing.T) {
-	entries := []memory.Entry{
-		{ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api"},
-		{ID: "id-web", Content: "the site builds on node 22", Seen: 8, SeenAt: time.Now(), Applies: "/srv/web"},
-	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
-
-	first := state.annotate(sessionWithOp("a", "write", "/srv/api/main.go"), operation.ResultEvent{OpID: "a"})
-	if !strings.Contains(first, "jdk 21") {
-		t.Fatalf("the matching operation was not annotated: %q", first)
-	}
-	repeat := state.annotate(sessionWithOp("b", "read", "/srv/api/main.go"), operation.ResultEvent{OpID: "b"})
-	if strings.Contains(repeat, "jdk 21") {
-		t.Errorf("the memory repeated on a second read of the same file: %q", repeat)
-	}
-	// Suppressing one memory must not suppress the others: a different path is
-	// different work, and it is the only other place the note can come from.
-	other := state.annotate(sessionWithOp("c", "write", "/srv/web/app.js"), operation.ResultEvent{OpID: "c"})
-	if !strings.Contains(other, "node 22") {
-		t.Errorf("a different path lost its own memory: %q", other)
-	}
-	if strings.Contains(other, "jdk 21") {
-		t.Errorf("an already-delivered memory rode along on another path's note: %q", other)
-	}
-}
-
-// The scope is the session, not the run. The bridge builds a coordinator per
-// Telegram message, so a set held only in the runner re-fires every memory on the
-// next message - the same copy-per-call cost with the timing moved outside the run
-// it was scoped to. This drives the round trip through a real store file, because
-// "it is persisted" is the whole claim.
-func TestATargetedMemoryStaysDeliveredInTheNextRun(t *testing.T) {
-	store, err := sessionstore.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries := []memory.Entry{{
-		ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
-	}}
-	lookup := func() ([]memory.Entry, error) { return entries, nil }
-
-	sess := &sessionstore.Session{ID: "scope", Version: 3}
-	sess.Operations = append(sess.Operations, sessionstore.Operation{
-		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
-	})
-	first := newSidekickState(lookup, "/srv").annotate(sess, operation.ResultEvent{OpID: "a"})
-	if !strings.Contains(first, "jdk 21") {
-		t.Fatalf("the first run delivered nothing: %q", first)
-	}
-	if err := store.Save(sess); err != nil {
-		t.Fatal(err)
-	}
-
-	// A new coordinator, which is what the next Telegram message builds.
-	reloaded, err := store.Load("scope")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reloaded.Operations = append(reloaded.Operations, sess.Operations...)
-	next := newSidekickState(lookup, "/srv").annotate(reloaded, operation.ResultEvent{OpID: "a"})
-	if strings.Contains(next, "jdk 21") {
-		t.Errorf("the next run repeated a memory the transcript already carries: %q", next)
-	}
-}
-
-// A compaction drops the tool results that carried the notes, so the memory behind
-// one is no longer in context and delivering it again is not a repeat. This is the
-// seam the epoch work calls; it has to clear both halves, because the persisted list
-// is folded back in on the next call.
-func TestForgettingDeliveredMemoryRearmsItForTheNextEpoch(t *testing.T) {
-	entries := []memory.Entry{{
-		ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
-	}}
-	sess := &sessionstore.Session{ID: "epoch", Version: 3}
-	sess.Operations = append(sess.Operations, sessionstore.Operation{
-		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
-	})
-	lookup := func() ([]memory.Entry, error) { return entries, nil }
-
-	runner := &Runner{cfg: RunnerConfig{SessionID: "epoch"}, reg: tool.DefaultRegistry()}
-	runner.sidekick = newSidekickState(lookup, "/srv")
-
-	if got := runner.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); !strings.Contains(got, "jdk 21") {
-		t.Fatalf("the first epoch delivered nothing: %q", got)
-	}
-	runner.ForgetDeliveredMemory(sess)
-	if len(sess.MemoryDelivered) != 0 {
-		t.Errorf("the persisted half survived the epoch reset: %v", sess.MemoryDelivered)
-	}
-	if got := runner.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); !strings.Contains(got, "jdk 21") {
-		t.Errorf("the memory did not come back after the transcript dropped it: %q", got)
-	}
-}
-
-// A carried set from an earlier epoch is honoured rather than re-derived, which is
-// what makes restoring one worth having.
-func TestMarkedMemoriesAreNotDeliveredAgain(t *testing.T) {
-	entries := []memory.Entry{{
-		ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
-	}}
-	sess := &sessionstore.Session{ID: "carried", Version: 3}
-	sess.Operations = append(sess.Operations, sessionstore.Operation{
-		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
-	})
-	runner := &Runner{cfg: RunnerConfig{SessionID: "carried"}, reg: tool.DefaultRegistry()}
-	runner.sidekick = newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
-
-	runner.MarkDeliveredMemory(sess, "id-api")
-	if got := runner.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); strings.Contains(got, "jdk 21") {
-		t.Errorf("a memory marked as already delivered was injected again: %q", got)
-	}
-	if len(sess.MemoryDelivered) != 1 || sess.MemoryDelivered[0] != "id-api" {
-		t.Errorf("the marked id was not carried onto the session: %v", sess.MemoryDelivered)
-	}
-}
-
-// The per-block ceiling is not a per-run bound. Forty operations each rendering a
-// full note is still forty notes, which is the flood the per-call problem was fixed
-// to stop arriving by another route. Past the ceiling an operation gets nothing
-// rather than a fragment, and what was withheld is recorded so a silent stop is not
-// mistaken for a store with nothing to say.
-func TestTheRunCeilingStopsInjectionRatherThanTrimmingIt(t *testing.T) {
-	var entries []memory.Entry
-	for i := 0; i < 30; i++ {
-		entries = append(entries, memory.Entry{
-			ID:      fmt.Sprintf("id%02d", i),
-			Content: fmt.Sprintf("memory %d about this path", i),
-			Why:     "because the build needs it",
-			Seen:    8, SeenAt: time.Now(), Applies: fmt.Sprintf("/srv/p%02d", i),
-		})
-	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
-
-	delivered, spent := 0, 0
-	for i := 0; i < 30; i++ {
-		path := fmt.Sprintf("/srv/p%02d/main.go", i)
-		note := state.annotate(sessionWithOp(fmt.Sprintf("op%02d", i), "write", path), operation.ResultEvent{OpID: fmt.Sprintf("op%02d", i)})
-		if note == "" {
-			continue
-		}
-		if len(note) > memory.SidekickBlockBytes {
-			t.Fatalf("a single note is %d bytes, over the block ceiling", len(note))
-		}
-		if !strings.HasSuffix(note, "</sidekick>") {
-			t.Fatalf("a note was cut inside its own markup: %q", note)
-		}
-		delivered++
-		spent += len(note)
-	}
-	if spent > memory.SidekickRunBytes {
-		t.Errorf("the run wrote %d bytes of notes, over the %d ceiling", spent, memory.SidekickRunBytes)
-	}
-	if delivered == 30 {
-		t.Error("the run ceiling never engaged, so the test is not exercising it")
-	}
-	report := state.deliveryReport()
-	if report.BudgetWithheld == 0 {
-		t.Errorf("the withheld memories were not recorded: %+v", report)
-	}
-}
-
-// A flood on one path is capped and says so, at the seam. The per-operation limit
-// already caps how many memories reach the renderer, so the fixture is built to the
-// line bound rather than to a count: three general lines and four targeted ones at
-// the full 96 runes, plus a long path in the heading, come to about 1260 bytes,
-// which is what makes the ceiling bind here instead of in a test that sets its own
-// budget. The renderer owns the ceiling and the memory package owns its own test of
-// it; this pins that the coordinator hands the selection over whole rather than
-// pre-trimming behind the renderer's back, which would store bytes nobody reads.
-func TestAFloodOnOnePathIsCappedInTheDeliveredNote(t *testing.T) {
-	widest := strings.Repeat("a", 96)
-	entries := []memory.Entry{
-		{ID: "id-g0", Content: widest, Seen: 8, SeenAt: time.Now()},
-		{ID: "id-g1", Content: widest, Seen: 8, SeenAt: time.Now()},
-		{ID: "id-g2", Content: widest, Seen: 8, SeenAt: time.Now()},
-	}
-	path := "/srv/" + strings.Repeat("deep/", 8) + "api/main.go"
-	for i := 0; i < 4; i++ {
-		entries = append(entries, memory.Entry{
-			ID: fmt.Sprintf("id%02d", i), Content: widest, Why: strings.Repeat("b", 96),
-			Seen: 8, SeenAt: time.Now(), Applies: "/srv",
-		})
-	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
-	note := state.annotate(sessionWithOp("a", "write", path), operation.ResultEvent{OpID: "a"})
-
-	if len(note) > memory.SidekickBlockBytes {
-		t.Errorf("the note is %d bytes, over the %d ceiling", len(note), memory.SidekickBlockBytes)
-	}
-	if !strings.Contains(note, fmt.Sprint(memory.SidekickBlockBytes)) {
-		t.Errorf("the note does not name its own ceiling: %q", note)
-	}
-	if !strings.Contains(note, "not shown") {
-		t.Errorf("a truncated note does not admit what it left out: %q", note)
-	}
-	if !strings.HasSuffix(note, "</sidekick>") {
-		t.Errorf("the note was cut inside its own markup: %q", note)
-	}
-}
-
-// The other two modes put memory in the prompt and are untouched by any of this.
-// Nothing here dedups, caps or withholds: the block is rendered whole by
-// memoryBlock and lives in one place, so there is no per-call repetition to guard
-// against in the first place. Cached puts it ahead of the seam rather than after
-// it, which is why it reads through memoryBlock and not through memoryContext.
-func TestPromptAndCachedModesCarryTheWholeBlockAndNoNote(t *testing.T) {
-	entries := []memory.Entry{{
-		ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
-	}}
-	block := "<memory>the backend pins jdk 21</memory>"
-	for _, mode := range []memory.Delivery{memory.DeliveryPrompt, memory.DeliveryCached} {
-		r := &Runner{cfg: RunnerConfig{
-			SessionID:      "mode",
-			MemoryContext:  block,
-			MemoryDelivery: string(mode),
-			MemoryEntries:  func() ([]memory.Entry, error) { return entries, nil },
-		}}
-		r.delivery = memory.ParseDelivery(string(mode))
-		if r.delivery != mode {
-			t.Fatalf("mode %q parsed as %q", mode, r.delivery)
-		}
-		if r.sidekick != nil {
-			t.Errorf("mode %q built sidekick state, so a tool result can be annotated in a mode that has no notes", mode)
-		}
-		if got := r.memoryBlock(); !strings.Contains(got, "jdk 21") {
-			t.Errorf("mode %q lost the memory block: %q", mode, got)
-		}
-		if got := r.memoryContext(); (mode == memory.DeliveryPrompt) != (got != "") {
-			t.Errorf("mode %q put %q in the varying tail, which is the seam it must not invalidate", mode, got)
-		}
-		report := r.DeliveryReport()
-		if report.PromptBlock != (mode == memory.DeliveryPrompt) {
-			t.Errorf("mode %q reported prompt_block=%v", mode, report.PromptBlock)
-		}
-		if report.TargetedInjects != 0 || report.Deduped != 0 || report.BudgetWithheld != 0 {
-			t.Errorf("mode %q recorded tool-result delivery: %+v", mode, report)
-		}
-	}
-}
-
 // The claim the whole mechanism rests on, at the seam production uses: the note is
 // appended to the tool result, that string is written into the transcript, and the
 // transcript is re-sent on every later request. Two reads of the same file in one
 // run must leave one copy of the memory in the file, not two.
-func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
+func TestOneCopyOfALogEntryReachesTheStoredTranscript(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "api"), 0o755); err != nil {
 		t.Fatal(err)
@@ -422,6 +94,10 @@ func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "api", "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	logPath := filepath.Join(dir, "Memory.md")
+	appendLog(t, memory.OpenMemoryFile(logPath),
+		"LOG_COPY: "+filepath.Join(dir, "api")+" pins jdk 21",
+	)
 
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -429,7 +105,7 @@ func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
 		send := func(delta map[string]any) {
 			payload := map[string]any{"choices": []any{map[string]any{"delta": delta}}}
 			encoded, _ := json.Marshal(payload)
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
+			_, _ = w.Write([]byte("data: " + string(encoded) + "\n\n"))
 		}
 		if requests.Add(1) == 1 {
 			calls := make([]any, 0, 2)
@@ -443,7 +119,7 @@ func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
 		} else {
 			send(map[string]any{"content": "read it twice"})
 		}
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
 
@@ -458,12 +134,7 @@ func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
 		WorkDir:        dir,
 		ToolOutputDir:  t.TempDir(),
 		MemoryDelivery: string(memory.DeliverySidekick),
-		MemoryEntries: func() ([]memory.Entry, error) {
-			return []memory.Entry{{
-				ID: "id-api", Content: "the backend pins jdk 21", Why: "gradle picked the wrong one",
-				Seen: 8, SeenAt: time.Now(), Applies: filepath.Join(dir, "api"),
-			}}, nil
-		},
+		MemoryFile:     logMemoryFile(logPath),
 	}, store, tool.DefaultRegistry())
 	if _, err := runner.Run(context.Background(), "read api/main.go twice"); err != nil {
 		t.Fatal(err)
@@ -495,7 +166,7 @@ func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
 	if total != 1 {
 		t.Errorf("the transcript carries %d copies of the memory; every one is re-sent on every later request", total)
 	}
-	if len(sess.MemoryDelivered) != 1 || sess.MemoryDelivered[0] != "id-api" {
+	if len(sess.MemoryDelivered) != 1 || !strings.HasPrefix(sess.MemoryDelivered[0], "memfile:") {
 		t.Errorf("the delivered set was not persisted for the next run: %v", sess.MemoryDelivered)
 	}
 }
@@ -506,23 +177,14 @@ func TestOneCopyOfATargetedMemoryReachesTheStoredTranscript(t *testing.T) {
 // string, which is the opposite of the property this exists for: a rule that
 // cannot be wrong.
 func TestAnOperationWithNoPathIsNotAnnotated(t *testing.T) {
-	entries := []memory.Entry{{
-		Content: "JAVA_HOME is set here", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
-	}}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
+	state, _ := logSidekick(t, 0,
+		"GENERIC: an older standing note",
+		"NO_PATH_SCOPE: /srv/api sets JAVA_HOME here",
+	)
 
 	got := state.annotate(sessionWithOp("a", "shell", ""), operation.ResultEvent{OpID: "a"})
 	if strings.Contains(got, "JAVA_HOME") {
 		t.Errorf("an operation with no path was annotated: %q", got)
-	}
-}
-
-// An unreadable store must be silent rather than reported as an empty one, which
-// would read as "there is nothing to remember" rather than "we could not look".
-func TestAnUnreadableStoreDeliversNothing(t *testing.T) {
-	state := newSidekickState(func() ([]memory.Entry, error) { return nil, os.ErrPermission }, "/srv")
-	if got := state.annotate(sessionWithOp("a", "write", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
-		t.Errorf("an unreadable store produced %q", got)
 	}
 }
 
@@ -588,23 +250,6 @@ func TestPathsAreExtractedFromACommand(t *testing.T) {
 	}
 }
 
-// The bound is what stops a build that names three hundred files from becoming a
-// wall of annotations.
-func TestExtractionIsBounded(t *testing.T) {
-	root := t.TempDir()
-	var names []string
-	for i := 0; i < 40; i++ {
-		name := filepath.Join(root, fmt.Sprintf("f%02d.go", i))
-		if err := os.WriteFile(name, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		names = append(names, name)
-	}
-	if got := pathsFromCommand("cat "+strings.Join(names, " "), root); len(got) != maxCommandTargets {
-		t.Errorf("extraction returned %d targets, want the cap of %d", len(got), maxCommandTargets)
-	}
-}
-
 // The same command must always produce the same list, or two identical operations
 // deliver different annotations and the comparison stops meaning anything.
 func TestExtractionIsDeterministic(t *testing.T) {
@@ -626,12 +271,12 @@ func TestExtractionIsDeterministic(t *testing.T) {
 // A command that rewrites three files surfaces what is known about all three, not
 // only the first.
 func TestAMultiFileCommandReachesEveryTarget(t *testing.T) {
-	entries := []memory.Entry{
-		{Content: "api needs JAVA_HOME", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api/build.gradle"},
-		{Content: "deploys run from ops", Seen: 8, SeenAt: time.Now(), Applies: "/srv/ops"},
-		{Content: "web needs node 22", Seen: 8, SeenAt: time.Now(), Applies: "/srv/web/package.json"},
-	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
+	state, _ := logSidekick(t, 0,
+		"GENERIC: an older standing note",
+		"MULTI_API: /srv/api/build.gradle needs JAVA_HOME",
+		"MULTI_OPS: deploys run from /srv/ops",
+		"MULTI_WEB: /srv/web/package.json needs node 22",
+	)
 
 	sess := &sessionstore.Session{}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
@@ -644,7 +289,7 @@ func TestAMultiFileCommandReachesEveryTarget(t *testing.T) {
 			t.Errorf("a shell rewrite of api/build.gradle and web/package.json missed %q: %q", miss, got)
 		}
 	}
-	if strings.Contains(got, "deploys run from ops") {
+	if strings.Contains(got, "deploys run from") {
 		t.Errorf("surfaced a memory about a path the command never touched: %q", got)
 	}
 }
@@ -663,5 +308,22 @@ func TestBashIsNotTheDefaultForEditing(t *testing.T) {
 	}
 	if !strings.Contains(text, "never with shell redirection or sed") {
 		t.Error("the prompt does not forbid the model editing with shell redirection or sed")
+	}
+}
+
+// The bound is what stops a build that names three hundred files from becoming a
+// wall of annotations.
+func TestExtractionIsBounded(t *testing.T) {
+	root := t.TempDir()
+	var names []string
+	for i := 0; i < 40; i++ {
+		name := filepath.Join(root, fmt.Sprintf("f%02d.go", i))
+		if err := os.WriteFile(name, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if got := pathsFromCommand("cat "+strings.Join(names, " "), root); len(got) != maxCommandTargets {
+		t.Errorf("extraction returned %d targets, want the cap of %d", len(got), maxCommandTargets)
 	}
 }

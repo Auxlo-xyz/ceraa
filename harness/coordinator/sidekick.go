@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
@@ -44,25 +43,12 @@ const pathTokenTrim = "`\"'()[]{}<>,;:"
 
 // sidekickState carries what tool-output delivery needs, and records what it
 // delivered so the two modes can be told apart later.
-//
-// The store is read through a function rather than held, for the same reason the
-// prompt block is: the file on disk is the source of truth, and a snapshot taken
-// at construction diverges from it silently in a long-lived daemon.
 type sidekickState struct {
-	mu     sync.Mutex
-	lookup func() ([]memory.Entry, error)
-	// memFile is the append-only log this run reads what has been learned from,
-	// and when it is set it is the source: the store above is not consulted.
-	//
-	// A reader rather than a store for the same reason lookup is a function - the
-	// file on disk is the source of truth, and a snapshot taken at construction
-	// diverges from it silently in a long-lived daemon.
-	//
-	// It supersedes the store rather than joining it because the store re-rendered
-	// and re-ranked itself against a wall clock on every request. That volatility
-	// sat ahead of the cache seam and rebuilt the cached prefix on every turn, so
-	// the two sources cannot simply be summed: one of them is the defect the log
-	// exists to remove.
+	mu sync.Mutex
+	// memFile is the append-only log this run reads what has been learned from.
+	// It is the only source: a reader rather than a snapshot because the file on
+	// disk is the source of truth, and a snapshot taken at construction diverges
+	// from it silently in a long-lived daemon.
 	memFile func() *memory.MemoryFile
 	// tail is how many entries memFile is read for. Zero never reaches here;
 	// useMemoryFile substitutes defaultMemoryTail.
@@ -70,7 +56,7 @@ type sidekickState struct {
 	workDir string
 
 	// delivered is every memory already annotated into this session's transcript,
-	// keyed by memory.DeliveryID.
+	// keyed by the log entry's content-hash id.
 	//
 	// It exists because a targeted memory is fired by its own trigger, over and
 	// over: a memory scoped to /srv/api reaches every read and every write of a
@@ -106,9 +92,8 @@ type sidekickState struct {
 	report memory.DeliveryReport
 }
 
-func newSidekickState(lookup func() ([]memory.Entry, error), workDir string) *sidekickState {
+func newSidekickState(workDir string) *sidekickState {
 	return &sidekickState{
-		lookup:    lookup,
 		workDir:   workDir,
 		delivered: map[string]struct{}{},
 	}
@@ -134,7 +119,7 @@ func (s *sidekickState) useMemoryFile(file func() *memory.MemoryFile, tail int) 
 // annotate returns the sidekick block for one completed operation, or "" when
 // nothing qualifies.
 func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.ResultEvent) string {
-	if s == nil || (s.lookup == nil && s.memFile == nil) {
+	if s == nil || s.memFile == nil {
 		return ""
 	}
 	targets := s.targetsFor(sess, result)
@@ -145,37 +130,13 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 	// is built per run, and the session file is the only thing that outlives one.
 	s.adoptDelivered(sess)
 
-	if s.memFile != nil {
-		targeted, general, held := s.selectFromLog(targets)
-		if len(targeted) == 0 && len(general) == 0 {
-			// No gate on this path: the log is not scored, so nothing sits above or
-			// below a floor and SuppressedByGate would be a claim about a mechanism
-			// this source does not have. A run that delivered nothing here reads as
-			// "the tail had nothing for this operation", which is a different and
-			// true answer from what the gate reports.
-			s.report.Deduped += held
-			return ""
-		}
-		return s.deliver(sess, targets, targeted, general)
-	}
-
-	entries, err := s.lookup()
-	if err != nil {
-		// A read failure must not fail the turn, and must not look like "there is
-		// no memory", which would be a different and wrong answer.
-		return ""
-	}
-	now := time.Now()
-	var targeted, general []memory.Brief
-	if len(targets) > 0 {
-		targeted = memory.Select(entries, targets, now, memory.SidekickTargetLimit, s.alreadyDelivered)
-	}
-	if !s.generalDelivered {
-		general = memory.SelectGeneral(entries, now, memory.SidekickGeneralLimit)
-	}
+	targeted, general, held := s.selectFromLog(targets)
 	if len(targeted) == 0 && len(general) == 0 {
-		s.report.NoteSuppressed(belowGate(entries, now))
-		s.report.Deduped += s.wouldDeliver(entries, targets, now)
+		// No gate on this path: the log is not scored, so nothing sits above or
+		// below a floor. A run that delivered nothing here reads as "the tail had
+		// nothing for this operation", which is a different and true answer from
+		// what a gate would report.
+		s.report.Deduped += held
 		return ""
 	}
 	return s.deliver(sess, targets, targeted, general)
@@ -325,8 +286,7 @@ func (s *sidekickState) selectFromLog(targets []string) (targeted, general []mem
 			// No path named, so it is a standing preference rather than something
 			// about one file. It goes out on the run's first tool result whatever
 			// that result was about, because "applies everywhere" is a claim about
-			// scope and not about this call - the same reading the store's
-			// entry-with-no-applies has.
+			// scope and not about this call.
 			standing = append(standing, entry)
 		case len(targets) > 0 && entry.matchesAny(targets):
 			matched = append(matched, entry)
@@ -396,23 +356,10 @@ func isPathLike(token string) bool {
 	return strings.Contains(base, ".") && hasAlphanumeric(base)
 }
 
-// alreadyDelivered is the exclusion predicate handed to memory.Select.
+// alreadyDelivered is the exclusion predicate the log selector consults.
 func (s *sidekickState) alreadyDelivered(id string) bool {
 	_, ok := s.delivered[id]
 	return ok
-}
-
-// wouldDeliver is how many memories this operation would have been annotated with
-// had nothing been delivered yet.
-//
-// Recorded so a session where dedup suppressed everything still reads as activity
-// rather than as a store with nothing to say, which is the difference between "the
-// store was empty" and "the store was already in context".
-func (s *sidekickState) wouldDeliver(entries []memory.Entry, targets []string, now time.Time) int {
-	if len(targets) == 0 || len(s.delivered) == 0 {
-		return 0
-	}
-	return len(memory.Select(entries, targets, now, memory.SidekickTargetLimit, nil))
 }
 
 // adoptDelivered folds the session's persisted set into memory.
@@ -652,18 +599,6 @@ func (r *Runner) ReseedDeliveredMemoryFromCheckpoint(sess *sessionstore.Session)
 	r.sidekick.mu.Lock()
 	defer r.sidekick.mu.Unlock()
 	r.sidekick.reseedFromCheckpoint(sess)
-}
-
-// belowGate counts what the gate held back, so a run that delivered nothing can be
-// told apart from a run that had nothing worth delivering.
-func belowGate(entries []memory.Entry, now time.Time) int {
-	n := 0
-	for _, entry := range entries {
-		if memory.ScoreOf(entry, now) < memory.SidekickGate {
-			n++
-		}
-	}
-	return n
 }
 
 // targetsFor is every path the completed operation was about.

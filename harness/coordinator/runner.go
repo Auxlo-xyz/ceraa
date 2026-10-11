@@ -65,39 +65,26 @@ type RunnerConfig struct {
 	ModelCatalogURL     string
 	ModelCatalogCache   string
 	ModelCatalogRefresh time.Duration
-	MemoryContext       string
-	// MemoryContextFunc renders memory for the current turn and is preferred over
-	// MemoryContext when set.
-	//
-	// Memory used to be rendered once, here, at construction. An edit to the
-	// memory file therefore did not reach the model until the agent was rebuilt,
-	// so for a long-lived daemon the file on disk and the memory in the prompt
-	// diverged with nothing logging it. A per-turn function makes the file the
-	// source of truth rather than a startup snapshot of it.
-	MemoryContextFunc func() (string, error)
-	// MemoryDelivery selects where memory reaches the model: "prompt" (default)
-	// renders a <memory> block after the cache seam, "sidekick" suppresses the
-	// block and annotates tool results at the point of use instead.
+	// MemoryDelivery selects where memory reaches the model. "sidekick" annotates
+	// tool results at the point of use from the append-only log; the prompt and
+	// cached values select no prompt block, because memory no longer rides the
+	// prompt at all.
 	MemoryDelivery string
-	// MemoryEntries lists stored memories for sidekick delivery. Nil disables it,
-	// which is what keeps the prompt path working with nothing configured.
-	MemoryEntries func() ([]memory.Entry, error)
-	// MemoryFile is the append-only log this run reads for what has been learned,
-	// and when it is set it replaces MemoryEntries for sidekick delivery. Every
-	// completed run also appends one compact turn record to it, so memory grows
-	// incrementally rather than only when a compaction happens.
+	// MemoryFile is the append-only log this run reads for what has been learned.
+	// Every completed run also appends one compact turn record to it, so memory
+	// grows incrementally rather than only when a compaction happens.
 	//
-	// A reader rather than a store because the file is the source of truth and a
-	// snapshot taken at construction diverges from it silently in a long-lived
-	// daemon - the same reason MemoryContextFunc is a function.
+	// A reader rather than a snapshot because the file is the source of truth and
+	// a snapshot taken at construction diverges from it silently in a long-lived
+	// daemon.
 	//
-	// It replaces the store because the store re-rendered and re-ranked itself
-	// against a wall clock on every request, and that volatility sat ahead of the
-	// cache seam: the bytes changed when nothing had been written, so the cached
-	// prefix was rebuilt on every turn. An append-only log cannot do that. Nothing
-	// re-ranks, nothing decays, and the tail is read rather than the whole, so the
-	// cost per turn is proportional to what is delivered rather than to everything
-	// ever learned.
+	// It replaced the memory store because the store re-rendered and re-ranked
+	// itself against a wall clock on every request, and that volatility sat ahead
+	// of the cache seam: the bytes changed when nothing had been written, so the
+	// cached prefix was rebuilt on every turn. An append-only log cannot do that.
+	// Nothing re-ranks, nothing decays, and the tail is read rather than the
+	// whole, so the cost per turn is proportional to what is delivered rather
+	// than to everything ever learned.
 	MemoryFile func() *memory.MemoryFile
 	// MemoryTail is how many entries of the log delivery reads. Zero means
 	// defaultMemoryTail, which is what a run that delivers on every call can
@@ -293,55 +280,6 @@ func (r *Runner) recalibrateContextLimit(meta llm.ModelMetadata, lookupErr error
 	return decision
 }
 
-// memoryBlock renders the persisted memories for this turn, falling back to the
-// startup snapshot when no live renderer is configured.
-//
-// It is a separate method from memoryContext so the two delivery modes that do
-// not put the block in the varying suffix can share the same render without
-// copying the fallback logic.
-func (r *Runner) memoryBlock() string {
-	if r.cfg.MemoryContextFunc != nil {
-		rendered, err := r.cfg.MemoryContextFunc()
-		if err != nil {
-			// A memory read failure must not fail the turn, and must not silently
-			// look like "there is no memory".
-			//
-			// Live returns whatever rendered alongside the error, which can only
-			// be the store: the file is the source that failed. Keeping the
-			// startup snapshot of that file beside the live store means neither
-			// source disappears because the other broke, and the log line still
-			// names what was lost.
-			logger.Warn("Memory render failed, keeping the snapshot and any partial render: " + err.Error())
-			snapshot := strings.TrimSpace(r.cfg.MemoryContext)
-			live := strings.TrimSpace(rendered)
-			switch {
-			case snapshot != "" && live != "":
-				return snapshot + "\n" + live
-			case snapshot != "":
-				return snapshot
-			default:
-				return live
-			}
-		}
-		if strings.TrimSpace(rendered) != "" {
-			return strings.TrimSpace(rendered)
-		}
-	}
-	return strings.TrimSpace(r.cfg.MemoryContext)
-}
-
-// memoryContext renders memory for the varying tail of the prompt.
-//
-// Both of the modes that do not want the block here are suppressed:
-// DeliverySidekick emits nothing into the prompt at all, and DeliveryCached
-// selects the stable prefix ahead of the seam instead.
-func (r *Runner) memoryContext() string {
-	if r.delivery == memory.DeliverySidekick || r.delivery == memory.DeliveryCached {
-		return ""
-	}
-	return r.memoryBlock()
-}
-
 // promptCacheKey identifies the reusable prefix for the provider's cache router,
 // excluding the session id.
 //
@@ -429,16 +367,11 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
 	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
-	// Any one of the two is enough to build the state. Keying it on MemoryEntries
-	// alone meant a caller configured with the log and no store - which is a legal
-	// configuration, since MemoryEntries is documented as optional - got no
-	// sidekick at all, and the log went with it. That is the same silent drop, one
-	// indirection further from the cause.
-	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.MemoryFile != nil) {
-		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.WorkDir)
-		// Attached after construction because the log is a replacement for the
-		// store rather than a fourth argument to it: a caller that configures both
-		// is mid-migration, and the log is the half that keeps the prompt cache.
+	// The log is the only memory source. A run configured without it gets no
+	// sidekick at all, and a mode that is not sidekick gets no memory delivery:
+	// memory no longer rides the prompt in any mode.
+	if r.delivery == memory.DeliverySidekick && cfg.MemoryFile != nil {
+		r.sidekick = newSidekickState(cfg.WorkDir)
 		r.sidekick.useMemoryFile(cfg.MemoryFile, cfg.MemoryTail)
 	}
 	// The instruction source is built here, once, beside the sidekick and not
@@ -629,7 +562,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				sess.Runs[i].MemoryDelivery = delivery.Mode
 				sess.Runs[i].MemoryGeneralSent = delivery.GeneralInjected
 				sess.Runs[i].MemoryTargetedSent = delivery.TargetedInjects
-				sess.Runs[i].MemoryBelowGate = delivery.SuppressedByGate
 			}
 		}
 		if r.evaluation != nil {
@@ -1390,24 +1322,11 @@ func (r *Runner) systemPromptParts() ([]string, int) {
 		parts = append(parts, skills.CatalogPreamble+"\n\n"+strings.TrimSpace(r.cfg.SkillContext))
 		stableCount++
 	}
-	// DeliveryCached puts memory ahead of the seam. That is the one mode in
-	// which memory is always visible, including on turns with no tool call, and
-	// it is only safe here because the extractor writes memory at compaction
-	// rather than mid-session: a change rebuilds the prefix, so doing it during
-	// a turn would re-bill the whole cache every time.
-	if r.delivery == memory.DeliveryCached {
-		if rendered := r.memoryBlock(); rendered != "" {
-			parts = append(parts, rendered)
-			stableCount++
-		}
-	}
-	// The date changes daily and memory changes whenever the agent writes, so both
-	// belong past the seam, where a change costs only the part that changed.
+	// The date changes daily, so it belongs past the seam, where a change costs
+	// only the part that changed. Memory no longer rides the prompt at all: it
+	// reaches the model through sidekick annotations on tool results instead.
 	if date := todayContext(); date != "" {
 		parts = append(parts, date)
-	}
-	if rendered := r.memoryContext(); rendered != "" {
-		parts = append(parts, rendered)
 	}
 	return parts, stableCount
 }
@@ -2295,11 +2214,11 @@ func (r *Runner) ForgetDeliveredMemory(sess *sessionstore.Session) {
 // MarkDeliveredMemory records memories as already delivered without injecting
 // them, for a caller carrying a set across an epoch boundary or a restart.
 //
-// The ids are the same ones Annotate was given: memory.DeliveryID of the entry,
-// which is its store id. Nothing validates them against the store, because a
-// caller restoring state it wrote earlier has nothing to check it against and a
-// remembered delivery that no longer exists costs nothing - the memory simply
-// stays quiet.
+// The ids are the same ones Annotate was given: the log entry's content hash,
+// which is one-to-one with what dedup treats as a duplicate. Nothing validates
+// them against the log, because a caller restoring state it wrote earlier has
+// nothing to check it against and a remembered delivery that no longer exists
+// costs nothing - the memory simply stays quiet.
 func (r *Runner) MarkDeliveredMemory(sess *sessionstore.Session, ids ...string) {
 	if r.sidekick == nil || sess == nil {
 		return
@@ -2314,7 +2233,10 @@ func (r *Runner) MarkDeliveredMemory(sess *sessionstore.Session, ids ...string) 
 func (r *Runner) DeliveryReport() memory.DeliveryReport {
 	report := r.sidekick.deliveryReport()
 	report.Mode = string(r.delivery)
-	report.PromptBlock = r.delivery == memory.DeliveryPrompt && r.memoryContext() != ""
+	// No mode renders a prompt block anymore: memory reaches the model through
+	// sidekick annotations only, so this stays false and a later analysis can
+	// trust it.
+	report.PromptBlock = false
 	return report
 }
 

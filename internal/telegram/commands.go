@@ -15,7 +15,6 @@ import (
 
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
-	"ceraa/harness/memory"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -1043,22 +1042,12 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 		}
 	}
 	if _, ok := pendingMemory.LoadAndDelete(chatID); ok {
-		cfg, err := config.Load()
-		if err != nil {
-			send(token, chatID, "Config error: "+err.Error())
-			return true
-		}
-		store, err := memory.New(cfg.MemoryFile)
-		if err != nil {
-			send(token, chatID, "Memory store error: "+err.Error())
-			return true
-		}
-		entry, err := store.Add(defaultState.project(chatID), currentSessionID(chatID), text)
-		if err != nil {
+		log := memoryLogReader(defaultState.project(chatID))
+		if err := log.Append(text, currentSessionID(chatID)); err != nil {
 			send(token, chatID, "Memory save failed: "+err.Error())
 			return true
 		}
-		send(token, chatID, "Memory saved: "+entry.ID)
+		send(token, chatID, "Memory saved to the log")
 		return true
 	}
 	if value, ok := pendingSchedule.LoadAndDelete(chatID); ok {
@@ -1088,21 +1077,12 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 }
 
 func handleMemoryCommand(token string, chatID int64, text string) {
-	cfg, err := config.Load()
-	if err != nil {
-		send(token, chatID, "Config error: "+err.Error())
-		return
-	}
-	store, err := memory.New(cfg.MemoryFile)
-	if err != nil {
-		send(token, chatID, "Memory store error: "+err.Error())
-		return
-	}
 	project := defaultState.project(chatID)
 	sessionID := currentSessionID(chatID)
+	log := memoryLogReader(project)
 	parts := strings.Fields(text)
 	if len(parts) == 1 {
-		sendMenuMarkup(token, chatID, "🧠 Compact memory", menus.InlineForChat("memory", 0, chatID, sessionID))
+		sendMenuMarkup(token, chatID, "🧠 Memory log", menus.InlineForChat("memory", 0, chatID, sessionID))
 		return
 	}
 	if len(parts) >= 2 && parts[1] == "add" {
@@ -1111,34 +1091,29 @@ func handleMemoryCommand(token string, chatID int64, text string) {
 			send(token, chatID, "Usage: /memory add <compact fact>")
 			return
 		}
-		entry, err := store.Add(project, sessionID, content)
-		if err != nil {
+		if err := log.Append(content, sessionID); err != nil {
 			send(token, chatID, "Memory save failed: "+err.Error())
 			return
 		}
-		send(token, chatID, "Memory saved: "+entry.ID)
+		send(token, chatID, "Memory saved to the log")
 		return
 	}
 	if len(parts) >= 2 && parts[1] == "remove" {
-		if err := store.Remove(parts[2]); err != nil {
-			send(token, chatID, "Memory removal failed: "+err.Error())
-			return
-		}
-		send(token, chatID, "Memory removed")
+		send(token, chatID, "The memory log is append-only, so entries are never removed. Add a correction with /memory add and the newer line wins.")
 		return
 	}
-	entries, err := store.List(project, sessionID)
-	if err != nil {
-		send(token, chatID, "Memory load failed: "+err.Error())
-		return
-	}
+	entries := log.Tail(10)
 	if len(entries) == 0 {
-		send(token, chatID, "No compact memory saved for this project/session")
+		send(token, chatID, "No memory logged for this project yet")
 		return
 	}
 	var lines []string
 	for i, entry := range entries {
-		lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, entry.Scope, entry.Content))
+		body := strings.TrimSpace(entry)
+		if line := strings.IndexByte(entry, '\n'); line >= 0 {
+			body = strings.TrimSpace(entry[line+1:])
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, body))
 	}
 	send(token, chatID, "Memory:\n"+strings.Join(lines, "\n"))
 }

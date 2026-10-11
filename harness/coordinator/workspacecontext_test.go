@@ -123,13 +123,11 @@ func TestTheWorkspaceBlockFollowsEachSessionsOwnProject(t *testing.T) {
 // Everything rare belongs inside and everything that changes mid-turn belongs
 // outside, or the caching either does nothing or thrashes.
 func TestTheCacheSeamSplitsStableFromVolatile(t *testing.T) {
-	memory := strings.Repeat("remembered. ", 300)
 	r := &Runner{cfg: RunnerConfig{
-		SystemPrompt:      "you are a coding agent",
-		SkillContext:      "a skill",
-		WorkDir:           "/srv/projects/beta",
-		Model:             llm.ProviderConfig{Model: "test-model", BaseURL: "host.example"},
-		MemoryContextFunc: func() (string, error) { return memory, nil },
+		SystemPrompt: "you are a coding agent",
+		SkillContext: "a skill",
+		WorkDir:      "/srv/projects/beta",
+		Model:        llm.ProviderConfig{Model: "test-model", BaseURL: "host.example"},
 	}}
 	parts, stable := r.systemPromptParts()
 	if stable >= len(parts) {
@@ -146,15 +144,15 @@ func TestTheCacheSeamSplitsStableFromVolatile(t *testing.T) {
 			t.Errorf("%s is not in the cached prefix", want)
 		}
 	}
-	// The date and memory change daily and mid-turn respectively. Caching them
-	// would re-read the whole prefix whenever the agent writes a memory.
-	for _, unwanted := range []string{"<current-date>", "remembered."} {
+	// The date changes daily. Caching it would re-read the whole prefix on every
+	// rollover, and memory no longer rides the prompt at all.
+	for _, unwanted := range []string{"<current-date>"} {
 		if strings.Contains(cached, unwanted) {
 			t.Errorf("%s is inside the cached prefix", unwanted)
 		}
 	}
-	if !strings.Contains(uncached, "<current-date>") || !strings.Contains(uncached, "remembered.") {
-		t.Errorf("the volatile tail is missing a part:\n%s", uncached)
+	if !strings.Contains(uncached, "<current-date>") {
+		t.Errorf("the volatile tail is missing the date:\n%s", uncached)
 	}
 }
 

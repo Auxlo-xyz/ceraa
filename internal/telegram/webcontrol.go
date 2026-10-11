@@ -65,7 +65,6 @@ func webControl(cfg *miniapp.Config, tunnelAddr func() string) {
 	cfg.SetToolAllowed = webSetToolAllowed
 	cfg.Secrets = webSecretLengths
 	cfg.Memories = webMemories
-	cfg.DeleteMemory = webDeleteMemory
 	cfg.TriggerCompaction = webTriggerCompaction
 	cfg.Skills = webSkills
 	cfg.DecideSkill = webDecideSkill
@@ -96,14 +95,6 @@ func webMeta() map[string]any {
 			break
 		}
 	}
-	halfLives := memory.TypeHalfLives()
-	types := make([]map[string]any, 0, len(halfLives))
-	for _, entry := range halfLives {
-		types = append(types, map[string]any{
-			"type":           string(entry.Type),
-			"half_life_days": entry.HalfLife,
-		})
-	}
 	registry := tool.DefaultRegistryWithStores(nil)
 	inventory := registry.All()
 	toolIDs := make([]string, 0, len(inventory))
@@ -112,7 +103,6 @@ func webMeta() map[string]any {
 	}
 	return map[string]any{
 		"reasoning_levels":  levels,
-		"memory_types":      types,
 		"tool_ids":          toolIDs,
 		"reserved_prefixes": secret.ReservedPrefixes(),
 		"source_tree":       "/workspace/development/ceraa",
@@ -553,51 +543,33 @@ func webSecretLengths() ([]miniapp.SecretEntry, error) {
 	return out, nil
 }
 
+// webMemories reads the newest entries of the current project's append-only
+// memory log for the dashboard. Read-only: the log has no rewrite operation,
+// so there is nothing to delete by and no metadata to show.
 func webMemories() ([]miniapp.MemoryEntry, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, err
+	projectRoot := defaultState.projectForSession(currentSessionID(defaultState.allowedUserID()))
+	if projectRoot == "" {
+		return []miniapp.MemoryEntry{}, nil
 	}
-	store, err := memory.New(cfg.MemoryFile)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := store.ListAll()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]miniapp.MemoryEntry, 0, len(entries))
-	for _, entry := range entries {
-		veracity := string(entry.Veracity)
-		if veracity == "" {
-			// Unset provenance reads as unknown everywhere else, and the
-			// dashboard must agree rather than show a blank.
-			veracity = string(memory.Unknown)
+	tail := memory.OpenMemoryFile(memoryLogPath(projectRoot)).Tail(30)
+	out := make([]miniapp.MemoryEntry, 0, len(tail))
+	for i, raw := range tail {
+		body := strings.TrimSpace(raw)
+		if line := strings.IndexByte(raw, '\n'); line >= 0 {
+			// The first line is the log's own date-and-session header, dropped
+			// the same way delivery drops it: the dashboard shows the claim,
+			// not when the agent wrote it down.
+			body = strings.TrimSpace(raw[line+1:])
+		}
+		if body == "" {
+			continue
 		}
 		out = append(out, miniapp.MemoryEntry{
-			ID:        entry.ID,
-			Type:      string(entry.Type),
-			Content:   entry.Content,
-			Veracity:  veracity,
-			Seen:      entry.Seen,
-			Applies:   entry.Applies,
-			Project:   entry.ProjectID,
-			CreatedAt: entry.CreatedAt.UTC().Format(time.RFC3339),
+			ID:      fmt.Sprintf("log-%d", i+1),
+			Content: body,
 		})
 	}
 	return out, nil
-}
-
-func webDeleteMemory(id string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	store, err := memory.New(cfg.MemoryFile)
-	if err != nil {
-		return err
-	}
-	return store.Remove(id)
 }
 
 // webLiveDeps is what the dashboard's live-request runner config is built from.
@@ -607,9 +579,7 @@ type webLiveDeps struct {
 	providerConfig      config.LLMProvider
 	modelConfig         llm.ProviderConfig
 	projectRoot         string
-	memoryContext       string
 	memory              memoryWiring
-	memoryStore         *memory.Store
 	instructionProposer instruction.Proposer
 	skillContext        string
 	evaluationStore     *evaluation.Store
@@ -622,20 +592,17 @@ type webLiveDeps struct {
 // asserted on the config a preview actually uses.
 func webLiveRunnerConfig(d webLiveDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
-		SessionID:         d.sessionID,
-		SystemPrompt:      prompt.System,
-		Model:             d.modelConfig,
-		ContextLimit:      d.providerConfig.ContextLimit,
-		MaxOutputTokens:   d.providerConfig.MaxOutputTokens,
-		WorkDir:           d.projectRoot,
-		MemoryContext:     d.memoryContext,
-		MemoryContextFunc: d.memory.MemoryContextFunc,
-		MemoryFile:        d.memory.MemoryFile,
-		MemoryDelivery:    d.cfg.MemoryDelivery,
-		MemoryEntries:     memoryEntries(d.memoryStore, d.projectRoot, d.sessionID),
-		InstructionRules:  internal.InstructionRules(d.projectRoot, d.instructionProposer),
-		SkillContext:      d.skillContext,
-		EvaluationStore:   d.evaluationStore,
+		SessionID:        d.sessionID,
+		SystemPrompt:     prompt.System,
+		Model:            d.modelConfig,
+		ContextLimit:     d.providerConfig.ContextLimit,
+		MaxOutputTokens:  d.providerConfig.MaxOutputTokens,
+		WorkDir:          d.projectRoot,
+		MemoryFile:       d.memory.MemoryFile,
+		MemoryDelivery:   d.cfg.MemoryDelivery,
+		InstructionRules: internal.InstructionRules(d.projectRoot, d.instructionProposer),
+		SkillContext:     d.skillContext,
+		EvaluationStore:  d.evaluationStore,
 	}
 }
 
@@ -660,10 +627,6 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 	modelConfig.PromptCacheMode = providerConfig.PromptCacheMode
 	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(providerConfig.Model, providerConfig.URL)
-	memoryStore, err := memory.New(cfg.MemoryFile)
-	if err != nil {
-		return nil, err
-	}
 	skillStore, err := skills.New(cfg.SkillFile)
 	if err != nil {
 		return nil, err
@@ -678,13 +641,10 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 	// and the filesystem still decides what survives.
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
-	memoryContext, _ := memoryStore.RenderContext(projectRoot, sess.ID, 2000)
 	// The append-only log for the same project the request is built for, so the
-	// previewed request carries the same tail a run would.
+	// previewed request is built from exactly what a run would read.
 	memoryLog := memoryLogReader(projectRoot)
-	// The memory half of the config, built beside the store and the log it
-	// reads so the previewed request carries exactly what a run would.
-	wiring := newMemoryWiring(memoryStore, projectRoot, sess.ID, memoryLog)
+	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	// No user text reaches this path, so the skill-feedback heuristic stays off
 	// and the proposal tool stays out of the catalogue, which is where it is on
@@ -697,9 +657,7 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 		providerConfig:      providerConfig,
 		modelConfig:         modelConfig,
 		projectRoot:         projectRoot,
-		memoryContext:       memoryContext,
 		memory:              wiring,
-		memoryStore:         memoryStore,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,

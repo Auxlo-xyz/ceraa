@@ -43,9 +43,8 @@ func controlFixture(t *testing.T) *Server {
 	}
 	cfg.SetToolAllowed = func(name string, allowed bool) error { return nil }
 	cfg.Memories = func() ([]MemoryEntry, error) {
-		return []MemoryEntry{{ID: "m1", Type: "preference", Content: "likes tea"}}, nil
+		return []MemoryEntry{{ID: "log-1", Content: "likes tea"}}, nil
 	}
-	cfg.DeleteMemory = func(id string) error { return nil }
 	cfg.TriggerCompaction = func(sessionID string) (map[string]any, error) {
 		return map[string]any{"session": sessionID, "compacted": true}, nil
 	}
@@ -140,7 +139,6 @@ func TestControlWritesRoundTrip(t *testing.T) {
 		{http.MethodDelete, "/api/providers/x", ``},
 		{http.MethodPost, "/api/runparams", `{"params":{"reasoning":"low"}}`},
 		{http.MethodPost, "/api/tools", `{"name":"read","allowed":true}`},
-		{http.MethodDelete, "/api/memories/m1", ``},
 		{http.MethodPost, "/api/compaction", `{"session_id":"s"}`},
 		{http.MethodPost, "/api/skills/s1", `{"decision":"approve"}`},
 		{http.MethodPost, "/api/skills/s1", `{"decision":"bogus"}`},

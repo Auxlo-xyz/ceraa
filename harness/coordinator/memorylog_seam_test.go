@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
@@ -21,9 +20,8 @@ import (
 	"ceraa/harness/tool"
 )
 
-// Memory.md is the sidekick source. It was the second of two sources, alongside
-// the ranked store. A separate delivery path would be dead weight rather than a
-// spare.
+// Memory.md is the sidekick source: the append-only log the runner reads for
+// what has been learned.
 //
 // What is left has to be proven at the wire, not at annotate. annotate is one term
 // in a sum at the runner's result loop, and a sum can lose a term: every unit test
@@ -96,10 +94,7 @@ func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig))
 		ModelCatalogURL: "http://127.0.0.1:1",
 		WorkDir:         work,
 		MaxRequests:     4,
-		MemoryContextFunc: func() (string, error) {
-			return "<memory>project memory</memory>", nil
-		},
-		MemoryDelivery: string(memory.DeliverySidekick),
+		MemoryDelivery:  string(memory.DeliverySidekick),
 	}
 	if extra != nil {
 		extra(&cfg)
@@ -195,9 +190,8 @@ func TestTheMemoryLogAloneReachesTheModelOnTheToolResult(t *testing.T) {
 	}
 }
 
-// The state is built from the log alone, with no store configured. MemoryEntries
-// is documented as optional, so this is a legal caller. The log has to be worth
-// the same widening on its own.
+// The log alone builds the state: no other source is configured, and the log
+// has to be enough on its own.
 func TestTheSidekickIsBuiltAndDeliversWithOnlyTheMemoryFileSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Memory.md")
 	appendLog(t, memory.OpenMemoryFile(path),
@@ -217,47 +211,6 @@ func TestTheSidekickIsBuiltAndDeliversWithOnlyTheMemoryFileSet(t *testing.T) {
 	}
 }
 
-// The store path is untouched by the deletion, and it is still reachable: a caller
-// mid-migration with a store and no log must keep delivering. Proved at the wire
-// rather than at annotate because the same sum at the result loop serves it.
-func TestTheStorePathStillReachesTheModelWithoutTheLog(t *testing.T) {
-	toolResults, _, runner := memoryLogSeamRun(t, "store-only", func(cfg *RunnerConfig) {
-		target := filepath.Join(cfg.WorkDir, "notes.txt")
-		cfg.MemoryEntries = func() ([]memory.Entry, error) {
-			return []memory.Entry{{
-				Content: "STORE_ONLY: " + target + " is generated, never hand-edit it",
-				Seen:    8, SeenAt: time.Now(), Applies: target,
-			}}, nil
-		}
-	})
-
-	if len(toolResults) == 0 {
-		t.Fatal("no tool result reached the provider, so the test proved nothing")
-	}
-	carrying := 0
-	for _, text := range toolResults {
-		if !strings.Contains(text, "STORE_ONLY") {
-			continue
-		}
-		carrying++
-		if !strings.Contains(text, "the file the agent read") {
-			t.Errorf("the store note replaced the tool output rather than accompanying it: %q", text)
-		}
-	}
-	if carrying == 0 {
-		t.Fatalf("no tool result the model reads carries the store memory: %#v", toolResults)
-	}
-	if carrying != 1 {
-		t.Errorf("the store memory reached the model %d times in one run", carrying)
-	}
-	if got := runner.DeliveryReport(); got.Mode != string(memory.DeliverySidekick) || got.TargetedInjects == 0 {
-		t.Errorf("the run recorded no store delivery: %+v", got)
-	}
-	if strings.Contains(runner.systemPrompt(), "STORE_ONLY") {
-		t.Error("the store memory is in the system prompt, so the cache prefix is volatile again")
-	}
-}
-
 // Nothing configured means nothing built and nothing delivered. A nil source has
 // to fall all the way through to "" rather than returning a half-answer.
 func TestASidekickWithNoSourceAtAllDeliversNothing(t *testing.T) {
@@ -265,16 +218,16 @@ func TestASidekickWithNoSourceAtAllDeliversNothing(t *testing.T) {
 		MemoryDelivery: string(memory.DeliverySidekick),
 	}, nil, tool.NewRegistry())
 	if runner.sidekick != nil {
-		t.Error("sidekick state was built with no store and no log")
+		t.Error("sidekick state was built with no log")
 	}
 	if got := runner.sidekickNote(sessionWithOp("a", "read", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
 		t.Errorf("a run with no source delivered: %q", got)
 	}
 	// The state itself, constructed the way a test or a future caller might: no
-	// lookup, no log.
-	bare := newSidekickState(nil, "/srv")
+	// log at all.
+	bare := newSidekickState("/srv")
 	if got := bare.annotate(sessionWithOp("a", "read", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
-		t.Errorf("a state with neither source delivered %q", got)
+		t.Errorf("a state with no source delivered %q", got)
 	}
 	if report := bare.deliveryReport(); report != (memory.DeliveryReport{}) {
 		t.Errorf("a state that delivered nothing reported delivery: %+v", report)

@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
@@ -19,22 +18,32 @@ import (
 // anything is annotated - because the claim is about a per-message coordinator, and
 // a test that shared one coordinator would not be testing it.
 
-// seedEntries are two targeted memories on two paths, so a test can tell
-// suppression apart from a store that has nothing to say. One path silenced by a
+// seed bodies are two targeted memories on two paths, so a test can tell
+// suppression apart from a log that has nothing to say. One path silenced by a
 // seed must leave the other delivering.
-func seedEntries() []memory.Entry {
-	return []memory.Entry{
-		{ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api"},
-		{ID: "id-web", Content: "the site builds on node 22", Seen: 8, SeenAt: time.Now(), Applies: "/srv/web"},
-	}
-}
+const (
+	seedAPIBody  = "SEED_API: /srv/api pins jdk 21"
+	seedWebBody  = "SEED_WEB: /srv/web builds on node 22"
+	seedDarkBody = "SEED_DARK: prefers dark mode"
+)
 
-// seededRunner is a runner in sidekick mode over a fixed store, built the way the
+// The ids are the log's own content hashes, deterministic on the body text, so
+// every runner built below remembers the same entry by the same id.
+var (
+	seedAPIID = parseLogEntry(seedAPIBody).id
+	seedWebID = parseLogEntry(seedWebBody).id
+)
+
+// seededRunner is a runner in sidekick mode over a fixed log, built the way the
 // bridge builds one: per message, with nothing delivered yet.
-func seededRunner(entries []memory.Entry) *Runner {
+func seededRunner(t *testing.T, extra ...string) *Runner {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "Memory.md")
+	appendLog(t, memory.OpenMemoryFile(path), append([]string{seedAPIBody, seedWebBody}, extra...)...)
 	r := &Runner{cfg: RunnerConfig{SessionID: "seed"}, reg: tool.DefaultRegistry()}
 	r.delivery = memory.DeliverySidekick
-	r.sidekick = newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
+	r.sidekick = newSidekickState("/srv")
+	r.sidekick.useMemoryFile(logMemoryFile(path), 0)
 	return r
 }
 
@@ -74,13 +83,13 @@ func joined(ids []string) string { return strings.Join(ids, ",") }
 // the next message. The record has to be adopted, and suppressing it must not
 // silence a memory that was never delivered.
 func TestSeedingAdoptsTheSessionDeliveredSetSoAMatchingRuleIsNotRedelivered(t *testing.T) {
-	r := seededRunner(seedEntries())
+	r := seededRunner(t)
 	sess := sessionWithOp("a", "write", "/srv/api/main.go")
-	sess.MemoryDelivered = []string{"id-api"}
+	sess.MemoryDelivered = []string{seedAPIID}
 
 	r.SeedDeliveredMemory(sess)
 
-	if !hasDelivered(r.sidekick, "id-api") {
+	if !hasDelivered(r.sidekick, seedAPIID) {
 		t.Fatalf("the session's own delivered set was not adopted: %v", heldIDs(sess))
 	}
 	if note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); strings.Contains(note, "jdk 21") {
@@ -90,7 +99,7 @@ func TestSeedingAdoptsTheSessionDeliveredSetSoAMatchingRuleIsNotRedelivered(t *t
 	// The other path is different work, and deduping one id must not take the
 	// other memory out of context with it.
 	other := sessionWithOp("b", "write", "/srv/web/app.js")
-	other.MemoryDelivered = []string{"id-api"}
+	other.MemoryDelivered = []string{seedAPIID}
 	if note := r.sidekick.annotate(other, operation.ResultEvent{OpID: "b"}); !strings.Contains(note, "node 22") {
 		t.Errorf("seeding silenced a memory on a path it never covered: %q", note)
 	}
@@ -102,15 +111,15 @@ func TestSeedingAdoptsTheSessionDeliveredSetSoAMatchingRuleIsNotRedelivered(t *t
 // told. Without this half, the first run in a fork re-announces a context that
 // already has the notes.
 func TestSeedingAdoptsAFoldsCarriedSetSoItsSurvivorsAreNotRedelivered(t *testing.T) {
-	r := seededRunner(seedEntries())
-	sess := foldSession("id-api")
+	r := seededRunner(t)
+	sess := foldSession(seedAPIID)
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
 	})
 
 	r.SeedDeliveredMemory(sess)
 
-	if !hasDelivered(r.sidekick, "id-api") {
+	if !hasDelivered(r.sidekick, seedAPIID) {
 		t.Fatalf("the fold's carried set was not adopted: %v", heldIDs(sess))
 	}
 	if note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); strings.Contains(note, "jdk 21") {
@@ -118,7 +127,7 @@ func TestSeedingAdoptsAFoldsCarriedSetSoItsSurvivorsAreNotRedelivered(t *testing
 	}
 	// Written back onto the session, so the next message reads one record rather
 	// than reaching for the fold again.
-	if got := joined(heldIDs(sess)); got != "id-api" {
+	if got := joined(heldIDs(sess)); got != seedAPIID {
 		t.Errorf("session delivered set = %s, want the fold's own id", got)
 	}
 }
@@ -127,7 +136,7 @@ func TestSeedingAdoptsAFoldsCarriedSetSoItsSurvivorsAreNotRedelivered(t *testing
 // run with no seed at all, or the fix for repeat delivery becomes a way of losing
 // memory delivery entirely.
 func TestASessionWithNeitherDeliveredFieldIsSeededEmptyAndDeliversNormally(t *testing.T) {
-	r := seededRunner(seedEntries())
+	r := seededRunner(t)
 	sess := sessionWithOp("a", "write", "/srv/api/main.go")
 
 	r.SeedDeliveredMemory(sess)
@@ -138,7 +147,7 @@ func TestASessionWithNeitherDeliveredFieldIsSeededEmptyAndDeliversNormally(t *te
 	if note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); !strings.Contains(note, "jdk 21") {
 		t.Errorf("an empty session stopped delivering: %q", note)
 	}
-	if got := joined(heldIDs(sess)); got != "id-api" {
+	if got := joined(heldIDs(sess)); got != seedAPIID {
 		t.Errorf("session delivered set = %s, want the delivered id recorded", got)
 	}
 }
@@ -165,7 +174,7 @@ func TestASessionStoredBeforeTheDeliveredFieldsReadsAsEmptyNotAsAFailure(t *test
 		t.Fatal(err)
 	}
 
-	r := seededRunner(seedEntries())
+	r := seededRunner(t)
 	r.SeedDeliveredMemory(sess)
 
 	if len(r.sidekick.delivered) != 0 {
@@ -185,22 +194,22 @@ func TestASessionStoredBeforeTheDeliveredFieldsReadsAsEmptyNotAsAFailure(t *test
 // turns a per-session dedup into a per-fold one. So the union stands: the seed adds
 // the fold's judgement and releases nothing.
 func TestSeedingNeverReOffersAnIdWhoseToolResultTheFoldDeleted(t *testing.T) {
-	r := seededRunner(seedEntries())
-	sess := foldSession("id-web")
-	sess.MemoryDelivered = []string{"id-api", "id-web"}
+	r := seededRunner(t)
+	sess := foldSession(seedWebID)
+	sess.MemoryDelivered = []string{seedAPIID, seedWebID}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
 	})
 
 	r.SeedDeliveredMemory(sess)
 
-	if !hasDelivered(r.sidekick, "id-api") {
+	if !hasDelivered(r.sidekick, seedAPIID) {
 		t.Errorf("seeding expired id-api, whose tool result the fold deleted: %v", heldIDs(sess))
 	}
 	if note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); strings.Contains(note, "jdk 21") {
 		t.Errorf("seeding re-offered the dropped note: %q", note)
 	}
-	if got := joined(heldIDs(sess)); got != "id-api,id-web" {
+	if got := joined(heldIDs(sess)); got != seedAPIID+","+seedWebID {
 		t.Errorf("session delivered set = %s, want the union with nothing dropped", got)
 	}
 }
@@ -212,16 +221,16 @@ func TestSeedingNeverReOffersAnIdWhoseToolResultTheFoldDeleted(t *testing.T) {
 // Named for what it does, because a test that only asserted the safe direction would
 // leave the aggressive path unmeasured and therefore free to drift.
 func TestTheAggressiveReseedReOffersAnIdWhoseToolResultTheFoldDeleted(t *testing.T) {
-	r := seededRunner(seedEntries())
-	sess := foldSession("id-web")
-	sess.MemoryDelivered = []string{"id-api", "id-web"}
+	r := seededRunner(t)
+	sess := foldSession(seedWebID)
+	sess.MemoryDelivered = []string{seedAPIID, seedWebID}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
 	})
 
 	r.ReseedDeliveredMemoryFromCheckpoint(sess)
 
-	if got := joined(heldIDs(sess)); got != "id-web" {
+	if got := joined(heldIDs(sess)); got != seedWebID {
 		t.Errorf("session delivered set = %s, want the fold's judgement alone", got)
 	}
 	note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"})
@@ -243,22 +252,22 @@ func TestTheAggressiveReseedReOffersAnIdWhoseToolResultTheFoldDeleted(t *testing
 // forgetting on nil would reset a session that has delivered everything it has - the
 // repeat the delivered set exists to prevent, arrived at through the fix for it.
 func TestAReseedWithNoStandingCheckpointForgetsNothing(t *testing.T) {
-	r := seededRunner(seedEntries())
+	r := seededRunner(t)
 	sess := sessionWithOp("a", "write", "/srv/api/main.go")
-	sess.MemoryDelivered = []string{"id-api"}
+	sess.MemoryDelivered = []string{seedAPIID}
 
 	// Seed first, as every real run does: the session file is what the sidekick
 	// state adopts, and a reseed with nothing loaded has nothing to preserve.
 	r.SeedDeliveredMemory(sess)
-	if !hasDelivered(r.sidekick, "id-api") {
+	if !hasDelivered(r.sidekick, seedAPIID) {
 		t.Fatal("the seed did not adopt the session's delivered id, so the reseed below proves nothing")
 	}
 	r.ReseedDeliveredMemoryFromCheckpoint(sess)
 
-	if got := joined(heldIDs(sess)); got != "id-api" {
+	if got := joined(heldIDs(sess)); got != seedAPIID {
 		t.Errorf("session delivered set = %s, want the delivered id untouched", got)
 	}
-	if !hasDelivered(r.sidekick, "id-api") {
+	if !hasDelivered(r.sidekick, seedAPIID) {
 		t.Error("a reseed with nothing to reseed from dropped a delivered id")
 	}
 	if note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); strings.Contains(note, "jdk 21") {
@@ -271,8 +280,8 @@ func TestAReseedWithNoStandingCheckpointForgetsNothing(t *testing.T) {
 // held would grow the file by the fold's set on every message until the 512-id cap
 // forgets something still wanted.
 func TestSeedingTheSameFoldOnEveryMessageDoesNotGrowTheSessionDeliveredList(t *testing.T) {
-	r := seededRunner(seedEntries())
-	sess := foldSession("id-api", "id-web")
+	r := seededRunner(t)
+	sess := foldSession(seedAPIID, seedWebID)
 
 	for i := 0; i < 5; i++ {
 		r.SeedDeliveredMemory(sess)
@@ -280,7 +289,7 @@ func TestSeedingTheSameFoldOnEveryMessageDoesNotGrowTheSessionDeliveredList(t *t
 			t.Fatalf("message %d armed %d ids, want 2", i, len(r.sidekick.delivered))
 		}
 	}
-	if got := joined(heldIDs(sess)); got != "id-api,id-web" {
+	if got := joined(heldIDs(sess)); got != seedAPIID+","+seedWebID {
 		t.Errorf("session delivered set = %s, want the fold's ids once", got)
 	}
 }
@@ -290,12 +299,9 @@ func TestSeedingTheSameFoldOnEveryMessageDoesNotGrowTheSessionDeliveredList(t *t
 // the failure the general set is deliberately scoped against: it has to survive
 // exactly when the context carrying it was rewritten.
 func TestSeedingDoesNotArmTheOncePerRunFlags(t *testing.T) {
-	entries := append(seedEntries(), memory.Entry{
-		Content: "prefers dark mode", Seen: 8, SeenAt: time.Now(),
-	})
-	r := seededRunner(entries)
-	sess := foldSession("id-api")
-	sess.MemoryDelivered = []string{"id-api"}
+	r := seededRunner(t, seedDarkBody)
+	sess := foldSession(seedAPIID)
+	sess.MemoryDelivered = []string{seedAPIID}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
 	})
@@ -317,20 +323,20 @@ func TestSeedingDoesNotArmTheOncePerRunFlags(t *testing.T) {
 func TestSeedingIsSafeWithNoSidekickStateAndOnAnEmptySession(t *testing.T) {
 	detached := &Runner{cfg: RunnerConfig{SessionID: "seed"}}
 	sess := sessionWithOp("a", "write", "/srv/api/main.go")
-	sess.MemoryDelivered = []string{"id-api"}
+	sess.MemoryDelivered = []string{seedAPIID}
 
 	detached.SeedDeliveredMemory(sess)
 	detached.ReseedDeliveredMemoryFromCheckpoint(sess)
 	detached.ForgetDeliveredMemory(sess)
-	detached.MarkDeliveredMemory(sess, "id-web")
+	detached.MarkDeliveredMemory(sess, seedWebID)
 
-	if got := joined(heldIDs(sess)); got != "id-api" {
+	if got := joined(heldIDs(sess)); got != seedAPIID {
 		t.Errorf("a runner with no sidekick state changed the session's record: %s", got)
 	}
 
 	// A nil session and an empty one are both first runs, and neither may arm
 	// anything or panic on the way there.
-	r := seededRunner(seedEntries())
+	r := seededRunner(t)
 	r.SeedDeliveredMemory(nil)
 	r.SeedDeliveredMemory(&sessionstore.Session{})
 	r.ReseedDeliveredMemoryFromCheckpoint(nil)

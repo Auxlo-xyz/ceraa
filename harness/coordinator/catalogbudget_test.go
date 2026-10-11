@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -145,104 +143,4 @@ func TestRunFallsBackWhenTheCatalogIsUnreachable(t *testing.T) {
 	if compactor.ContextLimit != llm.FallbackContextWindow {
 		t.Errorf("budget = %d, want the fallback %d", compactor.ContextLimit, llm.FallbackContextWindow)
 	}
-}
-
-// The live memory hook has to be reachable through a real run too, since that is
-// the only path a session takes.
-func TestRunSeesAMemoryEditMadeMidSession(t *testing.T) {
-	var prompts atomic.Int32
-	var sawFirst, sawSecond atomic.Bool
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if prompts.Add(1) == 1 {
-			encoded, _ := json.Marshal(map[string]any{
-				"choices": []any{map[string]any{"delta": map[string]any{"content": "ok"}}},
-			})
-			fmt.Fprintf(w, "data: %s\n\n", encoded)
-			fmt.Fprint(w, "data: [DONE]\n\n")
-			return
-		}
-		for _, raw := range messagesOf(body) {
-			if strings.Contains(raw, "MEMORY ONE") {
-				sawFirst.Store(true)
-			}
-			if strings.Contains(raw, "MEMORY TWO") {
-				sawSecond.Store(true)
-			}
-		}
-		encoded, _ := json.Marshal(map[string]any{
-			"choices": []any{map[string]any{"delta": map[string]any{"content": "ok"}}},
-		})
-		fmt.Fprintf(w, "data: %s\n\n", encoded)
-		fmt.Fprint(w, "data: [DONE]\n\n")
-	}))
-	defer provider.Close()
-	t.Setenv("CERAA_API_URL", provider.URL)
-	t.Setenv("CERAA_API_KEY", "test")
-	t.Setenv("CERAA_MODEL", "stub/mem")
-
-	dir := t.TempDir()
-	memoryPath := dir + "/AGENTS.md"
-	if err := writeFile(memoryPath, "MEMORY ONE"); err != nil {
-		t.Fatal(err)
-	}
-	store, err := sessionstore.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ib, err := inbox.New(context.Background(), nil, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ib.Stop()
-
-	runner := New(Config{
-		SessionID:       "memory-live",
-		SystemPrompt:    "test",
-		ModelCatalogURL: "http://127.0.0.1:1",
-		MemoryContextFunc: func() (string, error) {
-			raw, err := readFile(memoryPath)
-			if err != nil {
-				return "", err
-			}
-			return "<memory-file>" + raw + "</memory-file>", nil
-		},
-	}, store, tool.DefaultRegistry())
-
-	for i, want := range []string{"first", "second"} {
-		if i == 1 {
-			if err := writeFile(memoryPath, "MEMORY TWO"); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := runner.Run(context.Background(), "hello"); err != nil {
-			t.Fatalf("run %d: %v", i+1, err)
-		}
-		_ = want
-	}
-	if !sawSecond.Load() {
-		t.Error("the second run's prompt did not contain the edited memory")
-	}
-}
-
-func writeFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0o644)
-}
-
-func readFile(path string) (string, error) {
-	raw, err := os.ReadFile(path)
-	return string(raw), err
-}
-
-func messagesOf(body map[string]any) []string {
-	var out []string
-	raw, _ := body["messages"].([]any)
-	for _, item := range raw {
-		m, _ := item.(map[string]any)
-		if content, ok := m["content"].(string); ok {
-			out = append(out, content)
-		}
-	}
-	return out
 }

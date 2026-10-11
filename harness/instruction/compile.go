@@ -33,15 +33,10 @@ const MaxInstructionBytes = 480
 // meant to replace.
 const VolumeWarn = 400
 
-// imperativePrefixes is the standing-directive vocabulary, restated from
-// memory.isImperative (harness/memory/store.go).
-//
-// It is a copy rather than a call because that function is unexported and its
-// file is outside this package's change boundary. It is restated rather than
-// reinvented so the two classifiers cannot drift into disagreeing about what a
-// directive is; if one changes, the other has to change with it. Exporting
-// memory.IsImperative and deleting this list is the follow-up that removes the
-// need to remember.
+// imperativePrefixes is the standing-directive vocabulary. It was restated from
+// a classifier that lived beside the deleted memory store; with the store gone
+// this list is the only copy, and a directive vocabulary that disagrees with
+// itself is how a rule fires for one consumer and silently not for another.
 var imperativePrefixes = []string{
 	"never ", "always ", "do not ", "don't ", "must ", "avoid ", "stop ",
 }
@@ -52,12 +47,11 @@ var imperativePrefixes = []string{
 // records: "for this task, always run the gate" is a one-off phrase followed by a
 // standing rule, and the rule is the part that decides how it binds.
 //
-// One deliberate difference from memory.isImperative: the comparison is
-// case-folded. Memory statements are extracted sentences and start lower case;
-// rules in a document do not, and this repository's own AGENTS.md opens bullets
-// with "Never", "Do not" and "Always" throughout. A case-sensitive test reads
-// every one of them as ordinary advice, which is the classification those
-// sentences most obviously do not want.
+// The comparison is case-folded. Rules in a document do not start lower case,
+// and this repository's own AGENTS.md opens bullets with "Never", "Do not" and
+// "Always" throughout. A case-sensitive test reads every one of them as
+// ordinary advice, which is the classification those sentences most obviously
+// do not want.
 func isImperative(text string) bool {
 	folded := strings.ToLower(text)
 	trimmed := strings.TrimSpace(folded)

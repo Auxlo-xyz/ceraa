@@ -92,8 +92,8 @@ type CompactionInfo struct {
 	Tier       int    `json:"tier,omitempty"`
 	Generation string `json:"generation,omitempty"`
 	Survived   int    `json:"survived,omitempty"`
-	// Delivered is the delivered set as this fold judged it: one
-	// memory.DeliveryID per entry, the same ids Session.MemoryDelivered holds.
+	// Delivered is the delivered set as this fold judged it: one log-entry
+	// content-hash id per line, the same ids Session.MemoryDelivered holds.
 	//
 	// It is carried because the fold deletes the copies the model actually read.
 	// A sidekick annotation reaches the model as text appended to a tool result,
@@ -224,7 +224,6 @@ type Run struct {
 	MemoryDelivery     string    `json:"memory_delivery,omitempty"`
 	MemoryGeneralSent  int       `json:"memory_general_sent,omitempty"`
 	MemoryTargetedSent int       `json:"memory_targeted_sent,omitempty"`
-	MemoryBelowGate    int       `json:"memory_below_gate,omitempty"`
 	PricingFetchedAt   time.Time `json:"pricing_fetched_at,omitempty"`
 	ModelContextWindow int       `json:"model_context_window,omitempty"`
 	ModelMaxTokens     int       `json:"model_max_tokens,omitempty"`
@@ -248,7 +247,7 @@ type Session struct {
 	ParentID         string      `json:"parent_id,omitempty"`
 
 	// MemoryDelivered is every memory already annotated into this session's tool
-	// results, by memory.DeliveryID.
+	// results, by log-entry content-hash id.
 	//
 	// Persisted because the runner is rebuilt for every run and nothing else
 	// outlives one. A set held in memory alone re-fires every memory on the next

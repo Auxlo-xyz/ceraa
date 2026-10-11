@@ -79,22 +79,19 @@ func memoryLogReader(root string) *memory.MemoryFile {
 	return memory.OpenMemoryFile(memoryLogPath(root))
 }
 
-// memoryWiring is the memory-related half of the runner config: the live
-// renderer the prompt modes read, and the reader for the append-only log.
+// memoryWiring is the memory-related half of the runner config: the reader for
+// the append-only log.
 //
 // One value rather than fields written into the literal, so the wiring can be
 // asserted without a turn.
 type memoryWiring struct {
-	// MemoryContextFunc renders the memory block the prompt modes read.
-	MemoryContextFunc func() (string, error)
 	// MemoryFile is the runner's reader for the session's append-only log.
 	MemoryFile func() *memory.MemoryFile
 }
 
-func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, memoryLog *memory.MemoryFile) memoryWiring {
+func newMemoryWiring(memoryLog *memory.MemoryFile) memoryWiring {
 	return memoryWiring{
-		MemoryContextFunc: memory.Live(memoryStore, "cli", sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000),
-		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
+		MemoryFile: func() *memory.MemoryFile { return memoryLog },
 	}
 }
 
@@ -108,9 +105,9 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // nothing, which is the failure a credential-gated hook exists to avoid, and
 // compaction.ChainLearn treats nil as absent so the distinction is preserved all
 // the way to the call site.
-func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+func cliLearnChain(modelConfig llm.ProviderConfig, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
 	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli", memoryLog); enabled {
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryLog); enabled {
 		chain = learn
 	}
 	if memoryLog != nil {
@@ -149,9 +146,6 @@ func NewSession(opts SessionOptions) (*Session, error) {
 	// an uninitialised store.
 	if err := secret.Init(filepath.Join(paths.DataDir(), "secret.key"), filepath.Join(paths.DataDir(), "secrets.json")); err != nil {
 		return nil, fmt.Errorf("secret store: %w", err)
-	}
-	if cfg.MemoryFile == "" {
-		cfg.MemoryFile = "memory"
 	}
 	if cfg.SkillFile == "" {
 		cfg.SkillFile = "skills"
@@ -215,10 +209,6 @@ func (s *Session) build() error {
 		return modelConfig, provider, nil
 	}
 
-	memoryStore, err := memory.New(s.cfg.MemoryFile)
-	if err != nil {
-		return fmt.Errorf("memory store: %w", err)
-	}
 	skillStore, err := skills.New(s.cfg.SkillFile)
 	if err != nil {
 		return fmt.Errorf("skill store: %w", err)
@@ -226,19 +216,15 @@ func (s *Session) build() error {
 	evaluationStore, err := newEvaluationStore(s.cfg)
 	// One learn hook for the turn: the extractor when a credential is
 	// configured.
-	compactor.Learn = cliLearnChain(modelConfig, memoryStore, memoryLog)
+	compactor.Learn = cliLearnChain(modelConfig, memoryLog)
 	if err != nil {
 		return err
 	}
-	// A snapshot for the first render and a live reader for every turn after it,
-	// so an edit to memory/AGENTS.md reaches the model without a restart.
-	memoryContext, _ := memoryStore.RenderContext("cli", s.session, 2000)
 	// The append-only log for this session's workdir. The workdir is the project
-	// root here exactly as it is for the memory file above it, so the two resolve
-	// against the same place. Flat at the root, and never /tmp.
-	// The memory half of the runner config, built beside the store and the log
-	// it reads so the two are constructed once and shared.
-	wiring := newMemoryWiring(memoryStore, s.workDir, s.session, memoryLog)
+	// root here, flat at the root, and never /tmp.
+	// The memory half of the runner config, built beside the log it reads so
+	// the two are constructed once and shared.
+	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 
 	registry := tool.DefaultRegistryForUser("cli", skillStore)
@@ -261,10 +247,8 @@ func (s *Session) build() error {
 		modelConfig:         modelConfig,
 		resolveModel:        resolveModel,
 		compactor:           compactor,
-		memoryStore:         memoryStore,
 		evaluationStore:     evaluationStore,
 		instructionProposer: instructionProposer,
-		memoryContext:       memoryContext,
 		memory:              wiring,
 		skillContext:        skillContext,
 	}), s.store, registry)
@@ -281,10 +265,8 @@ type sessionRunnerDeps struct {
 	modelConfig         llm.ProviderConfig
 	resolveModel        func(context.Context) (llm.ProviderConfig, error)
 	compactor           *compaction.Compactor
-	memoryStore         *memory.Store
 	evaluationStore     *evaluation.Store
 	instructionProposer instruction.Proposer
-	memoryContext       string
 	memory              memoryWiring
 	skillContext        string
 }
@@ -309,11 +291,8 @@ func (s *Session) runnerConfig(d sessionRunnerDeps) coordinator.RunnerConfig {
 		ModelCatalogURL:     s.cfg.ModelCatalogURL,
 		ModelCatalogCache:   s.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(s.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       d.memoryContext,
-		MemoryContextFunc:   d.memory.MemoryContextFunc,
 		MemoryFile:          d.memory.MemoryFile,
 		MemoryDelivery:      s.cfg.MemoryDelivery,
-		MemoryEntries:       memoryEntries(d.memoryStore, s.session),
 		InstructionRules:    internal.InstructionRules(s.workDir, d.instructionProposer),
 		SkillContext:        d.skillContext,
 		EvaluationStore:     d.evaluationStore,
@@ -676,13 +655,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func memoryEntries(store *memory.Store, sessionID string) func() ([]memory.Entry, error) {
-	if store == nil {
-		return nil
-	}
-	return func() ([]memory.Entry, error) { return store.List("cli", sessionID) }
 }
 
 // newSessionID names a conversation.

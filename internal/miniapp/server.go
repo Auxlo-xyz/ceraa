@@ -137,7 +137,6 @@ type Config struct {
 	SetToolAllowed    func(name string, allowed bool) error
 	Secrets           func() ([]SecretEntry, error)
 	Memories          func() ([]MemoryEntry, error)
-	DeleteMemory      func(id string) error
 	TriggerCompaction func(sessionID string) (map[string]any, error)
 	Skills            func() ([]SkillProposal, error)
 	DecideSkill       func(id string, approve bool) error
@@ -239,7 +238,6 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("GET /api/tools", s.handleTools)
 	mux.HandleFunc("POST /api/tools", s.handleSetToolAllowed)
 	mux.HandleFunc("GET /api/memories", s.handleMemories)
-	mux.HandleFunc("DELETE /api/memories/{id}", s.handleDeleteMemory)
 	mux.HandleFunc("POST /api/compaction", s.handleCompaction)
 	mux.HandleFunc("GET /api/skills", s.handleSkills)
 	mux.HandleFunc("POST /api/skills/{id}", s.handleDecideSkill)

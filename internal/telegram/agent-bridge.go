@@ -40,19 +40,6 @@ import (
 	"ceraa/internal/xaiauth"
 )
 
-// memoryEntries lists the store for sidekick delivery.
-//
-// A closure rather than a slice, so an edit to the store during a long run reaches
-// the next tool call instead of being frozen at construction.
-func memoryEntries(store *memory.Store, projectID, sessionID string) func() ([]memory.Entry, error) {
-	if store == nil {
-		return nil
-	}
-	return func() ([]memory.Entry, error) {
-		return store.List(projectID, sessionID)
-	}
-}
-
 // memoryLogPath is where the append-only Memory.md log lives for the project at
 // root.
 //
@@ -98,22 +85,19 @@ func memoryLogReader(root string) *memory.MemoryFile {
 // A failure logs and returns: a log write must not fail the turnover, the same
 // contract the compactor already documents for every Learn hook.
 
-// memoryWiring is the memory-related half of a RunnerConfig: the live renderer
-// the prompt modes read, and the reader for the append-only log.
+// memoryWiring is the memory-related half of a RunnerConfig: the reader for
+// the project's append-only log.
 //
-// One value rather than fields written into each literal, so the wiring can be
+// One value rather than a field written into each literal, so the wiring can be
 // asserted without starting a run.
 type memoryWiring struct {
-	// MemoryContextFunc renders the memory block the prompt modes read.
-	MemoryContextFunc func() (string, error)
 	// MemoryFile is the runner's reader for the project's append-only log.
 	MemoryFile func() *memory.MemoryFile
 }
 
-func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, memoryLog *memory.MemoryFile) memoryWiring {
+func newMemoryWiring(memoryLog *memory.MemoryFile) memoryWiring {
 	return memoryWiring{
-		MemoryContextFunc: memory.Live(memoryStore, projectRoot, sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000),
-		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
+		MemoryFile: func() *memory.MemoryFile { return memoryLog },
 	}
 }
 
@@ -123,9 +107,9 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // The durable-person subset of that same extraction is also appended to the
 // log, so profile, preference, goal and constraint claims reach Memory.md
 // without a second model call.
-func agentLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, projectRoot string, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+func agentLearnChain(modelConfig llm.ProviderConfig, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
 	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot, memoryLog); enabled {
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryLog); enabled {
 		chain = learn
 	}
 	return compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
@@ -144,9 +128,7 @@ type agentRunDeps struct {
 	resolveModel        func(context.Context) (llm.ProviderConfig, error)
 	reasoning           llm.ReasonLevel
 	projectRoot         string
-	memoryContext       string
 	memory              memoryWiring
-	memoryStore         *memory.Store
 	instructionProposer instruction.Proposer
 	skillContext        string
 	evaluationStore     *evaluation.Store
@@ -181,11 +163,8 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 		ModelCatalogURL:     d.cfg.ModelCatalogURL,
 		ModelCatalogCache:   d.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(d.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       d.memoryContext,
-		MemoryContextFunc:   d.memory.MemoryContextFunc,
 		MemoryFile:          d.memory.MemoryFile,
 		MemoryDelivery:      d.cfg.MemoryDelivery,
-		MemoryEntries:       memoryEntries(d.memoryStore, d.projectRoot, d.sessionID),
 		InstructionRules:    internal.InstructionRules(d.projectRoot, d.instructionProposer),
 		SkillContext:        d.skillContext,
 		EvaluationStore:     d.evaluationStore,
@@ -315,9 +294,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	if err := parent.Err(); err != nil {
 		return err
 	}
-	if cfg.MemoryFile == "" {
-		cfg.MemoryFile = "memory"
-	}
 	if cfg.SkillFile == "" {
 		cfg.SkillFile = "skills"
 	}
@@ -325,10 +301,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		cfg.EvaluationFile = "evaluations.json"
 	}
 	store, err := sessionstore.New(cfg.SessionFile)
-	if err != nil {
-		return err
-	}
-	memoryStore, err := memory.New(cfg.MemoryFile)
 	if err != nil {
 		return err
 	}
@@ -371,16 +343,12 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	memoryLog := memoryLogReader(projectRoot)
 	// One learn chain for the run: the extractor when a credential is
 	// configured, then the append-only log.
-	compactor.Learn = agentLearnChain(modelConfig, memoryStore, projectRoot, memoryLog)
+	compactor.Learn = agentLearnChain(modelConfig, memoryLog)
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
-	// Startup snapshot, kept as a fallback and as the first render. The live
-	// renderer below re-reads the file every turn, so an edit to
-	// memory/AGENTS.md reaches the model without a restart.
-	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
-	// The memory half of the runner config, built beside the stores it reads so
+	// The memory half of the runner config, built beside the log it reads so
 	// it is constructed once and shared with the learn chain above.
-	wiring := newMemoryWiring(memoryStore, projectRoot, sessionID, memoryLog)
+	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
 	// Recorded because a provider may reject or ignore a level, and the only way
@@ -406,7 +374,6 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		skillStore:      skillStore,
 		evaluationStore: evaluationStore,
 		store:           store,
-		memoryContext:   memoryContext,
 		skillContext:    skillContext,
 		WallClock:       15 * time.Minute,
 	})
@@ -427,9 +394,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		resolveModel:        resolveModel,
 		reasoning:           reasoning,
 		projectRoot:         projectRoot,
-		memoryContext:       memoryContext,
 		memory:              wiring,
-		memoryStore:         memoryStore,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,
