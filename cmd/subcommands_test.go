@@ -215,7 +215,14 @@ func TestPlainProviderStillNeedsAnAPIKey(t *testing.T) {
 // The helper points CERAA_HOME at a regular file so the key cannot be created.
 // runDoctor must then fail on the store itself, before producing a report.
 func TestDoctorFailsWhenTheCredentialStoreCannotBeOpened(t *testing.T) {
-	if os.Getenv("CERAA_DOCTER_STORE_HELPER") == "1" {
+	if os.Getenv("DOCTOR_STORE_HELPER") == "1" {
+		// TestMain (testsupport.Main) scrubs every CERAA_* variable and forces
+		// CERAA_HOME to a temp dir, so the guard and the blocker path travel under
+		// names it leaves alone and the blocker is restored here. A CERAA_* guard
+		// was stripped in the child, so the child re-exec'd itself without end.
+		if blocker := os.Getenv("DOCTOR_STORE_BLOCKER"); blocker != "" {
+			os.Setenv("CERAA_HOME", blocker)
+		}
 		// The helper has to carry the verdict out through its exit status. An
 		// earlier version called runDoctor and returned, so the helper passed
 		// whether or not doctor had failed and the parent learned nothing.
@@ -233,8 +240,8 @@ func TestDoctorFailsWhenTheCredentialStoreCannotBeOpened(t *testing.T) {
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=TestDoctorFailsWhenTheCredentialStoreCannotBeOpened")
 	cmd.Env = append(os.Environ(),
-		"CERAA_DOCTER_STORE_HELPER=1",
-		"CERAA_HOME="+blocker,
+		"DOCTOR_STORE_HELPER=1",
+		"DOCTOR_STORE_BLOCKER="+blocker,
 		"TELEGRAM_BOT_TOKEN=999:TESTTOKENabcdefghijklmnopqrstuvwxyz",
 		"TELEGRAM_ALLOWED_USER_ID=1",
 	)
