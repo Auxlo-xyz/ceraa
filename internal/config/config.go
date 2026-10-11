@@ -45,13 +45,11 @@ type Config struct {
 	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
 	TitleAPIURL              string         `json:"title_api_url,omitempty"`
 	TitleModel               string         `json:"title_model,omitempty"`
-	// MemoryDelivery selects where memory reaches the model. "sidekick" annotates
-	// tool results at the point of use from the project's append-only Memory.md
-	// log and leaves the system prompt fully static, which is the only mode that
-	// delivers anything. "prompt" and "cached" are accepted and deliver nothing:
-	// memory no longer rides the prompt in any mode, because the ranked store
-	// that rendered the block re-ranked itself against a wall clock on every
-	// request and rebuilt the cached prefix on every turn.
+	// MemoryDelivery selects where memory reaches the model. "sidekick" appends
+	// the latest log state once per run as a tail line on the newest user
+	// message, which is the only mode that delivers anything. "prompt" and
+	// "cached" are accepted and deliver nothing: memory no longer rides the
+	// prompt in any mode.
 	MemoryDelivery string `json:"memory_delivery,omitempty"`
 	SkillFile      string `json:"skill_file,omitempty"`
 	EvaluationFile string `json:"evaluation_file,omitempty"`

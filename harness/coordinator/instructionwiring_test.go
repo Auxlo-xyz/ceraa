@@ -511,9 +511,10 @@ func TestARuleTheBudgetHeldIsStillDeliveredOnTheNextMatchingOperation(t *testing
 	}
 }
 
-// sidekickNote checks r.sidekick, so delivering one must not depend on the other
-// being configured. Wiring that gated them behind a shared nil check would make
-// the instruction feature silently require memory to have been set up.
+// memoryTailLine needs no operation, so delivering one must not depend on the
+// other being configured. Wiring that gated them behind a shared nil check
+// would make the instruction feature silently require memory to have been set
+// up.
 func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	work := t.TempDir()
 	target := filepath.Join(work, "notes.txt")
@@ -522,7 +523,8 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	}
 	sess := &sessionstore.Session{ID: "ind", Version: 3}
 
-	// Both configured: both notes render.
+	// Both configured: the instruction note renders on the tool result and the
+	// memory tail renders on the run, and neither consults the other.
 	logPath := filepath.Join(work, "Memory.md")
 	appendLog(t, memory.OpenMemoryFile(logPath), "memory only, recorded at "+work)
 	both := New(RunnerConfig{
@@ -538,8 +540,8 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	if note := both.instructionNote(sessionFor(sess), result); note == "" {
 		t.Error("an instruction source with a memory store configured delivered nothing")
 	}
-	if note := both.sidekickNote(sessionFor(sess), result); note == "" {
-		t.Error("a memory sidekick with an instruction source configured delivered nothing")
+	if tail := both.memoryTailLine(); !strings.Contains(tail, "memory only") {
+		t.Errorf("a memory tail with an instruction source configured delivered nothing: %q", tail)
 	}
 
 	// Instructions alone.
@@ -560,8 +562,8 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	if note := memoryRunner.instructionNote(sessionFor(sess), result); note != "" {
 		t.Errorf("a runner with no rule file produced an instruction note: %q", note)
 	}
-	if note := memoryRunner.sidekickNote(sessionFor(sess), result); !strings.Contains(note, "memory only") {
-		t.Errorf("the memory sidekick stopped delivering once the instruction channel existed: %q", note)
+	if tail := memoryRunner.memoryTailLine(); !strings.Contains(tail, "memory only") {
+		t.Errorf("the memory tail stopped delivering once the instruction channel existed: %q", tail)
 	}
 }
 

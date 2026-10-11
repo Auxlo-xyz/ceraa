@@ -218,9 +218,12 @@ type Run struct {
 	// build produced the file.
 	//
 	// Recorded because a memory change that is never attributed cannot be
-	// evaluated: two sessions differing in outcome, one with the block and one
-	// with sidekick notes, are otherwise indistinguishable from a change in the
-	// task.
+	// evaluated: two sessions differing in outcome, one with the tail line and
+	// one without, are otherwise indistinguishable from a change in the task.
+	//
+	// The per-note counters below are retired with per-result delivery and stay
+	// zero: MemoryTargetedSent now means the once-per-run tail line rode at
+	// least one request (1) or not (0), and MemoryGeneralSent is always 0.
 	MemoryDelivery     string    `json:"memory_delivery,omitempty"`
 	MemoryGeneralSent  int       `json:"memory_general_sent,omitempty"`
 	MemoryTargetedSent int       `json:"memory_targeted_sent,omitempty"`

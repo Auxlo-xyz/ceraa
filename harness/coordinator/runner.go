@@ -65,14 +65,14 @@ type RunnerConfig struct {
 	ModelCatalogURL     string
 	ModelCatalogCache   string
 	ModelCatalogRefresh time.Duration
-	// MemoryDelivery selects where memory reaches the model. "sidekick" annotates
-	// tool results at the point of use from the append-only log; the prompt and
-	// cached values select no prompt block, because memory no longer rides the
-	// prompt at all.
+	// MemoryDelivery selects where memory reaches the model. "sidekick" appends
+	// the latest log state once per run as a tail line on the newest user
+	// message; any other value attaches nothing, because memory no longer
+	// rides the prompt in any mode.
 	MemoryDelivery string
 	// MemoryFile is the append-only log this run reads for what has been learned.
-	// Every completed run also appends one compact turn record to it, so memory
-	// grows incrementally rather than only when a compaction happens.
+	// The latest entries ride each request once, as a tail line on the newest
+	// user message, so memory reaches the model without a per-tool annotation.
 	//
 	// A reader rather than a snapshot because the file is the source of truth and
 	// a snapshot taken at construction diverges from it silently in a long-lived
@@ -86,9 +86,9 @@ type RunnerConfig struct {
 	// whole, so the cost per turn is proportional to what is delivered rather
 	// than to everything ever learned.
 	MemoryFile func() *memory.MemoryFile
-	// MemoryTail is how many entries of the log delivery reads. Zero means
-	// defaultMemoryTail, which is what a run that delivers on every call can
-	// render before the run ceiling stops it.
+	// MemoryTail is how many entries of the log the once-per-run tail line
+	// reads. Zero means defaultMemoryTail. The line caps itself in runes on
+	// top, so a large tail costs nothing the line does not render.
 	MemoryTail int
 	// InstructionRules compiles the project's instruction file into the rules
 	// that tool-result delivery selects from. Nil disables instruction delivery
@@ -111,8 +111,8 @@ type RunnerConfig struct {
 	// Once per run, not once per session, is deliberate: a rule file edited
 	// mid-run would otherwise put two revisions of the same project instruction
 	// into one transcript with nothing marking which is current. The next run
-	// picks the edit up, which is the same boundary the sidekick's once-per-run
-	// standing set uses and for the same reason.
+	// picks the edit up, which is the same boundary the memory tail line uses
+	// and for the same reason.
 	InstructionRules func() instruction.Snapshot
 	SkillContext     string
 	EvaluationStore  *evaluation.Store
@@ -556,12 +556,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// final once the run has finished delivering.
 				//
 				// This is the whole measurement story for now: a run record that says
-				// which mode ran and what it delivered, so a later analysis can
+				// which mode ran and whether the tail line rode, so a later analysis can
 				// compare outcomes instead of inferring the mode from the build.
-				delivery := r.DeliveryReport()
-				sess.Runs[i].MemoryDelivery = delivery.Mode
-				sess.Runs[i].MemoryGeneralSent = delivery.GeneralInjected
-				sess.Runs[i].MemoryTargetedSent = delivery.TargetedInjects
+				sess.Runs[i].MemoryDelivery = string(r.delivery)
+				if r.memoryTailLine() != "" {
+					sess.Runs[i].MemoryTargetedSent = 1
+				}
 			}
 		}
 		if r.evaluation != nil {
@@ -589,7 +589,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if err := r.store.Save(sess); err != nil {
 			return err
 		}
-		r.recordTurnMemory(sess, runID, user, status)
 		if runErr != nil && r.cb.OnError != nil {
 			r.cb.OnError(runErr)
 		}
@@ -988,18 +987,13 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// of the project's own rules had fired by then.
 				//
 				// The order of the two note calls is fixed and not cosmetic:
-				// memory before project rules, because a reader - and a model -
-				// takes project context before project-specific rules about the
-				// file in front of it. Neither is allowed to see the other's
-				// work, which is what keeps them separately fixable.
-				//
 				// This line runs BEFORE persistResult, on purpose. The note is
 				// rendered from the result that just arrived, not from the session
 				// record, and rendering after the persist would read an operation
 				// row whose Status and Error had already been rewritten from this
 				// same event - two answers to "did this fail" taken a few lines
 				// apart.
-				results[result.OpID] = r.resultText(runID, result) + r.sidekickNote(sess, result) + r.instructionNote(sess, result)
+				results[result.OpID] = r.resultText(runID, result) + r.instructionNote(sess, result)
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
@@ -1119,7 +1113,59 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	}
 	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
+	// The once-per-run memory tail: the newest user message carries the latest
+	// log state as a suffix, so memory reaches the model exactly once, at the
+	// end of the conversation rather than on any tool result. Suffix-local on
+	// purpose: the system prompt and history stay byte-identical, which keeps
+	// the cached prefix stable. LiveRequest shares this path, so compactions
+	// summarise over the same bytes the turns send.
+	//
+	// Read through the sidekick state, which exists only in sidekick mode, so
+	// its presence is the delivery switch and other modes attach nothing.
+	if tail := r.memoryTailLine(); tail != "" {
+		for i := len(request.Messages) - 1; i >= 0; i-- {
+			if request.Messages[i].Role == llm.RoleUser {
+				request.Messages[i].Text += tail
+				break
+			}
+		}
+	}
 	return request.Messages
+}
+
+// memoryTailLine renders the latest log state for the once-per-run tail, or ""
+// when there is nothing to send.
+//
+// Read through the sidekick state rather than the config reader directly, so a
+// mode that is not sidekick attaches nothing: the state only exists in sidekick
+// mode, which makes its presence the delivery switch.
+//
+// A nil state, an unreadable file and an empty log all fall through to "", so
+// a run with no memory builds byte-identical messages to one that never
+// configured it. The block is capped at 800 runes: the tail is a reminder of
+// what was learned, not a second transcript.
+func (r *Runner) memoryTailLine() string {
+	if r == nil || r.sidekick == nil {
+		return ""
+	}
+	lines := make([]string, 0)
+	for _, entry := range r.sidekick.memTail() {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	body := strings.Join(lines, "\n---\n")
+	if runes := []rune(body); len(runes) > 800 {
+		cut := string(runes[:800])
+		if i := strings.LastIndex(cut, "\n"); i > 0 {
+			cut = cut[:i]
+		}
+		body = cut
+	}
+	return "\n\n<memory>\n" + body + "\n</memory>"
 }
 
 // LiveRequest returns the request the running agent would send for this session
@@ -2023,123 +2069,6 @@ func (r *Runner) resultText(runID string, result operation.ResultEvent) string {
 	return formatted
 }
 
-// sidekickNote is the injected block for a completed operation, or "".
-func (r *Runner) sidekickNote(sess *sessionstore.Session, result operation.ResultEvent) string {
-	if r.sidekick == nil {
-		return ""
-	}
-	return r.sidekick.annotate(sess, result)
-}
-
-// recordTurnMemory appends one compact turn record to the append-only memory
-// log, without judging whether the turn was worth remembering.
-//
-// It runs once at the end of a run, after the live model work has finished, so
-// the write cannot disturb the request it just answered. The log is intentionally
-// much smaller than a rule file: no results, no arguments, and no reply text are
-// copied here, only the terminal status, the tools actually used, their outcome
-// counts, and the paths those operations were about. Paths stay because the
-// sidekick can match a later operation against them; everything else stays out
-// because a per-turn record that duplicated the transcript would become the
-// bloat it was meant to replace.
-//
-// The write is best-effort. A memory-log failure must not fail the turn that
-// just produced the record, and the session file is already the authoritative
-// account when the log write does not land.
-func (r *Runner) recordTurnMemory(sess *sessionstore.Session, runID, user string, status sessionstore.RunStatus) {
-	if r == nil || sess == nil || r.cfg.MemoryFile == nil {
-		return
-	}
-	file := r.cfg.MemoryFile()
-	if file == nil {
-		return
-	}
-	tools := make([]string, 0)
-	seenTools := make(map[string]struct{})
-	outcomes := make(map[string]int)
-	paths := make([]string, 0)
-	seenPaths := make(map[string]struct{})
-	operations := 0
-	for _, op := range sess.Operations {
-		if op.RunID != runID {
-			continue
-		}
-		operations++
-		if op.Tool != "" {
-			if _, ok := seenTools[op.Tool]; !ok {
-				seenTools[op.Tool] = struct{}{}
-				tools = append(tools, op.Tool)
-			}
-		}
-		outcomes[string(op.Status)]++
-		for _, path := range targetsForSpec(op.SpecType, r.cfg.WorkDir, op.SpecArgs) {
-			if _, ok := seenPaths[path]; !ok && len(paths) < 8 {
-				seenPaths[path] = struct{}{}
-				paths = append(paths, path)
-			}
-		}
-	}
-	if strings.TrimSpace(user) == "" && operations == 0 {
-		return
-	}
-
-	var note strings.Builder
-	fmt.Fprintf(&note, "Turn %s", status)
-	if request := strings.Join(strings.Fields(user), " "); request != "" {
-		fmt.Fprintf(&note, "; request %q", truncateRunes(request, 160))
-	}
-	if len(tools) > 0 {
-		fmt.Fprintf(&note, "; tools %s", strings.Join(tools, ", "))
-	}
-	if counts := outcomeCounts(outcomes); counts != "" {
-		fmt.Fprintf(&note, "; outcomes %s", counts)
-	}
-	if len(paths) > 0 {
-		fmt.Fprintf(&note, "; paths %s", strings.Join(paths, ", "))
-	}
-	if err := file.Append(truncateRunes(note.String(), 480), r.cfg.SessionID); err != nil {
-		logger.Warn("memory log append: " + err.Error())
-	}
-}
-
-// outcomeCounts renders per-status operation counts in a stable order.
-func outcomeCounts(outcomes map[string]int) string {
-	statuses := []sessionstore.OperationStatus{
-		sessionstore.StatusCompleted,
-		sessionstore.StatusFailed,
-		sessionstore.StatusCanceled,
-		sessionstore.StatusRunning,
-		sessionstore.StatusPending,
-	}
-	counts := make([]string, 0, len(statuses))
-	remaining := 0
-	for _, status := range outcomes {
-		remaining += status
-	}
-	for _, status := range statuses {
-		if outcomes[string(status)] > 0 {
-			counts = append(counts, fmt.Sprintf("%s=%d", status, outcomes[string(status)]))
-			remaining -= outcomes[string(status)]
-		}
-	}
-	if remaining > 0 {
-		counts = append(counts, fmt.Sprintf("other=%d", remaining))
-	}
-	return strings.Join(counts, ",")
-}
-
-// truncateRunes bounds one line without splitting a rune.
-func truncateRunes(text string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit])
-}
-
 // instructionNote renders the AGENTS.md rules that bear on the operation that
 // just finished, or "" when nothing applies.
 //
@@ -2191,53 +2120,6 @@ func (r *Runner) instructionTrigger(sess *sessionstore.Session, result operation
 		return instruction.Trigger{Failed: result.Status != operation.StatusCompleted}
 	}
 	return InstructionTrigger(op.SpecType, op.SpecArgs, op.Tool, r.cfg.WorkDir, result.Status != operation.StatusCompleted)
-}
-
-// ForgetDeliveredMemory releases every memory this session has been annotated
-// with, so each one is eligible again on the next matching operation.
-//
-// This is the seam for a compaction epoch, and it belongs here rather than in the
-// compactor because the compactor owns the transcript, not the knowledge of which
-// notes are still in it: a compaction drops the tool results that carried them, so
-// the memory behind a note is no longer in context and delivering it once more is
-// not a repeat. Call it with the session being compacted, on both sides of the
-// fold, and the delivered list on the session file goes with it.
-func (r *Runner) ForgetDeliveredMemory(sess *sessionstore.Session) {
-	if r.sidekick == nil {
-		return
-	}
-	r.sidekick.mu.Lock()
-	defer r.sidekick.mu.Unlock()
-	r.sidekick.forgetDelivered(sess)
-}
-
-// MarkDeliveredMemory records memories as already delivered without injecting
-// them, for a caller carrying a set across an epoch boundary or a restart.
-//
-// The ids are the same ones Annotate was given: the log entry's content hash,
-// which is one-to-one with what dedup treats as a duplicate. Nothing validates
-// them against the log, because a caller restoring state it wrote earlier has
-// nothing to check it against and a remembered delivery that no longer exists
-// costs nothing - the memory simply stays quiet.
-func (r *Runner) MarkDeliveredMemory(sess *sessionstore.Session, ids ...string) {
-	if r.sidekick == nil || sess == nil {
-		return
-	}
-	r.sidekick.mu.Lock()
-	defer r.sidekick.mu.Unlock()
-	r.sidekick.remember(ids...)
-	r.sidekick.persist(sess, ids...)
-}
-
-// DeliveryReport says how memory was delivered for the run that just finished.
-func (r *Runner) DeliveryReport() memory.DeliveryReport {
-	report := r.sidekick.deliveryReport()
-	report.Mode = string(r.delivery)
-	// No mode renders a prompt block anymore: memory reaches the model through
-	// sidekick annotations only, so this stays false and a later analysis can
-	// trust it.
-	report.PromptBlock = false
-	return report
 }
 
 func (r *Runner) formatOutput(runID, operationID, output string) string {

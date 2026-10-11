@@ -15,14 +15,13 @@ import (
 
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
-	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
 )
 
-// No mode renders a memory block anymore. Memory reaches the model through
-// sidekick annotations on tool results only, so the system prompt carries no
-// memory in any mode and the report never claims a prompt block.
+// WHY: memory now reaches the model exactly once per run as a tail line on the newest user message, so no mode may render it into the prompt.
+// No mode renders a memory block anymore. The system prompt carries no memory
+// in any mode and the report never claims a prompt block.
 func TestNoModeRendersAMemoryBlock(t *testing.T) {
 	for _, mode := range []memory.Delivery{memory.DeliveryPrompt, memory.DeliveryCached, memory.DeliverySidekick} {
 		path := filepath.Join(t.TempDir(), "Memory.md")
@@ -41,15 +40,10 @@ func TestNoModeRendersAMemoryBlock(t *testing.T) {
 		if got := r.systemPrompt(); strings.Contains(got, "<memory>") || strings.Contains(got, "MODE_CHECK") {
 			t.Errorf("mode %q carries memory in the system prompt: %q", mode, got)
 		}
-		if report := r.DeliveryReport(); report.PromptBlock {
-			t.Errorf("mode %q reported prompt_block, so a later analysis cannot trust it", mode)
-		}
-		if report := r.DeliveryReport(); report.Mode != string(mode) {
-			t.Errorf("mode = %q, want %q", report.Mode, mode)
-		}
 	}
 }
 
+// WHY: the mode label must stay honest because the run record stores it for later analysis.
 // The point of keeping memory out of the prompt: the system prompt becomes
 // fully static, so the whole thing is one cached prefix.
 func TestSidekickModeIsReportedForMeasurement(t *testing.T) {
@@ -61,12 +55,11 @@ func TestSidekickModeIsReportedForMeasurement(t *testing.T) {
 		MemoryFile:     logMemoryFile(path),
 	}, nil, tool.NewRegistry())
 
-	report := sidekick.DeliveryReport()
-	if report.Mode != string(memory.DeliverySidekick) {
-		t.Errorf("mode = %q", report.Mode)
+	if sidekick.delivery != memory.DeliverySidekick {
+		t.Errorf("mode = %q", sidekick.delivery)
 	}
-	if report.PromptBlock {
-		t.Error("the report claims a prompt block in sidekick mode, so a later analysis cannot trust it")
+	if sidekick.sidekick == nil {
+		t.Error("sidekick mode built no tail reader, so memory has no path to the model")
 	}
 }
 
@@ -82,11 +75,11 @@ func sessionWithOp(id, specType, path string) *sessionstore.Session {
 	return sess
 }
 
-// The claim the whole mechanism rests on, at the seam production uses: the note is
-// appended to the tool result, that string is written into the transcript, and the
-// transcript is re-sent on every later request. Two reads of the same file in one
-// run must leave one copy of the memory in the file, not two.
-func TestOneCopyOfALogEntryReachesTheStoredTranscript(t *testing.T) {
+// WHY: the stored transcript is re-sent on every later request, so any per-result copy would repeat for the rest of the session.
+// The claim the new contract rests on, at the seam production uses: two reads
+// of the same file in one run must leave zero copies of the memory in the
+// stored tool results, because delivery now happens once as a tail line.
+func TestNoMemoryTextReachesTheStoredTranscript(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "api"), 0o755); err != nil {
 		t.Fatal(err)
@@ -150,9 +143,6 @@ func TestOneCopyOfALogEntryReachesTheStoredTranscript(t *testing.T) {
 			continue
 		}
 		results++
-		if got := strings.Count(message.ToolResult, "jdk 21"); got > 1 {
-			t.Errorf("one tool result carries %d copies of the memory: %q", got, message.ToolResult)
-		}
 	}
 	if results != 2 {
 		t.Fatalf("the run produced %d tool results, so the test never drove two reads of the same file", results)
@@ -163,36 +153,32 @@ func TestOneCopyOfALogEntryReachesTheStoredTranscript(t *testing.T) {
 			total += strings.Count(message.ToolResult, "jdk 21")
 		}
 	}
-	if total != 1 {
-		t.Errorf("the transcript carries %d copies of the memory; every one is re-sent on every later request", total)
-	}
-	if len(sess.MemoryDelivered) != 1 || !strings.HasPrefix(sess.MemoryDelivered[0], "memfile:") {
-		t.Errorf("the delivered set was not persisted for the next run: %v", sess.MemoryDelivered)
+	if total != 0 {
+		t.Errorf("the transcript carries %d copies of the memory; tool results must carry none", total)
 	}
 }
 
-// An operation with no path gets no targeted injection.
-//
-// A bash command has no single target, and extracting one means parsing a shell
-// string, which is the opposite of the property this exists for: a rule that
-// cannot be wrong.
-func TestAnOperationWithNoPathIsNotAnnotated(t *testing.T) {
-	state, _ := logSidekick(t, 0,
-		"GENERIC: an older standing note",
-		"NO_PATH_SCOPE: /srv/api sets JAVA_HOME here",
-	)
-
-	got := state.annotate(sessionWithOp("a", "shell", ""), operation.ResultEvent{OpID: "a"})
-	if strings.Contains(got, "JAVA_HOME") {
-		t.Errorf("an operation with no path was annotated: %q", got)
+// WHY: target extraction still runs because the instruction channel shares it, but memory must never land on a tool result.
+// A command that rewrites two files still resolves to both targets; there is
+// simply no memory annotation anymore for them to trigger.
+func TestAMultiFileCommandCarriesNoMemoryText(t *testing.T) {
+	sess := &sessionstore.Session{}
+	sess.Operations = append(sess.Operations, sessionstore.Operation{
+		ID: "a", SpecType: "shell",
+		SpecArgs: map[string]any{"command": "python3 - <<'PY' && cp api/build.gradle api/bak && cat web/package.json"},
+	})
+	state := newSidekickState("/srv")
+	targets := state.targetsForSpec("shell", sess.Operations[0].SpecArgs)
+	joined := strings.Join(targets, ",")
+	for _, want := range []string{filepath.Join("/srv", "api", "build.gradle"), filepath.Join("/srv", "web", "package.json")} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("extraction lost %q from a multi-file command: %v", want, targets)
+		}
 	}
 }
 
+// WHY: the model names files as plain shell tokens, so the shared extractor must keep seeing them for the tail reader to match on.
 // A shell command names its files as plain tokens, so the trigger has to see them.
-//
-// This is the coverage hole that made removing the prompt path premature. Eight
-// tools carry an explicit path; bash does not, and in measured sessions bash is
-// roughly five times the more common operation and does five times the file work.
 //
 // Run against a real directory, because the filter that does the work is a
 // filesystem question - does this exist, or does it have a filename - and testing
@@ -250,6 +236,7 @@ func TestPathsAreExtractedFromACommand(t *testing.T) {
 	}
 }
 
+// WHY: identical operations must keep resolving identically, or the tail reader's matching stops meaning anything.
 // The same command must always produce the same list, or two identical operations
 // deliver different annotations and the comparison stops meaning anything.
 func TestExtractionIsDeterministic(t *testing.T) {
@@ -268,32 +255,7 @@ func TestExtractionIsDeterministic(t *testing.T) {
 	}
 }
 
-// A command that rewrites three files surfaces what is known about all three, not
-// only the first.
-func TestAMultiFileCommandReachesEveryTarget(t *testing.T) {
-	state, _ := logSidekick(t, 0,
-		"GENERIC: an older standing note",
-		"MULTI_API: /srv/api/build.gradle needs JAVA_HOME",
-		"MULTI_OPS: deploys run from /srv/ops",
-		"MULTI_WEB: /srv/web/package.json needs node 22",
-	)
-
-	sess := &sessionstore.Session{}
-	sess.Operations = append(sess.Operations, sessionstore.Operation{
-		ID: "a", SpecType: "shell",
-		SpecArgs: map[string]any{"command": "python3 - <<'PY' && cp api/build.gradle api/bak && cat web/package.json"},
-	})
-	got := state.annotate(sess, operation.ResultEvent{OpID: "a"})
-	for _, miss := range []string{"JAVA_HOME", "node 22"} {
-		if !strings.Contains(got, miss) {
-			t.Errorf("a shell rewrite of api/build.gradle and web/package.json missed %q: %q", miss, got)
-		}
-	}
-	if strings.Contains(got, "deploys run from") {
-		t.Errorf("surfaced a memory about a path the command never touched: %q", got)
-	}
-}
-
+// WHY: the prompt must not steer the model toward the one tool the shared trigger cannot see.
 // The prompt must not steer the model toward the one tool the trigger cannot see.
 // The wording that made bash the default for editing is the reason this was
 // worth changing, and a test is the only thing that keeps it changed.
@@ -311,6 +273,7 @@ func TestBashIsNotTheDefaultForEditing(t *testing.T) {
 	}
 }
 
+// WHY: an unbounded target list would turn one build command into noise for the tail reader's matching.
 // The bound is what stops a build that names three hundred files from becoming a
 // wall of annotations.
 func TestExtractionIsBounded(t *testing.T) {

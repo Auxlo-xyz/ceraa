@@ -11,38 +11,22 @@ import (
 type Delivery string
 
 const (
-	// DeliveryPrompt puts every above-floor memory in a <memory> block after the
-	// cache seam, so it is rebuilt and re-read on every turn whether or not it
-	// bears on the work. This is what Ceraa did before the sidekick existed.
+	// DeliveryPrompt is retained as a name only: no prompt block is rendered in
+	// any mode anymore, so configuring it delivers nothing.
 	DeliveryPrompt Delivery = "prompt"
-	// DeliverySidekick suppresses the block entirely and annotates tool results
-	// instead, so a memory is delivered at the point of use and the system prompt
-	// stays static.
-	//
-	// The system prompt becoming fully static is half the win: every part of it
-	// moves before the seam, including the date, so the whole prompt is one
-	// cached block and memory costs nothing on a turn where nothing fires.
+	// DeliverySidekick appends the latest log state once per run as a tail line
+	// on the newest user message, so memory reaches the model exactly once, at
+	// the end of the conversation, and the system prompt stays static.
 	DeliverySidekick Delivery = "sidekick"
-	// DeliveryCached renders a small, ranked memory block and places it in the
-	// stable, cacheable prefix rather than past the seam. The block is the
-	// always-on preference baseline: visible even on turns with no tool call,
-	// which is the shape conversational preference learning needs and the one
-	// the sidekick mode deliberately does not provide.
-	//
-	// It is only safe because the extractor writes memory rarely: a change
-	// invalidates the prefix, so this mode wants writes to land at compaction,
-	// not mid-turn.
+	// DeliveryCached is retained as a name only: the ranked block it used to
+	// render is gone with the store, so configuring it delivers nothing.
 	DeliveryCached Delivery = "cached"
 )
 
 // ParseDelivery maps a configured value onto a mode.
 //
-// Unset means cached: the block sits in the stable, cacheable prefix, so a
-// preference is visible on every turn and pays only cache-hit cost. That is
-// the behaviour preference learning needs, and it is the right default because
-// the extractor that writes memory now runs at compaction, not mid-session, so
-// the block does not churn. "prompt" and "sidekick" remain available as
-// overrides.
+// Unset means cached, kept as the default so an old config keeps parsing; it
+// delivers nothing, exactly like prompt. Only sidekick delivers.
 func ParseDelivery(value string) Delivery {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case string(DeliverySidekick), "tool", "tool_output", "tools":
@@ -56,13 +40,9 @@ func ParseDelivery(value string) Delivery {
 	}
 }
 
-// sidekickGeneralLimit caps the always-applicable preferences delivered per run.
-//
-// General preferences name no path, so they match every operation. Injecting
-// them on every tool result would repeat them into the transcript once per call -
-// forty copies in a long run, against a prompt block that carried them once. They
-// are therefore delivered once per run, on the first tool result, and this is that
-// cap.
+// sidekickGeneralLimit caps the always-applicable preferences a single note
+// used to carry. The per-result notes are retired; the number survives as one
+// term of the default tail derivation below.
 const SidekickGeneralLimit = 3
 
 // sidekickTargetLimit caps the targeted memories for a single operation.

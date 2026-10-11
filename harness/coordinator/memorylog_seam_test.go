@@ -15,7 +15,6 @@ import (
 
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
-	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
 )
@@ -30,14 +29,14 @@ import (
 // read the tool-result body off the request, which is what the model actually got.
 
 // memoryLogSeamRun drives one real run against a fake provider: the model reads a
-// file, then answers. It returns the tool-result bodies exactly as they went on
-// the wire, so a test can assert on what the model saw rather than on what was
-// assembled.
+// file, then answers. It returns the tool-result bodies and the user message
+// bodies exactly as they went on the wire, so a test can assert on what the
+// model saw rather than on what was assembled.
 //
 // It configures no store and no third channel. The log, when the caller wants one,
 // is configured through extra: that is the whole point of the shape, because a
 // helper that quietly supplied the store would let a broken log path look fine.
-func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig)) ([]string, *sessionstore.Session, *Runner) {
+func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig)) ([]string, []string, *sessionstore.Session, *Runner) {
 	t.Helper()
 	work := t.TempDir()
 	target := filepath.Join(work, "notes.txt")
@@ -47,6 +46,7 @@ func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig))
 
 	var mu sync.Mutex
 	var toolResults []string
+	var userTexts []string
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -61,6 +61,9 @@ func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig))
 		for _, m := range body.Messages {
 			if m.Role == "tool" {
 				toolResults = append(toolResults, m.Content)
+			}
+			if m.Role == "user" {
+				userTexts = append(userTexts, m.Content)
 			}
 		}
 		mu.Unlock()
@@ -109,45 +112,132 @@ func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig))
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	return append([]string(nil), toolResults...), sess, runner
+	return append([]string(nil), toolResults...), append([]string(nil), userTexts...), sess, runner
 }
 
-// A completed turn appends its own compact record to the log, so the append-only
-// source keeps growing even when no compaction has happened. The assertion reads
-// the file back rather than trusting the runner: the point is the durable write,
-// not merely the note handed to the next request.
-func TestACompletedTurnAppendsOneCompactRecordToMemory(t *testing.T) {
-	var logPath string
-	_, _, _ = memoryLogSeamRun(t, "memfile-turn", func(cfg *RunnerConfig) {
-		logPath = filepath.Join(cfg.WorkDir, "Memory.md")
-		cfg.MemoryFile = logMemoryFile(logPath)
-	})
-
-	entries := memory.OpenMemoryFile(logPath).Tail(10)
-	if len(entries) != 1 {
-		t.Fatalf("Memory.md holds %d entries after one turn, want exactly one durable turn record: %#v", len(entries), entries)
+// Memory reaches the model exactly once per run, as a tail line on the newest
+// user message, rather than as a turn record written after the run or a note
+// on every tool result.
+func TestMemoryTailLineRidesTheNewestUserMessageOnce(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "Memory.md")
+	appendLog(t, memory.OpenMemoryFile(logPath),
+		"TAIL_ALPHA: prefer tabs over spaces",
+		"TAIL_BETA: ship on fridays",
+	)
+	runner := New(RunnerConfig{
+		SessionID:      "tail",
+		SystemPrompt:   "you are a test agent",
+		Model:          llm.FromProvider("http://127.0.0.1:1", "k", "m"),
+		ContextLimit:   32000,
+		WorkDir:        dir,
+		MemoryDelivery: string(memory.DeliverySidekick),
+		MemoryFile:     logMemoryFile(logPath),
+	}, nil, tool.NewRegistry())
+	sess := &sessionstore.Session{
+		ID: "tail",
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "first question"},
+			{Role: llm.RoleAssistant, Content: "first answer"},
+			{Role: llm.RoleUser, Content: "latest question"},
+		},
 	}
-	record := entries[0]
-	for _, want := range []string{"Turn completed", "read", "notes.txt"} {
-		if !strings.Contains(record, want) {
-			t.Errorf("turn record = %q, want it to contain %q", record, want)
+	msgs := runner.messages(sess, nil)
+	if len(msgs) == 0 {
+		t.Fatal("messages built nothing, so the test proved nothing")
+	}
+	carrying := 0
+	for _, m := range msgs {
+		carrying += strings.Count(m.Text, "<memory>")
+	}
+	if carrying != 1 {
+		t.Fatalf("the memory block reaches the model %d times, want exactly once: %#v", carrying, msgs)
+	}
+	newest := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == llm.RoleUser {
+			newest = i
+			break
 		}
 	}
-	if got := len([]rune(record)); got > 480 {
-		t.Errorf("turn record is %d runes, want a small record that cannot become the next prompt's bulk", got)
+	if newest < 0 {
+		t.Fatal("no user message in the built request")
 	}
-	if strings.Contains(record, "the file the agent read") {
-		t.Errorf("turn record = %q, want metadata rather than the tool's output", record)
+	got := msgs[newest].Text
+	if !strings.HasPrefix(got, "latest question") {
+		t.Errorf("the tail line prepended rather than suffixed: %q", got)
+	}
+	if !strings.HasSuffix(got, "</memory>") {
+		t.Errorf("the memory block is not at the end of the newest user message: %q", got)
+	}
+	for _, want := range []string{"TAIL_ALPHA", "TAIL_BETA"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the tail line lost %q: %q", want, got)
+		}
+	}
+	for _, m := range msgs[:newest] {
+		if strings.Contains(m.Text, "<memory>") {
+			t.Errorf("memory leaked outside the newest user message: %+v", m)
+		}
+	}
+}
+
+// With no log the request is untouched: a missing file must not reshape the bytes the model sees.
+func TestMessagesWithoutMemoryAreByteIdentical(t *testing.T) {
+	mkSess := func() *sessionstore.Session {
+		return &sessionstore.Session{
+			ID: "tail-empty",
+			Messages: []sessionstore.Message{
+				{Role: llm.RoleUser, Content: "hello"},
+			},
+		}
+	}
+	// One workdir for all three runners: the system prompt names it, so a
+	// fresh dir per runner would differ before memory is even considered.
+	dir := t.TempDir()
+	mkRunner := func(mf func() *memory.MemoryFile) *Runner {
+		return New(RunnerConfig{
+			SessionID:    "tail-empty",
+			SystemPrompt: "you are a test agent",
+			Model:        llm.FromProvider("http://127.0.0.1:1", "k", "m"),
+			ContextLimit: 32000,
+			WorkDir:      dir,
+			MemoryFile:   mf,
+		}, nil, tool.NewRegistry())
+	}
+	emptyPath := filepath.Join(t.TempDir(), "Memory.md")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	builds := map[string][]llm.Item{
+		"nil reader":   mkRunner(nil).messages(mkSess(), nil),
+		"missing file": mkRunner(logMemoryFile(filepath.Join(t.TempDir(), "absent", "Memory.md"))).messages(mkSess(), nil),
+		"empty log":    mkRunner(logMemoryFile(emptyPath)).messages(mkSess(), nil),
+	}
+	base := builds["nil reader"]
+	for name, msgs := range builds {
+		if len(msgs) != len(base) {
+			t.Fatalf("%s built %d messages, want %d", name, len(msgs), len(base))
+		}
+		for i := range base {
+			a, b := base[i], msgs[i]
+			if a.Kind != b.Kind || a.Role != b.Role || a.Text != b.Text {
+				t.Errorf("%s message %d differs: %+v vs %+v", name, i, b, a)
+			}
+			if strings.Contains(b.Text, "<memory>") {
+				t.Errorf("%s carries a memory block with nothing logged: %q", name, b.Text)
+			}
+		}
 	}
 }
 
 // The log alone, at the wire. This is the configuration production has now: one
 // source, no store. If the log stopped reaching the model - because the
-// construction condition no longer builds the state, because the note was dropped
-// from the result line, or because the tail read stopped - the run would still
-// succeed and the agent would silently lose everything it had learned.
-func TestTheMemoryLogAloneReachesTheModelOnTheToolResult(t *testing.T) {
-	toolResults, _, runner := memoryLogSeamRun(t, "memfile-only", func(cfg *RunnerConfig) {
+// construction condition no longer builds the state, or because the tail read
+// stopped - the run would still succeed and the agent would silently lose
+// everything it had learned.
+func TestTheMemoryLogAloneReachesTheModelOnTheTailLine(t *testing.T) {
+	toolResults, userTexts, _, runner := memoryLogSeamRun(t, "memfile-only", func(cfg *RunnerConfig) {
 		file := memory.OpenMemoryFile(filepath.Join(cfg.WorkDir, "Memory.md"))
 		appendLog(t, file,
 			"GENERIC: an older standing note",
@@ -159,40 +249,34 @@ func TestTheMemoryLogAloneReachesTheModelOnTheToolResult(t *testing.T) {
 	if len(toolResults) == 0 {
 		t.Fatal("no tool result reached the provider, so the test proved nothing")
 	}
-	carrying := 0
+	// Tool results carry no memory: the tail line is the single delivery.
 	for _, text := range toolResults {
+		if strings.Contains(text, "LOG_ONLY") || strings.Contains(text, "<memory>") {
+			t.Errorf("a tool result carries memory text: %q", text)
+		}
+	}
+	// The newest user message carries the entry exactly once per request.
+	carrying := 0
+	for _, text := range userTexts {
 		if !strings.Contains(text, "LOG_ONLY") {
 			continue
 		}
 		carrying++
-		if !strings.Contains(text, "<sidekick") || !strings.HasSuffix(strings.TrimSpace(text), "</sidekick>") {
-			t.Errorf("the note is not a whole sidekick block: %q", text)
-		}
-		if !strings.Contains(text, "the file the agent read") {
-			t.Errorf("the note replaced the tool output rather than accompanying it: %q", text)
+		if !strings.HasSuffix(text, "</memory>") {
+			t.Errorf("the memory block is not a suffix of the user message: %q", text)
 		}
 	}
 	if carrying == 0 {
-		t.Fatalf("no tool result the model reads carries the log entry: %#v", toolResults)
-	}
-	// Once, not once per call: the entry names one path and the operation touched
-	// it once, and a note repeated into the transcript is re-sent on every later
-	// request for the rest of the session.
-	if carrying != 1 {
-		t.Errorf("the log entry reached the model %d times in one run", carrying)
+		t.Fatalf("no user message the model reads carries the log entry: %#v", userTexts)
 	}
 	if got := runner.systemPrompt(); strings.Contains(got, "LOG_ONLY") {
 		t.Error("the log entry is in the system prompt, so the cache prefix is volatile again")
-	}
-	report := runner.DeliveryReport()
-	if report.Mode != string(memory.DeliverySidekick) || report.TargetedInjects == 0 {
-		t.Errorf("the run recorded no log delivery: %+v", report)
 	}
 }
 
 // The log alone builds the state: no other source is configured, and the log
 // has to be enough on its own.
-func TestTheSidekickIsBuiltAndDeliversWithOnlyTheMemoryFileSet(t *testing.T) {
+func TestTheSidekickIsBuiltAndReadsWithOnlyTheMemoryFileSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Memory.md")
 	appendLog(t, memory.OpenMemoryFile(path),
 		"UNIT_ONLY: /srv/api is the backend",
@@ -205,9 +289,8 @@ func TestTheSidekickIsBuiltAndDeliversWithOnlyTheMemoryFileSet(t *testing.T) {
 	if runner.sidekick == nil {
 		t.Fatal("no sidekick state was built from the log alone, so the log has no path to the model")
 	}
-	got := runner.sidekickNote(sessionWithOp("a", "read", "/srv/api/main.go"), operation.ResultEvent{OpID: "a"})
-	if !strings.Contains(got, "UNIT_ONLY") {
-		t.Errorf("the log entry did not reach the tool result: %q", got)
+	if tail := runner.memoryTailLine(); !strings.Contains(tail, "UNIT_ONLY") {
+		t.Errorf("the tail line did not render the log entry: %q", tail)
 	}
 }
 
@@ -220,16 +303,13 @@ func TestASidekickWithNoSourceAtAllDeliversNothing(t *testing.T) {
 	if runner.sidekick != nil {
 		t.Error("sidekick state was built with no log")
 	}
-	if got := runner.sidekickNote(sessionWithOp("a", "read", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
-		t.Errorf("a run with no source delivered: %q", got)
+	if tail := runner.memoryTailLine(); tail != "" {
+		t.Errorf("a run with no source delivered: %q", tail)
 	}
 	// The state itself, constructed the way a test or a future caller might: no
 	// log at all.
 	bare := newSidekickState("/srv")
-	if got := bare.annotate(sessionWithOp("a", "read", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
-		t.Errorf("a state with no source delivered %q", got)
-	}
-	if report := bare.deliveryReport(); report != (memory.DeliveryReport{}) {
-		t.Errorf("a state that delivered nothing reported delivery: %+v", report)
+	if tail := bare.memTail(); tail != nil {
+		t.Errorf("a state with no source read %q", tail)
 	}
 }
