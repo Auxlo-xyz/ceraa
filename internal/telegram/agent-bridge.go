@@ -171,6 +171,12 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	})
 	// view_image follows the same resolved provider as the run, so a media call
 	// cannot drift onto a different model than the one doing the work.
+	// Rule scoping is opt-in and off by default. Without credentials the
+	// deterministic pass alone runs, which scopes every rule that names a real
+	// path - no model, no network. Adding credentials asks a model for the rest
+	// and the filesystem still decides what survives.
+	instructionProposer, _ := internal.ProposeScopes(modelConfig)
+
 	attachVisionToRegistry(registry, resolveModel)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           sessionID,
@@ -195,7 +201,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),
-		InstructionRules:    internal.InstructionRules(projectRoot),
+		InstructionRules:    internal.InstructionRules(projectRoot, instructionProposer),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Compactor:           compactor,

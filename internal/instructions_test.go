@@ -21,7 +21,7 @@ func TestTheLoaderReadsARealInstructionFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	load := InstructionRules(root)
+	load := InstructionRules(root, nil)
 	snapshot := load()
 
 	if len(snapshot.Instructions) == 0 {
@@ -48,7 +48,7 @@ func TestTheLoaderReadsARealInstructionFile(t *testing.T) {
 // than an error: every caller wires this unconditionally, so a missing AGENTS.md
 // must not become a run failure.
 func TestAProjectWithNoInstructionFileYieldsNothingWithoutFailing(t *testing.T) {
-	load := InstructionRules(t.TempDir())
+	load := InstructionRules(t.TempDir(), nil)
 
 	if snapshot := load(); len(snapshot.Instructions) != 0 {
 		t.Errorf("a project with no AGENTS.md compiled %d rules", len(snapshot.Instructions))
@@ -65,7 +65,7 @@ func TestAnUnchangedFileGivesTheSameSnapshotTwice(t *testing.T) {
 		[]byte("- Keep one rule. [applies=notes.txt]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	load := InstructionRules(root)
+	load := InstructionRules(root, nil)
 
 	first, second := load(), load()
 	if len(first.Instructions) != len(second.Instructions) {

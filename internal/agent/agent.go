@@ -226,6 +226,12 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	compactor.ResolveModel = resolveModel
 	registry := tool.DefaultRegistryForUser(user, skillStore)
 	// The CLI has a provider too, so a media view works the same way there.
+	// Rule scoping is opt-in and off by default. Without credentials the
+	// deterministic pass alone runs, which scopes every rule that names a real
+	// path - no model, no network. Adding credentials asks a model for the rest
+	// and the filesystem still decides what survives.
+	instructionProposer, _ := internal.ProposeScopes(modelConfig)
+
 	attachVisionToRegistry(registry, resolveModel)
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           "cli",
@@ -250,7 +256,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		// WorkDir, so the runner resolves relative paths against it, and the
 		// instruction store has to resolve against the same place or a project's
 		// AGENTS.md is read from somewhere the commands do not run.
-		InstructionRules: internal.InstructionRules("."),
+		InstructionRules: internal.InstructionRules(".", instructionProposer),
 		SkillContext:     skillContext,
 		EvaluationStore:  evaluationStore,
 		Reasoning:        llm.ReasonLevel(strings.TrimSpace(provider.Reasoning)),

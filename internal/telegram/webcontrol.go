@@ -626,6 +626,12 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 	if err != nil {
 		return nil, err
 	}
+	// Rule scoping is opt-in and off by default. Without credentials the
+	// deterministic pass alone runs, which scopes every rule that names a real
+	// path - no model, no network. Adding credentials asks a model for the rest
+	// and the filesystem still decides what survives.
+	instructionProposer, _ := internal.ProposeScopes(modelConfig)
+
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sess.ID, 2000)
 	liveMemory := memory.Live(memoryStore, projectRoot, sess.ID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
 	// One renderer, two homes. The prompt modes read the bond out of the combined
@@ -650,7 +656,7 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 		BondFunc:          bondRenderer,
 		MemoryDelivery:    cfg.MemoryDelivery,
 		MemoryEntries:     memoryEntries(memoryStore, projectRoot, sess.ID),
-		InstructionRules:  internal.InstructionRules(projectRoot),
+		InstructionRules:  internal.InstructionRules(projectRoot, instructionProposer),
 		SkillContext:      skillContext,
 		EvaluationStore:   evaluationStore,
 	}, registry, store)

@@ -193,6 +193,12 @@ func (s *Session) build() error {
 	// Kept so the banner can count what a turn would actually be offered. The
 	// field existed and was never assigned, so the count came back empty and the
 	// row was left out.
+	// Rule scoping is opt-in and off by default. Without credentials the
+	// deterministic pass alone runs, which scopes every rule that names a real
+	// path - no model, no network. Adding credentials asks a model for the rest
+	// and the filesystem still decides what survives.
+	instructionProposer, _ := internal.ProposeScopes(modelConfig)
+
 	s.registry = func() (*tool.Registry, error) { return registry, nil }
 
 	s.runner = coordinator.New(coordinator.RunnerConfig{
@@ -215,7 +221,7 @@ func (s *Session) build() error {
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      s.cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, s.session),
-		InstructionRules:    internal.InstructionRules(s.workDir),
+		InstructionRules:    internal.InstructionRules(s.workDir, instructionProposer),
 		SkillContext:        skillContext,
 		EvaluationStore:     evaluationStore,
 		Reasoning:           llm.ReasonLevel(s.Effort()),

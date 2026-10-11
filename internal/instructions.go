@@ -16,9 +16,15 @@ import (
 // The loader is called exactly once per run by the runner, so the refresh here is
 // once per run too: an edit made mid-run is picked up by the next run rather than
 // landing two revisions of the same rule in one transcript. That is the same
-// boundary the bond's once-per-run render uses and for the same reason.
-func InstructionRules(root string) func() instruction.Snapshot {
-	store := instruction.NewStore(root, instruction.DefaultFile)
+// boundary the sidekick's once-per-run bond uses and for the same reason.
+//
+// A proposer is optional. Without one the deterministic pass alone runs, which
+// scopes every rule that names a real path and needs no model and no network at
+// all - on this repo's own file that is 25 rules that previously could not be
+// matched to anything. Adding one asks a model for the rest, and the filesystem
+// still decides what survives.
+func InstructionRules(root string, propose instruction.Proposer) func() instruction.Snapshot {
+	store := instruction.NewStore(root, instruction.DefaultFile).WithProposer(propose)
 	return func() instruction.Snapshot {
 		store.Refresh()
 		return store.Snapshot()
