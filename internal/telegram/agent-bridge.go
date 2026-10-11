@@ -35,6 +35,7 @@ import (
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
+	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
@@ -420,6 +421,11 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
 	// The memory half of the runner config, built beside the stores it reads so
 	// it is constructed once and shared with the learn chain above.
+	// The legacy identity file is carried across once, before the first run reads
+	// the log. Without this the content an install accumulated is stranded in a
+	// file nothing opens any more, and the loss is silent - the log simply starts
+	// from empty and reads like a project that never learned anything.
+	migrateLegacyBond(memoryLog, paths.DataDir())
 	wiring := newMemoryWiring(memoryStore, projectRoot, sessionID, memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
