@@ -120,9 +120,12 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // agentLearnChain assembles the compaction learn hooks for one run: the memory
 // extractor when a credential is configured, and the append-only log last, so
 // the log records what the checkpoint produced rather than feeding anything.
+// The durable-person subset of that same extraction is also appended to the
+// log, so profile, preference, goal and constraint claims reach Memory.md
+// without a second model call.
 func agentLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, projectRoot string, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
 	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot, memoryLog); enabled {
 		chain = learn
 	}
 	return compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))

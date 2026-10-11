@@ -36,6 +36,7 @@ const extractorPrompt = `You are a memory extractor for a coding agent. Read the
 
 Extract these kinds of claim:
 - how the user wants work done: formatting rules, tool preferences, review discipline, conventions
+- durable personal facts when stated or strongly repeated: identity, preferences and dislikes, fears, likes, preferred stack, and standing facts about the user's role
 - standing instructions the user gave as a rule ("always run gofmt before committing")
 - things that are true about the user or their role
 - goals the user is working towards that are still live
@@ -235,6 +236,117 @@ func Commit(store *Store, projectID, sessionID string, statements []Extracted) (
 	return added, contradicted, nil
 }
 
+// personalMemoryLogLookback is how far back the log is checked before appending
+// extracted personal facts. It bounds the duplicate check at compaction, which
+// is rare, without letting one unchecked older copy turn into a new copy on
+// every fold.
+const personalMemoryLogLookback = 200
+
+// personalMemoryMaxStatements bounds one compaction's user-memory write. The log
+// already receives the checkpoint summary itself, so this writer carries only
+// what the log cannot already say in compressed form.
+const personalMemoryMaxStatements = 8
+
+// personalMemoryMaxEntryRunes bounds one compaction's user-memory write. An
+// unbounded profile would become the per-turn bulk this design removed.
+const personalMemoryMaxEntryRunes = 1600
+
+// personalMemoryKinds are the extractor types that belong in the append-only
+// log as durable facts about the person rather than the task.
+func personalMemoryKinds() map[MemoryType]bool {
+	return map[MemoryType]bool{
+		Profile:    true,
+		Preference: true,
+		Goal:       true,
+		Constraint: true,
+	}
+}
+
+// personalMemoryLabel names the kind in the rendered note.
+func personalMemoryLabel(kind MemoryType) string {
+	switch kind {
+	case Profile:
+		return "Profile"
+	case Preference:
+		return "Preference"
+	case Goal:
+		return "Goal"
+	case Constraint:
+		return "Constraint"
+	default:
+		return "Memory"
+	}
+}
+
+// AppendPersonalMemories writes newly extracted durable user facts to the
+// append-only log, without any extra model call.
+//
+// It uses the statements Extract already returned for the store, so the log and
+// the store stay different views of the same extraction. Only high- and
+// medium-confidence profile, preference, goal and constraint claims are
+// carried: task state, requests, decisions, errors and context belong in the
+// turn ledger or the checkpoint summary rather than in a durable picture of the
+// person. A claim already present in the recent log is not repeated, because the
+// log has no rewrite operation and a duplicate would otherwise be permanent.
+func AppendPersonalMemories(log *MemoryFile, sessionID string, statements []Extracted) int {
+	if log == nil || len(statements) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{})
+	for _, entry := range log.Tail(personalMemoryLogLookback) {
+		body := entry
+		if line := strings.IndexByte(entry, '\n'); line >= 0 {
+			body = entry[line+1:]
+		}
+		for _, line := range strings.Split(body, "\n") {
+			normalised := strings.Join(strings.Fields(line), " ")
+			if normalised != "" {
+				seen[normalised] = struct{}{}
+			}
+		}
+	}
+
+	kinds := personalMemoryKinds()
+	lines := make([]string, 0, personalMemoryMaxStatements)
+	for _, statement := range statements {
+		if len(lines) >= personalMemoryMaxStatements {
+			break
+		}
+		text := strings.Join(strings.Fields(statement.Statement), " ")
+		if text == "" || VeracityForConfidence(statement.Confidence) == "" {
+			continue
+		}
+		kind := MemoryTypeFromName(statement.Type)
+		if !kinds[kind] {
+			continue
+		}
+		line := personalMemoryLabel(kind) + ": " + text
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return 0
+	}
+	entry := truncatePersonalMemory("Durable user memory:\n" + strings.Join(lines, "\n"))
+	if err := log.Append(entry, sessionID); err != nil {
+		logger.Warn("memory log personal append: " + err.Error())
+		return 0
+	}
+	return len(lines)
+}
+
+// truncatePersonalMemory bounds one user-memory write without splitting a rune.
+func truncatePersonalMemory(text string) string {
+	runes := []rune(text)
+	if len(runes) <= personalMemoryMaxEntryRunes {
+		return text
+	}
+	return string(runes[:personalMemoryMaxEntryRunes])
+}
+
 // VeracityForConfidence maps the extractor's own confidence onto a provenance.
 //
 // The extractor's "high" means the conversation gave a clear explicit signal,
@@ -265,12 +377,12 @@ func VeracityForConfidence(confidence string) Veracity {
 // attached to a compactor directly.
 type LearnFunc func(context.Context, string, []sessionstore.Message, string)
 
-// MakeLearner ties extraction to a memory store and a project.
-// It returns a compaction.Learn hook, or nil when no extraction credential is
-// configured, which makes the "zero-cost model" opt-in rather than a hard
+// MakeLearner ties extraction to a memory store, a project and the append-only
+// log. It returns a compaction.Learn hook, or nil when no extraction credential
+// is configured, which makes the "zero-cost model" opt-in rather than a hard
 // requirement. An empty config does not disable compaction; it just skips the
 // memory-mining step that follows it.
-func MakeLearner(main llm.ProviderConfig, store *Store, projectID string) (LearnFunc, bool) {
+func MakeLearner(main llm.ProviderConfig, store *Store, projectID string, log *MemoryFile) (LearnFunc, bool) {
 	cfg, enabled := ExtractConfigFromENV(main)
 	if !enabled {
 		return nil, false
@@ -286,6 +398,11 @@ func MakeLearner(main llm.ProviderConfig, store *Store, projectID string) (Learn
 			logger.Warn("memory extractor commit: " + err.Error())
 			return
 		}
+		// The same extraction already paid for the model call, so the log gets
+		// the personal subset without a second one. Durable facts about the user
+		// belong in the log the sidekick actually reads; task-scoped claims stay
+		// in the store and the turn ledger.
+		AppendPersonalMemories(log, sessionID, extracted)
 		if added > 0 || contradicted > 0 {
 			logger.Info(fmt.Sprintf("memory extractor: added=%d contradicted=%d", added, contradicted))
 		}

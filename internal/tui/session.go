@@ -101,6 +101,8 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // cliLearnChain assembles the compaction learn hooks for one turn: the memory
 // extractor when a credential is configured, followed by the append-only log,
 // so the log records what the checkpoint produced rather than feeding anything.
+// The extractor also appends its durable profile, preference, goal and
+// constraint claims to the same log.
 //
 // Nil when nothing is enabled. A non-nil no-op would read as wired while doing
 // nothing, which is the failure a credential-gated hook exists to avoid, and
@@ -108,7 +110,7 @@ func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, m
 // the way to the call site.
 func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
 	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli", memoryLog); enabled {
 		chain = learn
 	}
 	if memoryLog != nil {

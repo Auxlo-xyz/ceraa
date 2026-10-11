@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,87 @@ func TestExtractSkipsAnEmptyHead(t *testing.T) {
 }
 
 var _ = sessionstore.Message{} // keep import anchored for future shape changes
+
+// The log gets the durable-person subset of an extraction: profile facts,
+// preferences, live goals and standing constraints. Task state and project
+// context remain in the store and the checkpoint summary instead, because the
+// log is a durable picture of the user rather than another copy of the work.
+func TestAppendPersonalMemoriesCarriesOnlyTheDurablePerson(t *testing.T) {
+	log := OpenMemoryFile(filepath.Join(t.TempDir(), "Memory.md"))
+	added := AppendPersonalMemories(log, "owner", []Extracted{
+		{Statement: "Emperor M.K prefers direct answers", Type: "preference", Kind: "add", Confidence: "high"},
+		{Statement: "Emperor M.K wants to ship the new landing page", Type: "goal", Kind: "add", Confidence: "medium"},
+		{Statement: "Emperor M.K never works on Sundays", Type: "constraint", Kind: "add", Confidence: "high"},
+		{Statement: "Emperor M.K is a backend engineer", Type: "profile", Kind: "add", Confidence: "medium"},
+		{Statement: "Fixed the login redirect", Type: "decision", Kind: "add", Confidence: "high"},
+		{Statement: "The API paginates at fifty rows", Type: "context", Kind: "add", Confidence: "high"},
+		{Statement: "Maybe use tabs", Type: "preference", Kind: "add", Confidence: "low"},
+		{Statement: "Prefers direct answers", Type: "observation", Kind: "confirm", Confidence: "high"},
+	})
+	if added != 4 {
+		t.Fatalf("AppendPersonalMemories = %d, want the profile, preference, goal and constraint", added)
+	}
+
+	entries := log.Tail(10)
+	if len(entries) != 1 {
+		t.Fatalf("log holds %d entries, want one compact user-memory entry", len(entries))
+	}
+	for _, want := range []string{
+		"Durable user memory:",
+		"Profile: Emperor M.K is a backend engineer",
+		"Preference: Emperor M.K prefers direct answers",
+		"Goal: Emperor M.K wants to ship the new landing page",
+		"Constraint: Emperor M.K never works on Sundays",
+	} {
+		if !strings.Contains(entries[0], want) {
+			t.Errorf("log entry = %q, want it to contain %q", entries[0], want)
+		}
+	}
+	for _, avoid := range []string{"Fixed the login redirect", "fifty rows", "Maybe use tabs"} {
+		if strings.Contains(entries[0], avoid) {
+			t.Errorf("log entry = %q, want it to exclude task-scoped material %q", entries[0], avoid)
+		}
+	}
+
+	// The log has no rewrite operation, so the same extraction must not become a
+	// second permanent copy.
+	if again := AppendPersonalMemories(log, "owner", []Extracted{
+		{Statement: "Emperor M.K prefers direct answers", Type: "preference", Kind: "add", Confidence: "high"},
+	}); again != 0 {
+		t.Errorf("second identical write added %d, want no duplicate", again)
+	}
+	if got := log.Lines(); got != 1 {
+		t.Errorf("log holds %d entries, want the original compact entry only", got)
+	}
+	if got := AppendPersonalMemories(nil, "owner", []Extracted{
+		{Statement: "Emperor M.K prefers direct answers", Type: "preference", Kind: "add", Confidence: "high"},
+	}); got != 0 {
+		t.Errorf("missing log returned %d, want a no-op rather than a failure", got)
+	}
+}
+
+// A compaction can produce more durable claims than one note should carry. The
+// cap sheds the tail by selection order rather than by cutting a sentence, and a
+// sentence that is withheld remains eligible rather than being retired unseen.
+func TestAppendPersonalMemoriesIsBounded(t *testing.T) {
+	log := OpenMemoryFile(filepath.Join(t.TempDir(), "Memory.md"))
+	statements := make([]Extracted, 0, personalMemoryMaxStatements+4)
+	for i := 0; i < personalMemoryMaxStatements+4; i++ {
+		statements = append(statements, Extracted{
+			Statement:  strings.Repeat("durable preference ", 8) + strings.Repeat("x", i),
+			Type:       "preference",
+			Kind:       "add",
+			Confidence: "high",
+		})
+	}
+	if got := AppendPersonalMemories(log, "owner", statements); got != personalMemoryMaxStatements {
+		t.Fatalf("AppendPersonalMemories = %d, want the per-compaction cap %d", got, personalMemoryMaxStatements)
+	}
+	entry := log.Tail(1)[0]
+	if got := len([]rune(entry)); got > personalMemoryMaxEntryRunes {
+		t.Fatalf("user-memory entry is %d runes, want at most %d", got, personalMemoryMaxEntryRunes)
+	}
+}
 
 // The extractor's defaults must name a provider that holds still. Poolside
 // laguna returned three different documents across runs of the same prompt on
