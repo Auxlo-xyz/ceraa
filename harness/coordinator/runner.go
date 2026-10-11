@@ -83,7 +83,9 @@ type RunnerConfig struct {
 	// which is what keeps the prompt path working with nothing configured.
 	MemoryEntries func() ([]memory.Entry, error)
 	// MemoryFile is the append-only log this run reads for what has been learned,
-	// and when it is set it replaces MemoryEntries for sidekick delivery.
+	// and when it is set it replaces MemoryEntries for sidekick delivery. Every
+	// completed run also appends one compact turn record to it, so memory grows
+	// incrementally rather than only when a compaction happens.
 	//
 	// A reader rather than a store because the file is the source of truth and a
 	// snapshot taken at construction diverges from it silently in a long-lived
@@ -655,6 +657,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if err := r.store.Save(sess); err != nil {
 			return err
 		}
+		r.recordTurnMemory(sess, runID, user, status)
 		if runErr != nil && r.cb.OnError != nil {
 			r.cb.OnError(runErr)
 		}
@@ -2107,6 +2110,115 @@ func (r *Runner) sidekickNote(sess *sessionstore.Session, result operation.Resul
 		return ""
 	}
 	return r.sidekick.annotate(sess, result)
+}
+
+// recordTurnMemory appends one compact turn record to the append-only memory
+// log, without judging whether the turn was worth remembering.
+//
+// It runs once at the end of a run, after the live model work has finished, so
+// the write cannot disturb the request it just answered. The log is intentionally
+// much smaller than a rule file: no results, no arguments, and no reply text are
+// copied here, only the terminal status, the tools actually used, their outcome
+// counts, and the paths those operations were about. Paths stay because the
+// sidekick can match a later operation against them; everything else stays out
+// because a per-turn record that duplicated the transcript would become the
+// bloat it was meant to replace.
+//
+// The write is best-effort. A memory-log failure must not fail the turn that
+// just produced the record, and the session file is already the authoritative
+// account when the log write does not land.
+func (r *Runner) recordTurnMemory(sess *sessionstore.Session, runID, user string, status sessionstore.RunStatus) {
+	if r == nil || sess == nil || r.cfg.MemoryFile == nil {
+		return
+	}
+	file := r.cfg.MemoryFile()
+	if file == nil {
+		return
+	}
+	tools := make([]string, 0)
+	seenTools := make(map[string]struct{})
+	outcomes := make(map[string]int)
+	paths := make([]string, 0)
+	seenPaths := make(map[string]struct{})
+	operations := 0
+	for _, op := range sess.Operations {
+		if op.RunID != runID {
+			continue
+		}
+		operations++
+		if op.Tool != "" {
+			if _, ok := seenTools[op.Tool]; !ok {
+				seenTools[op.Tool] = struct{}{}
+				tools = append(tools, op.Tool)
+			}
+		}
+		outcomes[string(op.Status)]++
+		for _, path := range targetsForSpec(op.SpecType, r.cfg.WorkDir, op.SpecArgs) {
+			if _, ok := seenPaths[path]; !ok && len(paths) < 8 {
+				seenPaths[path] = struct{}{}
+				paths = append(paths, path)
+			}
+		}
+	}
+	if strings.TrimSpace(user) == "" && operations == 0 {
+		return
+	}
+
+	var note strings.Builder
+	fmt.Fprintf(&note, "Turn %s", status)
+	if request := strings.Join(strings.Fields(user), " "); request != "" {
+		fmt.Fprintf(&note, "; request %q", truncateRunes(request, 160))
+	}
+	if len(tools) > 0 {
+		fmt.Fprintf(&note, "; tools %s", strings.Join(tools, ", "))
+	}
+	if counts := outcomeCounts(outcomes); counts != "" {
+		fmt.Fprintf(&note, "; outcomes %s", counts)
+	}
+	if len(paths) > 0 {
+		fmt.Fprintf(&note, "; paths %s", strings.Join(paths, ", "))
+	}
+	if err := file.Append(truncateRunes(note.String(), 480), r.cfg.SessionID); err != nil {
+		logger.Warn("memory log append: " + err.Error())
+	}
+}
+
+// outcomeCounts renders per-status operation counts in a stable order.
+func outcomeCounts(outcomes map[string]int) string {
+	statuses := []sessionstore.OperationStatus{
+		sessionstore.StatusCompleted,
+		sessionstore.StatusFailed,
+		sessionstore.StatusCanceled,
+		sessionstore.StatusRunning,
+		sessionstore.StatusPending,
+	}
+	counts := make([]string, 0, len(statuses))
+	remaining := 0
+	for _, status := range outcomes {
+		remaining += status
+	}
+	for _, status := range statuses {
+		if outcomes[string(status)] > 0 {
+			counts = append(counts, fmt.Sprintf("%s=%d", status, outcomes[string(status)]))
+			remaining -= outcomes[string(status)]
+		}
+	}
+	if remaining > 0 {
+		counts = append(counts, fmt.Sprintf("other=%d", remaining))
+	}
+	return strings.Join(counts, ",")
+}
+
+// truncateRunes bounds one line without splitting a rune.
+func truncateRunes(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit])
 }
 
 // instructionNote renders the AGENTS.md rules that bear on the operation that

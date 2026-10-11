@@ -117,6 +117,35 @@ func memoryLogSeamRun(t *testing.T, sessionID string, extra func(*RunnerConfig))
 	return append([]string(nil), toolResults...), sess, runner
 }
 
+// A completed turn appends its own compact record to the log, so the append-only
+// source keeps growing even when no compaction has happened. The assertion reads
+// the file back rather than trusting the runner: the point is the durable write,
+// not merely the note handed to the next request.
+func TestACompletedTurnAppendsOneCompactRecordToMemory(t *testing.T) {
+	var logPath string
+	_, _, _ = memoryLogSeamRun(t, "memfile-turn", func(cfg *RunnerConfig) {
+		logPath = filepath.Join(cfg.WorkDir, "Memory.md")
+		cfg.MemoryFile = logMemoryFile(logPath)
+	})
+
+	entries := memory.OpenMemoryFile(logPath).Tail(10)
+	if len(entries) != 1 {
+		t.Fatalf("Memory.md holds %d entries after one turn, want exactly one durable turn record: %#v", len(entries), entries)
+	}
+	record := entries[0]
+	for _, want := range []string{"Turn completed", "read", "notes.txt"} {
+		if !strings.Contains(record, want) {
+			t.Errorf("turn record = %q, want it to contain %q", record, want)
+		}
+	}
+	if got := len([]rune(record)); got > 480 {
+		t.Errorf("turn record is %d runes, want a small record that cannot become the next prompt's bulk", got)
+	}
+	if strings.Contains(record, "the file the agent read") {
+		t.Errorf("turn record = %q, want metadata rather than the tool's output", record)
+	}
+}
+
 // The log alone, at the wire. This is the configuration production has now: one
 // source, no store. If the log stopped reaching the model - because the
 // construction condition no longer builds the state, because the note was dropped
