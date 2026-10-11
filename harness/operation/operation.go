@@ -191,7 +191,9 @@ func New(runner ToolRunner) *LocalManager {
 
 // defaultRunnerTimeout bounds an in-process tool the manager does not know
 // natively. It is generous because such a tool may start a browser or fetch a
-// large resource, and the coordinator imposes its own outer deadline anyway.
+// large resource. The coordinator does not impose a shorter outer deadline: it
+// waits for the longest operation in the step, sized by SpecTimeout below, so
+// this value is the one a caller actually waits out.
 const defaultRunnerTimeout = 150 * time.Second
 
 // defaultShellTimeout bounds one shell command.
@@ -208,12 +210,55 @@ const maxShellTimeout = 3600 * time.Second
 
 // clampShellTimeout converts a requested timeout in seconds into a duration
 // inside the allowed range.
+// defaultWireTimeout bounds a network-backed tool that carries no timeout
+// argument of its own.
+const defaultWireTimeout = 30 * time.Second
+
+// questionTimeout bounds one question waiting for a human to answer it.
+const questionTimeout = 2 * time.Minute
+
 func clampShellTimeout(seconds int) time.Duration {
 	requested := time.Duration(seconds) * time.Second
 	if requested > maxShellTimeout {
 		return maxShellTimeout
 	}
 	return requested
+}
+
+// SpecTimeout is how long the manager lets a spec run before the context under
+// which it runs expires.
+//
+// The executor and the caller that waits on it both read this, deliberately.
+// The waiter sizes its deadline to the longest operation in the batch, and if
+// the two disagreed the waiter would cancel work the manager was still running
+// and report it as an unknown outcome, which reads exactly like a harness
+// failure. One function, so a new operation type cannot be given a timeout in
+// one place and left without one in the other.
+func SpecTimeout(spec Spec) time.Duration {
+	requested, _ := spec.Args["timeout"].(int)
+	switch spec.Type {
+	case "shell":
+		if requested > 0 {
+			return clampShellTimeout(requested)
+		}
+		return defaultShellTimeout
+	case "run_command_with_secret":
+		// The secret path does not read the argument; it always runs on the
+		// shell default, so a waiter has to assume the same.
+		return defaultShellTimeout
+	case "question":
+		return questionTimeout
+	case "webfetch", "websearch", "create_goal", "get_goal", "update_goal":
+		if requested > 0 {
+			return time.Duration(requested) * time.Second
+		}
+		return defaultWireTimeout
+	default:
+		if requested > 0 {
+			return time.Duration(requested) * time.Second
+		}
+		return defaultRunnerTimeout
+	}
 }
 
 func (m *LocalManager) Results() <-chan ResultEvent {
@@ -358,7 +403,7 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 				break
 			}
 			workDir = operationPath(workDir, workDir)
-			r, err := primitives.RunShellContextWithEnv(ctx, cmd, workDir, defaultShellTimeout,
+			r, err := primitives.RunShellContextWithEnv(ctx, cmd, workDir, SpecTimeout(op.Spec),
 				[]string{envVar + "=" + value})
 			// Overwrite the local so it is not left in a long-lived slice while the
 			// rest of the operation finishes.
@@ -378,14 +423,8 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			}
 		case "shell":
 			cmd, _ := op.Spec.Args["command"].(string)
-			to := defaultShellTimeout
-			if t, ok := op.Spec.Args["timeout"]; ok {
-				if ts, ok := t.(int); ok && ts > 0 {
-					to = clampShellTimeout(ts)
-				}
-			}
 			workDir, _ := op.Spec.Args["workdir"].(string)
-			r, err := primitives.RunShellContext(ctx, cmd, workDir, to)
+			r, err := primitives.RunShellContext(ctx, cmd, workDir, SpecTimeout(op.Spec))
 			result.Output = r.Content
 			result.OutputPath = r.OutputPath
 			if r.OutputPath != "" {
@@ -656,7 +695,7 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 				sessionID = "default"
 			}
 			requestID := op.ID
-			answer, err := question.Default.CreateWithContext(ctx, sessionID, requestID, ques, opts, 2*time.Minute, func() {
+			answer, err := question.Default.CreateWithContext(ctx, sessionID, requestID, ques, opts, SpecTimeout(op.Spec), func() {
 				event.Default.Publish(event.Event{Type: event.TypeQuestion, SessionID: sessionID, Data: map[string]any{
 					"question": ques, "options": opts, "request_id": requestID,
 					"free_form": freeForm, "header": header,
@@ -677,14 +716,9 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			}
 		case "webfetch", "websearch", "create_goal", "get_goal", "update_goal":
 			if m.runner != nil {
-				// Default timeout: 30s for webfetch, 25s for websearch
-				to := 30 * time.Second
-				if t, ok := op.Spec.Args["timeout"]; ok {
-					if ts, ok := t.(int); ok && ts > 0 {
-						to = time.Duration(ts) * time.Second
-					}
-				}
-				tctx, tcancel := context.WithTimeout(ctx, to)
+				// SpecTimeout covers both shapes here: the 30s default when no
+				// timeout argument was sent, and the requested value when one was.
+				tctx, tcancel := context.WithTimeout(ctx, SpecTimeout(op.Spec))
 				defer tcancel()
 				out, err := m.runner.RunTool(tctx, op.Spec)
 				result.Output = out
@@ -705,13 +739,7 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 			// operation type" until the executor was also edited. Anything the
 			// manager does not handle natively is the runner's business.
 			if m.runner != nil {
-				to := defaultRunnerTimeout
-				if t, ok := op.Spec.Args["timeout"]; ok {
-					if ts, ok := t.(int); ok && ts > 0 {
-						to = time.Duration(ts) * time.Second
-					}
-				}
-				tctx, tcancel := context.WithTimeout(ctx, to)
+				tctx, tcancel := context.WithTimeout(ctx, SpecTimeout(op.Spec))
 				defer tcancel()
 				out, err := m.runner.RunTool(tctx, op.Spec)
 				result.Output = out

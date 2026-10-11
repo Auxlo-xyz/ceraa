@@ -11,11 +11,18 @@
 // Every package that logs must call Main from its TestMain. Doing the work here
 // rather than in each TestMain is the point: one implementation, and a package
 // that forgets cannot silently fall back to the real directory.
+//
+// Main also strips the CERAA_* variables a parent shell may have exported. The
+// redirect alone is not enough: the running supervisor puts its own CERAA_HOME,
+// CERAA_SESSION_FILE and CERAA_EXTRACT_KEY into any shell that shares its
+// environment, and those override the fixture a test just wrote. That is how
+// `go test` started from the supervisor failed tests that pass in a clean one.
 package testsupport
 
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +33,7 @@ import (
 //
 //	func TestMain(m *testing.M) { testsupport.Main(m) }
 func Main(m *testing.M) {
+	ScrubCeraaEnv()
 	dir, err := os.MkdirTemp("", "ceraa-test-")
 	if err != nil {
 		panic(err)
@@ -43,4 +51,21 @@ func Main(m *testing.M) {
 	// behind for every run to accumulate.
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// ScrubCeraaEnv removes every inherited CERAA_* variable.
+//
+// A test binary configures itself: each test calls t.Setenv for the variable it
+// depends on, and Main sets the data directory and log that follow. The values
+// inherited from a parent process are therefore never wanted, and leaving them
+// in place is not a harmless difference in environment, it changes what the
+// test asserts. CERAA_SESSION_FILE moved the store out from under the manual
+// compaction tests, and CERAA_EXTRACT_KEY turned the extractor back on for the
+// tests whose whole point is that it stays off without a key.
+func ScrubCeraaEnv() {
+	for _, kv := range os.Environ() {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "CERAA_") {
+			os.Unsetenv(name)
+		}
+	}
 }

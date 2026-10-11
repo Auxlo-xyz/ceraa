@@ -9,6 +9,7 @@ import (
 	"ceraa/internal/config"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
+	"ceraa/internal/testsupport"
 )
 
 // TestMain points the whole package at a temporary data directory before any test
@@ -25,6 +26,12 @@ import (
 // $HOME, which this process shares with the running bot, so setting CERAA_HOME
 // was not enough: the suite appended its own lines to the live bridge.log.
 func TestMain(m *testing.M) {
+	// Drop the supervisor's own CERAA_* before pinning this binary's. An
+	// inherited CERAA_SESSION_FILE put the session store outside the fixture
+	// the manual compaction tests seed, so they failed with "session not
+	// found" in a shell that shared the live environment and passed in a
+	// clean one.
+	testsupport.ScrubCeraaEnv()
 	dir, err := os.MkdirTemp("", "ceraa-telegram-test-")
 	if err != nil {
 		panic(err)

@@ -988,7 +988,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			pending[item.call.ID] = struct{}{}
 			toolByCall[item.call.ID] = item.tool.Name()
 		}
-		timeout := time.NewTimer(180 * time.Second)
+		timeout := time.NewTimer(toolTurnWait(prepared))
 		for len(pending) > 0 {
 			select {
 			case result := <-r.opMgr.Results():
@@ -1545,6 +1545,31 @@ type preparedTool struct {
 	tool    tool.Tool
 	args    map[string]any
 	rawArgs string
+}
+
+// toolTurnGrace lets a result that lands at the operation's own deadline still be
+// collected and persisted before the step gives up on it.
+const toolTurnGrace = 30 * time.Second
+
+// toolTurnWait is how long a step waits for the tool calls it dispatched.
+//
+// Sized from the operations rather than a constant. The manager ends each
+// operation at operation.SpecTimeout, and a waiter with a shorter deadline
+// cancels work that was about to finish and reports it as an unknown outcome.
+// The fixed 180s this replaced was shorter than the shell default of 15 minutes,
+// so an ordinary long command was cut off at three minutes and read as a failed
+// operation.
+func toolTurnWait(prepared []preparedTool) time.Duration {
+	wait := time.Duration(0)
+	for _, item := range prepared {
+		if d := operation.SpecTimeout(item.spec); d > wait {
+			wait = d
+		}
+	}
+	if wait <= 0 {
+		wait = operation.SpecTimeout(operation.Spec{Type: "shell"})
+	}
+	return wait + toolTurnGrace
 }
 
 var canonicalToolAliases = map[string]string{
