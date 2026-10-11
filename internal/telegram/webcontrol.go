@@ -374,6 +374,12 @@ func webRunParams() map[string]any {
 		out["prompt_cache_mode"] = cfg.LLM.PromptCacheMode
 		out["prompt_cache_ttl"] = cfg.LLM.PromptCacheTTL
 		out["memory_delivery"] = cfg.MemoryDelivery
+		// Where the append-only log lands, reported rather than set. The path is
+		// derived from the session's project root, which is chosen per session, so
+		// there is no one value a settings row could write and no knob to widen
+		// here; the row exists so the dashboard can say where to look, which is
+		// what MemoryFile.Path is for.
+		out["memory_log"] = memoryLogPath(defaultState.projectForSession(currentSessionID(defaultState.allowedUserID())))
 	}
 	return out
 }
@@ -634,6 +640,9 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sess.ID, 2000)
 	liveMemory := memory.Live(memoryStore, projectRoot, sess.ID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
+	// The append-only log for the same project the request is built for, so the
+	// previewed request carries the same tail a run would.
+	memoryLog := memoryLogReader(projectRoot)
 	// One renderer, two homes. The prompt modes read the bond out of the combined
 	// block below; sidekick mode suppresses that whole block and reads it from
 	// BondFunc instead, which is why it cannot simply be left inside the combine.
@@ -653,6 +662,7 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 		WorkDir:           projectRoot,
 		MemoryContext:     memoryContext,
 		MemoryContextFunc: memory.Combine(bondRenderer, liveMemory),
+		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
 		BondFunc:          bondRenderer,
 		MemoryDelivery:    cfg.MemoryDelivery,
 		MemoryEntries:     memoryEntries(memoryStore, projectRoot, sess.ID),

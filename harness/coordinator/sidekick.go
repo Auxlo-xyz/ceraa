@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,29 @@ const sidekickBondBytes = 2000
 // single repeated delivery much later, which is the recoverable direction.
 const sidekickDeliveredKeep = 512
 
+// defaultMemoryTail is how many entries of the append-only log delivery reads when
+// the caller has not said.
+//
+// Derived rather than picked. One note carries at most SidekickGeneralLimit
+// standing entries plus SidekickTargetLimit targeted ones, and a run may write
+// SidekickRunBytes worth of notes before its ceiling stops it, which is four
+// blocks. So 28 is exactly what a run that delivers on every call can render:
+// below it the tail becomes the binding constraint and a later note in the same
+// run finds nothing it has not already delivered, and above it the surplus
+// entries cannot be reached at all, because the run ceiling is spent.
+//
+// A count rather than a byte budget because the renderer's own ceilings are what
+// bound what reaches the model: the tail decides what is eligible, and an entry
+// that was never rendered was never paid for.
+const defaultMemoryTail = (memory.SidekickGeneralLimit + memory.SidekickTargetLimit) *
+	(memory.SidekickRunBytes / memory.SidekickBlockBytes)
+
+// pathTokenTrim is the punctuation that surrounds a path inside prose, dropped
+// before a token is offered to the scope matcher. The trimming stops at the
+// characters a glob needs, so `*.go` survives as a pattern rather than losing its
+// star.
+const pathTokenTrim = "`\"'()[]{}<>,;:"
+
 // sidekickState carries what tool-output delivery needs, and records what it
 // delivered so the two modes can be told apart later.
 //
@@ -43,10 +67,26 @@ const sidekickDeliveredKeep = 512
 type sidekickState struct {
 	mu     sync.Mutex
 	lookup func() ([]memory.Entry, error)
+	// memFile is the append-only log this run reads what has been learned from,
+	// and when it is set it is the source: the store above is not consulted.
+	//
+	// A reader rather than a store for the same reason lookup is a function - the
+	// file on disk is the source of truth, and a snapshot taken at construction
+	// diverges from it silently in a long-lived daemon.
+	//
+	// It supersedes the store rather than joining it because the store re-rendered
+	// and re-ranked itself against a wall clock on every request. That volatility
+	// sat ahead of the cache seam and rebuilt the cached prefix on every turn, so
+	// the two sources cannot simply be summed: one of them is the defect the log
+	// exists to remove.
+	memFile func() *memory.MemoryFile
+	// tail is how many entries memFile is read for. Zero never reaches here;
+	// useMemoryFile substitutes defaultMemoryTail.
+	tail int
 	// bond renders the operator's identity file. It is a separate channel from
-	// lookup because it is not a memory: it has no `applies`, no score and no
-	// gate, and routing it through the store is what dropped it from the prompt
-	// in the first place.
+	// both sources above because it is not a memory: it has no `applies`, no
+	// score and no gate, and routing it through the store is what dropped it
+	// from the prompt in the first place.
 	bond    func() (string, error)
 	workDir string
 
@@ -107,6 +147,23 @@ func newSidekickState(lookup func() ([]memory.Entry, error), bond func() (string
 	}
 }
 
+// useMemoryFile makes the append-only log this state's source of what has been
+// learned, replacing the store reader it was built with.
+//
+// Replacement rather than addition, because the store re-ranked itself against a
+// wall clock on every request and that is the volatility the log exists to
+// remove: delivering from both would keep the volatile half of the pair live
+// while appearing to have retired it.
+func (s *sidekickState) useMemoryFile(file func() *memory.MemoryFile, tail int) {
+	if s == nil || file == nil {
+		return
+	}
+	if tail <= 0 {
+		tail = defaultMemoryTail
+	}
+	s.memFile, s.tail = file, tail
+}
+
 // annotate returns the sidekick block for one completed operation, or "" when
 // nothing qualifies.
 func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.ResultEvent) string {
@@ -122,16 +179,9 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 	// expects in both places.
 	bond := s.bondBlock()
 
-	if s == nil || s.lookup == nil {
+	if s == nil || (s.lookup == nil && s.memFile == nil) {
 		return bond
 	}
-	entries, err := s.lookup()
-	if err != nil {
-		// A read failure must not fail the turn, and must not look like "there is
-		// no memory", which would be a different and wrong answer.
-		return bond
-	}
-	now := time.Now()
 	targets := s.targetsFor(sess, result)
 
 	s.mu.Lock()
@@ -140,6 +190,27 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 	// is built per run, and the session file is the only thing that outlives one.
 	s.adoptDelivered(sess)
 
+	if s.memFile != nil {
+		targeted, general, held := s.selectFromLog(targets)
+		if len(targeted) == 0 && len(general) == 0 {
+			// No gate on this path: the log is not scored, so nothing sits above or
+			// below a floor and SuppressedByGate would be a claim about a mechanism
+			// this source does not have. A run that delivered nothing here reads as
+			// "the tail had nothing for this operation", which is a different and
+			// true answer from what the gate reports.
+			s.report.Deduped += held
+			return bond
+		}
+		return bond + s.deliver(sess, targets, targeted, general)
+	}
+
+	entries, err := s.lookup()
+	if err != nil {
+		// A read failure must not fail the turn, and must not look like "there is
+		// no memory", which would be a different and wrong answer.
+		return bond
+	}
+	now := time.Now()
 	var targeted, general []memory.Brief
 	if len(targets) > 0 {
 		targeted = memory.Select(entries, targets, now, memory.SidekickTargetLimit, s.alreadyDelivered)
@@ -152,9 +223,20 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 		s.report.Deduped += s.wouldDeliver(entries, targets, now)
 		return bond
 	}
+	return bond + s.deliver(sess, targets, targeted, general)
+}
+
+// deliver renders the selection into the note and charges it to the run's byte
+// ceiling, returning "" when nothing may be sent.
+//
+// Shared by both sources because everything from here down is about what was
+// already decided rather than about where it came from: the render, the run
+// ceiling, the delivered set and the report are one mechanism, and a second copy
+// of it is a second thing to keep correct.
+func (s *sidekickState) deliver(sess *sessionstore.Session, targets []string, targeted, general []memory.Brief) string {
 	note := memory.Annotate(targets, targeted, general)
 	if note == "" {
-		return bond
+		return ""
 	}
 	// The run ceiling is checked against the rendered note rather than against what
 	// has been spent so far, so it is a ceiling and not a threshold the last block
@@ -166,7 +248,7 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 	// lost for the run.
 	if s.runSpent+len(note) > memory.SidekickRunBytes {
 		s.report.BudgetWithheld += len(targeted) + len(general)
-		return bond
+		return ""
 	}
 	// Only what was actually rendered is marked delivered. Marking a selection the
 	// block ceiling threw away would retire a memory the model never saw.
@@ -178,7 +260,185 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 	// run where dedup did all the work look like the run this replaced.
 	s.report.TargetedInjects += len(targeted)
 	s.report.GeneralInjected = len(general)
-	return bond + note
+	return note
+}
+
+// memTail is the newest entries of the log, oldest first, newest last, or nil
+// when there is nothing to read.
+//
+// An unreadable file is an empty tail rather than an error: the conversation is
+// the source of truth and the log is an optimisation, so a run that cannot read
+// it delivers nothing instead of failing a turn. The file itself makes that
+// promise; this only guarantees a nil answer for a caller that configured no
+// reader, so the delivery path never has to branch on it.
+func (s *sidekickState) memTail() []string {
+	if s == nil || s.memFile == nil {
+		return nil
+	}
+	file := s.memFile()
+	if file == nil {
+		return nil
+	}
+	return file.Tail(s.tail)
+}
+
+// fileEntry is one logged memory split into what delivery needs from it: the
+// identity it is remembered by, the text the model reads, and the paths it names.
+type fileEntry struct {
+	id    string
+	body  string
+	paths []string
+}
+
+// logEntries is the parsed tail, oldest first.
+func (s *sidekickState) logEntries() []fileEntry {
+	tail := s.memTail()
+	out := make([]fileEntry, 0, len(tail))
+	for _, raw := range tail {
+		if entry := parseLogEntry(raw); entry.body != "" {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// parseLogEntry reads one logged memory.
+//
+// The date-and-session line the log writes above every entry is dropped rather
+// than rendered: when the agent learned something is a fact about the agent, not
+// about the thing, and a delivered line is a budget better spent on the claim.
+// An entry with no such line - a hand-edited file, a one-line note - is the whole
+// of its own body, so the split is on the newline rather than on the date.
+func parseLogEntry(raw string) fileEntry {
+	// The first line is the log's own header; the entry's body is everything under
+	// it. An entry with no newline has no header to drop and is all body.
+	body := strings.TrimSpace(raw)
+	if line := strings.IndexByte(raw, '\n'); line >= 0 {
+		body = strings.TrimSpace(raw[line+1:])
+	}
+	// Normalised before hashing so two entries that differ only in whitespace are
+	// one memory rather than two that each get delivered once.
+	normalised := strings.Join(strings.Fields(body), " ")
+	return fileEntry{
+		id:    "memfile:" + shortHash(normalised),
+		body:  body,
+		paths: pathsNamed(body),
+	}
+}
+
+// matchesAny reports whether the paths this entry names cover any of the paths
+// the operation touched.
+func (e fileEntry) matchesAny(targets []string) bool {
+	for _, scope := range e.paths {
+		for _, target := range targets {
+			if memory.MatchesScope(scope, target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e fileEntry) brief() memory.Brief {
+	brief := memory.Brief{ID: e.id, Content: e.body}
+	if len(e.paths) > 0 {
+		// Carried for the report rather than rendered: the note's heading names
+		// the operation's own targets, and a scope the entry wrote for itself is
+		// not one of them.
+		brief.Applies = e.paths[0]
+	}
+	return brief
+}
+
+// selectFromLog picks the log entries this operation is about, and the standing
+// entries this run has not carried yet.
+//
+// The ordering is the log's own: oldest first. Nothing re-ranks, which is the
+// whole point of the source - a ranking would need a clock, and a clock is what
+// made the block volatile. The most recent entries are the ones kept when the
+// tail carries more than a note can hold, because a log that has moved on has
+// newer things to say about the same path.
+//
+// held is how many entries matched but were already delivered, so a run where
+// dedup did all the work still reads as activity.
+func (s *sidekickState) selectFromLog(targets []string) (targeted, general []memory.Brief, held int) {
+	entries := s.logEntries()
+	var matched, standing []fileEntry
+	for _, entry := range entries {
+		switch {
+		case len(entry.paths) == 0:
+			// No path named, so it is a standing preference rather than something
+			// about one file. It goes out on the run's first tool result whatever
+			// that result was about, because "applies everywhere" is a claim about
+			// scope and not about this call - the same reading the store's
+			// entry-with-no-applies has.
+			standing = append(standing, entry)
+		case len(targets) > 0 && entry.matchesAny(targets):
+			matched = append(matched, entry)
+		}
+	}
+	// Excluded before the limit, not after. The limit is the newest N, so
+	// filtering afterwards would let entries delivered on earlier calls hide
+	// fresher ones, and the newest entry would then never fire in this session at
+	// all - dedup that silently retires the tail.
+	fresh := make([]fileEntry, 0, len(matched))
+	for _, entry := range matched {
+		if s.alreadyDelivered(entry.id) {
+			held++
+			continue
+		}
+		fresh = append(fresh, entry)
+	}
+	if len(fresh) > memory.SidekickTargetLimit {
+		fresh = fresh[len(fresh)-memory.SidekickTargetLimit:]
+	}
+	if !s.generalDelivered && len(standing) > memory.SidekickGeneralLimit {
+		standing = standing[len(standing)-memory.SidekickGeneralLimit:]
+	}
+	for _, entry := range fresh {
+		targeted = append(targeted, entry.brief())
+	}
+	if !s.generalDelivered {
+		for _, entry := range standing {
+			general = append(general, entry.brief())
+		}
+	}
+	return targeted, general, held
+}
+
+// pathsNamed is every path-like token an entry names.
+//
+// A log entry is prose, so the scope it carries is the path it mentions rather
+// than a field. This is deliberately the same shape of judgement pathsFromCommand
+// makes - a token that has a separator in it, or a base name that carries an
+// extension - and it has the same failure mode: a token this misses is delivered
+// on a later operation rather than delivered wrongly.
+func pathsNamed(text string) []string {
+	var out []string
+	for _, field := range strings.Fields(text) {
+		token := strings.TrimRight(strings.Trim(field, pathTokenTrim), ".")
+		if token == "" || strings.Contains(token, "://") {
+			continue
+		}
+		if !isPathLike(token) {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+// isPathLike is "this token names a file or a directory".
+//
+// A bare word is not a path, because "gradle" names a tool and a memory about a
+// tool is a standing preference rather than something about one file. The scope
+// matcher does the rest, including a bare filename as a base-name match.
+func isPathLike(token string) bool {
+	if strings.ContainsAny(token, `/\`) {
+		return true
+	}
+	base := filepath.Base(token)
+	return strings.Contains(base, ".") && hasAlphanumeric(base)
 }
 
 // alreadyDelivered is the exclusion predicate handed to memory.Select.

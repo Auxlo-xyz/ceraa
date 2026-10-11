@@ -54,6 +54,62 @@ func memoryEntries(store *memory.Store, projectID, sessionID string) func() ([]m
 	}
 }
 
+// memoryLogPath is where the append-only Memory.md log lives for the project at
+// root.
+//
+// It is derived from the project root and never configured, because the project
+// root is already the one place a session answers "where does this project's data
+// live" - the renderer reads memory/AGENTS.md from the same root, and a second
+// setting naming a path inside it would be a second answer to one question.
+//
+// Flat at the root rather than memory/Memory.md beside AGENTS.md: MemoryFile.Append
+// opens with O_CREATE and creates no directory, so a project with no memory/
+// subdirectory would fail every append with ENOENT. An append-only log nothing can
+// be written to is a read-only log, which is the defect this file exists to avoid.
+//
+// The root is also what keeps the log out of /tmp. This host has wiped /tmp three
+// times in one day, and a memory that vanishes on reboot is not memory.
+func memoryLogPath(root string) string {
+	return filepath.Join(root, "Memory.md")
+}
+
+// memoryLogReader is the reader one RunnerConfig is handed for the project at
+// root.
+//
+// A fresh reader per call, matching the config field's factory shape: the runner
+// asks per run, and a reader is a path plus a mutex, so there is nothing to share
+// and nothing to go stale.
+func memoryLogReader(root string) *memory.MemoryFile {
+	return memory.OpenMemoryFile(memoryLogPath(root))
+}
+
+// memoryLogLearner appends each compaction's summary to the append-only log.
+//
+// The learn hook is the right seam because it is the only place a condensed
+// account of a stretch of conversation already exists: the summary is bounded, it
+// is written at the one checkpoint that happens on purpose, and hooking it costs
+// nothing per turn. Wiring a turn callback instead would put a disk write in front
+// of every model request for text that has not earned a place yet.
+//
+// It is chained after MakeLearner rather than folded into it because that hook is
+// gated on an extraction credential and returns disabled when none is configured.
+// An install with no extractor would then keep an empty log forever while the
+// feature looked wired, which is the failure mode that is hardest to see.
+//
+// A failure logs and returns: a log write must not fail the turnover, the same
+// contract the compactor already documents for every Learn hook.
+func memoryLogLearner(file *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+	return func(_ context.Context, sessionID string, _ []sessionstore.Message, summary string) {
+		trimmed := strings.TrimSpace(summary)
+		if trimmed == "" {
+			return
+		}
+		if err := file.Append(trimmed, sessionID); err != nil {
+			logger.Warn("memory log append: " + err.Error())
+		}
+	}
+}
+
 func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -120,6 +176,10 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
 	compactor := newCompactor(cfg, providerID, sessionID)
+	// The append-only log for this project: appended to at compaction, read as a
+	// tail by the runner. Built beside the other project-scoped stores so it is
+	// constructed once and shared by both.
+	memoryLog := memoryLogReader(projectRoot)
 	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
 		compactor.Learn = learn
 	}
@@ -129,6 +189,9 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	if bl, enabled := bond.MakeLearner(modelConfig, paths.BondFile()); enabled {
 		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
 	}
+	// Last in the chain, so it records what the checkpoint produced rather than
+	// feeding anything. Order is memory, bond, log.
+	compactor.Learn = compaction.ChainLearn(compactor.Learn, memoryLogLearner(memoryLog))
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
 	// Startup snapshot, kept as a fallback and as the first render. The live
@@ -198,6 +261,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
 		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
+		MemoryFile:          func() *memory.MemoryFile { return memoryLog },
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),

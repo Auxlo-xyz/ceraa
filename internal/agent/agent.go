@@ -32,6 +32,31 @@ import (
 	"ceraa/internal/xaiauth"
 )
 
+// memoryLogPath is where the append-only Memory.md log lives for the project at
+// root, and the reader one RunnerConfig is handed for it.
+//
+// Same rule the Telegram bridge and the TUI follow, so one project has one log
+// wherever it is opened from: flat at the project root, never /tmp, and never in a
+// setting - the root is already the answer to where a project's data lives.
+//
+// Flat rather than memory/Memory.md beside AGENTS.md because MemoryFile.Append
+// opens with O_CREATE and creates no directory, so a run from a directory with no
+// memory/ subdirectory would fail every append.
+//
+// This surface passes ".", not a configured workspace root: the config below sets
+// no WorkDir, so the runner resolves relative paths against the process working
+// directory, and a log anchored anywhere else would be a second answer to "where
+// does this run work" - the same reason InstructionRules is handed ".". The cost
+// is that the CLI's log follows the directory it was launched from, which is the
+// directory its commands already run in.
+func memoryLogPath(root string) string {
+	return filepath.Join(root, "Memory.md")
+}
+
+func memoryLogReader(root string) *memory.MemoryFile {
+	return memory.OpenMemoryFile(memoryLogPath(root))
+}
+
 func Run(user string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -103,6 +128,8 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	// renderer below re-reads the file every turn.
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
 	liveMemory := memory.Live(memoryStore, "cli", "cli", filepath.Join(cfg.WorkspaceRootPath(), memory.DefaultMemoryFile), 4000)
+	// The append-only log for this run. Flat at the root, never /tmp.
+	memoryLog := memoryLogReader(".")
 	// One renderer, two homes. The prompt modes read the bond out of the combined
 	// block below; sidekick mode suppresses that whole block and reads it from
 	// BondFunc instead, which is why it cannot simply be left inside the combine.
@@ -249,6 +276,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
 		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
+		MemoryFile:          func() *memory.MemoryFile { return memoryLog },
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),

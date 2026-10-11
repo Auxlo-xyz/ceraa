@@ -60,6 +60,25 @@ type Session struct {
 	registry func() (*tool.Registry, error)
 }
 
+// memoryLogPath is where the append-only Memory.md log lives for the project at
+// root, and the reader one RunnerConfig is handed for it.
+//
+// Same rule the Telegram bridge and the CLI follow, so one project has one log
+// wherever it is opened from: flat at the project root, never /tmp, and never in a
+// setting - the workdir is already the answer to where a session's data lives.
+//
+// Flat rather than memory/Memory.md beside AGENTS.md because MemoryFile.Append
+// opens with O_CREATE and creates no directory, so a session with no memory/
+// subdirectory would fail every append. The session workdir is the one directory
+// guaranteed to exist, because it is where the commands run.
+func memoryLogPath(root string) string {
+	return filepath.Join(root, "Memory.md")
+}
+
+func memoryLogReader(root string) *memory.MemoryFile {
+	return memory.OpenMemoryFile(memoryLogPath(root))
+}
+
 // SessionOptions configures a Session.
 type SessionOptions struct {
 	// Config is the resolved configuration. Required.
@@ -180,6 +199,10 @@ func (s *Session) build() error {
 	// so an edit to memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext("cli", s.session, 2000)
 	liveMemory := memory.Live(memoryStore, "cli", s.session, filepath.Join(s.workDir, memory.DefaultMemoryFile), 4000)
+	// The append-only log for this session's workdir. The workdir is the project
+	// root here exactly as it is for the memory file above it, so the two resolve
+	// against the same place. Flat at the root, and never /tmp.
+	memoryLog := memoryLogReader(s.workDir)
 	// One renderer, two homes. The prompt modes read the bond out of the combined
 	// block below; sidekick mode suppresses that whole block and reads it from
 	// BondFunc instead, which is why it cannot simply be left inside the combine.
@@ -218,6 +241,7 @@ func (s *Session) build() error {
 		ModelCatalogRefresh: time.Duration(s.cfg.ModelCatalogRefreshHours) * time.Hour,
 		MemoryContext:       memoryContext,
 		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
+		MemoryFile:          func() *memory.MemoryFile { return memoryLog },
 		BondFunc:            bondRenderer,
 		MemoryDelivery:      s.cfg.MemoryDelivery,
 		MemoryEntries:       memoryEntries(memoryStore, s.session),

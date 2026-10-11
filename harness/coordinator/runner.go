@@ -82,6 +82,25 @@ type RunnerConfig struct {
 	// MemoryEntries lists stored memories for sidekick delivery. Nil disables it,
 	// which is what keeps the prompt path working with nothing configured.
 	MemoryEntries func() ([]memory.Entry, error)
+	// MemoryFile is the append-only log this run reads for what has been learned,
+	// and when it is set it replaces MemoryEntries for sidekick delivery.
+	//
+	// A reader rather than a store because the file is the source of truth and a
+	// snapshot taken at construction diverges from it silently in a long-lived
+	// daemon - the same reason MemoryContextFunc is a function.
+	//
+	// It replaces the store because the store re-rendered and re-ranked itself
+	// against a wall clock on every request, and that volatility sat ahead of the
+	// cache seam: the bytes changed when nothing had been written, so the cached
+	// prefix was rebuilt on every turn. An append-only log cannot do that. Nothing
+	// re-ranks, nothing decays, and the tail is read rather than the whole, so the
+	// cost per turn is proportional to what is delivered rather than to everything
+	// ever learned.
+	MemoryFile func() *memory.MemoryFile
+	// MemoryTail is how many entries of the log delivery reads. Zero means
+	// defaultMemoryTail, which is what a run that delivers on every call can
+	// render before the run ceiling stops it.
+	MemoryTail int
 	// BondFunc renders the operator's identity file for sidekick delivery, which
 	// is the only mode that sees it.
 	//
@@ -417,13 +436,17 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
 	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
-	// Either half is enough to build the state. Keying it on MemoryEntries alone
-	// meant a caller configured with a bond and no store - which is a legal
-	// configuration, since MemoryEntries is documented as optional - got no
-	// sidekick at all, and the bond went with it. That is the same silent drop,
-	// one indirection further from the cause.
-	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.BondFunc != nil) {
+	// Any one of the three is enough to build the state. Keying it on
+	// MemoryEntries alone meant a caller configured with a bond and no store -
+	// which is a legal configuration, since MemoryEntries is documented as
+	// optional - got no sidekick at all, and the bond went with it. That is the
+	// same silent drop, one indirection further from the cause.
+	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.BondFunc != nil || cfg.MemoryFile != nil) {
 		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.BondFunc, cfg.WorkDir)
+		// Attached after construction because the log is a replacement for the
+		// store rather than a fourth argument to it: a caller that configures both
+		// is mid-migration, and the log is the half that keeps the prompt cache.
+		r.sidekick.useMemoryFile(cfg.MemoryFile, cfg.MemoryTail)
 	}
 	// The instruction source is built here, once, beside the sidekick and not
 	// inside it. Both are per-run holders of delivery state, and this is the one
