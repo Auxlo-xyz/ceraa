@@ -49,7 +49,7 @@ func logSidekick(t *testing.T, tail int, entries ...string) (*sidekickState, str
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "Memory.md")
 	appendLog(t, memory.OpenMemoryFile(path), entries...)
-	state := newSidekickState(nil, nil, "/srv")
+	state := newSidekickState(nil, "/srv")
 	state.useMemoryFile(logMemoryFile(path), tail)
 	return state, path
 }
@@ -66,9 +66,8 @@ func readOn(path string) (*sessionstore.Session, operation.ResultEvent) {
 // in a sum at the runner's result loop, and the sum can lose it. This drives a
 // whole run and reads the tool-result body off the request.
 func TestAMemoryFileEntryReachesTheModelOnTheToolResultItTouches(t *testing.T) {
-	toolResults, _, runner := bondSeamRun(t, "memfile-seam", func(cfg *RunnerConfig) {
+	toolResults, _, runner := memoryLogSeamRun(t, "memfile-seam", func(cfg *RunnerConfig) {
 		// The log replaces the store, and a caller mid-migration configures both.
-		cfg.MemoryEntries = nil
 		file := memory.OpenMemoryFile(filepath.Join(cfg.WorkDir, "Memory.md"))
 		appendLog(t, file,
 			"GENERIC: an older standing note",
@@ -115,8 +114,7 @@ func TestAMemoryFileEntryReachesTheModelOnTheToolResultItTouches(t *testing.T) {
 // later, and it has to stay the bare result - a record that depends on which
 // memories happened to be in the log at the time is not a record of anything.
 func TestTheSessionOperationKeepsTheBareResultWhileTheModelSeesTheLogEntry(t *testing.T) {
-	toolResults, sess, runner := bondSeamRun(t, "memfile-split", func(cfg *RunnerConfig) {
-		cfg.MemoryEntries = nil
+	toolResults, sess, runner := memoryLogSeamRun(t, "memfile-split", func(cfg *RunnerConfig) {
 		file := memory.OpenMemoryFile(filepath.Join(cfg.WorkDir, "Memory.md"))
 		appendLog(t, file,
 			"GENERIC: an older standing note",
@@ -241,7 +239,7 @@ func TestStandingLogEntriesFireOncePerRunAndRearmOnTheNext(t *testing.T) {
 	}
 	// A new runner over the same log, which is what the next Telegram message
 	// builds: the standing set re-arms with it.
-	next := newSidekickState(nil, nil, "/srv")
+	next := newSidekickState(nil, "/srv")
 	next.useMemoryFile(logMemoryFile(pathOf(t, state)), 0)
 	if got := next.annotate(sessionWithOp("c", "read", "/srv/web/index.js"), operation.ResultEvent{OpID: "c"}); !strings.Contains(got, "STANDING_MD") {
 		t.Errorf("the standing entry was not re-armed on the next run: %q", got)
@@ -303,7 +301,7 @@ func TestTheDefaultTailIsTheRunBudgetInEntries(t *testing.T) {
 func TestAnEmptyOrMissingMemoryFileDeliversNothing(t *testing.T) {
 	states := map[string]*sidekickState{}
 	// No file at all: a project with no memory yet is a state, not an error.
-	missing := newSidekickState(nil, nil, "/srv")
+	missing := newSidekickState(nil, "/srv")
 	missing.useMemoryFile(logMemoryFile(filepath.Join(t.TempDir(), "absent", "Memory.md")), 0)
 	states["missing"] = missing
 	// A file that exists and is empty.
@@ -311,11 +309,11 @@ func TestAnEmptyOrMissingMemoryFileDeliversNothing(t *testing.T) {
 	if err := os.WriteFile(empty, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	blank := newSidekickState(nil, nil, "/srv")
+	blank := newSidekickState(nil, "/srv")
 	blank.useMemoryFile(logMemoryFile(empty), 0)
 	states["empty"] = blank
 	// A reader that hands back nothing at all.
-	none := newSidekickState(nil, nil, "/srv")
+	none := newSidekickState(nil, "/srv")
 	none.useMemoryFile(func() *memory.MemoryFile { return nil }, 0)
 	states["nil reader"] = none
 

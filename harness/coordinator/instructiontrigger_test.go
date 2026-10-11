@@ -82,7 +82,7 @@ func TestTheTriggerBuilderReusesTheCommandPathWalk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state := newSidekickState(nil, nil, "/srv")
+			state := newSidekickState(nil, "/srv")
 			sidekick := state.targetsForSpec("shell", map[string]any{"command": tc.command})
 			trigger := InstructionTrigger("shell", map[string]any{"command": tc.command}, "shell", "/srv", false)
 
@@ -167,7 +167,7 @@ func TestTheSidekickAndTheTriggerAgreeOnOneOperation(t *testing.T) {
 	specType := "write"
 	args := map[string]any{"path": "api/main.go"}
 
-	state := newSidekickState(nil, nil, "/srv")
+	state := newSidekickState(nil, "/srv")
 	sidekick := state.targetsForSpec(specType, args)
 	trigger := InstructionTrigger(specType, args, "write", "/srv", false)
 

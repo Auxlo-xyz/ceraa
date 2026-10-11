@@ -1,27 +1,41 @@
-// Package bond maintains a user-level profile of the person Ceraa works for.
+// Package bond maintains the identity section of the append-only Memory.md
+// log.
 //
 // It differs from project memory in scope and in ownership. Memory is
 // per-project and the model mines it. The bond is one document about one
-// person across every project, and the design keeps the model advisory: it
-// proposes, a human commits. The rendered law in memory/bond.go says so on
-// every turn.
+// person across every project, and it stays advisory: the model writes only
+// what a compaction checkpoint supports, and Commit refuses anything else.
 //
-// The rolling window is the part that took probing to settle. Two documents
-// are kept. A fresh compaction checkpoint is one context; the last two
-// documents are the ones reconciled with it. The first round has no history
-// and runs on its context alone, which is the whole "new user" path.
+// It used to own a file. BOND.md was rewritten in place at every compaction
+// through a versioned store that carried the last two documents in a sidecar
+// window, and harness/memory rendered it back into a <bond> prompt block. That
+// was two mechanisms for one concept, and the rewrite was the half that could
+// lose data: a commit replaced the only current version, so one bad round
+// destroyed a good bond and the window beside it was the only recovery. Both
+// are deleted. The identity document is now ONE entry in the log, which is its
+// own history, and delivery is the sidekick's - out of the same tail every
+// other memory is read from.
+//
+// What transfers is the extraction, unchanged: two passes over a compaction
+// checkpoint, the second reconciling the fresh reading against the documents
+// already in the log. The rolling window is read back out of the log rather
+// than kept beside it, because an append-only log IS the history. There is no
+// .history file, no atomic rewrite and no in-place overwrite left to maintain.
 //
 // Triggered off compaction, not off turns: a checkpoint is the only place the
 // transcript has been deliberately condensed, so it is the only place a
 // context worth summarizing exists, and it costs nothing per turn.
+//
+// The name survives the change. Everything in here is identity maintenance for
+// the log, and the package still maintains one identity document - it just no
+// longer maintains it in a file of its own. A rename would pull every caller
+// in internal/ into the same edit for no reader's benefit.
 package bond
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -167,107 +181,80 @@ var running sync.Mutex
 // run that ever triggered it.
 const extractBudget = 5 * time.Minute
 
-// History is how many documents the merge pass sees. Two is a working value,
-// not a derivation: the probe showed a merge of one prior and one fresh
+// History is how many identity documents the merge pass sees. Two is a working
+// value, not a derivation: the probe showed a merge of one prior and one fresh
 // reading preserved durable fields verbatim, advanced Mind state, and promoted
 // two new patterns that neither input stated on its own. A third prior was not
 // tested and is not claimed.
+//
+// It used to bound a sidecar window file. It now bounds how far back into the
+// log the window is read, and the log keeps every entry whether or not the
+// merge pass looks at it.
 const History = 2
 
-// Document is one bond reading, with the context it came from.
+// Document is one identity reading: the text the model produced and the
+// session it came from.
+//
+// It carried a timestamp as well, and that field is gone rather than unused.
+// The log stamps its own date per entry - "the date is written rather than read
+// back" - so a document no longer knows when it was made; the entry does, and
+// an entry is the only copy there is.
 type Document struct {
-	At      time.Time `json:"at"`
-	Session string    `json:"session,omitempty"`
-	Content string    `json:"content"`
+	Session string
+	Content string
 }
 
-// store is the rolling window: the last History documents, oldest first.
-type store struct {
-	path string
-	mu   sync.Mutex
-}
+// identityHeading is what every identity entry carries.
+//
+// It is the same marker clean() validates against, and that is what makes the
+// two halves agree: an entry cannot reach the log without it, so an entry
+// found by it is an entry that was validated on the way in. Reading the window
+// back out of the log is the whole of how the rolling merge survives with no
+// sidecar file, and it rests on this marker being both required on the way in
+// and looked for on the way out.
+const identityHeading = "# BOND"
 
-// file is the on-disk shape. A list, so appending is a read-modify-write of
-// one small file rather than a directory of loose documents nobody prunes.
-type file struct {
-	Documents []Document `json:"documents"`
-}
-
-// NewStore returns the store for a given bond file. The history lives beside
-// it, named by suffix, so an operator who deletes BOND.md to reset also knows
-// there is one more file to delete.
-func NewStore(bondPath string) *store {
-	return &store{path: strings.TrimSuffix(bondPath, ".md") + ".history.json"}
-}
-
-// Recent returns up to History documents, oldest first.
-func (s *store) Recent() ([]Document, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.read()
-}
-
-func (s *store) read() ([]Document, error) {
-	raw, err := os.ReadFile(s.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+// identityWindow returns the last History identity documents in the log,
+// oldest first, for the merge pass.
+//
+// The log carries every kind of entry, so the window is a filter and not a
+// slice. At one compaction the log receives identity entries, project memories
+// and the checkpoint summary, and taking the last two entries blind would hand
+// the merge pass a summary and a memory and call them a bond.
+//
+// It reads the whole log, because a fixed-size tail is not the last two
+// identity entries unless the identity entries happen to be at the end, and
+// they are not. This runs once per compaction, so the cost lands on the rarest
+// event in the system rather than on a turn.
+func identityWindow(log *memory.MemoryFile) []Document {
+	if log == nil {
+		return nil
+	}
+	var window []Document
+	for _, entry := range log.Tail(log.Lines()) {
+		if !strings.Contains(entry, identityHeading) {
+			continue
 		}
-		return nil, err
+		window = append(window, Document{Content: entryBody(entry)})
+		if len(window) > History {
+			window = window[1:]
+		}
 	}
-	var f file
-	if err := json.Unmarshal(raw, &f); err != nil {
-		// A corrupt window is not worth refusing a fresh reading over: the
-		// alternative is a bond that can never be updated again.
-		return nil, nil
-	}
-	if len(f.Documents) > History {
-		f.Documents = f.Documents[len(f.Documents)-History:]
-	}
-	return f.Documents, nil
+	return window
 }
 
-// Push appends a document and trims the window to History.
-func (s *store) Push(doc Document) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, _ := s.read()
-	trimmed := append(existing, doc)
-	if len(trimmed) > History {
-		trimmed = trimmed[len(trimmed)-History:]
+// entryBody returns an entry's document without the log's date line.
+//
+// The log frames every entry as "## <date> <session>" followed by the text,
+// and only the text is the document. The date is deliberately left behind
+// rather than carried into the merge payload: the fresh reading is already
+// labelled as fresh and ordered last, so a date in the payload would be a
+// second, weaker statement of the same fact.
+func entryBody(entry string) string {
+	if i := strings.IndexByte(entry, '\n'); i >= 0 {
+		return strings.TrimSpace(entry[i+1:])
 	}
-	encoded, err := json.Marshal(file{Documents: trimmed})
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(s.path, encoded)
-}
-
-// writeFileAtomic commits through a temp file in the same directory, so a
-// crash mid-write leaves the previous window intact rather than a half file.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return strings.TrimSpace(entry)
 }
 
 // Extract runs the two passes over one context and returns the reconciled
@@ -276,6 +263,10 @@ func writeFileAtomic(path string, data []byte) error {
 // Pass one reads the context alone. Pass two reconciles that reading with the
 // window. With an empty window it is skipped rather than faked, so the first
 // round is genuinely a cold read and not a merge with an imaginary prior.
+//
+// The window is read back out of the log by identityWindow rather than held in
+// this process, so a restart does not reset the merge: the previous run's
+// reading is still the last identity entry in the file.
 func Extract(ctx context.Context, cfg llm.ProviderConfig, prior []Document, context string) (string, error) {
 	context = strings.TrimSpace(context)
 	if context == "" {
@@ -332,6 +323,11 @@ func askModel(ctx context.Context, cfg llm.ProviderConfig, payload string) (stri
 // rather than committed: writing "Understood." over a working bond is worse
 // than leaving the old one in place, and that is the exact failure the probe
 // recorded before the prompt gained its trailing imperative.
+//
+// It now runs on the way into the log as well as out of Extract, because the
+// two are not the same call: a commit is the only place an entry is created,
+// and a validator that runs somewhere upstream of it is a validator a later
+// caller can route around.
 func clean(text string) string {
 	text = strings.TrimSpace(text)
 	if strings.HasPrefix(text, "```") {
@@ -341,7 +337,7 @@ func clean(text string) string {
 		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
 		text = strings.TrimSpace(text)
 	}
-	if !strings.Contains(text, "# BOND") {
+	if !strings.Contains(text, identityHeading) {
 		return ""
 	}
 	return text
@@ -376,30 +372,84 @@ func contextFrom(summary string, discarded []sessionstore.Message) string {
 	return strings.TrimSpace(head.String())
 }
 
-// Commit writes the reconciled document to the bond file and advances the
-// window. The file is what the prompt renders every turn; the window is what
-// the next merge reconciles against.
-func Commit(bondPath string, st *store, doc Document) error {
-	if strings.TrimSpace(doc.Content) == "" {
+// Commit appends one document to the log as a single entry.
+//
+// Appending is the whole of what a commit is now, and it is the behavioural
+// change: there is no current version to overwrite, so a round that produces a
+// worse document leaves the better one above it in the log rather than
+// destroying it. The versioned store this replaces kept exactly one current
+// copy, which is why one bad round could cost the whole bond.
+//
+// The document is validated here rather than trusted. Extract already cleans
+// its own output, but Extract's output and Commit's input are not the same
+// call, and a fence the caller walks around is not a fence. Writing
+// "Understood." into the log is worse than writing nothing.
+func Commit(log *memory.MemoryFile, doc Document) error {
+	if log == nil {
+		return fmt.Errorf("bond: no log to commit to")
+	}
+	body := clean(doc.Content)
+	if body == "" {
 		return fmt.Errorf("bond: refusing to commit an empty document")
 	}
-	if err := writeFileAtomic(bondPath, []byte(strings.TrimSpace(doc.Content)+"\n")); err != nil {
-		return err
-	}
-	return st.Push(doc)
+	return log.Append(body, doc.Session)
 }
 
-// MakeLearner ties extraction to compaction and returns a hook matching
-// compaction.Learn. It returns false when no extraction credential is
-// configured, which keeps the bond opt-in on cost the same way memory
-// extraction is: an unconfigured install compacts normally and simply does
-// not maintain a bond.
-func MakeLearner(main llm.ProviderConfig, bondPath string) (func(context.Context, string, []sessionstore.Message, string), bool) {
+// Migrate carries a legacy BOND.md into the log as one entry, once.
+//
+// It exists because deleting the renderer would otherwise strand every
+// install's identity document: the file is still sitting in the data
+// directory, nothing reads it any more, and the only way its content reaches
+// the log is a step somebody has to take. A library that strands its users'
+// existing data is a library that gets reverted, so the step is code rather
+// than a line in a changelog.
+//
+// It is idempotent by the log rather than by a marker file. If the log already
+// carries an identity entry then the migration has run, and this appends
+// nothing: a second marker would be a second thing to lose, and losing it
+// duplicates the document while keeping it appends nothing at all.
+//
+// A legacy file with no identity in it is refused rather than migrated, so a
+// stray note left in the data directory does not become a bond entry.
+func Migrate(log *memory.MemoryFile, legacyPath string) (bool, error) {
+	if log == nil || strings.TrimSpace(legacyPath) == "" {
+		return false, nil
+	}
+	raw, err := os.ReadFile(legacyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	body := clean(string(raw))
+	if body == "" {
+		return false, nil
+	}
+	if len(identityWindow(log)) > 0 {
+		return false, nil
+	}
+	return true, log.Append(body, "")
+}
+
+// MakeLearner ties identity extraction to compaction and returns a hook
+// matching compaction.Learn.
+//
+// The log is passed in rather than derived, because every caller already has
+// one: Memory.md is opened once per run and shared with the other learners and
+// the sidekick. A path parameter here would be a second answer to "where does
+// this project's log live", and the signature it replaces took a bond path for
+// exactly that reason - which is how the bond ended up writing a file nothing
+// read.
+//
+// It returns false when no extraction credential is configured, which keeps
+// the bond opt-in on cost the same way memory extraction is: an unconfigured
+// install compacts normally and simply does not maintain an identity section.
+func MakeLearner(main llm.ProviderConfig, log *memory.MemoryFile) (func(context.Context, string, []sessionstore.Message, string), bool) {
 	cfg, enabled := memory.ExtractConfigFromENV(main)
-	if !enabled {
+	if !enabled || log == nil {
 		return nil, false
 	}
-	st := NewStore(bondPath)
 	return func(ctx context.Context, sessionID string, discarded []sessionstore.Message, summary string) {
 		// Read everything the hook needs before returning. ctx is the run's
 		// context and it is cancelled the moment that run finishes, so a
@@ -408,18 +458,19 @@ func MakeLearner(main llm.ProviderConfig, bondPath string) (func(context.Context
 		if one == "" {
 			return
 		}
-		prior, err := st.Recent()
-		if err != nil {
-			prior = nil
-		}
+		// The window is read here, off the run's context, so a compaction
+		// racing this one cannot hand the merge pass a window that changes
+		// underneath it while the passes are in flight.
+		prior := identityWindow(log)
 		// The hook runs inline in the compaction that produced this checkpoint,
 		// and that compaction is inside the run. Two model calls inline would
 		// add their full latency to a turn the user is waiting on, so the work
 		// moves off and the run continues on the checkpoint immediately.
 		//
-		// Nothing waits on it. The bond is read per turn by the prompt and the
-		// write is an atomic rename, so a document landing a few seconds late
-		// is read whole or not at all.
+		// Nothing waits on it. The log is appended to rather than rewritten, so
+		// an entry landing a few seconds late is read whole or not at all, and
+		// a late entry is a later one in the same file rather than a lock
+		// somebody has to take.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), extractBudget)
 			defer cancel()
@@ -432,12 +483,13 @@ func MakeLearner(main llm.ProviderConfig, bondPath string) (func(context.Context
 			}
 			if content == "" {
 				// The model acknowledged the prompt instead of answering it, or
-				// returned prose. Keeping the previous bond is the safe direction:
-				// the file is better than the prompt and better than an overwrite.
-				logger.Warn("bond extraction produced no document; keeping the existing bond")
+				// returned prose. Appending nothing is the safe direction: the
+				// entries already in the log are better than a new one that
+				// records an acknowledgement.
+				logger.Warn("bond extraction produced no document; keeping the existing identity entries")
 				return
 			}
-			if err := Commit(bondPath, st, Document{At: time.Now(), Session: sessionID, Content: content}); err != nil {
+			if err := Commit(log, Document{Session: sessionID, Content: content}); err != nil {
 				logger.Warn("bond commit: " + err.Error())
 			}
 		}()

@@ -1,7 +1,6 @@
 package coordinator
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,22 +9,7 @@ import (
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
-	"ceraa/internal/logger"
 )
-
-// sidekickBondBytes bounds the bond block appended to a tool result.
-//
-// It repeats the budget the renderer is configured with at every call site, and
-// it is here anyway because a renderer arrives from a caller: bounding at the
-// point the text becomes output is the only place a bound cannot be walked past,
-// which is the reason oneLine bounds rather than briefOf.
-//
-// Over the limit is refused rather than truncated. The block is a wrapper around
-// an operator-maintained file whose own renderer already truncates while keeping
-// the read-only law, so cutting it a second time is the one edit that can drop
-// that law - and a half-open <bond> reads to the model as a damaged file rather
-// than as a misconfigured budget.
-const sidekickBondBytes = 2000
 
 // sidekickDeliveredKeep bounds the delivered set carried on a session file.
 //
@@ -82,12 +66,7 @@ type sidekickState struct {
 	memFile func() *memory.MemoryFile
 	// tail is how many entries memFile is read for. Zero never reaches here;
 	// useMemoryFile substitutes defaultMemoryTail.
-	tail int
-	// bond renders the operator's identity file. It is a separate channel from
-	// both sources above because it is not a memory: it has no `applies`, no
-	// score and no gate, and routing it through the store is what dropped it
-	// from the prompt in the first place.
-	bond    func() (string, error)
+	tail    int
 	workDir string
 
 	// delivered is every memory already annotated into this session's transcript,
@@ -119,29 +98,17 @@ type sidekickState struct {
 	// rewritten.
 	generalDelivered bool
 
-	// bondDelivered makes the bond fire once per run, for the same reason. A bond
-	// has no path at all, so it matches every operation even harder than a general
-	// memory does, and it is a longer document: the whole of BOND.md, once per
-	// tool call, is the flooding this field exists to prevent.
-	bondDelivered bool
-
 	// runSpent is the bytes of memory note this run has already written into tool
 	// results. Per run rather than per session because the ceiling is about
 	// attention inside one piece of work, and a session is not one piece of work.
-	//
-	// The bond is not counted against it. The bond is a different channel with its
-	// own budget above and its own once-per-run rule, and charging it to the memory
-	// ceiling would silently disable memory for any run whose operator file is
-	// large.
 	runSpent int
 
 	report memory.DeliveryReport
 }
 
-func newSidekickState(lookup func() ([]memory.Entry, error), bond func() (string, error), workDir string) *sidekickState {
+func newSidekickState(lookup func() ([]memory.Entry, error), workDir string) *sidekickState {
 	return &sidekickState{
 		lookup:    lookup,
-		bond:      bond,
 		workDir:   workDir,
 		delivered: map[string]struct{}{},
 	}
@@ -167,20 +134,8 @@ func (s *sidekickState) useMemoryFile(file func() *memory.MemoryFile, tail int) 
 // annotate returns the sidekick block for one completed operation, or "" when
 // nothing qualifies.
 func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.ResultEvent) string {
-	// The bond goes first and ahead of the store read below.
-	//
-	// Ahead, because it must not sit behind a read that can fail: an unreadable
-	// project-memory store would then take the person's name and standing rules
-	// down with it, and that is the same silent loss this channel exists to stop.
-	// A missing BOND.md renders empty and that is a first run, not a failure.
-	//
-	// First, because memory.Combine puts the bond ahead of project memory in the
-	// prompt, and identity reading before project context is the order a reader
-	// expects in both places.
-	bond := s.bondBlock()
-
 	if s == nil || (s.lookup == nil && s.memFile == nil) {
-		return bond
+		return ""
 	}
 	targets := s.targetsFor(sess, result)
 
@@ -199,16 +154,16 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 			// "the tail had nothing for this operation", which is a different and
 			// true answer from what the gate reports.
 			s.report.Deduped += held
-			return bond
+			return ""
 		}
-		return bond + s.deliver(sess, targets, targeted, general)
+		return s.deliver(sess, targets, targeted, general)
 	}
 
 	entries, err := s.lookup()
 	if err != nil {
 		// A read failure must not fail the turn, and must not look like "there is
 		// no memory", which would be a different and wrong answer.
-		return bond
+		return ""
 	}
 	now := time.Now()
 	var targeted, general []memory.Brief
@@ -221,9 +176,9 @@ func (s *sidekickState) annotate(sess *sessionstore.Session, result operation.Re
 	if len(targeted) == 0 && len(general) == 0 {
 		s.report.NoteSuppressed(belowGate(entries, now))
 		s.report.Deduped += s.wouldDeliver(entries, targets, now)
-		return bond
+		return ""
 	}
-	return bond + s.deliver(sess, targets, targeted, general)
+	return s.deliver(sess, targets, targeted, general)
 }
 
 // deliver renders the selection into the note and charges it to the run's byte
@@ -697,46 +652,6 @@ func (r *Runner) ReseedDeliveredMemoryFromCheckpoint(sess *sessionstore.Session)
 	r.sidekick.mu.Lock()
 	defer r.sidekick.mu.Unlock()
 	r.sidekick.reseedFromCheckpoint(sess)
-}
-
-// bondBlock is the bond for the run's first tool result, and "" on every later one.
-//
-// LiveBond re-reads the file on every call, so the flag is what makes the second
-// call a non-call: rendering again mid-run would put two revisions of the same
-// operator-maintained file in one transcript, and the model has no way to tell
-// which one is current.
-//
-// The flag goes down only once something has been answered. A read failure is
-// retried on the next result, because nothing was delivered and a lost bond is
-// the failure this whole path was added to stop. An over-budget render is not
-// retried, because the budget is a property of the caller's configuration rather
-// than of the moment.
-func (s *sidekickState) bondBlock() string {
-	if s == nil || s.bond == nil {
-		return ""
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.bondDelivered {
-		return ""
-	}
-	rendered, err := s.bond()
-	if err != nil {
-		// Logged, because a bond that never arrives is otherwise indistinguishable
-		// from an install that has no BOND.md - which is the failure being fixed.
-		logger.Warn("Bond render failed for sidekick delivery: " + err.Error())
-		return ""
-	}
-	rendered = strings.TrimSpace(rendered)
-	if rendered != "" && len(rendered) > sidekickBondBytes {
-		logger.Warn(fmt.Sprintf("Bond block is %d bytes, over the %d allowed for tool results, so it was not delivered", len(rendered), sidekickBondBytes))
-		rendered = ""
-	}
-	// Empty counts as answered: the file was read and there was nothing in it,
-	// which is a first run rather than a fault.
-	s.bondDelivered = true
-	s.report.BondInjected = len(rendered)
-	return rendered
 }
 
 // belowGate counts what the gate held back, so a run that delivered nothing can be

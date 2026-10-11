@@ -14,6 +14,7 @@ import (
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
+	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
@@ -77,6 +78,54 @@ func memoryLogPath(root string) string {
 
 func memoryLogReader(root string) *memory.MemoryFile {
 	return memory.OpenMemoryFile(memoryLogPath(root))
+}
+
+// memoryWiring is the memory-related half of the runner config: the live
+// renderer the prompt modes read, and the reader for the append-only log.
+//
+// One value rather than fields written into the literal, so the wiring can be
+// asserted without a turn. The bond renderer that used to be woven into the
+// context function is gone; its content rides the log instead.
+type memoryWiring struct {
+	// MemoryContextFunc renders the memory block the prompt modes read.
+	MemoryContextFunc func() (string, error)
+	// MemoryFile is the runner's reader for the session's append-only log.
+	MemoryFile func() *memory.MemoryFile
+}
+
+func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, memoryLog *memory.MemoryFile) memoryWiring {
+	return memoryWiring{
+		MemoryContextFunc: memory.Live(memoryStore, "cli", sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000),
+		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
+	}
+}
+
+// cliLearnChain assembles the compaction learn hooks for one turn: the memory
+// extractor when a credential is configured, and nothing else.
+//
+// cliLearnChain assembles the compaction learn hooks for one turn: the memory
+// extractor when a credential is configured, the identity learner that used to
+// maintain a file of its own, and the append-only log last so it records what the
+// checkpoint produced rather than feeding anything.
+//
+// Nil when nothing is enabled. A non-nil no-op would read as wired while doing
+// nothing, which is the failure a credential-gated hook exists to avoid, and
+// compaction.ChainLearn treats nil as absent so the distinction is preserved all
+// the way to the call site.
+func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+	var chain func(context.Context, string, []sessionstore.Message, string)
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
+		chain = learn
+	}
+	if identity, enabled := bond.MakeLearner(modelConfig, memoryLog); enabled {
+		chain = compaction.ChainLearn(chain, identity)
+	}
+	if memoryLog != nil {
+		if memoryLog != nil {
+			chain = compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
+		}
+	}
+	return chain
 }
 
 // SessionOptions configures a Session.
@@ -161,6 +210,7 @@ func (s *Session) build() error {
 	modelConfig.PromptCacheTTL = provider.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 
+	memoryLog := memoryLogReader(s.workDir)
 	compactor := compaction.New(modelConfig)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
@@ -183,30 +233,21 @@ func (s *Session) build() error {
 		return fmt.Errorf("skill store: %w", err)
 	}
 	evaluationStore, err := newEvaluationStore(s.cfg)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
-		compactor.Learn = learn
-	}
-	// The bond rides the same checkpoint: a compaction is the only place a
-	// transcript has been condensed on purpose, so it is the only place a
-	// context worth reading exists, and it costs nothing per turn.
-	if bl, enabled := bond.MakeLearner(modelConfig, paths.BondFile()); enabled {
-		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
-	}
+	// One learn hook for the turn: the extractor when a credential is
+	// configured. The bond learner that used to be chained on here is gone.
+	compactor.Learn = cliLearnChain(modelConfig, memoryStore, memoryLog)
 	if err != nil {
 		return err
 	}
 	// A snapshot for the first render and a live reader for every turn after it,
 	// so an edit to memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext("cli", s.session, 2000)
-	liveMemory := memory.Live(memoryStore, "cli", s.session, filepath.Join(s.workDir, memory.DefaultMemoryFile), 4000)
 	// The append-only log for this session's workdir. The workdir is the project
 	// root here exactly as it is for the memory file above it, so the two resolve
 	// against the same place. Flat at the root, and never /tmp.
-	memoryLog := memoryLogReader(s.workDir)
-	// One renderer, two homes. The prompt modes read the bond out of the combined
-	// block below; sidekick mode suppresses that whole block and reads it from
-	// BondFunc instead, which is why it cannot simply be left inside the combine.
-	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
+	// The memory half of the runner config, built beside the store and the log
+	// it reads so the two are constructed once and shared.
+	wiring := newMemoryWiring(memoryStore, s.workDir, s.session, memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 
 	registry := tool.DefaultRegistryForUser("cli", skillStore)
@@ -224,13 +265,53 @@ func (s *Session) build() error {
 
 	s.registry = func() (*tool.Registry, error) { return registry, nil }
 
-	s.runner = coordinator.New(coordinator.RunnerConfig{
+	s.runner = coordinator.New(s.runnerConfig(sessionRunnerDeps{
+		provider:            provider,
+		modelConfig:         modelConfig,
+		resolveModel:        resolveModel,
+		compactor:           compactor,
+		memoryStore:         memoryStore,
+		evaluationStore:     evaluationStore,
+		instructionProposer: instructionProposer,
+		memoryContext:       memoryContext,
+		memory:              wiring,
+		skillContext:        skillContext,
+	}), s.store, registry)
+	return nil
+}
+
+// sessionRunnerDeps is what one turn's runner config is built from.
+//
+// A struct rather than a parameter list because the literal reads nearly all of
+// them, and a signature that long invites a transposed argument, which would
+// wire the wrong store into the runner with nothing failing to compile.
+type sessionRunnerDeps struct {
+	provider            config.LLMProvider
+	modelConfig         llm.ProviderConfig
+	resolveModel        func(context.Context) (llm.ProviderConfig, error)
+	compactor           *compaction.Compactor
+	memoryStore         *memory.Store
+	evaluationStore     *evaluation.Store
+	instructionProposer instruction.Proposer
+	memoryContext       string
+	memory              memoryWiring
+	skillContext        string
+}
+
+// runnerConfig builds the RunnerConfig for a turn.
+//
+// Extracted whole so the memory wiring can be asserted on the config a turn
+// actually receives rather than on a copy assembled in a test. The bond
+// renderer that used to be a member of that wiring is gone: what it rendered
+// rides the append-only log this same config reads.
+func (s *Session) runnerConfig(d sessionRunnerDeps) coordinator.RunnerConfig {
+	return coordinator.RunnerConfig{
 		SessionID:           s.session,
 		SystemPrompt:        prompt.System,
-		Model:               modelConfig,
-		ResolveModel:        resolveModel,
-		ContextLimit:        provider.ContextLimit,
-		MaxOutputTokens:     provider.MaxOutputTokens,
+		Model:               d.modelConfig,
+		ResolveModel:        d.resolveModel,
+		ContextLimit:        d.provider.ContextLimit,
+		MaxOutputTokens:     d.provider.MaxOutputTokens,
 		WorkDir:             s.workDir,
 		ToolOutputDir:       s.cfg.ToolOutputDir,
 		MaxToolResultChars:  s.cfg.MaxToolResultChars,
@@ -239,25 +320,25 @@ func (s *Session) build() error {
 		ModelCatalogURL:     s.cfg.ModelCatalogURL,
 		ModelCatalogCache:   s.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(s.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       memoryContext,
-		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
-		MemoryFile:          func() *memory.MemoryFile { return memoryLog },
-		BondFunc:            bondRenderer,
+		MemoryContext:       d.memoryContext,
+		MemoryContextFunc:   d.memory.MemoryContextFunc,
+		MemoryFile:          d.memory.MemoryFile,
 		MemoryDelivery:      s.cfg.MemoryDelivery,
-		MemoryEntries:       memoryEntries(memoryStore, s.session),
-		InstructionRules:    internal.InstructionRules(s.workDir, instructionProposer),
-		SkillContext:        skillContext,
-		EvaluationStore:     evaluationStore,
+		MemoryEntries:       memoryEntries(d.memoryStore, s.session),
+		InstructionRules:    internal.InstructionRules(s.workDir, d.instructionProposer),
+		SkillContext:        d.skillContext,
+		EvaluationStore:     d.evaluationStore,
 		Reasoning:           llm.ReasonLevel(s.Effort()),
-		ReasoningEfforts:    provider.ReasoningEfforts,
-		ReasoningDefault:    provider.ReasoningDefault,
-		Compactor:           compactor,
+		ReasoningEfforts:    d.provider.ReasoningEfforts,
+		ReasoningDefault:    d.provider.ReasoningDefault,
+		Compactor:           d.compactor,
 		Callbacks:           s.callbacks(),
 		NeedsAuthorization:  s.needsAuthorization,
 		AuthorizeTool:       s.authorizeTool,
-	}, s.store, registry)
-	return nil
+	}
 }
+
+// callbacks wires the coordinator to the renderer.
 
 // callbacks wires the coordinator to the renderer.
 //

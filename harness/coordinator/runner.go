@@ -101,15 +101,6 @@ type RunnerConfig struct {
 	// defaultMemoryTail, which is what a run that delivers on every call can
 	// render before the run ceiling stops it.
 	MemoryTail int
-	// BondFunc renders the operator's identity file for sidekick delivery, which
-	// is the only mode that sees it.
-	//
-	// It is separate from MemoryContextFunc because that one combines the bond
-	// with project memory, and a combined renderer cannot be taken apart: sidekick
-	// mode suppresses the whole block, so a bond arriving only inside it is a bond
-	// that never arrives. The prompt modes ignore this field entirely and keep
-	// reading the bond out of MemoryContextFunc.
-	BondFunc func() (string, error)
 	// InstructionRules compiles the project's instruction file into the rules
 	// that tool-result delivery selects from. Nil disables instruction delivery
 	// entirely, which is a configuration rather than a failure.
@@ -132,7 +123,7 @@ type RunnerConfig struct {
 	// mid-run would otherwise put two revisions of the same project instruction
 	// into one transcript with nothing marking which is current. The next run
 	// picks the edit up, which is the same boundary the sidekick's once-per-run
-	// bond uses and for the same reason.
+	// standing set uses and for the same reason.
 	InstructionRules func() instruction.Snapshot
 	SkillContext     string
 	EvaluationStore  *evaluation.Store
@@ -436,13 +427,13 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
 	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
-	// Any one of the three is enough to build the state. Keying it on
-	// MemoryEntries alone meant a caller configured with a bond and no store -
-	// which is a legal configuration, since MemoryEntries is documented as
-	// optional - got no sidekick at all, and the bond went with it. That is the
-	// same silent drop, one indirection further from the cause.
-	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.BondFunc != nil || cfg.MemoryFile != nil) {
-		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.BondFunc, cfg.WorkDir)
+	// Any one of the two is enough to build the state. Keying it on MemoryEntries
+	// alone meant a caller configured with the log and no store - which is a legal
+	// configuration, since MemoryEntries is documented as optional - got no
+	// sidekick at all, and the log went with it. That is the same silent drop, one
+	// indirection further from the cause.
+	if r.delivery == memory.DeliverySidekick && (cfg.MemoryEntries != nil || cfg.MemoryFile != nil) {
+		r.sidekick = newSidekickState(cfg.MemoryEntries, cfg.WorkDir)
 		// Attached after construction because the log is a replacement for the
 		// store rather than a fourth argument to it: a caller that configures both
 		// is mid-migration, and the log is the half that keeps the prompt cache.
@@ -1062,11 +1053,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// which memories happened to be in the store at the time, or which
 				// of the project's own rules had fired by then.
 				//
-				// The order of the two note calls is fixed and not cosmetic: bond
-				// and memory before project rules, because a reader - and a model -
-				// takes identity and project context before project-specific rules
-				// about the file in front of it. Neither is allowed to see the
-				// other's work, which is what keeps them separately fixable.
+				// The order of the two note calls is fixed and not cosmetic:
+				// memory before project rules, because a reader - and a model -
+				// takes project context before project-specific rules about the
+				// file in front of it. Neither is allowed to see the other's
+				// work, which is what keeps them separately fixable.
 				//
 				// This line runs BEFORE persistResult, on purpose. The note is
 				// rendered from the result that just arrived, not from the session

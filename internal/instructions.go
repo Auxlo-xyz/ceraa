@@ -1,7 +1,13 @@
 package internal
 
 import (
+	"context"
+	"strings"
+
 	"ceraa/harness/instruction"
+	"ceraa/harness/memory"
+	"ceraa/harness/sessionstore"
+	"ceraa/internal/logger"
 )
 
 // InstructionRules returns the loader a RunnerConfig wants for the compiled
@@ -28,5 +34,29 @@ func InstructionRules(root string, propose instruction.Proposer) func() instruct
 	return func() instruction.Snapshot {
 		store.Refresh()
 		return store.Snapshot()
+	}
+}
+
+// MemoryLogLearner appends a compaction summary to the append-only log.
+//
+// It moved here from internal/telegram so the TUI and the CLI use the same
+// writer rather than a second copy that can drift, which is how a surface ends up
+// reading a log it never appends to - the log being empty would read as the agent
+// having learned nothing.
+//
+// Not credential-gated, unlike the memory extractor: an install with no
+// extraction key would otherwise keep an empty log forever while the feature
+// looked wired, which is the hardest failure to see. A failure logs and returns,
+// because a log write must not fail the turnover - the same contract the
+// compactor documents for every Learn hook.
+func MemoryLogLearner(file *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+	return func(_ context.Context, sessionID string, _ []sessionstore.Message, summary string) {
+		trimmed := strings.TrimSpace(summary)
+		if trimmed == "" {
+			return
+		}
+		if err := file.Append(trimmed, sessionID); err != nil {
+			logger.Warn("memory log append: " + err.Error())
+		}
 	}
 }

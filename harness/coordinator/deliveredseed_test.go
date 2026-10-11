@@ -34,7 +34,7 @@ func seedEntries() []memory.Entry {
 func seededRunner(entries []memory.Entry) *Runner {
 	r := &Runner{cfg: RunnerConfig{SessionID: "seed"}, reg: tool.DefaultRegistry()}
 	r.delivery = memory.DeliverySidekick
-	r.sidekick = newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	r.sidekick = newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 	return r
 }
 
@@ -285,10 +285,10 @@ func TestSeedingTheSameFoldOnEveryMessageDoesNotGrowTheSessionDeliveredList(t *t
 	}
 }
 
-// The once-per-run flags are not the seed's business. A seed that armed them would
-// drop this run's baseline and its bond on the strength of a previous run's notes,
-// which is the failure the general set is deliberately scoped against: it has to
-// survive exactly when the context carrying it was rewritten.
+// The once-per-run flag is not the seed's business. A seed that armed it would
+// drop this run's baseline on the strength of a previous run's notes, which is
+// the failure the general set is deliberately scoped against: it has to survive
+// exactly when the context carrying it was rewritten.
 func TestSeedingDoesNotArmTheOncePerRunFlags(t *testing.T) {
 	entries := append(seedEntries(), memory.Entry{
 		Content: "prefers dark mode", Seen: 8, SeenAt: time.Now(),
@@ -302,8 +302,8 @@ func TestSeedingDoesNotArmTheOncePerRunFlags(t *testing.T) {
 
 	r.SeedDeliveredMemory(sess)
 
-	if r.sidekick.generalDelivered || r.sidekick.bondDelivered {
-		t.Error("seeding armed a once-per-run flag, so this run would open without its baseline")
+	if r.sidekick.generalDelivered {
+		t.Error("seeding armed the once-per-run flag, so this run would open without its baseline")
 	}
 	if note := r.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); !strings.Contains(note, "dark mode") {
 		t.Errorf("the standing preference was suppressed by a seed that carried no ids for it: %q", note)

@@ -15,6 +15,7 @@ import (
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
 	"ceraa/harness/event"
+	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
@@ -34,7 +35,6 @@ import (
 	"ceraa/internal/logger"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
-	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
@@ -98,15 +98,243 @@ func memoryLogReader(root string) *memory.MemoryFile {
 //
 // A failure logs and returns: a log write must not fail the turnover, the same
 // contract the compactor already documents for every Learn hook.
-func memoryLogLearner(file *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
-	return func(_ context.Context, sessionID string, _ []sessionstore.Message, summary string) {
-		trimmed := strings.TrimSpace(summary)
-		if trimmed == "" {
-			return
-		}
-		if err := file.Append(trimmed, sessionID); err != nil {
-			logger.Warn("memory log append: " + err.Error())
-		}
+
+// memoryWiring is the memory-related half of a RunnerConfig: the live renderer
+// the prompt modes read, and the reader for the append-only log.
+//
+// One value rather than fields written into each literal, so the wiring can be
+// asserted without starting a run, which is the only way a deleted renderer
+// stays deleted. The bond renderer that used to be woven into the context
+// function is gone; its content rides the log instead.
+type memoryWiring struct {
+	// MemoryContextFunc renders the memory block the prompt modes read.
+	MemoryContextFunc func() (string, error)
+	// MemoryFile is the runner's reader for the project's append-only log.
+	MemoryFile func() *memory.MemoryFile
+}
+
+func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, memoryLog *memory.MemoryFile) memoryWiring {
+	return memoryWiring{
+		MemoryContextFunc: memory.Live(memoryStore, projectRoot, sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000),
+		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
+	}
+}
+
+// agentLearnChain assembles the compaction learn hooks for one run: the memory
+// extractor when a credential is configured, and the append-only log last, so
+// the log records what the checkpoint produced rather than feeding anything.
+//
+// The identity learner that used to maintain a file of its own now appends to
+// the same log. It returns a Document rather than a Tip, so the log is the only
+// destination, and a compaction feeds exactly one file rather than three.
+//
+// It is chained rather than folded into the extractor because it has its own
+// credential gate and its own prompt, and a failure there must not take the
+// memory extractor down with it.
+// migrateLegacyBond carries an existing BOND.md into the append-only log once.
+//
+// The renderer that used to read it is deleted, so without this the identity
+// details an install accumulated - the user, the role, the stack, the goals -
+// would be stranded in a file nothing reads any more. Migrate is idempotent by
+// the log itself: if an identity entry is already there, it has run.
+//
+// A failure is logged rather than returned because a run must not be lost to a
+// migration step, and the operator can re-run it by deleting the log.
+// legacyBondName is the file the identity document used to live in. Kept as a
+// constant beside its only reader rather than exported from the bond package,
+// because the bond package no longer owns a path - it owns a log.
+const legacyBondName = "BOND.md"
+
+func migrateLegacyBond(memoryLog *memory.MemoryFile, dataDir string) {
+	if memoryLog == nil {
+		return
+	}
+	if migrated, err := bond.Migrate(memoryLog, filepath.Join(dataDir, legacyBondName)); err != nil {
+		logger.Warn("bond migration: " + err.Error())
+		return
+	} else if migrated {
+		logger.Info("carried the legacy bond into the memory log")
+	}
+}
+
+func agentLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, projectRoot string, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+	var chain func(context.Context, string, []sessionstore.Message, string)
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
+		chain = learn
+	}
+	if identity, enabled := bond.MakeLearner(modelConfig, memoryLog); enabled {
+		chain = compaction.ChainLearn(chain, identity)
+	}
+	return compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
+}
+
+// agentRunDeps is everything one Telegram run's RunnerConfig is built from.
+//
+// A struct rather than a parameter list because the literal below reads nearly
+// all of them, and a signature that long invites a transposed argument, which
+// would wire the wrong store into the runner with nothing failing to compile.
+type agentRunDeps struct {
+	sessionID           string
+	cfg                 *config.Config
+	providerConfig      config.LLMProvider
+	modelConfig         llm.ProviderConfig
+	resolveModel        func(context.Context) (llm.ProviderConfig, error)
+	reasoning           llm.ReasonLevel
+	projectRoot         string
+	memoryContext       string
+	memory              memoryWiring
+	memoryStore         *memory.Store
+	instructionProposer instruction.Proposer
+	skillContext        string
+	evaluationStore     *evaluation.Store
+	compactor           *compaction.Compactor
+	onContent           func(string)
+	onReasoning         func(string)
+	onTool              func(string, string)
+	onAnswer            func(string)
+	onStepReasoningOnly func()
+}
+
+// agentRunnerConfig builds the RunnerConfig for one Telegram run.
+//
+// Extracted whole from the run path so the memory wiring can be asserted on the
+// config a run actually receives rather than on a copy assembled in a test. The
+// bond renderer that used to be a member of that wiring is gone: what it
+// rendered rides the append-only log this same config reads.
+func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
+	return coordinator.RunnerConfig{
+		SessionID:           d.sessionID,
+		Reasoning:           d.reasoning,
+		ReasoningEfforts:    d.providerConfig.ReasoningEfforts,
+		ReasoningDefault:    d.providerConfig.ReasoningDefault,
+		SystemPrompt:        prompt.System,
+		Model:               d.modelConfig,
+		ResolveModel:        d.resolveModel,
+		ContextLimit:        d.providerConfig.ContextLimit,
+		MaxOutputTokens:     d.providerConfig.MaxOutputTokens,
+		WorkDir:             d.projectRoot,
+		ToolOutputDir:       d.cfg.ToolOutputDir,
+		MaxToolResultChars:  d.cfg.MaxToolResultChars,
+		MaxConcurrentTools:  d.cfg.MaxConcurrentTools,
+		GoalDir:             d.cfg.SessionFile,
+		ModelCatalogURL:     d.cfg.ModelCatalogURL,
+		ModelCatalogCache:   d.cfg.ModelCatalogCache,
+		ModelCatalogRefresh: time.Duration(d.cfg.ModelCatalogRefreshHours) * time.Hour,
+		MemoryContext:       d.memoryContext,
+		MemoryContextFunc:   d.memory.MemoryContextFunc,
+		MemoryFile:          d.memory.MemoryFile,
+		MemoryDelivery:      d.cfg.MemoryDelivery,
+		MemoryEntries:       memoryEntries(d.memoryStore, d.projectRoot, d.sessionID),
+		InstructionRules:    internal.InstructionRules(d.projectRoot, d.instructionProposer),
+		SkillContext:        d.skillContext,
+		EvaluationStore:     d.evaluationStore,
+		Compactor:           d.compactor,
+		ForcedCompaction:    func() bool { return consumeForcedCompaction(d.sessionID) },
+		NeedsAuthorization: func(name string, args map[string]any) bool {
+			return needsPermission(name, fmt.Sprint(args))
+		},
+		AuthorizeTool: func(ctx context.Context, callID, name string, args map[string]any) (bool, error) {
+			decision, err := permission.Default.Create(ctx, d.sessionID, callID, name, 5*time.Minute, func() {
+				event.Default.Publish(event.Event{Type: event.TypePermission, SessionID: d.sessionID, Data: map[string]any{"tool": name, "args": args, "request_id": callID}})
+			})
+			if err != nil {
+				return false, err
+			}
+			return decision == "allowOnce" || decision == "allowAlways", nil
+		},
+		Callbacks: coordinator.Callbacks{
+			// Structured events go on the bus for every surface, not just the
+			// one that asked for this run. A subscriber that has no renderer of
+			// its own still has to be able to watch, which is what the Mini App
+			// does; it gets a delta and a call id rather than a line that was
+			// already flattened into a sentence.
+			OnContent: func(content string) {
+				event.Default.Publish(event.Event{Type: event.TypeContent, SessionID: d.sessionID, Data: map[string]any{"delta": content}})
+				if d.onContent != nil {
+					d.onContent(content)
+				}
+			},
+			OnReasoning: func(reasoning string) {
+				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: d.sessionID, Data: map[string]any{"delta": reasoning}})
+				if d.onReasoning != nil {
+					d.onReasoning(reasoning)
+				}
+			},
+			OnStepReasoningOnly: func() {
+				if d.onStepReasoningOnly != nil {
+					d.onStepReasoningOnly()
+				}
+			},
+			OnToolStart: func(callID, name string, args map[string]any) {
+				event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: d.sessionID, Data: map[string]any{"call_id": callID, "tool": name, "args": args}})
+				if d.onTool != nil {
+					// The tool name is carried ahead of the label so the line can
+					// read "💻 bash <command>" rather than the harness's sentence
+					// about the call. parseToolActivity splits the two back apart.
+					d.onTool(callID, "🔄 "+toolNameToken(name)+toolDisplayName(name)+toolArgsSummary(name, args))
+				}
+			},
+			OnToolDone: func(callID, name string, result operation.ResultEvent) {
+				status := "✅"
+				label := toolDisplayName(name)
+				if result.Status != operation.StatusCompleted {
+					status = "⚠️"
+				}
+				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: d.sessionID, Data: map[string]any{
+					"call_id": callID, "tool": name, "label": label,
+					"status": string(result.Status), "outcome": toolResultLabel(result),
+				}})
+				if d.onTool != nil {
+					// The counts ride at the end of the line and are pulled off by
+					// parseToolActivity. They go here rather than into the label
+					// because the rendered word is the tool name, so a label
+					// suffix would be parsed and then never shown.
+					counts := ""
+					if delta := formatLineDelta(result); delta != "" {
+						counts = " " + lineDeltaTokenPrefix + " " + delta
+					}
+					d.onTool(callID, fmt.Sprintf("%s %s%s %s%s", status, toolNameToken(name), label, toolResultLabel(result), counts))
+				}
+			},
+			OnRetry: func(err error, attempt int, delay time.Duration) {
+				if d.onTool == nil {
+					return
+				}
+				// Shown rather than logged, because a gateway backoff can be a
+				// minute and the alternative is a silent wait.
+				d.onTool("retry", fmt.Sprintf("\u23f3 Upstream error, retrying (%d) in %s: %s",
+					attempt, delay.Round(time.Second), shortProviderError(err)))
+			},
+			OnCompactionStart: func() {
+				if d.onTool != nil {
+					d.onTool("compaction", "⚡ Compacting context...")
+				}
+			},
+			OnCompactionDone: func(ok bool, err error) {
+				if d.onTool != nil {
+					if ok {
+						d.onTool("compaction", "✅ Compaction completed")
+					} else if err != nil {
+						d.onTool("compaction", "⚠️ Compaction skipped")
+					}
+				}
+			},
+			// Usage and cost still stay off the bus. That was written when the
+			// only production subscriber answered permission and question
+			// requests, so TypeTokens and TypeCost fired on every usage delta of
+			// every run into nobody; the subscriber changed, the noise did not.
+			// Both are per-run totals in the session record now, which is where
+			// the Mini App reads them from, so a live surface pays nothing to
+			// know what a run cost.
+			OnDone: func(answer string) {
+				if answer != "" {
+					event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: d.sessionID, Data: map[string]any{"text": answer}})
+				}
+				if d.onAnswer != nil && answer != "" {
+					d.onAnswer(answer)
+				}
+			},
+		},
 	}
 }
 
@@ -180,29 +408,19 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// tail by the runner. Built beside the other project-scoped stores so it is
 	// constructed once and shared by both.
 	memoryLog := memoryLogReader(projectRoot)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, projectRoot); enabled {
-		compactor.Learn = learn
-	}
-	// The bond rides the same checkpoint: a compaction is the only place a
-	// transcript has been condensed on purpose, so it is the only place a
-	// context worth reading exists, and it costs nothing per turn.
-	if bl, enabled := bond.MakeLearner(modelConfig, paths.BondFile()); enabled {
-		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
-	}
-	// Last in the chain, so it records what the checkpoint produced rather than
-	// feeding anything. Order is memory, bond, log.
-	compactor.Learn = compaction.ChainLearn(compactor.Learn, memoryLogLearner(memoryLog))
+	// One learn chain for the run: the extractor when a credential is
+	// configured, then the append-only log. The bond learner that used to sit
+	// between the two is gone, because what the bond carried now rides the log.
+	compactor.Learn = agentLearnChain(modelConfig, memoryStore, projectRoot, memoryLog)
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
 	// Startup snapshot, kept as a fallback and as the first render. The live
 	// renderer below re-reads the file every turn, so an edit to
 	// memory/AGENTS.md reaches the model without a restart.
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sessionID, 2000)
-	liveMemory := memory.Live(memoryStore, projectRoot, sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
-	// One renderer, two homes. The prompt modes read the bond out of the combined
-	// block below; sidekick mode suppresses that whole block and reads it from
-	// BondFunc instead, which is why it cannot simply be left inside the combine.
-	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
+	// The memory half of the runner config, built beside the stores it reads so
+	// it is constructed once and shared with the learn chain above.
+	wiring := newMemoryWiring(memoryStore, projectRoot, sessionID, memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
 	// Recorded because a provider may reject or ignore a level, and the only way
@@ -241,141 +459,27 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
 	attachVisionToRegistry(registry, resolveModel)
-	runner := coordinator.New(coordinator.RunnerConfig{
-		SessionID:           sessionID,
-		Reasoning:           reasoning,
-		ReasoningEfforts:    providerConfig.ReasoningEfforts,
-		ReasoningDefault:    providerConfig.ReasoningDefault,
-		SystemPrompt:        prompt.System,
-		Model:               modelConfig,
-		ResolveModel:        resolveModel,
-		ContextLimit:        providerConfig.ContextLimit,
-		MaxOutputTokens:     providerConfig.MaxOutputTokens,
-		WorkDir:             projectRoot,
-		ToolOutputDir:       cfg.ToolOutputDir,
-		MaxToolResultChars:  cfg.MaxToolResultChars,
-		MaxConcurrentTools:  cfg.MaxConcurrentTools,
-		GoalDir:             cfg.SessionFile,
-		ModelCatalogURL:     cfg.ModelCatalogURL,
-		ModelCatalogCache:   cfg.ModelCatalogCache,
-		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       memoryContext,
-		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
-		MemoryFile:          func() *memory.MemoryFile { return memoryLog },
-		BondFunc:            bondRenderer,
-		MemoryDelivery:      cfg.MemoryDelivery,
-		MemoryEntries:       memoryEntries(memoryStore, projectRoot, sessionID),
-		InstructionRules:    internal.InstructionRules(projectRoot, instructionProposer),
-		SkillContext:        skillContext,
-		EvaluationStore:     evaluationStore,
-		Compactor:           compactor,
-		ForcedCompaction:    func() bool { return consumeForcedCompaction(sessionID) },
-		NeedsAuthorization: func(name string, args map[string]any) bool {
-			return needsPermission(name, fmt.Sprint(args))
-		},
-		AuthorizeTool: func(ctx context.Context, callID, name string, args map[string]any) (bool, error) {
-			decision, err := permission.Default.Create(ctx, sessionID, callID, name, 5*time.Minute, func() {
-				event.Default.Publish(event.Event{Type: event.TypePermission, SessionID: sessionID, Data: map[string]any{"tool": name, "args": args, "request_id": callID}})
-			})
-			if err != nil {
-				return false, err
-			}
-			return decision == "allowOnce" || decision == "allowAlways", nil
-		},
-		Callbacks: coordinator.Callbacks{
-			// Structured events go on the bus for every surface, not just the
-			// one that asked for this run. A subscriber that has no renderer of
-			// its own still has to be able to watch, which is what the Mini App
-			// does; it gets a delta and a call id rather than a line that was
-			// already flattened into a sentence.
-			OnContent: func(content string) {
-				event.Default.Publish(event.Event{Type: event.TypeContent, SessionID: sessionID, Data: map[string]any{"delta": content}})
-				if onContent != nil {
-					onContent(content)
-				}
-			},
-			OnReasoning: func(reasoning string) {
-				event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"delta": reasoning}})
-				if onReasoning != nil {
-					onReasoning(reasoning)
-				}
-			},
-			OnStepReasoningOnly: func() {
-				if onStepReasoningOnly != nil {
-					onStepReasoningOnly()
-				}
-			},
-			OnToolStart: func(callID, name string, args map[string]any) {
-				event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"call_id": callID, "tool": name, "args": args}})
-				if onTool != nil {
-					// The tool name is carried ahead of the label so the line can
-					// read "💻 bash <command>" rather than the harness's sentence
-					// about the call. parseToolActivity splits the two back apart.
-					onTool(callID, "🔄 "+toolNameToken(name)+toolDisplayName(name)+toolArgsSummary(name, args))
-				}
-			},
-			OnToolDone: func(callID, name string, result operation.ResultEvent) {
-				status := "✅"
-				label := toolDisplayName(name)
-				if result.Status != operation.StatusCompleted {
-					status = "⚠️"
-				}
-				event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{
-					"call_id": callID, "tool": name, "label": label,
-					"status": string(result.Status), "outcome": toolResultLabel(result),
-				}})
-				if onTool != nil {
-					// The counts ride at the end of the line and are pulled off by
-					// parseToolActivity. They go here rather than into the label
-					// because the rendered word is the tool name, so a label
-					// suffix would be parsed and then never shown.
-					counts := ""
-					if delta := formatLineDelta(result); delta != "" {
-						counts = " " + lineDeltaTokenPrefix + " " + delta
-					}
-					onTool(callID, fmt.Sprintf("%s %s%s %s%s", status, toolNameToken(name), label, toolResultLabel(result), counts))
-				}
-			},
-			OnRetry: func(err error, attempt int, delay time.Duration) {
-				if onTool == nil {
-					return
-				}
-				// Shown rather than logged, because a gateway backoff can be a
-				// minute and the alternative is a silent wait.
-				onTool("retry", fmt.Sprintf("\u23f3 Upstream error, retrying (%d) in %s: %s",
-					attempt, delay.Round(time.Second), shortProviderError(err)))
-			},
-			OnCompactionStart: func() {
-				if onTool != nil {
-					onTool("compaction", "⚡ Compacting context...")
-				}
-			},
-			OnCompactionDone: func(ok bool, err error) {
-				if onTool != nil {
-					if ok {
-						onTool("compaction", "✅ Compaction completed")
-					} else if err != nil {
-						onTool("compaction", "⚠️ Compaction skipped")
-					}
-				}
-			},
-			// Usage and cost still stay off the bus. That was written when the
-			// only production subscriber answered permission and question
-			// requests, so TypeTokens and TypeCost fired on every usage delta of
-			// every run into nobody; the subscriber changed, the noise did not.
-			// Both are per-run totals in the session record now, which is where
-			// the Mini App reads them from, so a live surface pays nothing to
-			// know what a run cost.
-			OnDone: func(answer string) {
-				if answer != "" {
-					event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"text": answer}})
-				}
-				if onAnswer != nil && answer != "" {
-					onAnswer(answer)
-				}
-			},
-		},
-	}, store, registry)
+	runner := coordinator.New(agentRunnerConfig(agentRunDeps{
+		sessionID:           sessionID,
+		cfg:                 cfg,
+		providerConfig:      providerConfig,
+		modelConfig:         modelConfig,
+		resolveModel:        resolveModel,
+		reasoning:           reasoning,
+		projectRoot:         projectRoot,
+		memoryContext:       memoryContext,
+		memory:              wiring,
+		memoryStore:         memoryStore,
+		instructionProposer: instructionProposer,
+		skillContext:        skillContext,
+		evaluationStore:     evaluationStore,
+		compactor:           compactor,
+		onContent:           onContent,
+		onReasoning:         onReasoning,
+		onTool:              onTool,
+		onAnswer:            onAnswer,
+		onStepReasoningOnly: onStepReasoningOnly,
+	}), store, registry)
 	_, err = runner.Run(parent, userText)
 	if err != nil {
 		event.Default.Publish(event.Event{Type: event.TypeError, SessionID: sessionID, Data: map[string]any{"message": err.Error()}})

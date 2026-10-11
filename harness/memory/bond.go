@@ -1,57 +1,28 @@
 package memory
 
-import (
-	"html"
-	"os"
-	"strings"
-)
+import "strings"
 
-// Bond is the user-level counterpart to project memory. Project files
-// describe the work; the bond describes the person, and it is the same
-// person in every project, so it lives once beside the config rather than
-// once per checkout. Maintained by the operator (Sidekick), never by the
-// agent: the law below is rendered into the prompt with the file, so the
-// rule travels with the content instead of living in a prompt somewhere
-// the file outlives.
-const bondLaw = "BOND.md is Sidekick-maintained: read it, never write it. Propose changes in chat; only the operator commits them."
-
-// LiveBond returns a renderer that re-reads the bond file on every call,
-// like Live does for project memory. A missing file renders nothing and no
-// error: a first run has no bond yet, and that is not a failure. Trimming
-// and escaping mirror RenderFile; only the section tag differs, because a
-// bond labelled as a memory file would read as project context.
-func LiveBond(filePath string, maxBytes int) func() (string, error) {
-	return func() (string, error) {
-		if filePath == "" {
-			return "", nil
-		}
-		raw, err := os.ReadFile(filePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return "", nil
-			}
-			return "", err
-		}
-		body := strings.TrimSpace(string(raw))
-		if body == "" {
-			return "", nil
-		}
-		const open = "<bond>\n"
-		const tail = "\n" + bondLaw + "\n</bond>\n"
-		// The law is load-bearing, so truncation takes from the body and
-		// never from it: a bond over budget degrades to stale-but-present
-		// rules, not to rules without the read-only law.
-		entry := open + html.EscapeString(body) + tail
-		if maxBytes > 0 && len(entry) > maxBytes {
-			entry = open + truncateUTF8(html.EscapeString(body), maxBytes-len(open)-len(tail)) + tail
-		}
-		return entry, nil
-	}
-}
-
-// Combine chains renderers in order: bond first, so identity and standing
-// rules precede project memory in the prompt. A failing source contributes
-// nothing but does not blank the others; the first error is reported.
+// Combine chains renderers in order, appending each one's output.
+//
+// It is the only thing left in this file, and the reason is worth recording.
+// Beside it sat LiveBond: the renderer that re-read BOND.md and turned it into
+// a <bond> prompt block wrapped in a read-only law. That was the second of two
+// renderers for one concept - the bond's content was maintained by in-place
+// rewrites in harness/bond and read back here - and the duplication is exactly
+// what this change removes. The renderer is deleted, along with the law string
+// it wrapped and the <bond> tag it emitted.
+//
+// The bond's content is now one entry in the append-only Memory.md log, and its
+// delivery is the sidekick's, out of the same log tail every other memory is
+// read from. There is nothing here to render, so there is nothing here to keep
+// in step with it.
+//
+// Combine survives because chaining prompt renderers is still what its callers
+// do. The bond renderer that used to be its first argument is gone; those call
+// sites drop that argument themselves, because they live outside this package.
+//
+// A failing source contributes nothing but does not blank the others; the first
+// error is reported.
 func Combine(renderers ...func() (string, error)) func() (string, error) {
 	return func() (string, error) {
 		var parts []string

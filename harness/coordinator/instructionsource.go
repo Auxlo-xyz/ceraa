@@ -24,8 +24,8 @@ import (
 // file edited mid-run would otherwise change what the model is told partway
 // through one piece of work, and the run would carry two revisions of the same
 // project instruction with nothing marking which is current. The next run picks
-// the edit up, which is the same boundary the sidekick's once-per-run bond uses
-// and for the same reason.
+// the edit up, which is the same boundary the sidekick's once-per-run standing
+// set uses and for the same reason.
 //
 // # Why Seen is here and not derived
 //

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ceraa/internal"
 )
 
 // liveWorkspaceRoot is the project root the deployed bot actually runs against,
@@ -75,7 +77,7 @@ func TestTelegramMemoryLogReaderIsNonNilAndWrites(t *testing.T) {
 // contract that must hold either way means this passes now and after it is fixed.
 func TestTelegramMemoryLogTailCarriesTheNewestEntry(t *testing.T) {
 	reader := memoryLogReader(t.TempDir())
-	learn := memoryLogLearner(reader)
+	learn := internal.MemoryLogLearner(reader)
 	learn(context.Background(), "tg-7", nil, "First summary.")
 	learn(context.Background(), "tg-8", nil, "Second summary.")
 
@@ -102,7 +104,7 @@ func TestTelegramMemoryLogTailCarriesTheNewestEntry(t *testing.T) {
 // complete one, and a log of those is noise that costs a tail read on every turn.
 func TestTelegramMemoryLogLearnerWritesNothingForAnEmptySummary(t *testing.T) {
 	reader := memoryLogReader(t.TempDir())
-	memoryLogLearner(reader)(context.Background(), "tg-1", nil, "   \n\t ")
+	internal.MemoryLogLearner(reader)(context.Background(), "tg-1", nil, "   \n\t ")
 	if entries := reader.Tail(10); len(entries) != 0 {
 		t.Fatalf("Tail = %d entries after an empty summary, want 0", len(entries))
 	}
@@ -116,7 +118,7 @@ func TestTelegramMemoryLogLearnerWritesNothingForAnEmptySummary(t *testing.T) {
 func TestTelegramMemoryLogLearnerSurvivesAnUnwritableRoot(t *testing.T) {
 	root := t.TempDir()
 	good := memoryLogReader(root)
-	broken := memoryLogLearner(memoryLogReader(filepath.Join(root, "missing")))
+	broken := internal.MemoryLogLearner(memoryLogReader(filepath.Join(root, "missing")))
 	broken(context.Background(), "tg-1", nil, "a summary nobody can store")
 	if entries := good.Tail(10); len(entries) != 0 {
 		t.Fatalf("failed hook wrote to the wrong log: %v", entries)

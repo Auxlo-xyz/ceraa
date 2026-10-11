@@ -11,6 +11,7 @@ import (
 	"ceraa/harness/compaction"
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
+	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/harness/operation"
@@ -55,6 +56,58 @@ func memoryLogPath(root string) string {
 
 func memoryLogReader(root string) *memory.MemoryFile {
 	return memory.OpenMemoryFile(memoryLogPath(root))
+}
+
+// memoryWiring is the memory-related half of the runner config: the live
+// renderer the prompt modes read, and the reader for the append-only log.
+//
+// One value rather than fields written into the literal, so the wiring can be
+// asserted without running a turn. The bond renderer that used to be woven
+// into the context function is gone; its content rides the log instead.
+type memoryWiring struct {
+	// MemoryContextFunc renders the memory block the prompt modes read.
+	MemoryContextFunc func() (string, error)
+	// MemoryFile is the runner's reader for the append-only log.
+	MemoryFile func() *memory.MemoryFile
+}
+
+func newMemoryWiring(memoryStore *memory.Store, projectRoot, sessionID string, memoryLog *memory.MemoryFile) memoryWiring {
+	return memoryWiring{
+		// The project id is "cli" for this surface, the same one the store is
+		// read against everywhere else in the file.
+		MemoryContextFunc: memory.Live(memoryStore, "cli", sessionID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000),
+		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
+	}
+}
+
+// cliLearnChain assembles the compaction learn hooks for one run: the memory
+// extractor when a credential is configured, and nothing else.
+//
+// cliLearnChain assembles the compaction learn hooks for one turn: the memory
+// extractor when a credential is configured, the identity learner that used to
+// maintain a file of its own, and the append-only log last so it records what the
+// checkpoint produced rather than feeding anything.
+//
+// Nil when nothing is enabled. A non-nil no-op would read as wired while doing
+// nothing, which is the failure a credential-gated hook exists to avoid, and
+// compaction.ChainLearn treats nil as absent so the distinction is preserved all
+// the way to the call site.
+func cliLearnChain(modelConfig llm.ProviderConfig, memoryStore *memory.Store, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
+	var chain func(context.Context, string, []sessionstore.Message, string)
+	if learn, enabled := memory.MakeLearner(modelConfig, memoryStore, "cli"); enabled {
+		chain = learn
+	}
+	if identity, enabled := bond.MakeLearner(modelConfig, memoryLog); enabled {
+		chain = compaction.ChainLearn(chain, identity)
+	}
+	// The log writer is always chained when a log exists. It is not
+	// credential-gated, so an install with no extractor key still accumulates the
+	// checkpoint summaries - the extractor turning the summary into memories is
+	// optional; recording it is not.
+	if memoryLog != nil {
+		chain = compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
+	}
+	return chain
 }
 
 func Run(user string) error {
@@ -111,29 +164,21 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	pcfg.PromptCacheMode = provider.PromptCacheMode
 	pcfg.PromptCacheTTL = provider.PromptCacheTTL
 	pcfg.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
+	memoryLog := memoryLogReader(".")
 	compactor := compaction.New(pcfg)
-	if learn, enabled := memory.MakeLearner(pcfg, memoryStore, "cli"); enabled {
-		compactor.Learn = learn
-	}
-	// The bond rides the same checkpoint: a compaction is the only place a
-	// transcript has been condensed on purpose, so it is the only place a
-	// context worth reading exists, and it costs nothing per turn.
-	if bl, enabled := bond.MakeLearner(pcfg, paths.BondFile()); enabled {
-		compactor.Learn = compaction.ChainLearn(compactor.Learn, bl)
-	}
+	// One learn hook for the run: the extractor when a credential is configured.
+	// The bond learner that used to be chained on here is gone.
+	compactor.Learn = cliLearnChain(pcfg, memoryStore, memoryLog)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.ArchiveDir = cfg.SessionFile
 	// Startup snapshot, kept as a fallback and as the first render. The live
 	// renderer below re-reads the file every turn.
 	memoryContext, _ := memoryStore.RenderContext("cli", "cli", 2000)
-	liveMemory := memory.Live(memoryStore, "cli", "cli", filepath.Join(cfg.WorkspaceRootPath(), memory.DefaultMemoryFile), 4000)
 	// The append-only log for this run. Flat at the root, never /tmp.
-	memoryLog := memoryLogReader(".")
-	// One renderer, two homes. The prompt modes read the bond out of the combined
-	// block below; sidekick mode suppresses that whole block and reads it from
-	// BondFunc instead, which is why it cannot simply be left inside the combine.
-	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
+	// The memory half of the runner config, built beside the store and the log
+	// it reads so the two are constructed once and shared.
+	wiring := newMemoryWiring(memoryStore, cfg.WorkspaceRootPath(), "cli", memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
@@ -260,37 +305,79 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
 	attachVisionToRegistry(registry, resolveModel)
-	runner := coordinator.New(coordinator.RunnerConfig{
+	runner := coordinator.New(agentRunnerConfig(agentRunDeps{
+		cfg:                 cfg,
+		provider:            provider,
+		modelConfig:         modelConfig,
+		resolveModel:        resolveModel,
+		memoryContext:       memoryContext,
+		memory:              wiring,
+		memoryStore:         memoryStore,
+		instructionProposer: instructionProposer,
+		skillContext:        skillContext,
+		evaluationStore:     evaluationStore,
+		compactor:           compactor,
+	}), store, registry)
+	_, err = runner.Run(ctx, user)
+	return err
+}
+
+// agentRunDeps is what one CLI run's RunnerConfig is built from.
+//
+// A struct rather than a parameter list because the literal reads nearly all of
+// them, and a signature that long invites a transposed argument, which would
+// wire the wrong store into the runner with nothing failing to compile.
+type agentRunDeps struct {
+	cfg                 *config.Config
+	provider            config.LLMProvider
+	modelConfig         llm.ProviderConfig
+	resolveModel        func(context.Context) (llm.ProviderConfig, error)
+	memoryContext       string
+	memory              memoryWiring
+	memoryStore         *memory.Store
+	instructionProposer instruction.Proposer
+	skillContext        string
+	evaluationStore     *evaluation.Store
+	compactor           *compaction.Compactor
+}
+
+// agentRunnerConfig builds the RunnerConfig for one CLI run.
+//
+// Extracted whole so the memory wiring can be asserted on the config a run
+// actually receives rather than on a copy assembled in a test. The bond
+// renderer that used to be a member of that wiring is gone: what it rendered
+// rides the append-only log this same config reads.
+func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
+	return coordinator.RunnerConfig{
 		SessionID:           "cli",
 		SystemPrompt:        prompt.System,
-		Model:               modelConfig,
-		ResolveModel:        resolveModel,
-		ContextLimit:        provider.ContextLimit,
-		MaxOutputTokens:     provider.MaxOutputTokens,
-		ToolOutputDir:       cfg.ToolOutputDir,
-		MaxToolResultChars:  cfg.MaxToolResultChars,
-		MaxConcurrentTools:  cfg.MaxConcurrentTools,
-		GoalDir:             cfg.SessionFile,
-		ModelCatalogURL:     cfg.ModelCatalogURL,
-		ModelCatalogCache:   cfg.ModelCatalogCache,
-		ModelCatalogRefresh: time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryContext:       memoryContext,
-		MemoryContextFunc:   memory.Combine(bondRenderer, liveMemory),
-		MemoryFile:          func() *memory.MemoryFile { return memoryLog },
-		BondFunc:            bondRenderer,
-		MemoryDelivery:      cfg.MemoryDelivery,
-		MemoryEntries:       memoryEntries(memoryStore, "cli", "cli"),
+		Model:               d.modelConfig,
+		ResolveModel:        d.resolveModel,
+		ContextLimit:        d.provider.ContextLimit,
+		MaxOutputTokens:     d.provider.MaxOutputTokens,
+		ToolOutputDir:       d.cfg.ToolOutputDir,
+		MaxToolResultChars:  d.cfg.MaxToolResultChars,
+		MaxConcurrentTools:  d.cfg.MaxConcurrentTools,
+		GoalDir:             d.cfg.SessionFile,
+		ModelCatalogURL:     d.cfg.ModelCatalogURL,
+		ModelCatalogCache:   d.cfg.ModelCatalogCache,
+		ModelCatalogRefresh: time.Duration(d.cfg.ModelCatalogRefreshHours) * time.Hour,
+		MemoryContext:       d.memoryContext,
+		MemoryContextFunc:   d.memory.MemoryContextFunc,
+		MemoryFile:          d.memory.MemoryFile,
+		MemoryDelivery:      d.cfg.MemoryDelivery,
+		MemoryEntries:       memoryEntries(d.memoryStore, "cli", "cli"),
 		// The CLI runs in the process working directory: this config sets no
 		// WorkDir, so the runner resolves relative paths against it, and the
 		// instruction store has to resolve against the same place or a project's
 		// AGENTS.md is read from somewhere the commands do not run.
-		InstructionRules: internal.InstructionRules(".", instructionProposer),
-		SkillContext:     skillContext,
-		EvaluationStore:  evaluationStore,
-		Reasoning:        llm.ReasonLevel(strings.TrimSpace(provider.Reasoning)),
-		ReasoningEfforts: provider.ReasoningEfforts,
-		ReasoningDefault: provider.ReasoningDefault,
-		Compactor:        compactor,
+		InstructionRules: internal.InstructionRules(".", d.instructionProposer),
+		SkillContext:     d.skillContext,
+		EvaluationStore:  d.evaluationStore,
+		Reasoning:        llm.ReasonLevel(strings.TrimSpace(d.provider.Reasoning)),
+		ReasoningEfforts: d.provider.ReasoningEfforts,
+		ReasoningDefault: d.provider.ReasoningDefault,
+		Compactor:        d.compactor,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(content string) { fmt.Print(content) },
 			OnToolStart: func(_, name string, _ map[string]any) {
@@ -301,9 +388,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 			},
 			OnCompactionStart: func() { fmt.Println("⚡ Compacting context...") },
 		},
-	}, store, registry)
-	_, err = runner.Run(ctx, user)
-	return err
+	}
 }
 
 // agentRunID is the run identifier sent to a provider that correlates on it.

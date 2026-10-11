@@ -11,6 +11,7 @@ import (
 
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
+	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/memory"
 	"ceraa/harness/permission"
@@ -599,6 +600,47 @@ func webDeleteMemory(id string) error {
 	return store.Remove(id)
 }
 
+// webLiveDeps is what the dashboard's live-request runner config is built from.
+type webLiveDeps struct {
+	sessionID           string
+	cfg                 *config.Config
+	providerConfig      config.LLMProvider
+	modelConfig         llm.ProviderConfig
+	projectRoot         string
+	memoryContext       string
+	memory              memoryWiring
+	memoryStore         *memory.Store
+	instructionProposer instruction.Proposer
+	skillContext        string
+	evaluationStore     *evaluation.Store
+}
+
+// webLiveRunnerConfig builds the RunnerConfig the compaction button previews
+// from.
+//
+// Extracted for the same reason the bridge's is: the memory wiring can then be
+// asserted on the config a preview actually uses. The bond renderer that used
+// to be woven into the context function is gone, and the log the reader names
+// carries what it rendered.
+func webLiveRunnerConfig(d webLiveDeps) coordinator.RunnerConfig {
+	return coordinator.RunnerConfig{
+		SessionID:         d.sessionID,
+		SystemPrompt:      prompt.System,
+		Model:             d.modelConfig,
+		ContextLimit:      d.providerConfig.ContextLimit,
+		MaxOutputTokens:   d.providerConfig.MaxOutputTokens,
+		WorkDir:           d.projectRoot,
+		MemoryContext:     d.memoryContext,
+		MemoryContextFunc: d.memory.MemoryContextFunc,
+		MemoryFile:        d.memory.MemoryFile,
+		MemoryDelivery:    d.cfg.MemoryDelivery,
+		MemoryEntries:     memoryEntries(d.memoryStore, d.projectRoot, d.sessionID),
+		InstructionRules:  internal.InstructionRules(d.projectRoot, d.instructionProposer),
+		SkillContext:      d.skillContext,
+		EvaluationStore:   d.evaluationStore,
+	}
+}
+
 // webLiveRequest returns the request a run would send for this session, so the
 // Mini App's compaction button compacts in-band by default rather than cold.
 //
@@ -639,37 +681,31 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
 	memoryContext, _ := memoryStore.RenderContext(projectRoot, sess.ID, 2000)
-	liveMemory := memory.Live(memoryStore, projectRoot, sess.ID, filepath.Join(projectRoot, memory.DefaultMemoryFile), 4000)
 	// The append-only log for the same project the request is built for, so the
 	// previewed request carries the same tail a run would.
 	memoryLog := memoryLogReader(projectRoot)
-	// One renderer, two homes. The prompt modes read the bond out of the combined
-	// block below; sidekick mode suppresses that whole block and reads it from
-	// BondFunc instead, which is why it cannot simply be left inside the combine.
-	bondRenderer := memory.LiveBond(paths.BondFile(), 2000)
+	// The memory half of the config, built beside the store and the log it
+	// reads so the previewed request carries exactly what a run would.
+	wiring := newMemoryWiring(memoryStore, projectRoot, sess.ID, memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	// No user text reaches this path, so the skill-feedback heuristic stays off
 	// and the proposal tool stays out of the catalogue, which is where it is on
 	// most runs. The tool set only has to be sendable, not bit-identical: where
 	// it differs the request costs a cache miss, never a wrong answer.
 	registry := telegramRegistry(cfg, "", skillStore)
-	builder := coordinator.LiveRequestFor(coordinator.RunnerConfig{
-		SessionID:         sess.ID,
-		SystemPrompt:      prompt.System,
-		Model:             modelConfig,
-		ContextLimit:      providerConfig.ContextLimit,
-		MaxOutputTokens:   providerConfig.MaxOutputTokens,
-		WorkDir:           projectRoot,
-		MemoryContext:     memoryContext,
-		MemoryContextFunc: memory.Combine(bondRenderer, liveMemory),
-		MemoryFile:        func() *memory.MemoryFile { return memoryLog },
-		BondFunc:          bondRenderer,
-		MemoryDelivery:    cfg.MemoryDelivery,
-		MemoryEntries:     memoryEntries(memoryStore, projectRoot, sess.ID),
-		InstructionRules:  internal.InstructionRules(projectRoot, instructionProposer),
-		SkillContext:      skillContext,
-		EvaluationStore:   evaluationStore,
-	}, registry, store)
+	builder := coordinator.LiveRequestFor(webLiveRunnerConfig(webLiveDeps{
+		sessionID:           sess.ID,
+		cfg:                 cfg,
+		providerConfig:      providerConfig,
+		modelConfig:         modelConfig,
+		projectRoot:         projectRoot,
+		memoryContext:       memoryContext,
+		memory:              wiring,
+		memoryStore:         memoryStore,
+		instructionProposer: instructionProposer,
+		skillContext:        skillContext,
+		evaluationStore:     evaluationStore,
+	}), registry, store)
 	return builder, nil
 }
 

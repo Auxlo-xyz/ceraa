@@ -44,7 +44,7 @@ func TestSidekickModeSuppressesThePromptBlock(t *testing.T) {
 		MemoryContextFunc: func() (string, error) { return "<memory>block</memory>", nil },
 	}}
 	sidekick.delivery = memory.DeliverySidekick
-	sidekick.sidekick = newSidekickState(entries, nil, "/srv/api")
+	sidekick.sidekick = newSidekickState(entries, "/srv/api")
 	if got := sidekick.memoryContext(); got != "" {
 		t.Errorf("sidekick mode still rendered the prompt block: %q", got)
 	}
@@ -57,7 +57,7 @@ func TestSidekickModeIsReportedForMeasurement(t *testing.T) {
 		MemoryContextFunc: func() (string, error) { return "<memory>x</memory>", nil },
 	}}
 	sidekick.delivery = memory.DeliverySidekick
-	sidekick.sidekick = newSidekickState(func() ([]memory.Entry, error) { return nil, nil }, nil, "/srv")
+	sidekick.sidekick = newSidekickState(func() ([]memory.Entry, error) { return nil, nil }, "/srv")
 
 	report := sidekick.DeliveryReport()
 	if report.Mode != string(memory.DeliverySidekick) {
@@ -87,7 +87,7 @@ func TestGeneralMemoryFiresOncePerRunNotOncePerCall(t *testing.T) {
 	general := []memory.Entry{{
 		Content: "prefers dark mode", Seen: 8, SeenAt: time.Now(),
 	}}
-	state := newSidekickState(func() ([]memory.Entry, error) { return general, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return general, nil }, "/srv")
 
 	first := state.annotate(sessionWithOp("a", "write", "/srv/a.txt"), operation.ResultEvent{OpID: "a"})
 	second := state.annotate(sessionWithOp("b", "write", "/srv/b.txt"), operation.ResultEvent{OpID: "b"})
@@ -116,7 +116,7 @@ func TestGeneralMemoriesFireAgainOnTheNextRun(t *testing.T) {
 	first.Operations = append(first.Operations, sessionstore.Operation{
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/a.txt"},
 	})
-	if got := newSidekickState(lookup, nil, "/srv").annotate(first, operation.ResultEvent{OpID: "a"}); !strings.Contains(got, "dark mode") {
+	if got := newSidekickState(lookup, "/srv").annotate(first, operation.ResultEvent{OpID: "a"}); !strings.Contains(got, "dark mode") {
 		t.Fatalf("the first run delivered nothing: %q", got)
 	}
 	// Same session, next run: the runner is rebuilt, and the general set re-arms
@@ -125,7 +125,7 @@ func TestGeneralMemoriesFireAgainOnTheNextRun(t *testing.T) {
 	second.Operations = append(second.Operations, sessionstore.Operation{
 		ID: "b", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/b.txt"},
 	})
-	if got := newSidekickState(lookup, nil, "/srv").annotate(second, operation.ResultEvent{OpID: "b"}); !strings.Contains(got, "dark mode") {
+	if got := newSidekickState(lookup, "/srv").annotate(second, operation.ResultEvent{OpID: "b"}); !strings.Contains(got, "dark mode") {
 		t.Errorf("the standing preference was not re-armed on the next run: %q", got)
 	}
 }
@@ -139,7 +139,7 @@ func TestTargetedMemoryReachesOnlyItsOperation(t *testing.T) {
 		Content: "JAVA_HOME is set here", Why: "gradle picked the wrong jdk",
 		Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
 	}}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 
 	match := state.annotate(sessionWithOp("a", "write", "/srv/api/main.go"), operation.ResultEvent{OpID: "a"})
 	if !strings.Contains(match, "JAVA_HOME is set here") {
@@ -175,7 +175,7 @@ func TestATargetedMemoryIsDeliveredOncePerID(t *testing.T) {
 		{ID: "id-api", Content: "the backend pins jdk 21", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api"},
 		{ID: "id-web", Content: "the site builds on node 22", Seen: 8, SeenAt: time.Now(), Applies: "/srv/web"},
 	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 
 	first := state.annotate(sessionWithOp("a", "write", "/srv/api/main.go"), operation.ResultEvent{OpID: "a"})
 	if !strings.Contains(first, "jdk 21") {
@@ -215,7 +215,7 @@ func TestATargetedMemoryStaysDeliveredInTheNextRun(t *testing.T) {
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
 	})
-	first := newSidekickState(lookup, nil, "/srv").annotate(sess, operation.ResultEvent{OpID: "a"})
+	first := newSidekickState(lookup, "/srv").annotate(sess, operation.ResultEvent{OpID: "a"})
 	if !strings.Contains(first, "jdk 21") {
 		t.Fatalf("the first run delivered nothing: %q", first)
 	}
@@ -229,7 +229,7 @@ func TestATargetedMemoryStaysDeliveredInTheNextRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	reloaded.Operations = append(reloaded.Operations, sess.Operations...)
-	next := newSidekickState(lookup, nil, "/srv").annotate(reloaded, operation.ResultEvent{OpID: "a"})
+	next := newSidekickState(lookup, "/srv").annotate(reloaded, operation.ResultEvent{OpID: "a"})
 	if strings.Contains(next, "jdk 21") {
 		t.Errorf("the next run repeated a memory the transcript already carries: %q", next)
 	}
@@ -250,7 +250,7 @@ func TestForgettingDeliveredMemoryRearmsItForTheNextEpoch(t *testing.T) {
 	lookup := func() ([]memory.Entry, error) { return entries, nil }
 
 	runner := &Runner{cfg: RunnerConfig{SessionID: "epoch"}, reg: tool.DefaultRegistry()}
-	runner.sidekick = newSidekickState(lookup, nil, "/srv")
+	runner.sidekick = newSidekickState(lookup, "/srv")
 
 	if got := runner.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); !strings.Contains(got, "jdk 21") {
 		t.Fatalf("the first epoch delivered nothing: %q", got)
@@ -275,7 +275,7 @@ func TestMarkedMemoriesAreNotDeliveredAgain(t *testing.T) {
 		ID: "a", SpecType: "write", SpecArgs: map[string]any{"path": "/srv/api/main.go"},
 	})
 	runner := &Runner{cfg: RunnerConfig{SessionID: "carried"}, reg: tool.DefaultRegistry()}
-	runner.sidekick = newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	runner.sidekick = newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 
 	runner.MarkDeliveredMemory(sess, "id-api")
 	if got := runner.sidekick.annotate(sess, operation.ResultEvent{OpID: "a"}); strings.Contains(got, "jdk 21") {
@@ -301,7 +301,7 @@ func TestTheRunCeilingStopsInjectionRatherThanTrimmingIt(t *testing.T) {
 			Seen:    8, SeenAt: time.Now(), Applies: fmt.Sprintf("/srv/p%02d", i),
 		})
 	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 
 	delivered, spent := 0, 0
 	for i := 0; i < 30; i++ {
@@ -353,7 +353,7 @@ func TestAFloodOnOnePathIsCappedInTheDeliveredNote(t *testing.T) {
 			Seen: 8, SeenAt: time.Now(), Applies: "/srv",
 		})
 	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 	note := state.annotate(sessionWithOp("a", "write", path), operation.ResultEvent{OpID: "a"})
 
 	if len(note) > memory.SidekickBlockBytes {
@@ -509,7 +509,7 @@ func TestAnOperationWithNoPathIsNotAnnotated(t *testing.T) {
 	entries := []memory.Entry{{
 		Content: "JAVA_HOME is set here", Seen: 8, SeenAt: time.Now(), Applies: "/srv/api",
 	}}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 
 	got := state.annotate(sessionWithOp("a", "shell", ""), operation.ResultEvent{OpID: "a"})
 	if strings.Contains(got, "JAVA_HOME") {
@@ -520,7 +520,7 @@ func TestAnOperationWithNoPathIsNotAnnotated(t *testing.T) {
 // An unreadable store must be silent rather than reported as an empty one, which
 // would read as "there is nothing to remember" rather than "we could not look".
 func TestAnUnreadableStoreDeliversNothing(t *testing.T) {
-	state := newSidekickState(func() ([]memory.Entry, error) { return nil, os.ErrPermission }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return nil, os.ErrPermission }, "/srv")
 	if got := state.annotate(sessionWithOp("a", "write", "/srv/a.txt"), operation.ResultEvent{OpID: "a"}); got != "" {
 		t.Errorf("an unreadable store produced %q", got)
 	}
@@ -631,7 +631,7 @@ func TestAMultiFileCommandReachesEveryTarget(t *testing.T) {
 		{Content: "deploys run from ops", Seen: 8, SeenAt: time.Now(), Applies: "/srv/ops"},
 		{Content: "web needs node 22", Seen: 8, SeenAt: time.Now(), Applies: "/srv/web/package.json"},
 	}
-	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, nil, "/srv")
+	state := newSidekickState(func() ([]memory.Entry, error) { return entries, nil }, "/srv")
 
 	sess := &sessionstore.Session{}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
