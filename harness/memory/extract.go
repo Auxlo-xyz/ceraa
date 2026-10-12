@@ -31,7 +31,8 @@ const (
 // extractorPrompt is the whole system instruction. It is tight on purpose:
 // the model is asked for statements about durable preferences, not for
 // anything a session file already has.
-const extractorPrompt = `Extract durable claims from the conversation and existing memory summary about how the user wants work done, plus standing facts that will still hold later.
+const extractorPrompt = `
+Extract durable claims from the conversation and existing memory summary about how the user wants work done, plus standing facts that will still hold later.
 
 Keep: standing rules, conventions, tool choices, stated role and stack, likes and dislikes, goals, inferred traits and mistakes to avoid (with the fix).
 
