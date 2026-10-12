@@ -288,7 +288,7 @@ func statusReport(chatID int64) (string, error) {
 		// actually saw carried 87k. This is the estimate NeedsCompaction compares
 		// against the trigger, so the card and the reason compaction did or did not
 		// run are one number.
-		tokens = compaction.EstimatedContext(sess)
+		tokens = sessionContextEstimate(cfg, sess)
 		for _, message := range sess.Messages {
 			usageOutput += message.Usage.OutputTokens
 			usageReasoning += message.Usage.ReasoningTokens
@@ -406,6 +406,21 @@ func handleContextCommand(token string, chatID int64) {
 // real count rather than falling to zero. A run stored before trust existed has
 // no measurement and keeps whatever it reported, because a missing verdict on old
 // data is not evidence that the data was wrong.
+// sessionContextEstimate is the context figure the status card and the
+// compaction report show.
+//
+// It has to be the same number the trigger uses, and that means it has to
+// answer the same question: on a transport that sends no reasoning, the local
+// estimate must not charge the window for bytes the provider never sees, or the
+// card alarms at a threshold compaction is not near and the reason compaction
+// did or did not run stops explaining the card.
+func sessionContextEstimate(cfg *config.Config, sess *sessionstore.Session) int {
+	if sess == nil {
+		return 0
+	}
+	return compaction.EstimatedContextFor(sess, !llm.UsesCodexNative(activeProviderConfig(cfg, cfg.EffectiveProviderID()).URL))
+}
+
 func sessionInputTokens(sess *sessionstore.Session) (total, measured int) {
 	if sess == nil {
 		return 0, 0
@@ -795,7 +810,7 @@ func handleCompaction(token string, chatID int64, text string) {
 			if sess, err := store.Load(currentSessionID(chatID)); err == nil {
 				// The same estimate the trigger uses, so this figure cannot
 				// disagree with whether compaction ran.
-				tokens = compaction.EstimatedContext(sess)
+				tokens = sessionContextEstimate(cfg, sess)
 				for _, message := range sess.Messages {
 					if message.Compaction != nil {
 						compactions++

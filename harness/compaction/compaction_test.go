@@ -510,3 +510,29 @@ func TestReplaysReasoningDefaultsToTrue(t *testing.T) {
 		t.Fatal("a Codex compactor still counts reasoning")
 	}
 }
+
+// The in-band summariser refuses when the window cannot carry a summary. Counting
+// reasoning it will never send makes it refuse on sessions that fit.
+func TestInBandRefusalIsMeasuredAgainstWhatTheTransportSends(t *testing.T) {
+	compactor := New(llm.ProviderConfig{BaseURL: "https://chatgpt.com/backend-api/codex"})
+	compactor.Settings.Auto = true
+	compactor.ContextLimit = 40000
+	compactor.MaxOutputTokens = 4096
+	var messages []sessionstore.Message
+	for i := 0; i < 12; i++ {
+		messages = append(messages, sessionstore.Message{
+			Role: llm.RoleAssistant, Content: "short", Reasoning: strings.Repeat("r", 12000),
+		})
+	}
+	sess := &sessionstore.Session{ID: "s", Messages: messages}
+	counting := EstimatedContextFor(sess, true)
+	honest := EstimatedContextFor(sess, false)
+	if counting <= honest {
+		t.Fatalf("counting reasoning gave %d, excluding it %d", counting, honest)
+	}
+	// The refusal threshold is the arithmetic a caller checks; both figures have
+	// to come from the same transport-aware call the trigger uses.
+	if got := compactor.EstimatedContext(sess); got != honest {
+		t.Fatalf("a Codex compactor estimated %d, want %d", got, honest)
+	}
+}

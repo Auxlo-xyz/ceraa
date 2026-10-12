@@ -1223,7 +1223,7 @@ func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Sess
 	// checkpoint must never be faked from a conversation that cannot be sent.
 	// An overflowed session is recovered by deleting messages or starting over,
 	// not by summarising.
-	if c.contextLimit()-EstimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
+	if c.contextLimit()-c.EstimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
 		return "", fmt.Errorf("the context cannot carry a summary")
 	}
 	var lastErr error
