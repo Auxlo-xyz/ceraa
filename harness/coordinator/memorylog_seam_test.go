@@ -163,22 +163,39 @@ func TestMemoryTailLineRidesTheNewestUserMessageOnce(t *testing.T) {
 	if newest < 0 {
 		t.Fatal("no user message in the built request")
 	}
-	got := msgs[newest].Text
-	if !strings.HasPrefix(got, "latest question") {
-		t.Errorf("the tail line prepended rather than suffixed: %q", got)
+	// The memory block is its own final user turn, not a suffix on an existing
+	// one. Suffixing the newest user message was suffix-local for exactly one
+	// run: once a new message arrived, that message stopped being the newest and
+	// lost the tail it was never given, which rewrote its length in the middle
+	// of the history and killed the cached prefix on every run boundary.
+	got := msgs[len(msgs)-1].Text
+	if msgs[len(msgs)-1].Role != llm.RoleUser {
+		t.Errorf("the memory turn is not a user turn: %+v", msgs[len(msgs)-1])
+	}
+	if !strings.HasPrefix(got, "\n\n<memory>\n") && !strings.HasPrefix(got, "<memory>\n") {
+		t.Errorf("the memory turn does not open with the memory block: %q", got)
 	}
 	if !strings.HasSuffix(got, "</memory>") {
-		t.Errorf("the memory block is not at the end of the newest user message: %q", got)
+		t.Errorf("the memory block is not at the end of its turn: %q", got)
 	}
 	for _, want := range []string{"TAIL_ALPHA", "TAIL_BETA"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the tail line lost %q: %q", want, got)
 		}
 	}
-	for _, m := range msgs[:newest] {
+	// Nothing before the memory turn may carry it, and specifically the previous
+	// user message must be byte-identical to what the session holds.
+	for _, m := range msgs[:len(msgs)-1] {
 		if strings.Contains(m.Text, "<memory>") {
-			t.Errorf("memory leaked outside the newest user message: %+v", m)
+			t.Errorf("memory leaked outside the final turn: %+v", m)
 		}
+	}
+	// The session's own newest user message, one turn before the memory block,
+	// must be byte-identical to what the session holds. This is the assertion
+	// that catches the regression: when the tail was suffixed onto this message,
+	// the next run dropped it again and rewrote the middle of the history.
+	if prev := msgs[newest-1]; prev.Text != "latest question" {
+		t.Errorf("the session's newest user message was rewritten: %q", prev.Text)
 	}
 }
 
@@ -311,5 +328,79 @@ func TestASidekickWithNoSourceAtAllDeliversNothing(t *testing.T) {
 	bare := newSidekickState("/srv")
 	if tail := bare.memTail(); tail != nil {
 		t.Errorf("a state with no source read %q", tail)
+	}
+}
+
+// The memory tail must not rewrite anything the provider has already cached.
+//
+// This is the bug the shape of the tail turn exists to prevent. The tail was
+// suffixed onto the newest user message, which is suffix-local for one run
+// only: a new user message makes the previous one stop being the newest, and
+// the next request drops the suffix it was never given. That shortens a message
+// in the middle of the history, the cached prefix dies from there to the end,
+// and the next turn re-bills the entire conversation at full input price.
+//
+// In the production log this fired on every run boundary: item369 of 379, then
+// item378 of 387, then item159 of 226, each followed by a request that read
+// 140 cached tokens out of 110,000.
+func TestMemoryTailDoesNotShiftWhenANewTurnArrives(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "Memory.md")
+	appendLog(t, memory.OpenMemoryFile(logPath), "TAIL_ALPHA: prefer tabs over spaces")
+
+	runner := New(RunnerConfig{
+		SessionID:      "shift",
+		SystemPrompt:   "you are a test agent",
+		Model:          llm.FromProvider("http://127.0.0.1:1", "k", "m"),
+		ContextLimit:   32000,
+		WorkDir:        dir,
+		MemoryDelivery: string(memory.DeliverySidekick),
+		MemoryFile:     logMemoryFile(logPath),
+	}, nil, tool.NewRegistry())
+
+	before := runner.messages(&sessionstore.Session{
+		ID: "shift",
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "first question"},
+			{Role: llm.RoleAssistant, Content: "first answer"},
+			{Role: llm.RoleUser, Content: "latest question"},
+		},
+	}, nil)
+
+	// The owner replies, so "latest question" is no longer the newest message.
+	after := runner.messages(&sessionstore.Session{
+		ID: "shift",
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "first question"},
+			{Role: llm.RoleAssistant, Content: "first answer"},
+			{Role: llm.RoleUser, Content: "latest question"},
+			{Role: llm.RoleAssistant, Content: "an answer"},
+			{Role: llm.RoleUser, Content: "next question"},
+		},
+	}, nil)
+
+	// Every message the session holds must reach the provider byte-identically.
+	// The tail may only appear on the final turn, so a message carrying it is by
+	// definition not the byte-identical copy of a session message, and the
+	// lookup below fails.
+	for _, want := range []string{"first question", "first answer", "latest question", "next question"} {
+		found := false
+		for _, m := range after {
+			if m.Text == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("session message %q was rewritten in the request; built items: %#v", want, after)
+		}
+	}
+
+	// And the signature the first request sent must survive as a prefix of the
+	// second's. A conversation that only grew is a cache hit by construction;
+	// anything else means a cached byte moved.
+	base := cacheSignature(before[:len(before)-1])
+	if got := cacheSignature(after[:len(after)-1]); !strings.HasPrefix(got, base+",") {
+		t.Fatalf("the prefix signature is not a prefix of the later request:\nbefore %s\nafter  %s", base, got)
 	}
 }

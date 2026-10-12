@@ -162,3 +162,51 @@ func TestWarmerRefreshErrorIsLoggedNotPanicked(t *testing.T) {
 		t.Fatal("the refresh never ran")
 	}
 }
+
+// The refresh decision is a ratio of prices, not a dollar figure: the token
+// count scales both sides of the comparison and cancels. That is what lets it be
+// made for a model the catalogue does not carry, which is every model on a
+// gateway that reports no catalogue entry.
+func TestDecideIgnoresTheAbsolutePriceScale(t *testing.T) {
+	now := time.Now()
+	// Far enough apart that neither reading is at the dollar floor, so the only
+	// thing that can decide is the ratio.
+	cheap := Decide(now, now, DefaultTTL, 50000, Economics{InputPerMTok: 3, CacheReadPerMTok: 0.3})
+	big := Decide(now, now, DefaultTTL, 50000, Economics{InputPerMTok: 3000, CacheReadPerMTok: 300})
+	if cheap.Warm != big.Warm {
+		t.Fatalf("the same discount decided differently at two price scales: %v vs %v (%s, %s)",
+			cheap.Warm, big.Warm, cheap.Reason, big.Reason)
+	}
+	// Scaling the prices down until the dollar floor is the only thing left must
+	// flip it, which is the floor doing its own separate job.
+	floor := Decide(now, now, DefaultTTL, 50000, Economics{InputPerMTok: 3e-6, CacheReadPerMTok: 0.3e-6})
+	if floor.Warm {
+		t.Fatalf("a saving far below a cent was accepted: %s", floor.Reason)
+	}
+}
+
+// A model with no catalogue price still gets the keepalive. This is the case
+// that disabled it: every run on space-bunny-free logged "pricing unusable" and
+// every idle gap lost the whole prompt cache.
+func TestDecideWarmsAnUnpricedModel(t *testing.T) {
+	now := time.Now()
+	d := Decide(now, now, DefaultTTL, 100000, UnknownEconomics)
+	if !d.Warm {
+		t.Fatalf("an unpriced model was not kept warm: %s", d.Reason)
+	}
+}
+
+// And the assumed discount is the conservative one: a provider that barely
+// discounts caching must still be refused, because the saving would not pay for
+// the refresh.
+func TestDecideRefusesWhenTheAssumedDiscountWouldNotPay(t *testing.T) {
+	now := time.Now()
+	// Below ContinuationProbability*MinSavingsMultiple, i.e. no useful discount.
+	d := Decide(now, now, DefaultTTL, 100000, Economics{InputPerMTok: 1.2, CacheReadPerMTok: 1})
+	if d.Warm {
+		t.Fatal("a refresh with almost nothing to save was scheduled")
+	}
+	if d.Reason != "expected saving below the floor" {
+		t.Fatalf("unexpected reason: %s", d.Reason)
+	}
+}

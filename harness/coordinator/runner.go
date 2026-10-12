@@ -1149,22 +1149,24 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 		ReasoningReplayed(r.replaysReasoning()).
 		BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
-	// The once-per-run memory tail: the newest user message carries the latest
-	// log state as a suffix, so memory reaches the model exactly once, at the
-	// end of the conversation rather than on any tool result. Suffix-local on
-	// purpose: the system prompt and history stay byte-identical, which keeps
-	// the cached prefix stable. LiveRequest shares this path, so compactions
-	// summarise over the same bytes the turns send.
+	// The once-per-run memory tail: the newest log state rides at the very end of
+	// the request, as its own user turn.
 	//
-	// Read through the sidekick state, which exists only in sidekick mode, so
-	// its presence is the delivery switch and other modes attach nothing.
+	// It used to be appended to the text of the newest existing user message
+	// instead, which was suffix-local for exactly one run. A new user message
+	// makes the previous one stop being the newest, and the tail was not
+	// written into the session, so on the next run that message lost its suffix
+	// and got shorter. The change sat in the middle of the history, the
+	// provider's cached prefix died from there to the end, and the audit
+	// correctly named the position on every run boundary: item369 of 379, then
+	// item378 of 387, then item159 of 226. Same 140 tokens survived each time.
+	//
+	// Appending a separate turn puts the volatile content at the end where a
+	// change costs nothing: the request is the previous one plus a suffix, which
+	// is a cache hit by construction, and every earlier message stays
+	// byte-identical forever.
 	if tail := r.memoryTailLine(); tail != "" {
-		for i := len(request.Messages) - 1; i >= 0; i-- {
-			if request.Messages[i].Role == llm.RoleUser {
-				request.Messages[i].Text += tail
-				break
-			}
-		}
+		request.Messages = append(request.Messages, llm.Item{Kind: "text", Role: llm.RoleUser, Text: tail})
 	}
 	return request.Messages
 }
@@ -2724,10 +2726,17 @@ func (r *Runner) armCacheWarm(sess *sessionstore.Session, meta llm.ModelMetadata
 	if warmer == nil {
 		return
 	}
-	inputPerMTok, readPerMTok, ok := meta.CacheEconomics()
-	if !ok {
-		logger.Info("cachewarm skipped reason=pricing unusable tokens=" + fmt.Sprint(tokens))
-		return
+	inputPerMTok, readPerMTok, priced := meta.CacheEconomics()
+	if !priced {
+		// A model the catalogue does not carry is not a reason to skip the
+		// keepalive. The decision is a ratio of prices, and the default claims
+		// a discount at the conservative end, so an unknown price makes the
+		// feature refuse more often rather than spending on a guess. Refusing
+		// outright is what disabled it: on a gateway that reports no catalogue
+		// entry, every run logged "pricing unusable" and every idle gap lost the
+		// whole prompt cache.
+		inputPerMTok, readPerMTok = cachewarm.UnknownEconomics.InputPerMTok, cachewarm.UnknownEconomics.CacheReadPerMTok
+		logger.Info("cachewarm using an assumed cache discount: no catalogue price for " + meta.ID)
 	}
 	decision := cachewarm.Decide(time.Now(), time.Now(), llm.PromptCacheTTLFor(r.cfg.Model), tokens,
 		cachewarm.Economics{InputPerMTok: inputPerMTok, CacheReadPerMTok: readPerMTok})

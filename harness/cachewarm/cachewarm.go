@@ -91,6 +91,38 @@ type Economics struct {
 	CacheReadPerMTok float64
 }
 
+// CacheDiscount is how much cheaper a cached token is than a fresh one: the
+// ratio between the two prices, which is the only thing the decision actually
+// turns on.
+//
+// It is a separate accessor because the two prices are usually available
+// together but are not needed together. RefreshCost and AvoidedRewrite both
+// scale with the token count, so the count cancels out of the comparison and
+// what remains is a ratio of prices. A provider whose catalogue entry is missing
+// therefore does not disable the decision: it only removes the ability to quote
+// a dollar figure.
+func (e Economics) CacheDiscount() float64 {
+	if e.CacheReadPerMTok <= 0 {
+		return 0
+	}
+	d := e.InputPerMTok / e.CacheReadPerMTok
+	if d < 1 {
+		return 0
+	}
+	return d
+}
+
+// UnknownEconomics is the price pair to decide with when the provider is not in
+// the catalogue.
+//
+// Zero prices would divide by zero, so this is a ratio rather than an absence:
+// it claims a ten-times cache discount, which is the conservative end of what
+// providers actually charge. Assuming a worse-than-real discount understates
+// what a refresh saves, so the decision refuses more often than it would with
+// prices in hand. Assuming a better one would spend money on the theory that the
+// owner's next message arrives.
+var UnknownEconomics = Economics{InputPerMTok: 10, CacheReadPerMTok: 1}
+
 // RefreshCost is what one keepalive costs: the prefix arrives as a cache read,
 // and the reply is a single token billed at output prices, which this treats as
 // negligible rather than zero so the arithmetic never divides by nothing.
@@ -151,9 +183,15 @@ func Decide(now, lastUsed time.Time, ttl time.Duration, tokens int, economics Ec
 	if idle > MaxWarmAge {
 		return Decision{Reason: "session idle past the warm horizon"}
 	}
-	cost := economics.RefreshCost(tokens)
+	// The ratio decides. See the comment on the comparison below for why the
+	// refresh's own cost no longer appears in the condition.
+	// The comparison is a ratio, so the token count cancels and what is left is
+	// how much cheaper a cached token is than a fresh one. The dollar floor
+	// still runs first on the absolute figure: it is the only reason the
+	// decision needs prices rather than a ratio, and it refuses arithmetic on
+	// numbers too small to reason about.
 	expected := ContinuationProbability * economics.AvoidedRewrite(tokens)
-	if expected < MinExpectedSavings || expected < MinSavingsMultiple*cost {
+	if expected < MinExpectedSavings || economics.CacheDiscount() <= ContinuationProbability*MinSavingsMultiple {
 		return Decision{Reason: "expected saving below the floor"}
 	}
 	delay := time.Duration(float64(ttl) * RefreshFraction)
