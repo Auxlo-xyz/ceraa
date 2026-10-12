@@ -665,3 +665,27 @@ func TestReasoningRetryStaysOffForOtherBadRequests(t *testing.T) {
 		t.Fatalf("sent %d requests, want 1", attempts)
 	}
 }
+
+// The Codex transport sends no reasoning, so attributing any to a request says
+// a fifth of its cost is somewhere it is not.
+func TestBreakdownAttributesReasoningOnlyWhereItIsSent(t *testing.T) {
+	messages := []Item{
+		{Kind: "text", Role: RoleSystem, Text: "sys"},
+		{Kind: "text", Role: RoleAssistant, Text: "answer", Reason: strings.Repeat("r", 400)},
+	}
+	replayed := EstimateTokenBreakdown(messages, nil)
+	dropped := EstimateTokenBreakdownFor(messages, nil, false)
+	if replayed.Reasoning == 0 {
+		t.Fatal("the default breakdown stopped counting reasoning")
+	}
+	if dropped.Reasoning != 0 {
+		t.Fatalf("a transport that sends no reasoning was charged %d tokens for it", dropped.Reasoning)
+	}
+	if dropped.Total() <= 0 || replayed.Total() <= dropped.Total() {
+		t.Fatalf("totals: replayed %d, dropped %d", replayed.Total(), dropped.Total())
+	}
+	// The turn still counts, under the source that does reach the provider.
+	if dropped.Conversation == 0 {
+		t.Fatal("the assistant turn stopped being attributed to anything")
+	}
+}

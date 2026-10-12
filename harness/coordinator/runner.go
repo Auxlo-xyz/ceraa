@@ -755,7 +755,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			SystemCacheSeam: r.systemCacheSeam(),
 			SessionID:       r.cfg.SessionID,
 		}
-		breakdown := llm.EstimateTokenBreakdown(request.Messages, request.Tools)
+		breakdown := llm.EstimateTokenBreakdownFor(request.Messages, request.Tools, r.replaysReasoning())
 		countRequestBeforeUse(&runBreakdown, breakdown)
 		if traceCache {
 			logCachePrefix(sess, step, request.Messages, request.Tools, breakdown)

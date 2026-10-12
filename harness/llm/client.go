@@ -524,10 +524,24 @@ func EstimateToolDefinitionTokens(tools []ToolDef) int {
 }
 
 func EstimateTokenBreakdown(messages []Item, tools []ToolDef) TokenBreakdown {
+	return EstimateTokenBreakdownFor(messages, tools, true)
+}
+
+// EstimateTokenBreakdownFor attributes a request to its sources as the named
+// transport will carry it.
+//
+// With replayReasoning false the reasoning bucket stays empty, because the
+// transport has no case for reasoning and sends none of it. Leaving it in would
+// attribute a fifth of every Codex request to a category that costs nothing on
+// the wire, and this breakdown is what every cost-by-source number is read off.
+func EstimateTokenBreakdownFor(messages []Item, tools []ToolDef, replayReasoning bool) TokenBreakdown {
 	var breakdown TokenBreakdown
 	breakdown.Tools = EstimateToolDefinitionTokens(tools)
 	for _, item := range messages {
-		tokens := estimateTokens(item.Text) + estimateTokens(item.Args) + estimateTokens(item.Output) + estimateTokens(item.Reason) + estimateTokens(string(item.ReasoningDetails))
+		tokens := estimateTokens(item.Text) + estimateTokens(item.Args) + estimateTokens(item.Output)
+		if replayReasoning {
+			tokens += estimateTokens(item.Reason) + estimateTokens(string(item.ReasoningDetails))
+		}
 		tokens += estimateTokens(item.CallID) + estimateTokens(item.Name)
 		for _, call := range item.ToolCalls {
 			tokens += estimateTokens(call.ID) + estimateTokens(call.Name) + estimateTokens(call.Args)
@@ -538,7 +552,7 @@ func EstimateTokenBreakdown(messages []Item, tools []ToolDef) TokenBreakdown {
 			breakdown.Compaction += tokens
 		case item.Role == RoleSystem:
 			breakdown.System += tokens
-		case item.Kind == "reasoning" || item.Reason != "":
+		case item.Kind == "reasoning" || (replayReasoning && item.Reason != ""):
 			breakdown.Reasoning += tokens
 		case item.Role == RoleTool:
 			breakdown.ToolOutput += tokens
