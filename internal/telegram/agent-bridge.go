@@ -811,6 +811,9 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	if enabled, configured := defaultState.autoCompaction(); configured {
 		compactor.Settings.Auto = enabled
 	}
+	if percent := cfg.CompactAtPercent; percent != nil {
+		compactor.Settings.CompactAtPercent = *percent
+	}
 	return compactor
 }
 

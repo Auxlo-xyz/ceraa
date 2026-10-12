@@ -29,10 +29,14 @@ type Config struct {
 	// "which model is this" from different files under different precedence rules,
 	// so a provider switched from Telegram was not the provider the next run used.
 	// They belong beside ActiveProvider, which is the same kind of decision.
-	Model                    string         `json:"model,omitempty"`
-	Reasoning                string         `json:"reasoning,omitempty"`
-	Agent                    string         `json:"agent,omitempty"`
-	AutoCompaction           *bool          `json:"auto_compaction,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Reasoning      string `json:"reasoning,omitempty"`
+	Agent          string `json:"agent,omitempty"`
+	AutoCompaction *bool  `json:"auto_compaction,omitempty"`
+	// CompactAtPercent overrides when compaction starts, as a percentage of the
+	// model's window. Nil keeps the compiled default. Zero is not the same as nil:
+	// it is meaningless as a trigger and falls back to the default.
+	CompactAtPercent         *int           `json:"compact_at_percent,omitempty"`
 	Subscriptions            Subscriptions  `json:"subscriptions,omitempty"`
 	Telegram                 TelegramConfig `json:"telegram,omitempty"`
 	SessionFile              string         `json:"session_file,omitempty"`

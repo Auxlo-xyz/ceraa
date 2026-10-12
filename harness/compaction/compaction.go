@@ -32,14 +32,26 @@ const (
 	// as much and cannot spare a percentage of itself instead.
 	ReserveContextTokens = 16000
 
+	// MaxCompactAtPercent caps the override below. A trigger that fires at or past
+	// the window cannot admit the summary it was meant to make room for, so a
+	// configured value above this is clamped rather than obeyed.
+	MaxCompactAtPercent = 90
+
 	// CompactAtWindowPercent is the fraction of the window compaction waits for
 	// before starting, on any window large enough to afford the absolute reserve.
 	//
-	// Fifty five percent rather than something larger, because bounded folding
-	// compacts little and often: an early trigger keeps each fold small and leaves
-	// headroom for the reply, while a late trigger would force a large rewrite at
-	// the point the model can least afford it.
-	CompactAtWindowPercent = 55
+	// Raised from 55 to 85. Compaction rewrites the front of the history, and
+	// those rewrites are what kill the provider's cached prefix: the measured cost
+	// of a fold is a full re-write of the prompt at input price. Triggering later
+	// means fewer of them. The original 55 was chosen to keep each fold small, and
+	// that is still true of the fold, but it was chosen without the cache cost in
+	// view, and that is the larger of the two.
+	//
+	// 85 leaves room for the fold to run: on a 200k window it fires at 170k, so
+	// 30k remains, and the summariser needs its instruction plus a 4k summary. The
+	// old objection to a late trigger was that it starved the fold, and that is
+	// false at this figure. MaxCompactAtPercent is where it would become true.
+	CompactAtWindowPercent = 85
 )
 
 // Settings mirrors soraacode Config.Document.info.compaction
@@ -49,6 +61,17 @@ type Settings struct {
 	Keep   struct {
 		Tokens int `json:"tokens"`
 	} `json:"keep"`
+	// CompactAtPercent overrides CompactAtWindowPercent. Zero keeps the package
+	// default, so an unconfigured caller behaves exactly as before.
+	//
+	// It exists because the trigger is a measured tradeoff, not a constant to be
+	// guessed at in a source edit. Compacting later means fewer rewrites of the
+	// front of the history, and those rewrites are what kill the provider's cached
+	// prefix. Compacting later also means a bigger history when the fold runs,
+	// which is what the summariser's fit check measures. Both sides of that
+	// tradeoff are only visible in production traffic, so the knob has to be
+	// reachable without a rebuild.
+	CompactAtPercent int `json:"compact_at_percent,omitempty"`
 }
 
 func DefaultSettings() Settings {
@@ -740,16 +763,34 @@ func (c *Compactor) outputReserve() int {
 // windows: 12% of a 32k window, 80% of a 200k one. Neither figure was chosen;
 // both were the same flat reservation counted twice.
 //
-// The trigger is now the lesser of a 55% fill and the point where the absolute
-// reserve would be consumed. A large window therefore uses 55% of itself, and a
-// window too small to hold the reserve still stops before the model's reply no
-// longer fits.
+// The trigger is now the lesser of a percentage fill and the point where the
+// absolute reserve would be consumed. A large window therefore uses its share of
+// itself, and a window too small to hold the reserve still stops before the
+// model's reply no longer fits.
+//
+// The percentage is Settings.CompactAtPercent when set, clamped to
+// MaxCompactAtPercent. The clamp is not a policy about how early to compact; it
+// is arithmetic. A trigger at or past the window leaves no room for the summary,
+// so summariseInBand refuses and the turn fails on the very compaction meant to
+// save it. At 90% of a 200k window, 20k of headroom remains, which is the
+// reserve and the summary together and nothing spare.
+func (c *Compactor) compactAtPercent() int {
+	percent := c.Settings.CompactAtPercent
+	if percent <= 0 {
+		return CompactAtWindowPercent
+	}
+	if percent > MaxCompactAtPercent {
+		return MaxCompactAtPercent
+	}
+	return percent
+}
+
 func (c *Compactor) compactAt() int {
 	window := c.contextLimit()
 	if window <= 0 {
 		return 0
 	}
-	proportional := window * CompactAtWindowPercent / 100
+	proportional := window * c.compactAtPercent() / 100
 	absolute := window - c.reserve()
 	if absolute < proportional {
 		// A window smaller than the reserve cannot satisfy it. Triggering at the
