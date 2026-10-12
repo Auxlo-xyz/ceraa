@@ -1,11 +1,14 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -331,6 +334,49 @@ func TestCodexEncodesToolHistoryForResponsesAPI(t *testing.T) {
 	want := []string{"user", "function_call:get_weather:call_1", "function_call_output:call_1", "assistant"}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Errorf("input order = %v, want %v", kinds, want)
+	}
+}
+
+func TestCodexToolResultPreservesTextAndImage(t *testing.T) {
+	shot := testImagePNG(t)
+	input, _ := codexInput([]Item{
+		{Kind: "tool_call", CallID: "call_1", Name: "read", Args: `{}`},
+		{Kind: "text", Role: RoleTool, CallID: "call_1", Name: "read", Output: "shot.png attached as an image.", Images: []string{shot}},
+	})
+	if len(input) != 2 {
+		t.Fatalf("input length = %d, want tool call and result: %v", len(input), input)
+	}
+	result := input[1]
+	if result["type"] != "function_call_output" || result["call_id"] != "call_1" {
+		t.Fatalf("result = %v, want canonical function_call_output", result)
+	}
+	parts, ok := result["output"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("output = %T %v, want text and image parts", result["output"], result["output"])
+	}
+	text, ok := parts[0].(map[string]any)
+	if !ok || text["type"] != "input_text" || text["text"] != "shot.png attached as an image." {
+		t.Errorf("text part = %v, want preserved result text", parts[0])
+	}
+	image, ok := parts[1].(map[string]any)
+	if !ok || image["type"] != "input_image" {
+		t.Fatalf("image part = %v, want native input_image", parts[1])
+	}
+	dataURL, ok := image["image_url"].(string)
+	if !ok || !strings.HasPrefix(dataURL, "data:image/png;base64,") {
+		t.Fatalf("image_url = %v, want a PNG data URL", image["image_url"])
+	}
+	encoded := strings.TrimPrefix(dataURL, "data:image/png;base64,")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("image data is not base64: %v", err)
+	}
+	want, err := os.ReadFile(shot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, want) {
+		t.Errorf("image bytes differ: got %d bytes, want %d", len(decoded), len(want))
 	}
 }
 

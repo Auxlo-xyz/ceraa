@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,42 @@ func TestQoderModelMapping(t *testing.T) {
 	}
 }
 
-// The turn maps onto the vendor's plaintext shape: system aside, thinking
+func TestQoderToolResultImageContent(t *testing.T) {
+	shot := testImagePNG(t)
+	body := qoderPayloadFromRequest(StreamRequest{Messages: []Item{
+		{Kind: "text", Role: RoleTool, CallID: "c1", Output: "attached image", Images: []string{shot}},
+	}}, QoderModel{Key: "qfmodel"})
+	messages := body["messages"].([]any)
+	message := messages[0].(map[string]any)
+	content := message["content"].([]any)
+	if message["role"] != string(RoleTool) || message["tool_call_id"] != "c1" {
+		t.Fatalf("tool message = %v, want role/tool_call_id preserved", message)
+	}
+	if len(content) != 2 {
+		t.Fatalf("content = %v, want text plus image parts", content)
+	}
+	text := content[0].(map[string]any)
+	if text["type"] != "text" || text["text"] != "attached image" {
+		t.Errorf("text part = %v, want the tool-result text", text)
+	}
+	image := content[1].(map[string]any)
+	if image["type"] != "image_url" {
+		t.Fatalf("image part type = %v, want image_url", image["type"])
+	}
+	imageURL := image["image_url"].(map[string]any)["url"].(string)
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(imageURL, prefix) {
+		t.Fatalf("image URL = %q, want %s prefix", imageURL, prefix)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(imageURL, prefix))
+	if err != nil {
+		t.Fatalf("image data is not base64: %v", err)
+	}
+	if len(decoded) == 0 {
+		t.Fatal("image data is empty")
+	}
+}
+
 // dropped, tool pairing intact, business always present.
 func TestQoderPayloadFromRequest(t *testing.T) {
 	req := StreamRequest{

@@ -191,6 +191,7 @@ func encodeGeminiContents(items []Item) ([]geminiContent, *geminiContent) {
 					Response: geminiResponsePayload(item.Output),
 					ID:       item.CallID,
 				}})
+				pending = append(pending, geminiInlineImageParts(item.Images)...)
 			case RoleAssistant:
 				if strings.TrimSpace(item.Text) == "" {
 					continue
@@ -230,6 +231,24 @@ func encodeGeminiContents(items []Item) ([]geminiContent, *geminiContent) {
 		system = &geminiContent{Parts: []geminiPart{{Text: systemText.String()}}}
 	}
 	return contents, system
+}
+
+// geminiInlineImageParts loads tool-result attachments at send time. They are
+// separate native parts next to the function response, and stay in the pending
+// user turn so multiple tool results remain grouped as one Gemini step.
+func geminiInlineImageParts(paths []string) []geminiPart {
+	parts := make([]geminiPart, 0, len(paths))
+	for _, path := range paths {
+		attachment, err := LoadMediaAttachment(path)
+		if err != nil || attachment == nil {
+			continue
+		}
+		parts = append(parts, geminiPart{InlineData: &geminiInlineData{
+			MimeType: attachment.MimeType,
+			Data:     attachment.Base64Data(),
+		}})
+	}
+	return parts
 }
 
 // geminiFunctionCallParts renders a model's function calls as native parts.

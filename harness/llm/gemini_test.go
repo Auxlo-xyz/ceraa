@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -114,7 +115,38 @@ func TestEncodeGeminiMergesFunctionResponses(t *testing.T) {
 	}
 }
 
-// TestEncodeGeminiReplaysSignatureAndBypassesSyntheticCall pins the two cases
+func TestEncodeGeminiToolImageUsesInlineData(t *testing.T) {
+	imagePath := writePNG(t, t.TempDir(), "tool.png", 4, 3)
+	contents, _ := encodeGeminiContents([]Item{
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "inspect", Output: "attached", Images: []string{imagePath}},
+		{Kind: "text", Role: RoleTool, CallID: "c2", Name: "inspect", Output: "no image"},
+	})
+	if len(contents) != 1 || contents[0].Role != "user" || len(contents[0].Parts) != 3 {
+		t.Fatalf("tool responses and image must stay in one user turn: %#v", contents)
+	}
+	response := contents[0].Parts[0].FunctionResponse
+	if response == nil || response.Name != "inspect" {
+		t.Fatalf("first part = %#v, want functionResponse", contents[0].Parts[0])
+	}
+	inline := contents[0].Parts[1].InlineData
+	if inline == nil || inline.MimeType != "image/png" {
+		t.Fatalf("image part = %#v, want image/png inlineData", contents[0].Parts[1])
+	}
+	if _, err := base64.StdEncoding.DecodeString(inline.Data); err != nil {
+		t.Fatalf("inlineData is not base64: %v", err)
+	}
+	attachment, err := LoadMediaAttachment(imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inline.Data != attachment.Base64Data() {
+		t.Fatal("inlineData does not contain the loaded attachment bytes")
+	}
+	if contents[0].Parts[2].FunctionResponse == nil {
+		t.Fatalf("second tool response was not preserved: %#v", contents[0].Parts[2])
+	}
+}
+
 // that matter: a signature the model returned is replayed verbatim, and a call
 // with no possible signature gets Google's documented bypass value instead.
 func TestEncodeGeminiReplaysSignatureAndBypassesSyntheticCall(t *testing.T) {

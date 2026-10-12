@@ -129,10 +129,14 @@ func codexInput(items []Item) ([]map[string]any, string) {
 				if strings.TrimSpace(output) == "" {
 					output = "No output was produced."
 				}
+				result := any(output)
+				if parts := codexToolResultContent(output, item.Images); len(parts) > 0 {
+					result = parts
+				}
 				input = append(input, map[string]any{
 					"type":    "function_call_output",
 					"call_id": item.CallID,
-					"output":  output,
+					"output":  result,
 				})
 			case item.Role == RoleAssistant:
 				if strings.TrimSpace(item.Text) == "" {
@@ -160,6 +164,32 @@ func codexInput(items []Item) ([]map[string]any, string) {
 		}
 	}
 	return input, strings.Join(instructions, "\n\n")
+}
+
+// codexToolResultContent renders a tool result as Responses content parts when
+// it carries images. The endpoint accepts input_text and input_image parts in
+// function_call_output.output; keeping the text first preserves the canonical
+// tool result while attaching the original media bytes natively.
+func codexToolResultContent(output string, paths []string) []any {
+	parts := []any{map[string]any{"type": "input_text", "text": output}}
+	for _, path := range paths {
+		_, kind, ok := MimeTypeForFile(path)
+		if !ok || kind != MediaTypeImage {
+			continue
+		}
+		attachment, err := LoadMediaAttachment(path)
+		if err != nil || attachment == nil {
+			continue
+		}
+		parts = append(parts, map[string]any{
+			"type":      "input_image",
+			"image_url": "data:" + attachment.MimeType + ";base64," + attachment.Base64Data(),
+		})
+	}
+	if len(parts) == 1 {
+		return nil
+	}
+	return parts
 }
 
 func codexFunctionCall(callID, name, args string) map[string]any {

@@ -420,6 +420,22 @@ func qoderUUID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// qoderToolResultContent renders native multimodal content parts.
+func qoderToolResultContent(text string, paths []string) []any {
+	parts := []any{map[string]any{"type": "text", "text": text}}
+	for _, path := range paths {
+		attachment, err := LoadMediaAttachment(path)
+		if err != nil || attachment == nil {
+			continue
+		}
+		parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:" + attachment.MimeType + ";base64," + attachment.Base64Data()}})
+	}
+	if len(parts) == 1 {
+		return nil
+	}
+	return parts
+}
+
 // qoderPayloadFromRequest renders a run turn into the plaintext body the
 // signer encrypts. System text travels in system[], thinking blocks stay
 // home (this endpoint has no use for them and replaying them only bloats the
@@ -472,9 +488,13 @@ func qoderPayloadFromRequest(req StreamRequest, info QoderModel) map[string]any 
 				ToolCalls: calls,
 			})
 		case item.Kind == "text" && item.Role == RoleTool && item.CallID != "":
-			content := item.Output
-			if content == "" {
+			content := any(item.Output)
+			if strings.TrimSpace(item.Output) == "" {
 				content = item.Text
+			}
+			text, _ := content.(string)
+			if parts := qoderToolResultContent(text, item.Images); len(parts) > 0 {
+				content = parts
 			}
 			history = append(history, qodersign.Message{
 				Role:       string(RoleTool),
@@ -492,6 +512,7 @@ func qoderPayloadFromRequest(req StreamRequest, info QoderModel) map[string]any 
 			})
 		}
 	}
+
 	userText := ""
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		item := req.Messages[i]
