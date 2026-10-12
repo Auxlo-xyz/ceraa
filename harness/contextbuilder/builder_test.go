@@ -332,3 +332,45 @@ func TestPointerizeIsStableAcrossTurns(t *testing.T) {
 		t.Fatal("the appended turn did not survive")
 	}
 }
+
+// The Codex transport never sends stored reasoning, so a budget measured with
+// it counted is larger than the request. Measured on the live provider, that
+// was a fifth of every request, which is a fifth of real history trimmed away.
+func TestReasoningReplayedDecidesWhatTheBudgetIsMeasuredAgainst(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "do the thing"},
+		{Role: llm.RoleAssistant, Content: "on it", Reasoning: strings.Repeat("thinking ", 400)},
+	}}
+	withIt := New(sess, "system").Build()
+	withoutIt := New(sess, "system").ReasoningReplayed(false).Build()
+	if withoutIt.Usage.TokensRemaining <= withIt.Usage.TokensRemaining {
+		t.Fatalf("excluding unsent reasoning left %d tokens of room, replaying left %d; the first should be larger",
+			withoutIt.Usage.TokensRemaining, withIt.Usage.TokensRemaining)
+	}
+	// Default is unchanged, so every existing caller keeps measuring the whole
+	// conversation.
+	if got := EstimateMessages(withIt.Messages); got <= EstimateMessagesWithoutReasoning(withIt.Messages) {
+		t.Fatal("the default estimate is not the larger one")
+	}
+}
+
+// Over budget with reasoning counted, inside it without: the trim that follows
+// is the behaviour that changes.
+func TestReasoningReplayedStopsAnUnnecessaryTrim(t *testing.T) {
+	// A limit the conversation fits under only if the reasoning that never goes
+	// on the wire is not charged to it.
+	const limit = 90
+	build := func(replayed bool) []llm.Item {
+		sess := &sessionstore.Session{Messages: []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "first question"},
+			{Role: llm.RoleAssistant, Content: "first answer", Reasoning: strings.Repeat("r", 4000)},
+			{Role: llm.RoleUser, Content: "second question"},
+			{Role: llm.RoleAssistant, Content: "second answer"},
+		}}
+		return New(sess, "system").ReasoningReplayed(replayed).BuildWithLimit(limit).Messages
+	}
+	if len(build(true)) >= len(build(false)) {
+		t.Fatalf("trimmed %d messages counting reasoning, %d excluding it",
+			len(build(true)), len(build(false)))
+	}
+}

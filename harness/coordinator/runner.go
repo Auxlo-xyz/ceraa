@@ -196,6 +196,14 @@ type Runner struct {
 	identityOnce sync.Once
 	identity     string
 
+	// codexOnce and codexNative hold the same resolution for the transport
+	// shape, which decides whether stored reasoning reaches the provider at all.
+	// Resolved alongside the identity and for the same reason: the answer comes
+	// from the credential store, and asking once per run is the difference
+	// between a flag and a store read on every step.
+	codexOnce   sync.Once
+	codexNative bool
+
 	// contextLimit is the effective budget, recalibrated whenever the model
 	// changes rather than fixed at construction. Guarded because a model switch
 	// can arrive on a different goroutine from the run reading it.
@@ -1137,7 +1145,9 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 		// left rather than a remembered constant that may be larger still.
 		limit = budget / 2
 	}
-	request := contextbuilder.New(&history, r.systemPrompt()).BuildWithLimit(limit)
+	request := contextbuilder.New(&history, r.systemPrompt()).
+		ReasoningReplayed(r.replaysReasoning()).
+		BuildWithLimit(limit)
 	request.Messages = normalizeDispatcherMessages(request.Messages)
 	// The once-per-run memory tail: the newest user message carries the latest
 	// log state as a suffix, so memory reaches the model exactly once, at the
@@ -1450,6 +1460,28 @@ func (r *Runner) promptCacheKey() string {
 func (r *Runner) modelIdentity() string {
 	r.identityOnce.Do(func() { r.identity = r.resolveModelIdentity() })
 	return r.identity
+}
+
+// replaysReasoning reports whether the transport carrying this run sends stored
+// reasoning back to the provider.
+//
+// The Codex transport does not: codexInput has a case for text, tool calls and
+// tool results and none for reasoning, so the reasoning a run accumulates is
+// display-only and never reaches the model. Measuring the context against it
+// would charge the window for bytes that are not sent, and the builder would
+// trim real history to stay inside a limit the provider was never near.
+func (r *Runner) replaysReasoning() bool {
+	r.codexOnce.Do(func() { r.codexNative = r.resolveCodexNative() })
+	return !r.codexNative
+}
+
+func (r *Runner) resolveCodexNative() bool {
+	if r.cfg.ResolveModel != nil {
+		if resolved, err := r.cfg.ResolveModel(context.Background()); err == nil && resolved.CodexNative {
+			return true
+		}
+	}
+	return r.cfg.Model.CodexNative
 }
 
 func (r *Runner) resolveModelIdentity() string {

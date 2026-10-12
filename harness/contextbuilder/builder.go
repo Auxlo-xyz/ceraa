@@ -27,12 +27,37 @@ type Builder struct {
 	sess   *sessionstore.Session
 	prompt string // system prompt
 	pinned []llm.Item
+	// replayReasoning is whether the transport that will carry this request sends
+	// stored reasoning back to the provider. It decides what the context budget
+	// is measured against, not what the model sees.
+	replayReasoning bool
+}
+
+// ReasoningReplayed records whether the transport replays stored reasoning, so
+// the context budget is measured against the bytes that actually go on the wire.
+//
+// The Codex transport takes text, tool calls and tool results and has no case
+// for reasoning at all, so a stored reasoning block is never sent. Counting it
+// anyway made the builder think a request was about a fifth larger than it was:
+// on the live provider reasoning measured 20% of the request, and the budget is
+// compared against the window, so the builder trimmed roughly that much real
+// history out of every request to stay inside a limit the provider was never
+// approaching. Trimming is not free either, because what it drops has to be
+// re-read.
+//
+// Reasoning continuity is the reason a chat-completions provider does replay
+// it, and dropping those items is a known quality cost. This only makes the
+// arithmetic match the transport, which is the opposite trade.
+func (b *Builder) ReasoningReplayed(replayed bool) *Builder {
+	b.replayReasoning = replayed
+	return b
 }
 
 func New(sess *sessionstore.Session, systemPrompt string) *Builder {
 	return &Builder{
-		sess:   sess,
-		prompt: systemPrompt,
+		sess:            sess,
+		prompt:          systemPrompt,
+		replayReasoning: true,
 	}
 }
 
@@ -220,15 +245,25 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 		req.Messages = append(req.Messages, item)
 	}
 
-	if limit > 0 && EstimateMessages(req.Messages) > limit {
-		req.Messages = trimCompleteTurns(req.Messages, limit)
+	if limit > 0 && b.estimate(req.Messages) > limit {
+		req.Messages = trimCompleteTurns(req.Messages, limit, b.replayReasoning)
 	}
-	req.Usage = PruneResult{TokensRemaining: max(0, limit-EstimateMessages(req.Messages))}
+	req.Usage = PruneResult{TokensRemaining: max(0, limit-b.estimate(req.Messages))}
 	return req
 }
 
-func trimCompleteTurns(items []llm.Item, limit int) []llm.Item {
-	if limit <= 0 || EstimateMessages(items) <= limit {
+// estimate measures the request the way the receiving transport will.
+func (b *Builder) estimate(items []llm.Item) int {
+	if b.replayReasoning {
+		return EstimateMessages(items)
+	}
+	return EstimateMessagesWithoutReasoning(items)
+}
+
+// trimCompleteTurns drops whole exchanges from the front until the request fits,
+// never splitting a tool call from its result.
+func trimCompleteTurns(items []llm.Item, limit int, replayReasoning bool) []llm.Item {
+	if limit <= 0 || EstimateMessagesFor(items, replayReasoning) <= limit {
 		return items
 	}
 	firstUser := len(items)
@@ -254,10 +289,10 @@ func trimCompleteTurns(items []llm.Item, limit int) []llm.Item {
 	if len(current) > 0 {
 		groups = append(groups, current)
 	}
-	total := EstimateMessages(prefix)
+	total := EstimateMessagesFor(prefix, replayReasoning)
 	keepFrom := len(groups)
 	for i := len(groups) - 1; i >= 0; i-- {
-		groupTokens := EstimateMessages(groups[i])
+		groupTokens := EstimateMessagesFor(groups[i], replayReasoning)
 		if total+groupTokens > limit {
 			if keepFrom == len(groups) {
 				return prefix
@@ -295,9 +330,20 @@ func EstimateTokens(s string) int {
 
 // EstimateMessages calculates approximate token count.
 func EstimateMessages(items []llm.Item) int {
+	return EstimateMessagesFor(items, true)
+}
+
+// EstimateMessagesFor estimates the request as the named transport will carry
+// it. With replayReasoning false, stored reasoning is excluded because that
+// transport has no case for it and never sends it, so counting it would charge
+// the window for bytes that do not exist on the wire.
+func EstimateMessagesFor(items []llm.Item, replayReasoning bool) int {
 	total := 0
 	for _, item := range items {
-		total += EstimateTokens(item.Text) + EstimateTokens(item.Args) + EstimateTokens(item.Output) + EstimateTokens(item.Reason) + EstimateTokens(string(item.ReasoningDetails))
+		total += EstimateTokens(item.Text) + EstimateTokens(item.Args) + EstimateTokens(item.Output)
+		if replayReasoning {
+			total += EstimateTokens(item.Reason) + EstimateTokens(string(item.ReasoningDetails))
+		}
 		total += EstimateTokens(item.CallID) + EstimateTokens(item.Name)
 		for _, call := range item.ToolCalls {
 			total += EstimateTokens(call.ID) + EstimateTokens(call.Name) + EstimateTokens(call.Args)
@@ -338,4 +384,10 @@ func FormatMessagesIntoPrompt(items []llm.Item) string {
 		}
 	}
 	return sb.String()
+}
+
+// EstimateMessagesWithoutReasoning measures a request for a transport that
+// does not replay stored reasoning.
+func EstimateMessagesWithoutReasoning(items []llm.Item) int {
+	return EstimateMessagesFor(items, false)
 }
