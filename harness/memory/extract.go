@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -32,28 +31,21 @@ const (
 // extractorPrompt is the whole system instruction. It is tight on purpose:
 // the model is asked for statements about durable preferences, not for
 // anything a session file already has.
-const extractorPrompt = `You are a memory extractor for a coding agent. Read the conversation and the checkpoint summary, and extract durable claims about how the user wants work done and about standing facts that will still hold later.
+const extractorPrompt = `Extract durable claims from the conversation and existing memory summary about how the user wants work done, plus standing facts that will still hold later.
 
-Extract these kinds of claim:
-- how the user wants work done: formatting rules, tool preferences, review discipline, conventions
-- durable personal facts when stated or strongly repeated: identity, preferences and dislikes, fears, likes, preferred stack, and standing facts about the user's role
-- standing instructions the user gave as a rule ("always run gofmt before committing")
-- things that are true about the user or their role
-- goals the user is working towards that are still live
-- decisions already made, with the reason given
-- limits and constraints in force
-- mistakes worth not repeating, and what the correct approach turned out to be
+Keep: standing rules, conventions, tool choices, stated role and stack, likes and dislikes, goals, inferred traits and mistakes to avoid (with the fix).
 
-Do not extract task state, files, temporary details, what was done in this session, or anything else that does not generalize.
+Skip: task state, files, one-off requests.
 
-Return ONLY a JSON array of objects, no prose before or after, each with exactly these string fields:
-- "statement": a single concrete sentence. Name things that are stable.
-- "type": one of exactly "instruction", "preference", "profile", "goal", "decision", "constraint", "error", "context". Use "preference" when you are unsure; it is the safest and the most common answer. Use "request" only for something the user asked for once and clearly will not want again.
-- "applies": a path prefix or glob this claim is about, or "" if it applies everywhere.
-- "kind": "add" for a new claim, "contradict" if the statement reverses an existing one.
-- "confidence": "high" only if the conversation gives a clear, explicit signal; "medium" for inferred; "low" for weak.
+Output one claim per line: ` + "`type | applies | kind | confidence | statement`" + `
 
-If nothing in the conversation reveals a durable claim, return an empty array: [].`
+- type: instruction, preference, profile, goal, decision, constraint, error, or context
+- applies: a path glob, or "all"
+- kind: "add", or "contradict" if the user reversed an existing claim
+- confidence: "high" if explicit, "medium" if clearly implied and repeated; skip weaker ones
+- statement: one concrete sentence, no "|" characters
+
+Output nothing else. If nothing qualifies, output []`
 
 // Extracted is one candidate the model produced.
 type Extracted struct {
@@ -167,8 +159,20 @@ func Extract(ctx context.Context, cfg llm.ProviderConfig, discarded []sessionsto
 	return parseExtracted(out.String())
 }
 
-// parseExtracted turns the model's text into statements, tolerating a code
-// fence the model was told not to add.
+// parseExtracted turns the model's text into statements.
+//
+// The line format is `type | applies | kind | confidence | statement`, with
+// the statement last so a statement containing a pipe would still be readable
+// in full rather than being split at the wrong field. The prompt forbids them
+// but a parser that trusts that loses the claim.
+//
+// A line it cannot read is dropped and the rest are kept. That is the reason
+// for this format over JSON: a small model that emits one bad line loses that
+// line instead of the whole reply, because brace-matching a truncated array
+// fails closed on everything. Nothing here returns an error for bad content,
+// because a reply that is entirely unusable and a reply with three good claims
+// are both just a fact about the model, and neither is worth failing a
+// compaction over.
 func parseExtracted(text string) ([]Extracted, error) {
 	text = strings.TrimSpace(text)
 	// Strip a markdown fence if one was emitted anyway.
@@ -181,19 +185,38 @@ func parseExtracted(text string) ([]Extracted, error) {
 		}
 		text = strings.TrimSpace(text)
 	}
+	// The empty answer, spelled the way the prompt spells it, and the JSON one
+	// an older build of the extractor was asked for. Both mean nothing claimed.
 	if text == "" || text == "[]" || strings.TrimLeft(text, "` \t") == "[]" {
 		return nil, nil
 	}
-	var out []Extracted
-	if err := json.Unmarshal([]byte(text), &out); err != nil {
-		return nil, fmt.Errorf("parse extraction output as JSON array: %w\nfirst 400 bytes: %s", err, truncateUTF4(text, 400))
-	}
-	cleaned := make([]Extracted, 0, len(out))
-	for _, item := range out {
-		item.Statement = strings.TrimSpace(item.Statement)
-		item.Applies = strings.TrimSpace(item.Applies)
-		item.Confidence = strings.TrimSpace(item.Confidence)
-		item.Type = strings.TrimSpace(item.Type)
+
+	cleaned := make([]Extracted, 0, 8)
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "|"))
+		if line == "" || line == "[]" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) < 5 {
+			continue
+		}
+		item := Extracted{
+			Type:       strings.TrimSpace(parts[0]),
+			Applies:    strings.TrimSpace(parts[1]),
+			Kind:       strings.TrimSpace(parts[2]),
+			Confidence: strings.TrimSpace(parts[3]),
+			Statement:  strings.TrimSpace(parts[4]),
+		}
+		// "all" is how the prompt says everywhere, and "" is what the rest of
+		// this package reads as everywhere. Translated here so nothing
+		// downstream has to know which prompt is installed.
+		if strings.EqualFold(item.Applies, "all") {
+			item.Applies = ""
+		}
+		// A statement is the whole point of a line, so a line without one is not
+		// a claim. Confidence too: a claim of unknown strength cannot be given a
+		// lifetime, and guessing one is how a maybe becomes a standing fact.
 		if item.Statement == "" || item.Confidence == "" {
 			continue
 		}
@@ -367,13 +390,4 @@ func MakeLearner(main llm.ProviderConfig, log *MemoryFile) (LearnFunc, bool) {
 			logger.Info(fmt.Sprintf("memory extractor: logged=%d", added))
 		}
 	}, true
-}
-
-// truncateUTF4 is a bounded version of an error-message snippet so a giant
-// model reply does not blow up the log.
-func truncateUTF4(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

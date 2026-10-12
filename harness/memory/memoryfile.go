@@ -1,11 +1,28 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strings"
 	"sync"
 	"time"
 )
+
+// EntryID is the identity one log entry is delivered once under.
+//
+// A content hash of the entry text, not its position or date, because the
+// delivery set has to survive the log growing underneath it: the tail is a
+// window, so an entry delivered last week leaves the window and a positional id
+// would be reused by a different memory later. Hashing the text means the same
+// memory keeps its identity for as long as it is in the file.
+//
+// The prefix names the source, so an id from another producer cannot collide
+// with it by looking the same.
+func EntryID(entry string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(entry)))
+	return "memfile:" + hex.EncodeToString(sum[:6])
+}
 
 // MemoryFile is an append-only log of what the agent has learned.
 //

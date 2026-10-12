@@ -197,7 +197,7 @@ func TestAnEmptyOrMissingMemoryFileReadsNothing(t *testing.T) {
 		MemoryDelivery: string(memory.DeliverySidekick),
 		MemoryFile:     logMemoryFile(filepath.Join(t.TempDir(), "absent", "Memory.md")),
 	}, nil, tool.NewRegistry())
-	if tail := runner.memoryTailLine(); tail != "" {
+	if tail := runner.memoryTailLine(&sessionstore.Session{}); tail != "" {
 		t.Errorf("an unreadable log rendered %q", tail)
 	}
 }

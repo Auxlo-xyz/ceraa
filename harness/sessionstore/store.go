@@ -336,6 +336,46 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+// MarkDeliveredMemory records log-entry ids as told to the model in this
+// session, ignoring any it already holds.
+//
+// The writer that Session.MemoryDelivered was documented for and did not have:
+// grep found only Clear() touching the field, so the tail was rendered into
+// every request forever and the block re-fired on each turn.
+func (s *Session) MarkDeliveredMemory(ids []string) {
+	if s == nil || len(ids) == 0 {
+		return
+	}
+	have := make(map[string]struct{}, len(s.MemoryDelivered)+len(ids))
+	for _, id := range s.MemoryDelivered {
+		have[id] = struct{}{}
+	}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := have[id]; ok {
+			continue
+		}
+		have[id] = struct{}{}
+		s.MemoryDelivered = append(s.MemoryDelivered, id)
+	}
+}
+
+// MemoryDeliveredSet is the delivered ids as a lookup, for a caller filtering
+// what to send. A copy, because the caller must not mutate the session's own
+// slice.
+func (s *Session) MemoryDeliveredSet() map[string]struct{} {
+	if s == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(s.MemoryDelivered))
+	for _, id := range s.MemoryDelivered {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
 func (s *Session) Clear() error {
 	s.Messages = []Message{}
 	s.Operations = []Operation{}

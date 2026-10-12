@@ -540,7 +540,7 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	if note := both.instructionNote(sessionFor(sess), result); note == "" {
 		t.Error("an instruction source with a memory store configured delivered nothing")
 	}
-	if tail := both.memoryTailLine(); !strings.Contains(tail, "memory only") {
+	if tail := both.memoryTailLine(sessionFor(sess)); !strings.Contains(tail, "memory only") {
 		t.Errorf("a memory tail with an instruction source configured delivered nothing: %q", tail)
 	}
 
@@ -562,7 +562,7 @@ func TestTheTwoChannelsAreIndependent(t *testing.T) {
 	if note := memoryRunner.instructionNote(sessionFor(sess), result); note != "" {
 		t.Errorf("a runner with no rule file produced an instruction note: %q", note)
 	}
-	if tail := memoryRunner.memoryTailLine(); !strings.Contains(tail, "memory only") {
+	if tail := memoryRunner.memoryTailLine(sessionFor(sess)); !strings.Contains(tail, "memory only") {
 		t.Errorf("the memory tail stopped delivering once the instruction channel existed: %q", tail)
 	}
 }

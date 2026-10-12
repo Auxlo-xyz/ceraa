@@ -17,11 +17,14 @@ func TestParseExtractedToleratesTheFencesTheModelAdds(t *testing.T) {
 		in   string
 		want int
 	}{
-		{`[{"statement":"always write tests first","applies":"","kind":"add","confidence":"high"}]`, 1},
-		{"```json\n[{\"statement\":\"terse replies\",\"applies\":\"\",\"kind\":\"add\",\"confidence\":\"high\"}]\n```", 1},
+		{`instruction | all | add | high | always write tests first`, 1},
+		{"```\npreference | all | add | high | terse replies\n```", 1},
 		{`[]`, 0},
 		{"  ", 0},
-		{`[{"statement":"","applies":"","kind":"add","confidence":"high"}]`, 0}, // blank statement kept out
+		{`instruction | all | add | high |`, 0}, // blank statement kept out
+		{`instruction | all | add | always write tests first`, 0}, // four fields is not a claim
+		{`Here are the claims I found:
+preference | all | add | high | reply tersely`, 1}, // prose around it, claim still read
 	}
 	for _, tc := range cases {
 		got, err := parseExtracted(tc.in)
@@ -35,11 +38,35 @@ func TestParseExtractedToleratesTheFencesTheModelAdds(t *testing.T) {
 	}
 }
 
-// An invalid reply is an error that names why, rather than a plausible-looking
-// empty list that looks like "nothing to store".
-func TestParseExtractedRejectsNonJSONNonArray(t *testing.T) {
-	if _, err := parseExtracted("happy birthday"); err == nil {
-		t.Fatal("a prose reply was accepted")
+// A reply with nothing readable in it yields no claims and no error. That is the
+// other half of choosing a line format over JSON: a small model that wraps its
+// answer in a sentence, or drops one line mid-array, costs that line and not the
+// compaction. Failing the fold over an unreadable reply would let a chatty model
+// cost more than it stores.
+func TestParseExtractedRefusesAReplItCannotRead(t *testing.T) {
+	for _, in := range []string{"happy birthday", "I could not find any durable claims"} {
+		got, err := parseExtracted(in)
+		if err != nil {
+			t.Errorf("parseExtracted(%q) returned an error: %v", in, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("parseExtracted(%q) = %d claims, want none", in, len(got))
+		}
+	}
+}
+
+// One unreadable line does not cost the readable ones, which is the whole reason
+// the parser reads line by line.
+func TestOneBadLineKeepsTheClaimsAroundIt(t *testing.T) {
+	got, err := parseExtracted("preference | all | add | high | reply tersely\nnot a claim at all\ninstruction | all | add | high | run gofmt before committing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d claims, want the 2 readable ones: %+v", len(got), got)
+	}
+	if got[0].Statement != "reply tersely" || got[1].Statement != "run gofmt before committing" {
+		t.Errorf("the wrong claims survived: %+v", got)
 	}
 }
 
@@ -85,7 +112,7 @@ func TestMakeLearnerIsOffWithoutAKey(t *testing.T) {
 
 // Field whitespace is stripped by the cleaning step, not trusted to the model.
 func TestExtractedFieldsAreTrimmed(t *testing.T) {
-	got, err := parseExtracted("```\n[{\"statement\":\"  keep the session archive  \",\"applies\":\"  *.go \",\"kind\":\"add\",\"confidence\":\" high\"}]\n```")
+	got, err := parseExtracted("```\n preference  |  *.go  |  add  |  high  |   keep the session archive   \n```")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -216,6 +216,15 @@ type Runner struct {
 	delivery memory.Delivery
 	sidekick *sidekickState
 
+	// pendingMemory holds the ids of the entries the tail carried on the request
+	// messages was last built from, and memoryRode records that the tail rode at
+	// all this run. They are separate because messages is built more than once:
+	// a preview or the compactor's summary rebuilds it, by which point the ids
+	// are already delivered and the filter leaves nothing to send. memoryRode is
+	// never cleared, so that rebuild cannot un-record the run record.
+	pendingMemory []string
+	memoryRode    bool
+
 	// instructions is the instruction delivery state for this run: the compiled
 	// rules, the run's delivered set, and the scope matcher.
 	//
@@ -582,8 +591,17 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// which mode ran and whether the tail line rode, so a later analysis can
 				// compare outcomes instead of inferring the mode from the build.
 				sess.Runs[i].MemoryDelivery = string(r.delivery)
-				if r.memoryTailLine() != "" {
+				// memoryRode, not a fresh render: by now the ids are delivered,
+				// so rebuilding here would find nothing left and record zero for
+				// every run that did deliver.
+				if r.memoryRode {
 					sess.Runs[i].MemoryTargetedSent = 1
+					// Marked here, beside the record of the tail having rode, so
+					// the set is written by the Save that follows. What rode is
+					// what is marked, and pendingMemory only ever holds ids the
+					// model was actually sent: a rebuild that finds nothing new
+					// leaves it untouched rather than clearing it.
+					sess.MarkDeliveredMemory(r.pendingMemory)
 				}
 			}
 		}
@@ -1165,44 +1183,78 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	// change costs nothing: the request is the previous one plus a suffix, which
 	// is a cache hit by construction, and every earlier message stays
 	// byte-identical forever.
-	if tail := r.memoryTailLine(); tail != "" {
+	if tail := r.memoryTailLine(sess); tail != "" {
 		request.Messages = append(request.Messages, llm.Item{Kind: "text", Role: llm.RoleUser, Text: tail})
 	}
 	return request.Messages
 }
 
-// memoryTailLine renders the latest log state for the once-per-run tail, or ""
-// when there is nothing to send.
+// memoryTailLine renders the memory this session has not been told yet, and
+// "" when there is nothing new to send.
+//
+// Entries already in the session's delivered set are dropped rather than resent.
+// That filter is the whole point: Session.MemoryDelivered was documented for
+// exactly this and had no writer, so the same tail rode on every request
+// forever, and a block the model reads on every turn is a block it stops
+// reading. It also records the ids it carried, so the caller can mark them
+// delivered once the request actually goes out.
 //
 // Read through the sidekick state rather than the config reader directly, so a
 // mode that is not sidekick attaches nothing: the state only exists in sidekick
 // mode, which makes its presence the delivery switch.
 //
-// A nil state, an unreadable file and an empty log all fall through to "", so
-// a run with no memory builds byte-identical messages to one that never
-// configured it. The block is capped at 800 runes: the tail is a reminder of
-// what was learned, not a second transcript.
-func (r *Runner) memoryTailLine() string {
+// A nil state, an unreadable file, an empty log and a fully-delivered tail all
+// fall through to "", so a run with no memory builds byte-identical messages to
+// one that never configured it.
+//
+// The cap is a budget on the whole rendered body, and it is applied while
+// building rather than afterwards, so the ids recorded are exactly the ids of
+// the entries that were sent. Truncating first and recording everything would
+// mark entries the model never saw as delivered and lose them for good.
+func (r *Runner) memoryTailLine(sess *sessionstore.Session) string {
 	if r == nil || r.sidekick == nil {
 		return ""
 	}
-	lines := make([]string, 0)
+	delivered := sess.MemoryDeliveredSet()
+
+	// The tail is a reminder of what was learned, not a second transcript.
+	const budget = 800
+
+	body, ids := "", make([]string, 0, 4)
 	for _, entry := range r.sidekick.memTail() {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			lines = append(lines, trimmed)
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			continue
 		}
+		id := memory.EntryID(entry)
+		if _, seen := delivered[id]; seen {
+			continue
+		}
+		candidate := trimmed
+		if body != "" {
+			candidate = body + "\n---\n" + trimmed
+		}
+		runes := []rune(candidate)
+		if len(runes) > budget {
+			if body == "" {
+				// One entry larger than the whole budget. Sent truncated, as it
+				// always was, because dropping it would mean never delivering it
+				// at all: the budget is a cap on one turn, not a filter.
+				body = string(runes[:budget])
+				if i := strings.LastIndex(body, "\n"); i > 0 {
+					body = body[:i]
+				}
+				ids = append(ids, id)
+			}
+			break
+		}
+		body, ids = candidate, append(ids, id)
 	}
-	if len(lines) == 0 {
+	if body == "" {
 		return ""
 	}
-	body := strings.Join(lines, "\n---\n")
-	if runes := []rune(body); len(runes) > 800 {
-		cut := string(runes[:800])
-		if i := strings.LastIndex(cut, "\n"); i > 0 {
-			cut = cut[:i]
-		}
-		body = cut
-	}
+	r.pendingMemory = ids
+	r.memoryRode = true
 	return "\n\n<memory>\n" + body + "\n</memory>"
 }
 

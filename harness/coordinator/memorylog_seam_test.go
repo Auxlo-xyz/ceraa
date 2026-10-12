@@ -306,7 +306,7 @@ func TestTheSidekickIsBuiltAndReadsWithOnlyTheMemoryFileSet(t *testing.T) {
 	if runner.sidekick == nil {
 		t.Fatal("no sidekick state was built from the log alone, so the log has no path to the model")
 	}
-	if tail := runner.memoryTailLine(); !strings.Contains(tail, "UNIT_ONLY") {
+	if tail := runner.memoryTailLine(&sessionstore.Session{}); !strings.Contains(tail, "UNIT_ONLY") {
 		t.Errorf("the tail line did not render the log entry: %q", tail)
 	}
 }
@@ -320,7 +320,7 @@ func TestASidekickWithNoSourceAtAllDeliversNothing(t *testing.T) {
 	if runner.sidekick != nil {
 		t.Error("sidekick state was built with no log")
 	}
-	if tail := runner.memoryTailLine(); tail != "" {
+	if tail := runner.memoryTailLine(&sessionstore.Session{}); tail != "" {
 		t.Errorf("a run with no source delivered: %q", tail)
 	}
 	// The state itself, constructed the way a test or a future caller might: no
