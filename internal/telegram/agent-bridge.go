@@ -429,7 +429,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		evaluationStore: evaluationStore,
 		store:           store,
 		skillContext:    skillContext,
-		WallClock:       15 * time.Minute,
+		WallClock:       operation.TaskTimeout,
 	})
 	// view_image follows the same resolved provider as the run, so a media call
 	// cannot drift onto a different model than the one doing the work.

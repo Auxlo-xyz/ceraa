@@ -328,6 +328,11 @@ func (s *Store) Delete(id string) error {
 	if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete session %s: %w", id, err)
 	}
+	for _, suffix := range []string{".compacted.json", ".todos.json", ".goal.json"} {
+		if err := os.Remove(filepath.Join(s.dir, id+suffix)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete session %s sidecar %s: %w", id, suffix, err)
+		}
+	}
 	return nil
 }
 

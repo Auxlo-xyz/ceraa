@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"ceraa/harness/flock"
+
 	"ceraa/harness/redact"
 	"ceraa/harness/sessionstore"
 )
@@ -85,10 +87,17 @@ func (c *Compactor) writeArchive(sessionID string, seq int, summary string, disc
 	}
 
 	path := archivePath(c.ArchiveDir, sessionID)
+	lock, err := flock.Acquire(path + ".lock")
+	if err != nil {
+		return
+	}
+	defer lock.Release()
 	archive := ArchiveFile{SessionID: sessionID}
 	// A corrupt or absent sidecar must not stop a new one being written.
 	if raw, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(raw, &archive)
+		if err := json.Unmarshal(raw, &archive); err != nil {
+			archive = ArchiveFile{SessionID: sessionID}
+		}
 		archive.SessionID = sessionID
 	}
 	archive.Entries = append(archive.Entries, entry)
@@ -136,11 +145,27 @@ func redactArchiveMessages(messages []sessionstore.Message) []sessionstore.Messa
 // writeFileAtomic writes via a temporary file and a rename, so a crash mid-write
 // leaves the previous sidecar intact rather than a half-written one.
 func writeFileAtomic(path string, data []byte) {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return
 	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		return
+	}
+	_ = os.Rename(tmpPath, path)
 }

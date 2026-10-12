@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ceraa/harness/llm"
+	"ceraa/harness/redact"
 	"ceraa/harness/sessionstore"
 )
 
@@ -910,7 +911,8 @@ func (c *Compactor) mergeCheckpoints(ctx context.Context, sess *sessionstore.Ses
 	if c.ArchiveDir != "" {
 		sources := make([]FoldMessage, 0, len(parts))
 		for _, summary := range parts {
-			sources = append(sources, FoldMessage{Role: "system", Text: summary})
+			text := redact.SecretsInText(summary)
+			sources = append(sources, FoldMessage{Role: "system", Text: text})
 		}
 		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
 	}
@@ -1092,6 +1094,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 			if message.ToolResult != "" {
 				text += "\n[tool result]\n" + message.ToolResult
 			}
+			text = redact.SecretsInText(text)
 			sources = append(sources, FoldMessage{Role: string(message.Role), Text: text})
 		}
 		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)

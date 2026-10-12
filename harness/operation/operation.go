@@ -189,6 +189,11 @@ func New(runner ToolRunner) *LocalManager {
 	return NewWithBuffer(runner, 64)
 }
 
+// TaskTimeout is the maximum wall-clock duration for one child-agent call.
+// The operation manager and task runner both use this value so a parent does
+// not report an unknown result while the child is still allowed to run.
+const TaskTimeout = 15 * time.Minute
+
 // defaultRunnerTimeout bounds an in-process tool the manager does not know
 // natively. It is generous because such a tool may start a browser or fetch a
 // large resource. The coordinator does not impose a shorter outer deadline: it
@@ -246,6 +251,8 @@ func SpecTimeout(spec Spec) time.Duration {
 		// The secret path does not read the argument; it always runs on the
 		// shell default, so a waiter has to assume the same.
 		return defaultShellTimeout
+	case "task":
+		return TaskTimeout
 	case "question":
 		return questionTimeout
 	case "webfetch", "websearch", "create_goal", "get_goal", "update_goal":

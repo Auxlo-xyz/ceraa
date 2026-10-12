@@ -216,7 +216,12 @@ func validSubagentType(kind string) bool {
 // subagent is a nested agent loop, not a queued unit of work, and putting it on
 // the operation pool would occupy a concurrency slot for the whole of its run.
 func (t *TaskTool) Run(spec operation.Spec) (string, error) {
-	return t.run(context.Background(), spec)
+	return t.RunContext(context.Background(), spec)
+}
+
+// RunContext lets the operation manager cancel a child when its parent run ends.
+func (t *TaskTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
+	return t.run(ctx, spec)
 }
 
 func (t *TaskTool) run(ctx context.Context, spec operation.Spec) (string, error) {

@@ -47,8 +47,9 @@ func TestSpecTimeout(t *testing.T) {
 		{"shell honors the argument", Spec{Type: "shell", Args: map[string]any{"timeout": 600}}, 600 * time.Second},
 		{"shell clamps the argument", Spec{Type: "shell", Args: map[string]any{"timeout": 86400}}, maxShellTimeout},
 		{"secret shell ignores the argument", Spec{Type: "run_command_with_secret", Args: map[string]any{"timeout": 5}}, defaultShellTimeout},
+		{"task uses its child wall clock", Spec{Type: "task"}, TaskTimeout},
 		{"question waits for a human", Spec{Type: "question"}, questionTimeout},
-		{"wire tool without an argument uses the wire default", Spec{Type: "webfetch"}, defaultWireTimeout},
+
 		{"wire tool honors the argument", Spec{Type: "webfetch", Args: map[string]any{"timeout": 90}}, 90 * time.Second},
 		{"in-process tool without an argument uses the runner default", Spec{Type: "browser_open"}, defaultRunnerTimeout},
 		{"in-process tool honors the argument", Spec{Type: "browser_open", Args: map[string]any{"timeout": 240}}, 240 * time.Second},

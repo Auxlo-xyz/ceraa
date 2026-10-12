@@ -734,19 +734,9 @@ func handleDeleteSession(token string, chatID int64, text string) {
 		send(token, chatID, "Failed: "+err.Error())
 		return
 	}
-	// Clear session
-	sess, err := store.Load(id)
-	if err != nil {
-		send(token, chatID, "Session not found: "+id)
-		return
-	}
-	if err := sess.Clear(); err != nil {
+	if err := store.Delete(id); err != nil {
 		send(token, chatID, "Delete failed: "+err.Error())
 		return
-	}
-	cfg, err := config.Load()
-	if err == nil {
-		_ = os.Remove(filepath.Join(cfg.SessionFile, id+".json"))
 	}
 	send(token, chatID, "Deleted session "+id)
 }

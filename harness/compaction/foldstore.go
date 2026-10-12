@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -81,14 +82,81 @@ func RetainFold(dir, blockID string, messages []FoldMessage) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("compaction: retain fold: encode block %q: %w", blockID, err)
 	}
+	if len(data) > ArchiveMaxBytes {
+		return "", fmt.Errorf("compaction: retain fold: block %q is %d bytes, exceeds %d-byte limit", blockID, len(data), ArchiveMaxBytes)
+	}
 	path := filepath.Join(dir, "fold-"+safe+".json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := writeFoldAtomic(path, data); err != nil {
 		return "", fmt.Errorf("compaction: retain fold: write %q: %w", path, err)
+	}
+	if err := pruneFolds(dir, ArchiveKeep); err != nil {
+		return "", fmt.Errorf("compaction: retain fold: prune %q: %w", dir, err)
 	}
 	return path, nil
 }
 
-// ReadFold reads a fold file written by RetainFold.
+func writeFoldAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".fold-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func pruneFolds(dir string, keep int) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	type foldFile struct {
+		name string
+		at   time.Time
+	}
+	files := make([]foldFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "fold-") || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, foldFile{name: entry.Name(), at: info.ModTime()})
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].at.Before(files[j].at) })
+	for len(files) > keep {
+		if err := os.Remove(filepath.Join(dir, files[0].name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		files = files[1:]
+	}
+	return nil
+}
+
 func ReadFold(path string) (FoldRecord, error) {
 	var rec FoldRecord
 	if strings.TrimSpace(path) == "" {

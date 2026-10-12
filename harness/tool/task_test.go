@@ -90,6 +90,19 @@ func spec(t *testing.T, tool *TaskTool, args map[string]any) map[string]any {
 	return s.Args
 }
 
+func TestTaskRunContextCancelsChild(t *testing.T) {
+	factory := newStubFactory()
+	release := make(chan struct{})
+	factory.next = &stubSubagent{block: release}
+	tool := taskTool(factory)
+	sp := spec(t, tool, map[string]any{"subagent_type": "general", "description": "cancel child", "prompt": "wait"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := tool.RunContext(ctx, operationSpec(sp))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunContext error = %v, want context.Canceled", err)
+	}
+}
 func TestTaskDelegatesAndReturnsAnEnvelopeCarryingTheID(t *testing.T) {
 	factory := newStubFactory()
 	factory.next = &stubSubagent{final: "the provider exposes xai under provider:xai", requests: 3}
