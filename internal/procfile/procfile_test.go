@@ -13,11 +13,26 @@ import (
 	"time"
 )
 
+// requireProc skips a test that reads the kernel's process table.
+//
+// The package builds and runs on every platform Ceraa does, because the daemon
+// writes the pid file everywhere, but process identity here is read back out of
+// /proc/<pid>/stat, which only Linux has. These tests therefore assert Linux
+// behaviour and skip elsewhere instead of failing on a host that was never in
+// scope for them.
+func requireProc(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("this OS has no /proc, so process identity cannot be checked")
+	}
+}
+
 // A zombie still answers kill(0), so a caller that polls with kill(0) sees a dead
 // process as running. This reproduces that: the child exits and is deliberately
 // not reaped, which is exactly the state a Ceraa process is in between dying and
 // init collecting it.
 func TestProbeReportsAZombieAsDead(t *testing.T) {
+	requireProc(t)
 	child := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := child.Start(); err != nil {
 		t.Fatalf("start child: %v", err)
@@ -61,6 +76,7 @@ func TestProbeReportsAZombieAsDead(t *testing.T) {
 // kill(0) succeeding is the trap this package exists to avoid, so assert the
 // trap directly rather than trusting the comment.
 func TestZombieStillAnswersKillZero(t *testing.T) {
+	requireProc(t)
 	child := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := child.Start(); err != nil {
 		t.Fatalf("start child: %v", err)
@@ -111,6 +127,7 @@ func TestWriteReadRemoveRoundTrip(t *testing.T) {
 }
 
 func TestWriteRefusesToStealALiveSlot(t *testing.T) {
+	requireProc(t)
 	path := filepath.Join(t.TempDir(), "ceraa.pid")
 	ticks, err := StartTicks(os.Getpid())
 	if err != nil {
@@ -132,6 +149,7 @@ func TestWriteRefusesToStealALiveSlot(t *testing.T) {
 }
 
 func TestMatchesRejectsARecycledPID(t *testing.T) {
+	requireProc(t)
 	ticks, err := StartTicks(os.Getpid())
 	if err != nil {
 		t.Fatalf("start ticks: %v", err)
@@ -146,6 +164,7 @@ func TestMatchesRejectsARecycledPID(t *testing.T) {
 }
 
 func TestTerminateReportsACleanExitQuickly(t *testing.T) {
+	requireProc(t)
 	cmd := exec.Command("/bin/sleep", "60")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -191,6 +210,7 @@ func TestTerminateReportsACleanExitQuickly(t *testing.T) {
 }
 
 func TestTerminateEscalatesForAProcessThatIgnoresSIGTERM(t *testing.T) {
+	requireProc(t)
 	// A shell would not do here: `sh -c 'trap "" TERM; sleep 60'` execs the sleep,
 	// replacing the shell, so the pid that receives the signal is a plain sleep
 	// that dies on SIGTERM and the escalation path is never reached. Re-exec this
@@ -288,6 +308,7 @@ func TestTerminateOnAnAbsentProcessIsNotAnError(t *testing.T) {
 // waits out the whole grace period and then reports a kill against a process that
 // exited in under a second. Nothing reaps the child here on purpose.
 func TestTerminateReportsCleanEvenWhenTheExitIsNeverReaped(t *testing.T) {
+	requireProc(t)
 	cmd := exec.Command("/bin/sleep", "60")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {

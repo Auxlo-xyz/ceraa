@@ -845,6 +845,7 @@ func TestRepeatedReadsOfLongFilesCollapseToOneNoticeEach(t *testing.T) {
 
 	before, after, collapsed := 0, 0, 0
 	calls := 0
+	fullCost := map[string]int{}
 	for name, reads := range files {
 		for i := 0; i < reads; i++ {
 			formatted := runner.formatOutput("run1", fmt.Sprintf("call-%s-%d", name, i), bodies[name])
@@ -852,12 +853,24 @@ func TestRepeatedReadsOfLongFilesCollapseToOneNoticeEach(t *testing.T) {
 			calls++
 			if strings.Contains(formatted, "Identical to a tool result earlier") {
 				collapsed++
+				continue
 			}
-			// What each read costs with no dedupe: a trim notice plus its tail.
-			tail := 12000 / 3
-			before += len(fmt.Sprintf("Large tool output saved to /tmp/x/%s-%d.txt (%d bytes).\nTail:\n%s",
-				name, i, len(bodies[name]), bodies[name][len(bodies[name])-tail:]))
+			// The first read of a file is what that file costs at full size.
+			// Every repeat of it would cost the same again with no dedupe, so
+			// this measured number is the baseline the dedupe is judged on.
+			//
+			// The baseline used to be modelled by hand as a trim notice plus a
+			// tail, which both disagreed with what formatOutput now emits and
+			// pinned the result to exactly half. formatOutput puts the offload
+			// path in the notice, so the measured length tracks the length of
+			// t.TempDir(), which is /var/folders on macOS and /tmp on Linux, and
+			// the longer path alone pushed the test over its threshold. Taking
+			// both sides from the same rendering cancels that out.
+			fullCost[name] = len(formatted)
 		}
+	}
+	for name, reads := range files {
+		before += fullCost[name] * reads
 	}
 	if collapsed != calls-len(files) {
 		t.Errorf("collapsed %d of %d repeats, want %d", collapsed, calls-len(files), calls-len(files))
