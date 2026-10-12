@@ -1117,29 +1117,6 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	return request.Messages
 }
 
-// memoryTailLine renders the memory this session has not been told yet, and
-// "" when there is nothing new to send.
-//
-// Entries already in the session's delivered set are dropped rather than resent.
-// That filter is the whole point: Session.MemoryDelivered was documented for
-// exactly this and had no writer, so the same tail rode on every request
-// forever, and a block the model reads on every turn is a block it stops
-// reading. It also records the ids it carried, so the caller can mark them
-// delivered once the request actually goes out.
-//
-// Read through the sidekick state rather than the config reader directly, so a
-// mode that is not sidekick attaches nothing: the state only exists in sidekick
-// mode, which makes its presence the delivery switch.
-//
-// A nil state, an unreadable file, an empty log and a fully-delivered tail all
-// fall through to "", so a run with no memory builds byte-identical messages to
-// one that never configured it.
-//
-// The cap is a budget on the whole rendered body, and it is applied while
-// building rather than afterwards, so the ids recorded are exactly the ids of
-// the entries that were sent. Truncating first and recording everything would
-// mark entries the model never saw as delivered and lose them for good.
-
 // LiveRequest returns the request the running agent would send for this session
 // right now: the same system prompt, the same pinned context, the same history
 // and the same tool catalogue.

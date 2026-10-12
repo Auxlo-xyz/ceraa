@@ -92,17 +92,19 @@ type CompactionInfo struct {
 	Tier       int    `json:"tier,omitempty"`
 	Generation string `json:"generation,omitempty"`
 	Survived   int    `json:"survived,omitempty"`
-	// Delivered is the delivered set as this fold judged it: one log-entry
-	// content-hash id per line, the same ids Session.MemoryDelivered holds.
+	// Delivered is the delivered set as the last fold judged it: one entry
+	// content-hash id per line.
 	//
-	// It is carried because the fold deletes the copies the model actually read.
-	// A sidekick annotation reaches the model as text appended to a tool result,
-	// and that text IS the delivery; the delivered set on the session says what
-	// was told and outlives the transcript that carried it. So after a fold the
-	// session can hold ids whose every copy has been folded away - the harness
-	// believes it told the model X while the context says nothing about X, and
-	// the agent will never ask again. That is worse than never having told it,
-	// and nothing errors, nothing logs, and the transcript simply looks short.
+	// Vestigial. It existed so a fold could record what the model had been told
+	// about, and the memory feature it served is retired. The compaction carry
+	// chain still threads it (carry at compaction.go, and CheckpointDelivered
+	// reads it back), but the Carry hook that would have populated it from the
+	// memory side has no non-test caller, so carry is a pass-through and
+	// nothing in the product reads the set for any purpose.
+	//
+	// Kept rather than deleted because removing it means changing the fold carry
+	// chain, which is compaction behaviour and out of scope for the memory
+	// retirement. It is a removal candidate on its own terms.
 	//
 	// omitempty so a checkpoint with nothing to say writes the bytes it always
 	// wrote and a session stored before this field loads unchanged: an absent
