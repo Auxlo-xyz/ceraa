@@ -118,6 +118,20 @@ func TestBuildHandlesToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildPreservesToolResultImages(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "call_image", Name: "read", Args: `{}`}}},
+		{Role: llm.RoleTool, ToolCallID: "call_image", ToolName: "read", ToolResult: "shot.jpg attached as an image.", ToolImages: []string{"/tmp/shot.jpg"}},
+	}}
+	req := New(sess, "system").Build()
+	result := req.Messages[len(req.Messages)-1]
+	if result.Role != llm.RoleTool || result.CallID != "call_image" {
+		t.Fatalf("result = %+v, want tool result", result)
+	}
+	if len(result.Images) != 1 || result.Images[0] != "/tmp/shot.jpg" {
+		t.Fatalf("images = %v, want the persisted image path", result.Images)
+	}
+}
 func TestBuildPreservesEmptyToolResultWithPresenceMarker(t *testing.T) {
 	sess := &sessionstore.Session{Messages: []sessionstore.Message{
 		{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "call_empty", Name: "bash", Args: `{"command":"mkdir -p /tmp/example"}`}}},

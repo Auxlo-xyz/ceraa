@@ -237,6 +237,7 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 			// errors actually appear, and cost content for no cache benefit:
 			// a pure function of the stored text is already byte-stable.
 			item.Output = m.ToolResult
+			item.Images = append([]string(nil), m.ToolImages...)
 		}
 		if item.Role == llm.RoleAssistant && (m.Reasoning != "" || len(m.ReasoningDetails) > 0) {
 			item.Reason = m.Reasoning
