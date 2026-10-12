@@ -230,7 +230,7 @@ func TestCompactAtPercentIsClamped(t *testing.T) {
 // captured in the production log. So this asserts the exact condition the
 // summariser checks, at the fill level the trigger fires at.
 func TestTriggerAlwaysLeavesRoomForTheFold(t *testing.T) {
-	need := EstimateTokens(compactionInstruction(1)) + SummaryOutputTokens
+	need := EstimateTokens(compactionInstruction(1, nil)) + SummaryOutputTokens
 	if want := SummaryOutputTokens; need <= want {
 		t.Fatalf("the fold needs %d tokens, which does not exceed the summary alone (%d)", need, want)
 	}

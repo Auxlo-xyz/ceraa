@@ -156,7 +156,7 @@ func TestArchiveIsOffWhenUnconfigured(t *testing.T) {
 // old entries forward to disk; the instruction below is the only
 // compaction-authored text that reaches a model.
 func TestArchiveDoesNotReachThePrompt(t *testing.T) {
-	instruction := compactionInstruction(1)
+	instruction := compactionInstruction(1, nil)
 	for _, leak := range []string{"discarded", ".compacted.json", "read_files"} {
 		if strings.Contains(instruction, leak) {
 			t.Errorf("the compaction instruction mentions %q; the archive must not be readable by the model", leak)

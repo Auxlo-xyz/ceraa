@@ -472,7 +472,9 @@ func snapToExchangeEnd(head []sessionstore.Message, n int) int {
 // that was finished from one that was abandoned half-way with a failing build.
 // opencode answers this with a Work State of Completed, Active and Blocked;
 // Hermes with Blocked and Errors & Fixes. Both shapes carry it here.
-const summaryTemplate = `## Objective
+const summaryTemplate = `Every heading below is required. Reproduce each one exactly as written, in this order, each on its own line. Do not renumber, rename, reword, merge, drop or reorder a heading, and do not add one that is not listed. A summary that misses a heading is rejected whole and the transcript is summarised again.
+
+## Objective
 Summarize the main goal and current task.
 ## Progress
 What has been completed so far (terse bullets).
@@ -491,7 +493,7 @@ The next action as one command, the current position as file:line, the open bloc
 ## Design Lessons Learnt
 Patterns to preserve.
 
-Rules: keep every section, terse bullets, never mention compaction, no preamble. Keep by value: the user's words closest to verbatim, then lasting effects and failures, then findings, tool steps last. Copy names, numbers, ids, paths and errors exactly. Never make anything look further along than it was.`
+Rules: keep every heading above verbatim and in that order, terse bullets, never mention compaction, no preamble. Keep by value: the user's words closest to verbatim, then lasting effects and failures, then findings, tool steps last. Copy names, numbers, ids, paths and errors exactly. Never make anything look further along than it was.`
 
 // summaryBoundaryRules is what stops a summariser from doing the work instead.
 //
@@ -511,16 +513,32 @@ const summaryBoundaryRules = `Reply with the summary and nothing else: do not ca
 // the way the runner's final-answer nudge does, would leave a permanent
 // "summarise now" as the last thing the model reads on every subsequent
 // request.
-func compactionInstruction(attempt int) string {
+// prevErr is why the previous reply was rejected, or nil on the first attempt.
+// Passing it costs nothing and saves a guess: the validator already names the
+// heading, so the repair instruction can name it too, instead of asking the
+// model to work out which of nine it got wrong.
+func compactionInstruction(attempt int, prevErr error) string {
 	instruction := strings.Join([]string{
 		"Record what you need to remember from everything above. You will continue this same work with only this note and the recent tail; write it as yourself, to yourself. If the conversation holds a prior checkpoint, carry its unresolved items forward: anything omitted is permanently lost.",
 		summaryTemplate,
 		summaryBoundaryRules,
 	}, "\n\n")
 	if attempt > 1 {
-		instruction += "\n\nYour previous reply was not in the required format. Reply with only the summary, using every heading above in order."
+		instruction += "\n\nYour previous reply was rejected and thrown away. " +
+			repairReason(prevErr) +
+			" Reply with only the summary, reproducing every heading above exactly as written and in that order."
 	}
 	return instruction
+}
+
+// repairReason says what the validator objected to, in the model's own terms,
+// and falls back to the generic instruction when there is nothing specific to
+// report. It never claims a reason it does not have.
+func repairReason(prevErr error) string {
+	if prevErr == nil {
+		return "It was not in the required format."
+	}
+	return "The reason was: " + prevErr.Error() + ". "
 }
 
 // requiredSummaryHeadings reads the template's own headings rather than
@@ -1345,14 +1363,14 @@ func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Sess
 	// checkpoint must never be faked from a conversation that cannot be sent.
 	// An overflowed session is recovered by deleting messages or starting over,
 	// not by summarising.
-	if c.contextLimit()-c.EstimatedContext(sess)-EstimateTokens(compactionInstruction(1)) < summaryOutput {
+	if c.contextLimit()-c.EstimatedContext(sess)-EstimateTokens(compactionInstruction(1, nil)) < summaryOutput {
 		return "", fmt.Errorf("the context cannot carry a summary")
 	}
 	var lastErr error
 	for attempt := 1; attempt <= summaryAttempts; attempt++ {
 		request := c.LiveRequest(ctx, sess)
 		request.Messages = append(append(make([]llm.Item, 0, len(request.Messages)+1), request.Messages...),
-			llm.Item{Kind: "text", Role: llm.RoleUser, Text: compactionInstruction(attempt)})
+			llm.Item{Kind: "text", Role: llm.RoleUser, Text: compactionInstruction(attempt, lastErr)})
 		request.ToolChoice = "none"
 		request.MaxTokens = summaryOutput
 		// A summary is not deliberation, and a reply produced under thinking
