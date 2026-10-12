@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -162,9 +161,6 @@ func (s *Session) build() error {
 	skillContext, _ := skillStore.CatalogContext(2000)
 
 	registry := tool.DefaultRegistryForUser("cli", skillStore)
-	// The CLI has a provider too, so a media call works the same way it does in
-	// Telegram.
-	attachVision(registry, resolveModel)
 	// Kept so the banner can count what a turn would actually be offered. The
 	// field existed and was never assigned, so the count came back empty and the
 	// row was left out.
@@ -603,51 +599,6 @@ func defaultReadLine(p string) (string, error) {
 	}
 	return line, nil
 }
-
-// attachVision gives view_image the run's resolved model outside Telegram too,
-// so the CLI sees the same behaviour rather than a stub.
-func attachVision(registry *tool.Registry, resolve func(ctx context.Context) (llm.ProviderConfig, error)) {
-	vision := &cliVision{resolve: resolve}
-	llm.SetMediaSupportHostResolver(func(string) string { return "" })
-	if existing, ok := registry.Get("view_image"); ok {
-		if t, ok := existing.(*tool.ViewImageTool); ok {
-			t.Client = vision
-		}
-	}
-}
-
-type cliVision struct {
-	resolve func(ctx context.Context) (llm.ProviderConfig, error)
-}
-
-func (c *cliVision) config(ctx context.Context) (llm.ProviderConfig, error) {
-	if c.resolve == nil {
-		return llm.ProviderConfig{}, errNoProvider
-	}
-	return c.resolve(ctx)
-}
-
-func (c *cliVision) ModelName() string {
-	cfg, err := c.config(context.Background())
-	if err != nil {
-		return ""
-	}
-	return cfg.Model
-}
-
-func (c *cliVision) MediaHost() string { return "" }
-
-func (c *cliVision) DescribeMedia(ctx context.Context, media []*llm.MediaAttachment, prompt string) (string, error) {
-	cfg, err := c.config(ctx)
-	if err != nil {
-		return "", err
-	}
-	// A media call is its own short request and must not join the session cache.
-	cfg.PromptCacheMode = "off"
-	return llm.New(cfg).DescribeMedia(ctx, media, prompt)
-}
-
-var errNoProvider = errors.New("no provider is configured, so there is no model to look at the image with")
 
 func newEvaluationStore(cfg *config.Config) (*evaluation.Store, error) {
 	store, err := evaluation.New(cfg.EvaluationFile)

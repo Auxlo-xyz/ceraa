@@ -21,7 +21,7 @@ func TestEveryToolFamilyIsWhollyBoldOrWhollyNot(t *testing.T) {
 		{"search", []string{"grep", "glob"}},
 		{"shell", []string{"bash", "run_command_with_secret"}},
 		{"browser", []string{"browser"}},
-		{"outbound", []string{"webfetch", "websearch", "send_media", "view_image"}},
+		{"outbound", []string{"webfetch", "websearch", "send_media"}},
 		{"skills and secrets", []string{"skill_use", "skill_propose", "list_secrets"}},
 	}
 	for _, f := range families {
@@ -64,7 +64,7 @@ func TestAnUnknownToolIsNotBold(t *testing.T) {
 func TestEveryRegisteredToolHasAClass(t *testing.T) {
 	registered := []string{
 		"bash", "read", "write", "edit", "edit_line", "batch_edit_file",
-		"run_command_with_secret", "list_secrets", "webfetch", "view_image",
+		"run_command_with_secret", "list_secrets", "webfetch",
 		"browser", "task", "fts_search", "question", "todowrite",
 		"create_goal", "get_goal", "update_goal", "websearch",
 		"skill_propose", "skill_use", "send_media",
@@ -93,7 +93,7 @@ func TestTheToolNameStillTravelsInTheEventString(t *testing.T) {
 
 func TestBrowserMediaSecretsAndCommandsShowTheirCompletionStatus(t *testing.T) {
 	for _, name := range []string{
-		"browser", "browser_open", "browser_open_file", "browser_click", "browser_close", "view_image", "send_media", "list_secrets", "run_command_with_secret",
+		"browser", "browser_open", "browser_open_file", "browser_click", "browser_close", "send_media", "list_secrets", "run_command_with_secret",
 	} {
 		for _, outcome := range []struct {
 			prefix string

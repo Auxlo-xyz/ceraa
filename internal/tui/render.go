@@ -762,7 +762,7 @@ func ToolArgsSummary(name string, args map[string]any) string {
 // to be first in map order, which is random in Go.
 func argKeyFor(name string) string {
 	switch name {
-	case "read", "write", "edit_line", "batch_edit_file", "view_image", "move", "copy", "delete":
+	case "read", "write", "edit_line", "batch_edit_file", "move", "copy", "delete":
 		return "path"
 	case "bash", "run_command_with_secret":
 		return "command"

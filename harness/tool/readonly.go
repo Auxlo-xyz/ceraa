@@ -18,10 +18,10 @@ package tool
 // browser is deliberately absent: it can click and type, which changes state on
 // somebody else's server.
 var readOnly = map[string]bool{
-	"read":         true,
-	"webfetch":     true,
-	"websearch":    true,
-	"view_image":   true,
+	"read":      true,
+	"webfetch":  true,
+	"websearch": true,
+
 	"list_secrets": true,
 	"get_goal":     true,
 	"question":     true,

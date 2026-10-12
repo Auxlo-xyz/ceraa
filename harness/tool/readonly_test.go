@@ -11,7 +11,7 @@ import (
 func TestReadOnlySetIsPinnedAndEveryNameIsARealTool(t *testing.T) {
 	want := []string{
 		"get_goal", "list_secrets", "question",
-		"read", "view_image", "webfetch", "websearch",
+		"read", "webfetch", "websearch",
 	}
 	got := ReadOnlyNames()
 	if !slices.Equal(got, want) {

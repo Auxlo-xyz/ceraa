@@ -441,9 +441,6 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	r.Register(&ListSecretsTool{})
 
 	r.Register(&WebFetchTool{})
-	// Registered without a client and attached later by whoever knows the active
-	// provider, so the tool layer stays free of configuration.
-	r.Register(&ViewImageTool{})
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	//

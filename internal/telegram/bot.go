@@ -1028,7 +1028,7 @@ func Run() error {
 					// is the instruction when there is one; without it the run is
 					// asked to describe what it sees. Either way the user types
 					// once, and withUploadContext hands the saved path to the run
-					// with the instruction to view it via view_image.
+					// with the instruction to read it and look at it.
 					caption := strings.TrimSpace(u.Message.Caption)
 					if caption == "" {
 						caption = "Describe what you see in this image."

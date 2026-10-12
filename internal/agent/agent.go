@@ -207,7 +207,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	// and the filesystem still decides what survives.
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
-	attachVisionToRegistry(registry, resolveModel)
 	runner := coordinator.New(agentRunnerConfig(agentRunDeps{
 		cfg:                 cfg,
 		provider:            provider,

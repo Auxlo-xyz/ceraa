@@ -39,7 +39,7 @@ var SubagentTypes = []string{"explore", "general", "review"}
 //
 // This indirection is not decoration: the tool layer cannot import the
 // coordinator, because the coordinator imports the tool layer. The seam is the
-// same one view_image uses for its vision client.
+// same seam the tool layer has always used to stay free of configuration.
 type Subagent interface {
 	// Run drives the child to a final answer and returns it.
 	Run(ctx context.Context, brief string, budget RequestBudget) (SubagentResult, error)

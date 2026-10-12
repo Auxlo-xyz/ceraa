@@ -476,8 +476,8 @@ func (s *bridgeState) takeAnswer(chatID int64) (string, bool) {
 }
 
 // uploadContext renders waiting uploads as a prompt prefix. It names the
-// saved path every time, because the run needs something it can hand to read
-// or view_image, not just the knowledge that a file exists.
+// saved path every time, because the run needs something it can hand to read,
+// not just the knowledge that a file exists.
 func uploadContext(chatID int64) string {
 	notes := defaultState.takeUploads(chatID)
 	if len(notes) == 0 {
@@ -490,7 +490,7 @@ func uploadContext(chatID int64) string {
 			line = note.kind + " " + note.name + " saved at " + note.path
 		}
 		if note.kind == "photo" {
-			line += " (view it with the view_image tool)"
+			line += " (read the file to see it)"
 		}
 		if note.kind == "voice" {
 			line += " (transcription is not available; ask the user for text if you need its content)"

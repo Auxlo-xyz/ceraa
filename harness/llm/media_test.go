@@ -164,35 +164,6 @@ func TestOnlyMediaRefusalsAreRemembered(t *testing.T) {
 	}
 }
 
-// TestGeminiResponseSkipsThoughts pins that the answer describes the image
-// rather than the model's deliberation about it.
-func TestGeminiResponseSkipsThoughts(t *testing.T) {
-	raw := `{"candidates":[{"content":{"parts":[
-		{"text":"considering the layout","thought":true},
-		{"text":"A dark hero section with a gradient heading."}]},"finishReason":"STOP"}]}`
-	got, err := geminiTextFromResponse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "A dark hero section with a gradient heading." {
-		t.Fatalf("text = %q", got)
-	}
-	if strings.Contains(got, "considering") {
-		t.Fatal("thought text must not be reported as the description")
-	}
-}
-
-// TestGeminiTextFromEmptyResponseIsAnError pins that silence is a failure, not a
-// pass, so the model cannot record a view that never happened.
-func TestGeminiTextFromEmptyResponseIsAnError(t *testing.T) {
-	if _, err := geminiTextFromResponse(`{"candidates":[]}`); err == nil {
-		t.Fatal("no candidates should be an error")
-	}
-	if _, err := geminiTextFromResponse(`{"candidates":[{"content":{"parts":[{"text":"only a thought","thought":true}]}}]}`); err == nil {
-		t.Fatal("a response with nothing but thoughts should be an error")
-	}
-}
-
 // TestMediaSupportIsKeyedByHost pins that a refusal is remembered per provider,
 // since the same model name behind two endpoints can accept different things.
 func TestMediaSupportIsKeyedByHost(t *testing.T) {

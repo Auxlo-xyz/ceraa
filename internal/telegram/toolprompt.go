@@ -64,7 +64,7 @@ func primaryToolArg(tool string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "bash":
 		return "command", true
-	case "read", "write", "view_image":
+	case "read", "write":
 		return "path", true
 	case "edit_line", "batch_edit_file":
 		return "path", true

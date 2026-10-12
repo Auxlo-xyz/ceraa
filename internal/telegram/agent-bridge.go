@@ -370,15 +370,12 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		skillContext:    skillContext,
 		WallClock:       operation.TaskTimeout,
 	})
-	// view_image follows the same resolved provider as the run, so a media call
-	// cannot drift onto a different model than the one doing the work.
 	// Rule scoping is opt-in and off by default. Without credentials the
 	// deterministic pass alone runs, which scopes every rule that names a real
 	// path - no model, no network. Adding credentials asks a model for the rest
 	// and the filesystem still decides what survives.
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
-	attachVisionToRegistry(registry, resolveModel)
 	runConfig := agentRunnerConfig(agentRunDeps{
 		sessionID:      sessionID,
 		cfg:            cfg,
@@ -458,13 +455,6 @@ func telegramRegistry(cfg *config.Config, user string, skillStore *skills.Store)
 		registry.Register(&tool.SendMediaTool{Sender: newTelegramMediaSender(token, chatID)})
 	}
 	return registry
-}
-
-// attachVisionToRegistry gives view_image the run's resolved model, so a media
-// call follows the active provider instead of whatever was configured at build
-// time.
-func attachVisionToRegistry(registry *tool.Registry, resolve func(ctx context.Context) (llm.ProviderConfig, error)) {
-	attachVision(registry, resolve, func(string) string { return "" })
 }
 
 // effectiveReasoning picks the reasoning level for a run. A provider profile may

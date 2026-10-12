@@ -1699,7 +1699,7 @@ func formatToolActivity(tools []toolActivity) string {
 // asking the user a question, and the goal, todo and compaction bookkeeping are
 // not that, and they keep their marks.
 func statusMarkedTool(name string) bool {
-	return name == "browser" || strings.HasPrefix(name, "browser_") || name == "view_image" || name == "send_media" || name == "list_secrets" || name == "run_command_with_secret"
+	return name == "browser" || strings.HasPrefix(name, "browser_") || name == "send_media" || name == "list_secrets" || name == "run_command_with_secret"
 }
 
 func boldWordTool(name string) bool {
@@ -1713,8 +1713,8 @@ func boldWordTool(name string) bool {
 	// Search, every route into it.
 	case "grep", "glob":
 		return true
-	// Outbound: fetching, searching, sending, and looking at what came back.
-	case "webfetch", "websearch", "send_media", "view_image":
+	// Outbound: fetching, searching and sending.
+	case "webfetch", "websearch", "send_media":
 		return true
 	// Skills and the secret inventory: the agent reaching for its own capability.
 	case "skill_use", "skill_propose", "list_secrets":
@@ -1750,8 +1750,7 @@ func toolIcon(name string) string {
 		return "📌"
 	case "webfetch":
 		return "🔍"
-	case "view_image":
-		return "🖼️"
+
 	case "browser":
 		return "🧭"
 	case "websearch":

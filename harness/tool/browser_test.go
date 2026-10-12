@@ -211,7 +211,7 @@ func TestBrowserActionsReachTheDriver(t *testing.T) {
 }
 
 // TestScreenshotReportsItsPath pins that a screenshot returns the path the agent
-// can hand straight to view_image.
+// can hand straight to read.
 func TestScreenshotReportsItsPath(t *testing.T) {
 	tool, _ := newFakeManager()
 	path := t.TempDir() + "/page.png"

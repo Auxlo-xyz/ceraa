@@ -179,7 +179,6 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 	// tool is not in the child's registry at all. A guard that only exists in one
 	// place is a guard that a crafted call walks around.
 	registry.Remove("task")
-	attachVisionToRegistry(registry, providerModelResolver(f.providerCfg, c.id))
 
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           c.id,
