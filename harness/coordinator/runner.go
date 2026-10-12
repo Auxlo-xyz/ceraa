@@ -2597,20 +2597,29 @@ func logCachePrefix(sess *sessionstore.Session, step int, items []llm.Item, tool
 	// a prefix that never moved, and that false positive is what made it
 	// untrustworthy for the one comparison that pays.
 	if sess != nil && sess.PrefixSignature != "" {
-		note, regressed := classifyPrefixChange(sess.PrefixSignature, cur)
+		ch := classifyPrefixChange(sess.PrefixSignature, cur)
 		switch {
-		case !regressed:
-			diverged = note
+		case !ch.Regressed:
+			diverged = ch.Note
 		case sess.PrefixSignatureEpoch != sess.PrefixRewrites:
 			// A fold, a tier merge or a chain roll rewrote the front of the
 			// history since this signature was written. That is the rewrite the
 			// session is allowed to make, and reporting it as a regression would
 			// bury the one that matters.
-			diverged = note + " (expected: prefix rewritten this epoch)"
+			diverged = ch.Note + " (expected: prefix rewritten this epoch)"
+		case ch.IsTailRewrite(len(items)):
+			// A few items changed at the end. Everything the provider cached up
+			// to the divergence point is still there, so this costs a re-read and
+			// a re-price of the tail, not a full write. Reported at info and in
+			// its own words, because the regression warning used to describe
+			// exactly this as the cached prefix dying.
+			diverged = ch.Note + " (tail rewrite)"
+			logger.Info(fmt.Sprintf("prefix tail rewrite session=%s step=%d %s: %d of %d items changed at the tail, so the cached prefix before item%d still stands and the turn costs a re-read of the remainder",
+				sess.ID, step, ch.Note, ch.Rewritten, len(items), ch.At))
 		default:
-			diverged = note
-			logger.Warn(fmt.Sprintf("prefix regression session=%s step=%d %s: the front of the history changed inside an epoch, so the provider's cached prefix is dead and the next turn pays the full write",
-				sess.ID, step, note))
+			diverged = ch.Note
+			logger.Warn(fmt.Sprintf("prefix regression session=%s step=%d %s: %d of %d items changed from item%d onward, so the provider's cached prefix is dead from there and the next turn pays to rewrite the remainder",
+				sess.ID, step, ch.Note, ch.Rewritten, len(items), ch.At))
 		}
 	}
 	if sess != nil {
@@ -2661,10 +2670,60 @@ func sessionSignature(sess *sessionstore.Session) string {
 // persisted, per-session form can make the same one. Both sides are already
 // signature strings, so this is a string walk and not a re-derivation.
 func firstShapeChange(prev, cur string) string {
-	if note, regressed := classifyPrefixChange(prev, cur); regressed {
-		return note
+	if ch := classifyPrefixChange(prev, cur); ch.Regressed {
+		return ch.Note
 	}
 	return ""
+}
+
+// ShapeChange is what comparing two request shapes found.
+//
+// The position and the rewritten count are carried rather than formatted into
+// the note because "something changed" is not the question a reader of this
+// line has. A change at the front of the history and a change three items from
+// the end both produced the same warning and the same wording, "the provider's
+// cached prefix is dead and the next turn pays the full write", while in the
+// production log they cost 0.2% hit rate and 99.4% respectively. The instrument
+// said the same alarming thing about a free rewrite and a total one, so it was
+// worth less than the line it printed.
+type ShapeChange struct {
+	// Note is the human-readable form, as it appears in the log line.
+	Note string
+	// At is the index of the first item that differs, or -1 when the shapes did
+	// not diverge within their overlap.
+	At int
+	// Rewritten is how many items from At to the end must be re-priced, which is
+	// the part of the request the provider can no longer read from cache.
+	Rewritten int
+	// Regressed is whether a cached byte moved at all. A conversation that only
+	// grew is false: the previous request is a prefix of this one.
+	Regressed bool
+}
+
+// TailRewriteFraction is how much of a request may change at the end before the
+// change is treated as a prefix regression rather than a tail rewrite.
+//
+// Chosen from the production log, where the two populations are not close. A
+// change three items from the end of a 173-item request left the cache at 99.4%
+// and 99.0%; a change 125 items from the end of a 171-item request left 140
+// cached tokens out of 110,000. There is a wide gap between those, so a tenth is
+// a dividing line rather than a tuned threshold.
+const TailRewriteFraction = 0.10
+
+// IsTailRewrite reports whether the change is small enough at the end of the
+// request to leave the cached prefix standing.
+//
+// total is the item count of the request that was just sent, which is what the
+// fraction is taken against: three changed items in a short request is most of
+// it, and three in a long one is nothing.
+func (c ShapeChange) IsTailRewrite(total int) bool {
+	if !c.Regressed || c.At < 0 || total <= 0 {
+		return false
+	}
+	if c.Rewritten*10 <= total { // c.Rewritten/total <= TailRewriteFraction
+		return true
+	}
+	return c.At >= total-(total+9)/10
 }
 
 // classifyPrefixChange answers the two questions logCachePrefix asks with one
@@ -2682,9 +2741,9 @@ func firstShapeChange(prev, cur string) string {
 // already holds is still there, in the same order, and the request is the
 // previous one plus a suffix. Only a change at or before the end of the
 // overlapping prefix kills the cached bytes.
-func classifyPrefixChange(prev, cur string) (note string, regressed bool) {
+func classifyPrefixChange(prev, cur string) ShapeChange {
 	if prev == cur {
-		return "none", false
+		return ShapeChange{Note: "none", At: -1}
 	}
 	a, b := strings.Split(prev, ","), strings.Split(cur, ",")
 	n := len(a)
@@ -2693,15 +2752,20 @@ func classifyPrefixChange(prev, cur string) (note string, regressed bool) {
 	}
 	for i := 0; i < n; i++ {
 		if a[i] != b[i] {
-			return fmt.Sprintf("item%d", i), true
+			return ShapeChange{
+				Note:      fmt.Sprintf("item%d", i),
+				At:        i,
+				Rewritten: len(b) - i,
+				Regressed: true,
+			}
 		}
 	}
 	// The overlapping prefix is identical. Whether the shape grew or shrank past
 	// it, the bytes the provider cached are untouched.
 	if len(b) > n {
-		return fmt.Sprintf("none(appended %d)", len(b)-n), false
+		return ShapeChange{Note: fmt.Sprintf("none(appended %d)", len(b)-n), At: -1}
 	}
-	return fmt.Sprintf("none(truncated %d)", n-len(b)), false
+	return ShapeChange{Note: fmt.Sprintf("none(truncated %d)", n-len(b)), At: -1}
 }
 
 // disarmCacheWarm cancels any keepalive pending for this session.
