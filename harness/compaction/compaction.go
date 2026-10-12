@@ -131,6 +131,12 @@ type messageUnit struct {
 func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head []sessionstore.Message, recent []sessionstore.Message) {
 	var units []messageUnit
 	var current []sessionstore.Message
+	// outstanding holds the ids of calls made inside the unit being built that
+	// have not been answered yet. A unit is a whole exchange, not a run of
+	// messages: an assistant turn and the results that answer it are one thing,
+	// and a fold that keeps only half of one sends a tool_result whose tool_use
+	// the provider never received, which the Messages API rejects outright.
+	var outstanding map[string]bool
 	flush := func() {
 		if len(current) == 0 {
 			return
@@ -141,16 +147,29 @@ func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head [
 		}
 		units = append(units, messageUnit{messages: current, tokens: tokens})
 		current = nil
+		outstanding = nil
 	}
 	for _, message := range messages {
 		if message.Compaction != nil || message.Role == llm.RoleSystem {
 			flush()
 			continue
 		}
-		if message.Role == llm.RoleUser && len(current) > 0 {
+		if len(outstanding) == 0 && message.Role == llm.RoleUser && len(current) > 0 {
 			flush()
 		}
 		current = append(current, message)
+		for _, call := range message.AllToolCalls() {
+			if call.ID == "" {
+				continue
+			}
+			if outstanding == nil {
+				outstanding = make(map[string]bool)
+			}
+			outstanding[call.ID] = true
+		}
+		if message.Role == llm.RoleTool && message.ToolCallID != "" {
+			delete(outstanding, message.ToolCallID)
+		}
 	}
 	flush()
 
@@ -350,7 +369,57 @@ func splitFoldRange(head []sessionstore.Message, totalCandidates int) (fold, res
 	if n <= 0 {
 		return nil, head
 	}
+	// Snap the cut to an exchange boundary. The arithmetic above only counts
+	// messages, so n can land between an assistant turn that called tools and
+	// the results answering them; splitting there folds the calls away and
+	// leaves orphan tool_results behind, which the Messages API refuses with
+	// "tool_use_id found in tool_result blocks". Walk back over any results
+	// whose call is in the same exchange, so the fold ends on a whole one.
+	n = snapToExchangeEnd(head, n)
+	if n <= 0 {
+		return nil, head
+	}
 	return head[:n], head[n:]
+}
+
+// snapToExchangeEnd moves a cut at index n backwards so it never splits an
+// assistant turn from the results that answer its calls.
+//
+// head[:n] is folded and head[n:] stays. The cut is unsafe when the first
+// message that stays is a tool result whose call was declared by a turn that
+// is being folded: the calls go into the summary and the results stay behind,
+// which is exactly the shape the Messages API rejects. The cut is pulled back
+// to the turn that declared the call, so the whole exchange stays together.
+//
+// A cut that lands after an answered exchange, or before a message that made
+// no calls, is already on a boundary and is returned unchanged.
+func snapToExchangeEnd(head []sessionstore.Message, n int) int {
+	if n <= 0 || n >= len(head) {
+		return n
+	}
+	// Call id to the index of the turn that declared it. A tool result has no
+	// back-pointer of its own, so the owner is resolved once over the head.
+	owners := make(map[string]int, len(head))
+	for i, message := range head {
+		for _, call := range message.AllToolCalls() {
+			if call.ID != "" {
+				owners[call.ID] = i
+			}
+		}
+	}
+	// n only ever decreases, so this terminates.
+	for n > 0 {
+		first := head[n]
+		if first.Role != llm.RoleTool || first.ToolCallID == "" {
+			return n
+		}
+		owner, ok := owners[first.ToolCallID]
+		if !ok || owner >= n {
+			return n
+		}
+		n = owner
+	}
+	return n
 }
 
 // Summary template from soraacode.
@@ -828,7 +897,11 @@ func (c *Compactor) mergeCheckpoints(ctx context.Context, sess *sessionstore.Ses
 		}
 	}
 	out := append(kept[:first], append([]sessionstore.Message{merged}, kept[first:]...)...)
-	sess.Messages = out
+	// A merge only removes checkpoint markers, but a checkpoint can stand between
+	// a turn and its results after an earlier fold cut through one. Sweep here for
+	// the same reason the fold does: whatever produced the pairing, the request
+	// is refused while it is broken.
+	sess.Messages = dropOrphanToolResults(out)
 	// A merge rewrites the front of the prompt, so it counts as a prefix rewrite
 	// for the same reason a fold does: the next request re-bills everything after
 	// the position it moved.
@@ -841,6 +914,36 @@ func (c *Compactor) mergeCheckpoints(ctx context.Context, sess *sessionstore.Ses
 		}
 		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
 	}
+}
+
+// dropOrphanToolResults removes any tool result whose call is not on the wire.
+//
+// A tool_result names the tool_use that produced it, and an endpoint that
+// validates the pairing refuses the whole request when the name has nothing to
+// match: "tool_use_id found in tool_result blocks". Every rewrite of the history
+// is a chance to produce one, so each runs through here rather than trusting
+// the cut that preceded it. It is also what repairs a session already damaged
+// on disk, which folding alone cannot do: the bad pair is stored, not cut.
+//
+// A result is kept only when the assistant turn declaring its call is present
+// and stands earlier in the list. Everything else is dropped, because the
+// alternative - keeping it and being refused - costs the turn either way.
+func dropOrphanToolResults(messages []sessionstore.Message) []sessionstore.Message {
+	declared := make(map[string]bool)
+	out := make([]sessionstore.Message, 0, len(messages))
+	for _, message := range messages {
+		isResult := message.Role == llm.RoleTool && message.ToolCallID != ""
+		if isResult && !declared[message.ToolCallID] {
+			continue
+		}
+		out = append(out, message)
+		for _, call := range message.AllToolCalls() {
+			if call.ID != "" {
+				declared[call.ID] = true
+			}
+		}
+	}
+	return out
 }
 
 func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
@@ -972,6 +1075,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	}
 	newMessages = append(newMessages, middleMessages...)
 	newMessages = append(newMessages, recentMessages...)
+	newMessages = dropOrphanToolResults(newMessages)
 	sess.Messages = newMessages
 	// A fold is the one rewrite an epoch pays for: everything from the checkpoint
 	// onward is re-billed at full price on the next request, which is why the

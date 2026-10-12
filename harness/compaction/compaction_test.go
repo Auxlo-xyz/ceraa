@@ -339,6 +339,102 @@ func TestCollapseChainLeavesShortChainAlone(t *testing.T) {
 	}
 }
 
+// A fold must never leave a tool result whose call was folded away.
+//
+// This is the shape that made the provider refuse the request outright:
+// "tool_use_id found in tool_result blocks". The cut is computed from message
+// counts, so a parallel batch whose results straddle it loses its calls to the
+// summary and keeps its results on the wire.
+func TestFoldNeverLeavesOrphanToolResults(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fold"}})
+	c.Settings.Keep.Tokens = 100
+	// Ten exchanges, each an assistant turn with a call and one result. Ten
+	// keeps the age guard folding the oldest sixty percent, which is where a
+	// count-based cut lands mid-exchange.
+	messages := []sessionstore.Message{{Role: llm.RoleSystem, Content: "system"}}
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("call-%02d", i)
+		messages = append(messages,
+			sessionstore.Message{Role: llm.RoleUser, Content: fmt.Sprintf("task-%02d", i)},
+			sessionstore.Message{Role: llm.RoleAssistant, Content: "working", ToolCalls: []sessionstore.ToolCallRef{{ID: id, Name: "read", Args: `{}`}}},
+			sessionstore.Message{Role: llm.RoleTool, ToolCallID: id, ToolName: "read", ToolResult: strings.Repeat("result body\n", 40)},
+		)
+	}
+	sess := &sessionstore.Session{ID: "orphan-test", Messages: messages}
+	if _, err := c.Compact(context.Background(), sess); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	for _, message := range sess.Messages {
+		if message.Role != llm.RoleTool || message.ToolCallID == "" {
+			continue
+		}
+		for _, other := range sess.Messages {
+			if other.Role == llm.RoleAssistant {
+				for _, call := range other.AllToolCalls() {
+					if call.ID == message.ToolCallID {
+						goto paired
+					}
+				}
+			}
+		}
+		t.Errorf("tool result %q survived with no tool_use declaring it", message.ToolCallID)
+	paired:
+	}
+}
+
+// The sweep repairs a session that is already broken on disk, which a corrected
+// cut cannot: the bad pair is stored, not being cut. A session written by an
+// older build has to survive the next fold rather than stay refused forever.
+func TestDropOrphanToolResultsRepairsStoredDamage(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fold"}})
+	c.Settings.Keep.Tokens = 100
+	messages := []sessionstore.Message{{Role: llm.RoleSystem, Content: "system"}}
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("call-%02d", i)
+		messages = append(messages,
+			sessionstore.Message{Role: llm.RoleUser, Content: fmt.Sprintf("task-%02d", i)},
+			sessionstore.Message{Role: llm.RoleAssistant, Content: "working", ToolCalls: []sessionstore.ToolCallRef{{ID: id, Name: "read", Args: `{}`}}},
+			sessionstore.Message{Role: llm.RoleTool, ToolCallID: id, ToolName: "read", ToolResult: strings.Repeat("result body\n", 40)},
+		)
+	}
+	// The damage: a result whose call was dropped by an earlier build.
+	messages = append(messages, sessionstore.Message{Role: llm.RoleTool, ToolCallID: "call-dangling", ToolName: "read", ToolResult: "orphan"})
+	sess := &sessionstore.Session{ID: "repair-test", Messages: messages}
+	if _, err := c.Compact(context.Background(), sess); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	for _, message := range sess.Messages {
+		if message.ToolCallID == "call-dangling" {
+			t.Fatal("the orphan result survived the fold")
+		}
+	}
+}
+
+// A merge only removes checkpoint markers, but a checkpoint can stand between a
+// turn and its results once an earlier fold cut through one. The sweep runs
+// there too, for the same reason.
+func TestMergeCheckpointsDropsOrphanToolResults(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "merge"}})
+	sess := &sessionstore.Session{ID: "merge-orphan", Messages: []sessionstore.Message{
+		{Role: llm.RoleSystem, Content: "system", Compaction: &sessionstore.CompactionInfo{Summary: "one"}},
+		{Role: llm.RoleSystem, Content: "system", Compaction: &sessionstore.CompactionInfo{Summary: "two"}},
+		{Role: llm.RoleTool, ToolCallID: "call-gone", ToolName: "read", ToolResult: "orphan"},
+		{Role: llm.RoleUser, Content: "continue"},
+	}}
+	c.mergeCheckpoints(t.Context(), sess, []int{0, 1}, 2)
+	for _, message := range sess.Messages {
+		if message.ToolCallID == "call-gone" {
+			t.Fatal("the orphan result survived the merge")
+		}
+	}
+}
+
 func TestMergeCheckpointsWithNoIndicesIsNoOp(t *testing.T) {
 	c := &Compactor{Settings: DefaultSettings(), ContextLimit: 32000}
 	sess := &sessionstore.Session{ID: "s", Messages: []sessionstore.Message{{Role: llm.RoleUser, Content: "hi"}}}
