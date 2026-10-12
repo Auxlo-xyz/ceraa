@@ -1147,9 +1147,7 @@ func Run() error {
 			case "/todos":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleTodosCommand(token, u.Message.Chat.ID)
-			case "/memory":
-				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				handleMemoryCommand(token, u.Message.Chat.ID, txt)
+
 			case "/skill":
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				handleSkillCommand(token, u.Message.Chat.ID, txt)
@@ -1711,11 +1709,7 @@ func handleHarnessCommands(token string, updateID int, chatID int64, txt string)
 		handleCatalogCommand(token, chatID, txt)
 		return true
 	}
-	if txt == "/memory" || strings.HasPrefix(txt, "/memory ") {
-		GetDefaultInbox().CheckAndRecord(updateID)
-		handleMemoryCommand(token, chatID, txt)
-		return true
-	}
+
 	if txt == "/skill" || strings.HasPrefix(txt, "/skill ") {
 		GetDefaultInbox().CheckAndRecord(updateID)
 		handleSkillCommand(token, chatID, txt)

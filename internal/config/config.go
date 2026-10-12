@@ -49,12 +49,7 @@ type Config struct {
 	ModelCatalogRefreshHours int            `json:"model_catalog_refresh_hours,omitempty"`
 	TitleAPIURL              string         `json:"title_api_url,omitempty"`
 	TitleModel               string         `json:"title_model,omitempty"`
-	// MemoryDelivery selects where memory reaches the model. "sidekick" appends
-	// the latest log state once per run as a tail line on the newest user
-	// message, which is the only mode that delivers anything. "prompt" and
-	// "cached" are accepted and deliver nothing: memory no longer rides the
-	// prompt in any mode.
-	MemoryDelivery string `json:"memory_delivery,omitempty"`
+
 	SkillFile      string `json:"skill_file,omitempty"`
 	EvaluationFile string `json:"evaluation_file,omitempty"`
 	SchedulerFile  string `json:"scheduler_file,omitempty"`
@@ -525,9 +520,7 @@ func applyEnv(cfg *Config) {
 	if v := env("TITLE_MODEL"); v != "" {
 		cfg.TitleModel = v
 	}
-	if v := env("MEMORY_DELIVERY"); v != "" {
-		cfg.MemoryDelivery = v
-	}
+
 	if v := env("SKILL_FILE"); v != "" {
 		cfg.SkillFile = v
 	}

@@ -2,7 +2,6 @@ package coordinator
 
 import (
 	"ceraa/harness/instruction"
-	"ceraa/harness/memory"
 )
 
 // # The observer
@@ -72,11 +71,11 @@ func InstructionTrigger(specType string, args map[string]any, toolName string, w
 	}
 }
 
-// instructionMatcher adapts memory's scope matcher onto the instruction Matcher.
+// instructionMatcher adapts the scope matcher onto the instruction Matcher.
 //
-// A delegation with nothing added, on purpose. memory.Brief already answers
-// "does this Applies cover this target" - whole-path globs, base-name globs,
-// directory prefixes, a relative pattern against an absolute path - and
+// A delegation with nothing added, on purpose. MatchesScope in scope.go already
+// answers "does this Applies cover this target" - whole-path globs, base-name
+// globs, directory prefixes, a relative pattern against an absolute path - and
 // harness/instruction/select.go names this exact function as the dependency it
 // is waiting for. Re-deriving it here would produce the second implementation
 // that declaration exists to prevent, and the failure it invites is specific: a
@@ -88,5 +87,5 @@ func InstructionTrigger(specType string, args map[string]any, toolName string, w
 // adapter does not override it. Reaching for a matcher here only means a
 // matcher was genuinely wanted and this is the one that exists.
 func instructionMatcher(applies, target string) bool {
-	return memory.MatchesScope(applies, target)
+	return MatchesScope(applies, target)
 }

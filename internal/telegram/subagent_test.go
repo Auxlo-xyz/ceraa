@@ -3,7 +3,6 @@ package telegram
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,24 +133,6 @@ func TestNewSubagentWorksWithoutAnInitialisedChildrenMap(t *testing.T) {
 	}
 	if child.kind != "general" {
 		t.Errorf("child kind is %q, want general", child.kind)
-	}
-}
-
-// A factory built without a project root must hand the child no log reader.
-// The path would resolve against the process working directory, which in a
-// test is the source tree, and a Memory.md must never land there: this exact
-// shape wrote three turn records into internal/telegram/ before the guard.
-func TestAChildWithoutAProjectRootGetsNoMemoryLog(t *testing.T) {
-	if got := childMemoryFile(""); got != nil {
-		t.Errorf("a rootless factory built a log reader, so a child would append to ./Memory.md")
-	}
-	root := t.TempDir()
-	reader := childMemoryFile(root)
-	if reader == nil {
-		t.Fatal("a factory with a project root built no log reader")
-	}
-	if want := filepath.Join(root, "Memory.md"); reader().Path() != want {
-		t.Errorf("child log = %q, want %q", reader().Path(), want)
 	}
 }
 

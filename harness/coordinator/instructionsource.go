@@ -37,7 +37,7 @@ import (
 // transcript would retire a rule precisely when the context carrying it was
 // rewritten. instruction.Reset is the seam an epoch takes.
 //
-// This is shaped like sidekickState deliberately - a runner-owned struct built
+// This is shaped like a runner-owned struct built from config on purpose.
 // once per run, holding mutable delivery state beside the lock that guards it.
 // Two differently named holders doing one job is worse than one shape the next
 // reader already knows how to look at.

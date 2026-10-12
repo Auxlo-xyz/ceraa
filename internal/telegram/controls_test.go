@@ -251,7 +251,7 @@ func TestModelMenuOffersProviderButtons(t *testing.T) {
 }
 
 func TestNewFeatureMenusUseInlineButtons(t *testing.T) {
-	for _, name := range []string{"memory", "skill", "eval", "schedule"} {
+	for _, name := range []string{"skill", "eval", "schedule"} {
 		markup := menus.Inline(name, 0)
 		keyboard, ok := markup["inline_keyboard"].([][]map[string]string)
 		if !ok || len(keyboard) == 0 {

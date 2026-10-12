@@ -178,10 +178,3 @@ func targetsForSpec(specType string, workDir string, args map[string]any) []stri
 	command, _ := args["command"].(string)
 	return pathsFromCommand(command, workDir)
 }
-
-// targetsForSpec is the sidekick's own view of an operation's paths. Behaviour is
-// unchanged - it delegates rather than restating, so the memory side and the
-// instruction side cannot drift on which paths an operation is about.
-func (s *sidekickState) targetsForSpec(specType string, args map[string]any) []string {
-	return targetsForSpec(specType, s.workDir, args)
-}

@@ -42,9 +42,7 @@ func controlFixture(t *testing.T) *Server {
 		return []string{"read"}, []ToolEntry{{Name: "read", Description: "Read things"}}, nil
 	}
 	cfg.SetToolAllowed = func(name string, allowed bool) error { return nil }
-	cfg.Memories = func() ([]MemoryEntry, error) {
-		return []MemoryEntry{{ID: "log-1", Content: "likes tea"}}, nil
-	}
+
 	cfg.TriggerCompaction = func(sessionID string) (map[string]any, error) {
 		return map[string]any{"session": sessionID, "compacted": true}, nil
 	}
@@ -104,7 +102,6 @@ func TestControlReadsEverySurface(t *testing.T) {
 		"/api/providers": "providers",
 		"/api/runparams": "params",
 		"/api/tools":     "inventory",
-		"/api/memories":  "memories",
 		"/api/skills":    "proposals",
 		"/api/schedules": "jobs",
 		"/api/stats":     "stats",
@@ -172,7 +169,7 @@ func TestControlWithoutWiringReportsItself(t *testing.T) {
 	initData := initDataFor(t, testToken, testUser, 0)
 	for _, target := range []string{
 		"/api/meta", "/api/providers", "/api/runparams", "/api/tools",
-		"/api/memories", "/api/skills", "/api/schedules", "/api/stats",
+		"/api/skills", "/api/schedules", "/api/stats",
 		"/api/files", "/api/status", "/api/subscriptions", "/api/catalog",
 		"/api/snapshots", "/api/todos",
 	} {

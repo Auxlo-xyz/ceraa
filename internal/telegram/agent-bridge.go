@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,8 +19,8 @@ import (
 	"ceraa/harness/event"
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
+
 	"ceraa/harness/permission"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -52,20 +51,6 @@ func credentialDebugTag(value string) string {
 	return fmt.Sprintf("len=%d sha256=%s", len([]rune(value)), hex.EncodeToString(sum[:4]))
 }
 
-// root.
-//
-// It is derived from the project root and never configured, because the project
-// root is already the one place a session answers "where does this project's data
-// live" - the renderer reads memory/AGENTS.md from the same root, and a second
-// setting naming a path inside it would be a second answer to one question.
-//
-// Flat at the root rather than memory/Memory.md beside AGENTS.md: MemoryFile.Append
-// opens with O_CREATE and creates no directory, so a project with no memory/
-// subdirectory would fail every append with ENOENT. An append-only log nothing can
-// be written to is a read-only log, which is the defect this file exists to avoid.
-//
-// The root is also what keeps the log out of /tmp. This host has wiped /tmp three
-// times in one day, and a memory that vanishes on reboot is not memory.
 // cacheWarmer keeps the active session's prompt cache alive between messages.
 //
 // One for the daemon rather than one per run, because the thing being kept warm
@@ -118,66 +103,6 @@ func refreshAgentCache(ctx context.Context, signature string) error {
 	return coordinator.RefreshPromptCache(ctx, rc, registry, store, signature)
 }
 
-func memoryLogPath(root string) string {
-	return filepath.Join(root, "Memory.md")
-}
-
-// memoryLogReader is the reader one RunnerConfig is handed for the project at
-// root.
-//
-// A fresh reader per call, matching the config field's factory shape: the runner
-// asks per run, and a reader is a path plus a mutex, so there is nothing to share
-// and nothing to go stale.
-func memoryLogReader(root string) *memory.MemoryFile {
-	return memory.OpenMemoryFile(memoryLogPath(root))
-}
-
-// memoryLogLearner appends each compaction's summary to the append-only log.
-//
-// The learn hook is the right seam because it is the only place a condensed
-// account of a stretch of conversation already exists: the summary is bounded, it
-// is written at the one checkpoint that happens on purpose, and hooking it costs
-// nothing per turn. Wiring a turn callback instead would put a disk write in front
-// of every model request for text that has not earned a place yet.
-//
-// It is chained after MakeLearner rather than folded into it because that hook is
-// gated on an extraction credential and returns disabled when none is configured.
-// An install with no extractor would then keep an empty log forever while the
-// feature looked wired, which is the failure mode that is hardest to see.
-//
-// A failure logs and returns: a log write must not fail the turnover, the same
-// contract the compactor already documents for every Learn hook.
-
-// memoryWiring is the memory-related half of a RunnerConfig: the reader for
-// the project's append-only log.
-//
-// One value rather than a field written into each literal, so the wiring can be
-// asserted without starting a run.
-type memoryWiring struct {
-	// MemoryFile is the runner's reader for the project's append-only log.
-	MemoryFile func() *memory.MemoryFile
-}
-
-func newMemoryWiring(memoryLog *memory.MemoryFile) memoryWiring {
-	return memoryWiring{
-		MemoryFile: func() *memory.MemoryFile { return memoryLog },
-	}
-}
-
-// agentLearnChain assembles the compaction learn hooks for one run: the memory
-// extractor when a credential is configured, and the append-only log last, so
-// the log records what the checkpoint produced rather than feeding anything.
-// The durable-person subset of that same extraction is also appended to the
-// log, so profile, preference, goal and constraint claims reach Memory.md
-// without a second model call.
-func agentLearnChain(modelConfig llm.ProviderConfig, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
-	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryLog); enabled {
-		chain = learn
-	}
-	return compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
-}
-
 // agentRunDeps is everything one Telegram run's RunnerConfig is built from.
 //
 // A struct rather than a parameter list because the literal below reads nearly
@@ -191,7 +116,6 @@ type agentRunDeps struct {
 	resolveModel        func(context.Context) (llm.ProviderConfig, error)
 	reasoning           llm.ReasonLevel
 	projectRoot         string
-	memory              memoryWiring
 	instructionProposer instruction.Proposer
 	skillContext        string
 	evaluationStore     *evaluation.Store
@@ -226,13 +150,12 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 		ModelCatalogURL:     d.cfg.ModelCatalogURL,
 		ModelCatalogCache:   d.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(d.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryFile:          d.memory.MemoryFile,
-		MemoryDelivery:      d.cfg.MemoryDelivery,
-		InstructionRules:    internal.InstructionRules(d.projectRoot, d.instructionProposer),
-		SkillContext:        d.skillContext,
-		EvaluationStore:     d.evaluationStore,
-		Compactor:           d.compactor,
-		ForcedCompaction:    func() bool { return consumeForcedCompaction(d.sessionID) },
+
+		InstructionRules: internal.InstructionRules(d.projectRoot, d.instructionProposer),
+		SkillContext:     d.skillContext,
+		EvaluationStore:  d.evaluationStore,
+		Compactor:        d.compactor,
+		ForcedCompaction: func() bool { return consumeForcedCompaction(d.sessionID) },
 		NeedsAuthorization: func(name string, args map[string]any) bool {
 			return needsPermission(name, fmt.Sprint(args))
 		},
@@ -416,18 +339,9 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
 	compactor := newCompactor(cfg, providerID, sessionID)
-	// The append-only log for this project: appended to at compaction, read as a
-	// tail by the runner. Built beside the other project-scoped stores so it is
-	// constructed once and shared by both.
-	memoryLog := memoryLogReader(projectRoot)
-	// One learn chain for the run: the extractor when a credential is
-	// configured, then the append-only log.
-	compactor.Learn = agentLearnChain(modelConfig, memoryLog)
 	resolveModel := providerModelResolver(providerConfig, sessionID)
 	compactor.ResolveModel = resolveModel
-	// The memory half of the runner config, built beside the log it reads so
-	// it is constructed once and shared with the learn chain above.
-	wiring := newMemoryWiring(memoryLog)
+
 	skillContext, _ := skillStore.CatalogContext(2000)
 	reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, defaultState))
 	// Recorded because a provider may reject or ignore a level, and the only way
@@ -466,14 +380,14 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 
 	attachVisionToRegistry(registry, resolveModel)
 	runConfig := agentRunnerConfig(agentRunDeps{
-		sessionID:           sessionID,
-		cfg:                 cfg,
-		providerConfig:      providerConfig,
-		modelConfig:         modelConfig,
-		resolveModel:        resolveModel,
-		reasoning:           reasoning,
-		projectRoot:         projectRoot,
-		memory:              wiring,
+		sessionID:      sessionID,
+		cfg:            cfg,
+		providerConfig: providerConfig,
+		modelConfig:    modelConfig,
+		resolveModel:   resolveModel,
+		reasoning:      reasoning,
+		projectRoot:    projectRoot,
+
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,

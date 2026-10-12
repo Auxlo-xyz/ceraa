@@ -157,33 +157,6 @@ func (s *Session) CheckpointDelivered() []string {
 	return out
 }
 
-// LatestCheckpointDelivered is the newest checkpoint's delivered set, or nil.
-//
-// This is the read-back seam for the runner, after sessionstore.Recover. The
-// newest standing checkpoint is the last fold's own account of what it left
-// represented, so seeding the delivered set from it restores that judgement
-// instead of trusting Session.MemoryDelivered, which also holds every id whose
-// tool result the fold deleted. It is meant to feed MarkDeliveredMemory.
-//
-// Empty is a real answer and not a failure: nothing was carried, or the session
-// predates the field. A caller must not read nil as "keep everything marked".
-// The result is a copy, because the caller appends to it.
-func (s *Session) LatestCheckpointDelivered() []string {
-	if s == nil {
-		return nil
-	}
-	for i := len(s.Messages) - 1; i >= 0; i-- {
-		info := s.Messages[i].Compaction
-		if info == nil || len(info.Delivered) == 0 {
-			continue
-		}
-		out := make([]string, len(info.Delivered))
-		copy(out, info.Delivered)
-		return out
-	}
-	return nil
-}
-
 type Run struct {
 	ID             string             `json:"id"`
 	User           string             `json:"user,omitempty"`
@@ -213,27 +186,17 @@ type Run struct {
 	// be attributed to a route rather than only to a model name.
 	ProviderHost  string `json:"provider_host,omitempty"`
 	PricingStatus string `json:"pricing_status,omitempty"`
-	// MemoryDelivery records how memory was delivered for this run, so the two
-	// modes can be told apart in an analysis rather than inferred from which
-	// build produced the file.
-	//
-	// Recorded because a memory change that is never attributed cannot be
-	// evaluated: two sessions differing in outcome, one with the tail line and
-	// one without, are otherwise indistinguishable from a change in the task.
-	//
-	// The per-note counters below are retired with per-result delivery and stay
-	// zero: MemoryTargetedSent now means the once-per-run tail line rode at
-	// least one request (1) or not (0), and MemoryGeneralSent is always 0.
-	MemoryDelivery     string    `json:"memory_delivery,omitempty"`
-	MemoryGeneralSent  int       `json:"memory_general_sent,omitempty"`
-	MemoryTargetedSent int       `json:"memory_targeted_sent,omitempty"`
+	// PricingFetchedAt and the model envelope belong to the run rather than the
+	// session: they are set when the run is made, and two runs of one session
+	// can disagree about the model they used.
 	PricingFetchedAt   time.Time `json:"pricing_fetched_at,omitempty"`
 	ModelContextWindow int       `json:"model_context_window,omitempty"`
 	ModelMaxTokens     int       `json:"model_max_tokens,omitempty"`
 	ReasoningOptions   []string  `json:"reasoning_options,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	Error              string    `json:"error,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Error     string    `json:"error,omitempty"`
 }
 
 type Session struct {
@@ -248,17 +211,6 @@ type Session struct {
 	Runs             []Run       `json:"runs,omitempty"`
 	Version          int         `json:"version"`
 	ParentID         string      `json:"parent_id,omitempty"`
-
-	// MemoryDelivered is every memory already annotated into this session's tool
-	// results, by log-entry content-hash id.
-	//
-	// Persisted because the runner is rebuilt for every run and nothing else
-	// outlives one. A set held in memory alone re-fires every memory on the next
-	// message, which is the same copy-per-call cost the in-run guard was added for
-	// with the timing moved outside the run it was scoped to. A fork inherits the
-	// messages and not this list, so a fork re-delivers: one duplicate note beats a
-	// memory that never reaches the model.
-	MemoryDelivered []string `json:"memory_delivered,omitempty"`
 
 	// PrefixRewrites counts how many times this session has rewritten the front
 	// of the prompt: a fold, a tier merge, or a checkpoint-chain roll.
@@ -336,54 +288,10 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
-// MarkDeliveredMemory records log-entry ids as told to the model in this
-// session, ignoring any it already holds.
-//
-// The writer that Session.MemoryDelivered was documented for and did not have:
-// grep found only Clear() touching the field, so the tail was rendered into
-// every request forever and the block re-fired on each turn.
-func (s *Session) MarkDeliveredMemory(ids []string) {
-	if s == nil || len(ids) == 0 {
-		return
-	}
-	have := make(map[string]struct{}, len(s.MemoryDelivered)+len(ids))
-	for _, id := range s.MemoryDelivered {
-		have[id] = struct{}{}
-	}
-	for _, id := range ids {
-		if id == "" {
-			continue
-		}
-		if _, ok := have[id]; ok {
-			continue
-		}
-		have[id] = struct{}{}
-		s.MemoryDelivered = append(s.MemoryDelivered, id)
-	}
-}
-
-// MemoryDeliveredSet is the delivered ids as a lookup, for a caller filtering
-// what to send. A copy, because the caller must not mutate the session's own
-// slice.
-func (s *Session) MemoryDeliveredSet() map[string]struct{} {
-	if s == nil {
-		return nil
-	}
-	set := make(map[string]struct{}, len(s.MemoryDelivered))
-	for _, id := range s.MemoryDelivered {
-		set[id] = struct{}{}
-	}
-	return set
-}
-
 func (s *Session) Clear() error {
 	s.Messages = []Message{}
 	s.Operations = []Operation{}
 	s.Runs = []Run{}
-	// The delivered set goes with the transcript. Clearing empties the context that
-	// carried those notes, so every memory is once again something the model has
-	// not been told.
-	s.MemoryDelivered = nil
 	// The rewrite counter goes with the transcript: an empty session has rewritten
 	// nothing.
 	s.PrefixRewrites = 0

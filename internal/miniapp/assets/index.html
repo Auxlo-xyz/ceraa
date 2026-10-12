@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Ceraa — Dashboard</title>
-  <meta name="description" content="Ceraa control plane: provider profiles, reasoning effort, append-only memory log, encrypted secret store, session ledger, and token cache telemetry." />
+  <meta name="description" content="Ceraa control plane: provider profiles, reasoning effort, encrypted secret store, session ledger, and token cache telemetry." />
   <meta property="og:title" content="Ceraa — Control Plane & Telemetry" />
-  <meta property="og:description" content="Ceraa control plane: provider profiles, reasoning effort, append-only memory log, encrypted secret store, session ledger, and token cache telemetry." />
+  <meta property="og:description" content="Ceraa control plane: provider profiles, reasoning effort, encrypted secret store, session ledger, and token cache telemetry." />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -747,7 +747,7 @@
 
     /* Resource cards: icon plus title plus status pill, a description line,
        and pill actions. Reserved for content with identity: skill proposals,
-       provider profiles, schedules, subscriptions, memory log, run history.
+       provider profiles, schedules, subscriptions, run history.
        Ledgers, toggles, forms and secrets stay rows. */
     .card-list {
       display: flex;
@@ -1769,7 +1769,7 @@
     // so it is a parameter.
     //
     // Context is layers rather than a bar chart: that tab leads with the
-    // workspace root, the project roots, the file browser and memory, so bars
+    // workspace root, the project roots and the file browser, so bars
     // advertised a chart that is not there. Tools is a wrench rather than a
     // bolt: everything on that tab is configuration - what is allowed, what is
     // scheduled - and a bolt says speed and liveness, arguing against the
@@ -1789,7 +1789,7 @@
         },
         {
           id: "Context",
-          label: "Context, Roots & Memory",
+          label: "Context & Roots",
           icon: (
             <svg {...s}>
               <path d="M12 2L2 7l10 5 10-5-10-5z" />
@@ -2103,7 +2103,6 @@
         maxConcurrentTools: 1,
         promptCacheMode: "",
         promptCacheTTL: "",
-        memoryDelivery: "cached",
         agentRole: ""
       });
       const [paramsDirty, setParamsDirty] = useState(false);
@@ -2137,7 +2136,6 @@
           max_concurrent_tools: Number(runParams.maxConcurrentTools) || 1,
           prompt_cache_mode: runParams.promptCacheMode,
           prompt_cache_ttl: runParams.promptCacheTTL,
-          memory_delivery: runParams.memoryDelivery,
           agent: runParams.agentRole
         };
         try {
@@ -2276,15 +2274,11 @@
       const [fileScope, setFileScope] = useState("files/");
       const [workspaceFiles, setWorkspaceFiles] = useState({ "files/": [], "workspace/": [] });
 
-      // =======================================================================
-      // 6. MEMORY
-      // =======================================================================
       const [autoCompaction, setAutoCompaction] = useState(true);
       const [lastCompactionStatus, setLastCompactionStatus] = useState("Not compacted from here yet");
-      const [memories, setMemories] = useState([]);
 
       const triggerManualCompaction = async () => {
-        setLastCompactionStatus("Compacting…");
+        setLastCompactionStatus("Compacting\u2026");
         try {
           const res = await Api.call("/api/compaction", "POST", { session_id: selectedSessionId || "" });
           const c = (res && res.compaction) || {};
@@ -2293,7 +2287,6 @@
               ? "Compaction complete just now"
               : "Nothing to compact: session already fits"
           );
-          await refreshMemories();
         } catch (err) {
           setLastCompactionStatus("Compaction failed: " + (err.message || err));
         }
@@ -2308,6 +2301,8 @@
           setApiError("Auto-compaction failed: " + (err.message || err));
         }
       };
+
+
 
       // =======================================================================
       // 7. SKILLS AND SCHEDULES
@@ -2486,11 +2481,10 @@ contextLimit: p.context_limit || 0,
           maxConcurrentTools: p.max_concurrent_tools || 1,
           promptCacheMode: p.prompt_cache_mode || "",
           promptCacheTTL: p.prompt_cache_ttl || "",
-          memoryDelivery: p.memory_delivery || "cached",
           agentRole: p.agent || ""
         });
-        setParamsDirty(false);
         if (typeof p.auto_compaction === "boolean") setAutoCompaction(p.auto_compaction);
+        setParamsDirty(false);
       }
 
       async function refreshSecrets() {
@@ -2558,12 +2552,7 @@ contextLimit: p.context_limit || 0,
         }
       }
 
-      async function refreshMemories() {
-        const body = await Api.call("/api/memories");
-        setMemories(((body && body.memories) || []).map((m) => ({
-          id: m.id, text: m.content || ""
-        })));
-      }
+
 
       async function refreshSkills() {
         const body = await Api.call("/api/skills");
@@ -2606,7 +2595,7 @@ contextLimit: p.context_limit || 0,
         const steps = [
           refreshMeta, refreshStatus, refreshProviders, refreshSubscriptions,
           refreshCatalog, refreshRunParams, refreshSecrets, refreshProjects,
-          refreshStats, refreshMemories, refreshSkills, refreshSchedules,
+          refreshStats, refreshSkills, refreshSchedules,
           refreshSnapshots
         ];
         const results = await Promise.allSettled(steps.map((fn) => fn()));
@@ -2629,14 +2618,13 @@ contextLimit: p.context_limit || 0,
         // a run is in flight: the run count, the active run and the queue depth
         // all change second to second.
         const statusTimer = setInterval(() => { refreshStatus().catch(() => {}); }, 20000);
-        // Everything else on a slow tick. Sessions, memories, skills, schedules,
+        // Everything else on a slow tick. Sessions, skills, schedules,
         // secrets and the tool inventory are written by Telegram, so a dashboard
         // left open showed a stale copy of all of them until it was reloaded.
         // Not in the fast tick because providers and catalog are network reads
         // with their own timeouts and would dominate it.
         const dataTimer = setInterval(() => {
           refreshStats().catch(() => {});
-          refreshMemories().catch(() => {});
           refreshSkills().catch(() => {});
           refreshSchedules().catch(() => {});
           refreshSecrets().catch(() => {});
@@ -3509,14 +3497,7 @@ contextLimit: p.context_limit || 0,
                     <div className="t-body">{contextLimitNote(runParams)}</div>
                     <div className="t-body">Max output <AnimatedNumber value={runParams.maxOutputTokens} locale /></div>
                   </div>
-                  <div className="telem-cell">
-                    <div className="t-mono">MEMORY DELIVERY</div>
-                    <div className="t-sec" style={{ marginTop: 4, textTransform: "capitalize" }}>
-                      {runParams.memoryDelivery}
-                    </div>
-                    <div className="t-body">Cache TTL {runParams.promptCacheTTL}</div>
                   </div>
-                </div>
                 </div>
               </section>
 
@@ -3927,7 +3908,7 @@ contextLimit: p.context_limit || 0,
           )}
 
           {/* =================================================================
-              TAB 2: "Context" — PROJECT ROOTS, FILE BROWSER (files/), MEMORY & HALF-LIFE, SKILLS
+              TAB 2: "Context" — PROJECT ROOTS, FILE BROWSER (files/), SKILLS
               ================================================================= */}
           {activeTab === "Context" && (
             <main className="board" key="board-context">
@@ -4044,20 +4025,25 @@ contextLimit: p.context_limit || 0,
                 </div>
               </section>
 
-              {/* COLUMN 2: 6. MEMORY LOG + COMPACTION */}
+
+
+              {/* COLUMN 2: 6. COMPACTION */}
               <section className="col col-center">
                 <div className="hero-band">
                   <div>
-                    <div className="t-mono" style={{ marginBottom: 8 }}>MEMORY LOG</div>
+                    <div className="t-mono" style={{ marginBottom: 8 }}>CONTEXT</div>
                     <div className="t-hero tnum">
-                      <AnimatedNumber value={memories.length} padStart={2} />
-                      <span className="hero-unit">ENTRIES</span>
+                      <AnimatedNumber
+                        value={(runParams.contextLimitEffective || runParams.contextLimit) / 1000}
+                        padStart={2}
+                      />
+                      <span className="hero-unit">K TOKENS</span>
                     </div>
                   </div>
 
                   <div>
                     <button type="button" className="btn-solid" onClick={triggerManualCompaction}>
-                      Compact Memory Now
+                      Compact Now
                     </button>
                     <div className="t-body" style={{ marginTop: 6 }}>{lastCompactionStatus}</div>
                   </div>
@@ -4073,31 +4059,12 @@ contextLimit: p.context_limit || 0,
                     <span className={`dot ${autoCompaction ? "" : "idle"}`} />
                     <div>
                       <div className="t-row">Auto-Compaction</div>
-                      <div className="t-body">Automatically compact the transcript and record the summary to the memory log when threshold is reached</div>
+                      <div className="t-body">Fold the transcript automatically once context passes the threshold</div>
                     </div>
                   </div>
                   <div className="h-right">
                     <div className={`switch ${autoCompaction ? "on" : ""}`} />
                   </div>
-                </div>
-
-                {/* Memory Log Entries, newest last, read-only */}
-                <div className="sec-head">
-                  <h2 className="t-sec">Memory Log</h2>
-                  <span className="t-mono">APPEND-ONLY</span>
-                </div>
-
-                <div className="hairline-list">
-                  {memories.map((m) => (
-                    <div key={m.id} className="h-row stack-mobile">
-                      <div className="h-left">
-                        <span className="dot" />
-                        <div>
-                          <div className="t-row">{m.text}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
                 </div>
               </section>
 

@@ -351,7 +351,7 @@ func TestDeliveredRoundTripsThroughTheSessionFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	got := loaded.LatestCheckpointDelivered()
+	got := loaded.CheckpointDelivered()
 	if len(got) != 2 || got[0] != "id-api" || got[1] != "id-style" {
 		t.Fatalf("round trip delivered = %v, want [id-api id-style]", got)
 	}
@@ -366,57 +366,8 @@ func TestDeliveredRoundTripsThroughTheSessionFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load empty: %v", err)
 	}
-	if len(reloaded.LatestCheckpointDelivered()) != 0 {
-		t.Errorf("an absent field decoded to something: %v", reloaded.LatestCheckpointDelivered())
-	}
-}
-
-// The runner's read-back seam. Newest non-empty, because a checkpoint written
-// before the field carries none and a session's newest checkpoint is not always
-// the one holding an id.
-func TestLatestCheckpointDeliveredReadsTheNewestNonEmptySet(t *testing.T) {
-	sess := &sessionstore.Session{ID: "read-back", Messages: []sessionstore.Message{
-		checkpoint("oldest", "id-ancient"),
-		{Role: llm.RoleUser, Content: "work"},
-		checkpoint("middle", "id-api", "id-style"),
-		{Role: llm.RoleUser, Content: "more work"},
-		checkpoint("newest, carrying nothing"),
-		{Role: llm.RoleUser, Content: "even more work"},
-		checkpoint("newest", "id-ci"),
-	}}
-	got := sess.LatestCheckpointDelivered()
-	if len(got) != 1 || got[0] != "id-ci" {
-		t.Fatalf("LatestCheckpointDelivered = %v, want [id-ci] from the newest checkpoint", got)
-	}
-	// A copy, because the caller appends to it before marking the session.
-	got = append(got, "id-appended")
-	if len(sess.LatestCheckpointDelivered()) != 1 {
-		t.Error("the caller mutated the session through the returned slice")
-	}
-
-	// An older block is the answer when the newest carries none: that is the
-	// shape of a session whose newest checkpoint predates the field.
-	legacy := &sessionstore.Session{ID: "legacy-read-back", Messages: []sessionstore.Message{
-		checkpoint("carried", "id-api"),
-		checkpoint("written before the field"),
-	}}
-	if got := legacy.LatestCheckpointDelivered(); len(got) != 1 || got[0] != "id-api" {
-		t.Errorf("LatestCheckpointDelivered = %v, want the last checkpoint that carries a set", got)
-	}
-
-	empty := &sessionstore.Session{ID: "empty", Messages: []sessionstore.Message{
-		{Role: llm.RoleUser, Content: "no checkpoints here"},
-		checkpoint("nothing carried"),
-	}}
-	if got := empty.LatestCheckpointDelivered(); got != nil {
-		t.Errorf("LatestCheckpointDelivered = %v, want nil for a session that carried nothing", got)
-	}
-	var nilSession *sessionstore.Session
-	if got := nilSession.LatestCheckpointDelivered(); got != nil {
-		t.Errorf("LatestCheckpointDelivered on a nil session = %v", got)
-	}
-	if got := nilSession.CheckpointDelivered(); got != nil {
-		t.Errorf("CheckpointDelivered on a nil session = %v", got)
+	if len(reloaded.CheckpointDelivered()) != 0 {
+		t.Errorf("an absent field decoded to something: %v", reloaded.CheckpointDelivered())
 	}
 }
 

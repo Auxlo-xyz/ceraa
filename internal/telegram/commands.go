@@ -41,7 +41,6 @@ type providerDraft struct {
 	Stage string
 }
 
-var pendingMemory sync.Map
 var pendingModelSearch sync.Map
 var pendingProvider sync.Map
 var pendingSchedule sync.Map
@@ -1046,15 +1045,7 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			return true
 		}
 	}
-	if _, ok := pendingMemory.LoadAndDelete(chatID); ok {
-		log := memoryLogReader(defaultState.project(chatID))
-		if err := log.Append(text, currentSessionID(chatID)); err != nil {
-			send(token, chatID, "Memory save failed: "+err.Error())
-			return true
-		}
-		send(token, chatID, "Memory saved to the log")
-		return true
-	}
+
 	if value, ok := pendingSchedule.LoadAndDelete(chatID); ok {
 		interval, valid := value.(time.Duration)
 		if !valid || interval < time.Minute {
@@ -1079,48 +1070,6 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 		return true
 	}
 	return false
-}
-
-func handleMemoryCommand(token string, chatID int64, text string) {
-	project := defaultState.project(chatID)
-	sessionID := currentSessionID(chatID)
-	log := memoryLogReader(project)
-	parts := strings.Fields(text)
-	if len(parts) == 1 {
-		sendMenuMarkup(token, chatID, "🧠 Memory log", menus.InlineForChat("memory", 0, chatID, sessionID))
-		return
-	}
-	if len(parts) >= 2 && parts[1] == "add" {
-		content := strings.TrimSpace(strings.TrimPrefix(text, "/memory add"))
-		if content == "" {
-			send(token, chatID, "Usage: /memory add <compact fact>")
-			return
-		}
-		if err := log.Append(content, sessionID); err != nil {
-			send(token, chatID, "Memory save failed: "+err.Error())
-			return
-		}
-		send(token, chatID, "Memory saved to the log")
-		return
-	}
-	if len(parts) >= 2 && parts[1] == "remove" {
-		send(token, chatID, "The memory log is append-only, so entries are never removed. Add a correction with /memory add and the newer line wins.")
-		return
-	}
-	entries := log.Tail(10)
-	if len(entries) == 0 {
-		send(token, chatID, "No memory logged for this project yet")
-		return
-	}
-	var lines []string
-	for i, entry := range entries {
-		body := strings.TrimSpace(entry)
-		if line := strings.IndexByte(entry, '\n'); line >= 0 {
-			body = strings.TrimSpace(entry[line+1:])
-		}
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, body))
-	}
-	send(token, chatID, "Memory:\n"+strings.Join(lines, "\n"))
 }
 
 func handleSkillCommand(token string, chatID int64, text string) {

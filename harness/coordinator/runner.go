@@ -22,7 +22,6 @@ import (
 	"ceraa/harness/inbox"
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -66,31 +65,7 @@ type RunnerConfig struct {
 	ModelCatalogURL     string
 	ModelCatalogCache   string
 	ModelCatalogRefresh time.Duration
-	// MemoryDelivery selects where memory reaches the model. "sidekick" appends
-	// the latest log state once per run as a tail line on the newest user
-	// message; any other value attaches nothing, because memory no longer
-	// rides the prompt in any mode.
-	MemoryDelivery string
-	// MemoryFile is the append-only log this run reads for what has been learned.
-	// The latest entries ride each request once, as a tail line on the newest
-	// user message, so memory reaches the model without a per-tool annotation.
-	//
-	// A reader rather than a snapshot because the file is the source of truth and
-	// a snapshot taken at construction diverges from it silently in a long-lived
-	// daemon.
-	//
-	// It replaced the memory store because the store re-rendered and re-ranked
-	// itself against a wall clock on every request, and that volatility sat ahead
-	// of the cache seam: the bytes changed when nothing had been written, so the
-	// cached prefix was rebuilt on every turn. An append-only log cannot do that.
-	// Nothing re-ranks, nothing decays, and the tail is read rather than the
-	// whole, so the cost per turn is proportional to what is delivered rather
-	// than to everything ever learned.
-	MemoryFile func() *memory.MemoryFile
-	// MemoryTail is how many entries of the log the once-per-run tail line
-	// reads. Zero means defaultMemoryTail. The line caps itself in runes on
-	// top, so a large tail costs nothing the line does not render.
-	MemoryTail int
+
 	// InstructionRules compiles the project's instruction file into the rules
 	// that tool-result delivery selects from. Nil disables instruction delivery
 	// entirely, which is a configuration rather than a failure.
@@ -212,29 +187,8 @@ type Runner struct {
 	contextSource llm.ContextWindowSource
 	contextLogged bool
 
-	// delivery and sidekick are the memory delivery mode and its per-run state.
-	delivery memory.Delivery
-	sidekick *sidekickState
-
-	// pendingMemory holds the ids of the entries the tail carried on the request
-	// messages was last built from, and memoryRode records that the tail rode at
-	// all this run. They are separate because messages is built more than once:
-	// a preview or the compactor's summary rebuilds it, by which point the ids
-	// are already delivered and the filter leaves nothing to send. memoryRode is
-	// never cleared, so that rebuild cannot un-record the run record.
-	pendingMemory []string
-	memoryRode    bool
-
 	// instructions is the instruction delivery state for this run: the compiled
 	// rules, the run's delivered set, and the scope matcher.
-	//
-	// A field beside sidekick rather than inside it, and the two are never
-	// consulted together. They answer different questions - what this agent has
-	// learned about the person and the work, versus what this project says
-	// about these paths - and a caller is entitled to configure exactly one of
-	// them. Keying instruction delivery on the sidekick being present is how a
-	// project with no memory store, which is a legal configuration, silently
-	// stops being told its own rules.
 	//
 	// Nil means no instruction source was configured, and every read below
 	// answers rather than panicking: instruction delivery is optional, and a run
@@ -394,17 +348,8 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	opMgr.SetConcurrencyLimit(cfg.MaxConcurrentTools)
 	catalog := llm.NewCatalogClient(cfg.ModelCatalogURL, cfg.ModelCatalogCache, cfg.ModelCatalogRefresh)
 	r := &Runner{cfg: cfg, store: store, reg: reg, opMgr: opMgr, catalog: catalog, evaluation: cfg.EvaluationStore, cb: cfg.Callbacks}
-	r.delivery = memory.ParseDelivery(cfg.MemoryDelivery)
-	// The log is the only memory source. A run configured without it gets no
-	// sidekick at all, and a mode that is not sidekick gets no memory delivery:
-	// memory no longer rides the prompt in any mode.
-	if r.delivery == memory.DeliverySidekick && cfg.MemoryFile != nil {
-		r.sidekick = newSidekickState(cfg.WorkDir)
-		r.sidekick.useMemoryFile(cfg.MemoryFile, cfg.MemoryTail)
-	}
-	// The instruction source is built here, once, beside the sidekick and not
-	// inside it. Both are per-run holders of delivery state, and this is the one
-	// place that knows a run has started.
+	// The instruction source is built here, once, at the one place that knows a
+	// run has started.
 	//
 	// Built from the loader rather than from an already-compiled snapshot so the
 	// file is read here, at the start of the run, and never again: the holder
@@ -587,22 +532,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// Recorded here rather than at start, because the counts are only
 				// final once the run has finished delivering.
 				//
-				// This is the whole measurement story for now: a run record that says
-				// which mode ran and whether the tail line rode, so a later analysis can
-				// compare outcomes instead of inferring the mode from the build.
-				sess.Runs[i].MemoryDelivery = string(r.delivery)
-				// memoryRode, not a fresh render: by now the ids are delivered,
-				// so rebuilding here would find nothing left and record zero for
-				// every run that did deliver.
-				if r.memoryRode {
-					sess.Runs[i].MemoryTargetedSent = 1
-					// Marked here, beside the record of the tail having rode, so
-					// the set is written by the Save that follows. What rode is
-					// what is marked, and pendingMemory only ever holds ids the
-					// model was actually sent: a rebuild that finds nothing new
-					// leaves it untouched rather than clearing it.
-					sess.MarkDeliveredMemory(r.pendingMemory)
-				}
+
 			}
 		}
 		if r.evaluation != nil {
@@ -1183,9 +1113,7 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 	// change costs nothing: the request is the previous one plus a suffix, which
 	// is a cache hit by construction, and every earlier message stays
 	// byte-identical forever.
-	if tail := r.memoryTailLine(sess); tail != "" {
-		request.Messages = append(request.Messages, llm.Item{Kind: "text", Role: llm.RoleUser, Text: tail})
-	}
+
 	return request.Messages
 }
 
@@ -1211,52 +1139,6 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 // building rather than afterwards, so the ids recorded are exactly the ids of
 // the entries that were sent. Truncating first and recording everything would
 // mark entries the model never saw as delivered and lose them for good.
-func (r *Runner) memoryTailLine(sess *sessionstore.Session) string {
-	if r == nil || r.sidekick == nil {
-		return ""
-	}
-	delivered := sess.MemoryDeliveredSet()
-
-	// The tail is a reminder of what was learned, not a second transcript.
-	const budget = 800
-
-	body, ids := "", make([]string, 0, 4)
-	for _, entry := range r.sidekick.memTail() {
-		trimmed := strings.TrimSpace(entry)
-		if trimmed == "" {
-			continue
-		}
-		id := memory.EntryID(entry)
-		if _, seen := delivered[id]; seen {
-			continue
-		}
-		candidate := trimmed
-		if body != "" {
-			candidate = body + "\n---\n" + trimmed
-		}
-		runes := []rune(candidate)
-		if len(runes) > budget {
-			if body == "" {
-				// One entry larger than the whole budget. Sent truncated, as it
-				// always was, because dropping it would mean never delivering it
-				// at all: the budget is a cap on one turn, not a filter.
-				body = string(runes[:budget])
-				if i := strings.LastIndex(body, "\n"); i > 0 {
-					body = body[:i]
-				}
-				ids = append(ids, id)
-			}
-			break
-		}
-		body, ids = candidate, append(ids, id)
-	}
-	if body == "" {
-		return ""
-	}
-	r.pendingMemory = ids
-	r.memoryRode = true
-	return "\n\n<memory>\n" + body + "\n</memory>"
-}
 
 // LiveRequest returns the request the running agent would send for this session
 // right now: the same system prompt, the same pinned context, the same history

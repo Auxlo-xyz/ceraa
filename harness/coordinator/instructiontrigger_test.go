@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"ceraa/harness/instruction"
-	"ceraa/harness/memory"
 )
 
 // The trigger is the whole input to selection, so a path that never reaches it
@@ -82,13 +81,13 @@ func TestTheTriggerBuilderReusesTheCommandPathWalk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state := newSidekickState("/srv")
-			sidekick := state.targetsForSpec("shell", map[string]any{"command": tc.command})
-			trigger := InstructionTrigger("shell", map[string]any{"command": tc.command}, "shell", "/srv", false)
+			args := map[string]any{"command": tc.command}
+			walk := targetsForSpec("shell", "/srv", args)
+			trigger := InstructionTrigger("shell", args, "shell", "/srv", false)
 
-			if !reflect.DeepEqual(trigger.Targets, sidekick) {
-				t.Errorf("the trigger and the sidekick disagree about %q:\n  trigger %v\n  sidekick %v",
-					tc.command, trigger.Targets, sidekick)
+			if !reflect.DeepEqual(trigger.Targets, walk) {
+				t.Errorf("the trigger and the path walk disagree about %q:\n  trigger %v\n  walk %v",
+					tc.command, trigger.Targets, walk)
 			}
 			// And the filter still did its work. Agreement with a broken
 			// extraction would satisfy the comparison above while delivering a
@@ -144,7 +143,7 @@ func TestTheMatcherAdapterAgreesWithMemoryScope(t *testing.T) {
 		{"/srv/api", ""},
 	}
 	for _, tc := range cases {
-		want := memory.MatchesScope(tc.applies, tc.target)
+		want := MatchesScope(tc.applies, tc.target)
 		if got := instructionMatcher(tc.applies, tc.target); got != want {
 			t.Errorf("MatchesScope(%q, %q) = %v, the adapter said %v", tc.applies, tc.target, want, got)
 		}
@@ -156,23 +155,6 @@ func TestTheMatcherAdapterAgreesWithMemoryScope(t *testing.T) {
 	}
 	if !instructionMatcher("*.go", "/srv/api/main.go") {
 		t.Error("a base-name glob did not reach a nested target, so the adapter is not memory's matcher")
-	}
-}
-
-// The builder and the sidekick have to describe one operation the same way, or
-// the two delivery paths tell the model two different things about it.
-func TestTheSidekickAndTheTriggerAgreeOnOneOperation(t *testing.T) {
-	// The shape the runner hands both: a spec type and the args as they arrived
-	// from the model.
-	specType := "write"
-	args := map[string]any{"path": "api/main.go"}
-
-	state := newSidekickState("/srv")
-	sidekick := state.targetsForSpec(specType, args)
-	trigger := InstructionTrigger(specType, args, "write", "/srv", false)
-
-	if !reflect.DeepEqual(trigger.Targets, sidekick) {
-		t.Errorf("the two paths disagree:\n  trigger %v\n  sidekick %v", trigger.Targets, sidekick)
 	}
 }
 

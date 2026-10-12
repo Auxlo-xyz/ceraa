@@ -2,7 +2,6 @@ package menus
 
 import (
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -48,7 +47,7 @@ var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission",
 	"snapshots", "message_history", "skills_catalog", "worktree",
-	"memory", "skill", "schedule", "secrets",
+	"skill", "schedule", "secrets",
 	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "workbuddy",
 }
 
@@ -148,8 +147,7 @@ func InlineForChat(name string, page int, chatID int64, sessionID string) map[st
 		return ModelMenu(0)
 	case "model_catalog":
 		return ModelCatalogForChat(chatID, "")
-	case "memory":
-		return memoryMenu(chatID, sessionID)
+
 	case "title_settings":
 		return titleSettingsMenu()
 	case "skill":
@@ -246,8 +244,7 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return historyMenu()
 	case "worktree":
 		return worktreeMenu()
-	case "memory":
-		return memoryMenu(0, sessionID)
+
 	case "skill":
 		return skillMenu()
 	case "schedule":
@@ -916,35 +913,6 @@ func worktreeMenu() map[string]any {
 	}}
 }
 
-func memoryMenu(chatID int64, sessionID string) map[string]any {
-	root := projectForChat(chatID)
-	tail := memory.OpenMemoryFile(filepath.Join(root, "Memory.md")).Tail(8)
-	rows := make([][]map[string]string, 0, len(tail)+2)
-	for _, raw := range tail {
-		body := strings.TrimSpace(raw)
-		if line := strings.IndexByte(raw, '\n'); line >= 0 {
-			body = strings.TrimSpace(raw[line+1:])
-		}
-		if body == "" {
-			continue
-		}
-		rows = append(rows, []map[string]string{{"text": "✔ " + truncateMenuLabel(body, 36), "callback_data": "memory:view"}})
-	}
-	rows = append(rows, []map[string]string{{"text": "➕ Add memory", "callback_data": "memory:add"}, {"text": "🔄 Refresh", "callback_data": "memory:view"}})
-	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
-	return map[string]any{"inline_keyboard": rows}
-}
-
-// truncateMenuLabel bounds a button label without splitting a rune, so a log
-// line with wide characters does not become a broken one on the button.
-func truncateMenuLabel(body string, n int) string {
-	runes := []rune(body)
-	if len(runes) <= n {
-		return body
-	}
-	return string(runes[:n]) + "..."
-}
-
 func skillMenu() map[string]any {
 	cfg, _ := config.Load()
 	store, err := skills.New(cfg.SkillFile)
@@ -1091,7 +1059,7 @@ func Hub() map[string]any {
 		"context": "🧮 Context", "compaction_level": "🗜️ Compact", "file_browser": "📂 Files",
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools",
-		"worktree": "🌿 Worktree", "memory": "🧠 Memory", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
+		"worktree": "🌿 Worktree", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
 		"secrets": "🔑 Secrets",
 		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(), "qoder": qoderHubLabel(),

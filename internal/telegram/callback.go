@@ -283,22 +283,7 @@ func handleCallback(token string, q *callbackQuery) {
 		editCallback(token, chatID, q.Message.MessageID, "🔒 Bot locked to your Telegram account", nil)
 		return
 	}
-	if data == "memory:view" {
-		editCallback(token, chatID, q.Message.MessageID, "🧠 Memory log", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
-		return
-	}
-	if data == "memory:add" {
-		pendingMemory.Store(chatID, true)
-		send(token, chatID, "Send the compact fact or preference to remember. I’ll save it as the next message.")
-		return
-	}
-	if strings.HasPrefix(data, "memory:remove:") {
-		// Kept for keyboards built before the log replaced the store: the log
-		// is append-only, so removal became adding a correction instead.
-		send(token, chatID, "The memory log is append-only, so entries are never removed. Add a correction with /memory add and the newer line wins.")
-		editCallback(token, chatID, q.Message.MessageID, "🧠 Memory log", menus.InlineForChat("memory", 0, chatID, currentSessionID(chatID)))
-		return
-	}
+
 	if data == "skill:view" {
 		editCallback(token, chatID, q.Message.MessageID, "🧩 Skill proposals", menus.InlineForChat("skill", 0, chatID, currentSessionID(chatID)))
 		return

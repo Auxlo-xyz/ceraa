@@ -15,7 +15,6 @@ import (
 	"ceraa/harness/evaluation"
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/permission"
 	"ceraa/harness/sessionstore"
@@ -58,62 +57,6 @@ type Session struct {
 	// different provider without reloading the whole config.
 	resolver func() (llm.ProviderConfig, config.LLMProvider, error)
 	registry func() (*tool.Registry, error)
-}
-
-// memoryLogPath is where the append-only Memory.md log lives for the project at
-// root, and the reader one RunnerConfig is handed for it.
-//
-// Same rule the Telegram bridge and the CLI follow, so one project has one log
-// wherever it is opened from: flat at the project root, never /tmp, and never in a
-// setting - the workdir is already the answer to where a session's data lives.
-//
-// Flat rather than memory/Memory.md beside AGENTS.md because MemoryFile.Append
-// opens with O_CREATE and creates no directory, so a session with no memory/
-// subdirectory would fail every append. The session workdir is the one directory
-// guaranteed to exist, because it is where the commands run.
-func memoryLogPath(root string) string {
-	return filepath.Join(root, "Memory.md")
-}
-
-func memoryLogReader(root string) *memory.MemoryFile {
-	return memory.OpenMemoryFile(memoryLogPath(root))
-}
-
-// memoryWiring is the memory-related half of the runner config: the reader for
-// the append-only log.
-//
-// One value rather than fields written into the literal, so the wiring can be
-// asserted without a turn.
-type memoryWiring struct {
-	// MemoryFile is the runner's reader for the session's append-only log.
-	MemoryFile func() *memory.MemoryFile
-}
-
-func newMemoryWiring(memoryLog *memory.MemoryFile) memoryWiring {
-	return memoryWiring{
-		MemoryFile: func() *memory.MemoryFile { return memoryLog },
-	}
-}
-
-// cliLearnChain assembles the compaction learn hooks for one turn: the memory
-// extractor when a credential is configured, followed by the append-only log,
-// so the log records what the checkpoint produced rather than feeding anything.
-// The extractor also appends its durable profile, preference, goal and
-// constraint claims to the same log.
-//
-// Nil when nothing is enabled. A non-nil no-op would read as wired while doing
-// nothing, which is the failure a credential-gated hook exists to avoid, and
-// compaction.ChainLearn treats nil as absent so the distinction is preserved all
-// the way to the call site.
-func cliLearnChain(modelConfig llm.ProviderConfig, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
-	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryLog); enabled {
-		chain = learn
-	}
-	if memoryLog != nil {
-		chain = compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
-	}
-	return chain
 }
 
 // SessionOptions configures a Session.
@@ -195,7 +138,6 @@ func (s *Session) build() error {
 	modelConfig.PromptCacheTTL = provider.PromptCacheTTL
 	modelConfig.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 
-	memoryLog := memoryLogReader(s.workDir)
 	compactor := compaction.New(modelConfig)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
@@ -214,17 +156,9 @@ func (s *Session) build() error {
 		return fmt.Errorf("skill store: %w", err)
 	}
 	evaluationStore, err := newEvaluationStore(s.cfg)
-	// One learn hook for the turn: the extractor when a credential is
-	// configured.
-	compactor.Learn = cliLearnChain(modelConfig, memoryLog)
 	if err != nil {
 		return err
 	}
-	// The append-only log for this session's workdir. The workdir is the project
-	// root here, flat at the root, and never /tmp.
-	// The memory half of the runner config, built beside the log it reads so
-	// the two are constructed once and shared.
-	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 
 	registry := tool.DefaultRegistryForUser("cli", skillStore)
@@ -249,7 +183,6 @@ func (s *Session) build() error {
 		compactor:           compactor,
 		evaluationStore:     evaluationStore,
 		instructionProposer: instructionProposer,
-		memory:              wiring,
 		skillContext:        skillContext,
 	}), s.store, registry)
 	return nil
@@ -267,14 +200,10 @@ type sessionRunnerDeps struct {
 	compactor           *compaction.Compactor
 	evaluationStore     *evaluation.Store
 	instructionProposer instruction.Proposer
-	memory              memoryWiring
 	skillContext        string
 }
 
 // runnerConfig builds the RunnerConfig for a turn.
-//
-// Extracted whole so the memory wiring can be asserted on the config a turn
-// actually receives rather than on a copy assembled in a test.
 func (s *Session) runnerConfig(d sessionRunnerDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:           s.session,
@@ -291,8 +220,6 @@ func (s *Session) runnerConfig(d sessionRunnerDeps) coordinator.RunnerConfig {
 		ModelCatalogURL:     s.cfg.ModelCatalogURL,
 		ModelCatalogCache:   s.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(s.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryFile:          d.memory.MemoryFile,
-		MemoryDelivery:      s.cfg.MemoryDelivery,
 		InstructionRules:    internal.InstructionRules(s.workDir, d.instructionProposer),
 		SkillContext:        d.skillContext,
 		EvaluationStore:     d.evaluationStore,

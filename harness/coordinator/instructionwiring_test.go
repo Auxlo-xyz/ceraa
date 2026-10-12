@@ -15,7 +15,6 @@ import (
 
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/tool"
@@ -511,59 +510,30 @@ func TestARuleTheBudgetHeldIsStillDeliveredOnTheNextMatchingOperation(t *testing
 	}
 }
 
-// memoryTailLine needs no operation, so delivering one must not depend on the
-// other being configured. Wiring that gated them behind a shared nil check
-// would make the instruction feature silently require memory to have been set
-// up.
-func TestTheTwoChannelsAreIndependent(t *testing.T) {
+// Instruction delivery depends on nothing else being configured. It used to be
+// wired beside a memory sidekick and gated behind a shared nil check, which
+// would have made the instruction feature silently require memory to have been
+// set up. The memory channel is retired; this pins what is left standing.
+func TestInstructionDeliveryNeedsNoOtherSubsystem(t *testing.T) {
 	work := t.TempDir()
 	target := filepath.Join(work, "notes.txt")
 	if err := writeFileForTest(target, "the file the agent read"); err != nil {
 		t.Fatal(err)
 	}
 	sess := &sessionstore.Session{ID: "ind", Version: 3}
-
-	// Both configured: the instruction note renders on the tool result and the
-	// memory tail renders on the run, and neither consults the other.
-	logPath := filepath.Join(work, "Memory.md")
-	appendLog(t, memory.OpenMemoryFile(logPath), "memory only, recorded at "+work)
-	both := New(RunnerConfig{
-		WorkDir:          work,
-		InstructionRules: compilingSource(rulesBody).loader(),
-		MemoryDelivery:   string(memory.DeliverySidekick),
-		MemoryFile:       logMemoryFile(logPath),
-	}, nil, tool.DefaultRegistry())
-	result := operation.ResultEvent{OpID: "op1", Status: operation.StatusCompleted}
 	sess.Operations = append(sess.Operations, sessionstore.Operation{
 		ID: "op1", Tool: "read", SpecType: "read", SpecArgs: map[string]any{"path": target},
 	})
-	if note := both.instructionNote(sessionFor(sess), result); note == "" {
-		t.Error("an instruction source with a memory store configured delivered nothing")
-	}
-	if tail := both.memoryTailLine(sessionFor(sess)); !strings.Contains(tail, "memory only") {
-		t.Errorf("a memory tail with an instruction source configured delivered nothing: %q", tail)
-	}
 
-	// Instructions alone.
-	rulesOnly := New(RunnerConfig{
+	runner := New(RunnerConfig{
 		WorkDir:          work,
 		InstructionRules: compilingSource(rulesBody).loader(),
 	}, nil, tool.DefaultRegistry())
-	if note := rulesOnly.instructionNote(sessionFor(sess), result); !strings.Contains(note, "Every network tool goes through harness/netguard") {
-		t.Errorf("rules did not deliver without a memory sidekick: %q", note)
-	}
+	result := operation.ResultEvent{OpID: "op1", Status: operation.StatusCompleted}
 
-	// Memory alone.
-	memoryRunner := New(RunnerConfig{
-		WorkDir:        work,
-		MemoryDelivery: string(memory.DeliverySidekick),
-		MemoryFile:     logMemoryFile(logPath),
-	}, nil, tool.DefaultRegistry())
-	if note := memoryRunner.instructionNote(sessionFor(sess), result); note != "" {
-		t.Errorf("a runner with no rule file produced an instruction note: %q", note)
-	}
-	if tail := memoryRunner.memoryTailLine(sessionFor(sess)); !strings.Contains(tail, "memory only") {
-		t.Errorf("the memory tail stopped delivering once the instruction channel existed: %q", tail)
+	note := runner.instructionNote(sessionFor(sess), result)
+	if !strings.Contains(note, "Every network tool goes through harness/netguard") {
+		t.Errorf("rules did not deliver on a runner configured with nothing else: %q", note)
 	}
 }
 

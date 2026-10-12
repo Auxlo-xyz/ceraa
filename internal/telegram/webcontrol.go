@@ -13,7 +13,7 @@ import (
 	"ceraa/harness/evaluation"
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
+
 	"ceraa/harness/permission"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/sessionstore"
@@ -64,7 +64,6 @@ func webControl(cfg *miniapp.Config, tunnelAddr func() string) {
 	cfg.Tools = webTools
 	cfg.SetToolAllowed = webSetToolAllowed
 	cfg.Secrets = webSecretLengths
-	cfg.Memories = webMemories
 	cfg.TriggerCompaction = webTriggerCompaction
 	cfg.Skills = webSkills
 	cfg.DecideSkill = webDecideSkill
@@ -364,13 +363,7 @@ func webRunParams() map[string]any {
 		out["max_concurrent_tools"] = cfg.MaxConcurrentTools
 		out["prompt_cache_mode"] = cfg.LLM.PromptCacheMode
 		out["prompt_cache_ttl"] = cfg.LLM.PromptCacheTTL
-		out["memory_delivery"] = cfg.MemoryDelivery
-		// Where the append-only log lands, reported rather than set. The path is
-		// derived from the session's project root, which is chosen per session, so
-		// there is no one value a settings row could write and no knob to widen
-		// here; the row exists so the dashboard can say where to look, which is
-		// what MemoryFile.Path is for.
-		out["memory_log"] = memoryLogPath(defaultState.projectForSession(currentSessionID(defaultState.allowedUserID())))
+
 	}
 	return out
 }
@@ -386,7 +379,7 @@ func webSetRunParams(update map[string]any) error {
 		"max_tool_result_chars": true, "max_concurrent_tools": true,
 	}
 	stringKeys := map[string]bool{
-		"prompt_cache_mode": true, "prompt_cache_ttl": true, "memory_delivery": true,
+		"prompt_cache_mode": true, "prompt_cache_ttl": true,
 	}
 	for key, raw := range update {
 		switch {
@@ -407,13 +400,7 @@ func webSetRunParams(update map[string]any) error {
 			return fmt.Errorf("unknown run parameter %q", key)
 		}
 	}
-	if raw, ok := update["memory_delivery"].(string); ok {
-		switch strings.TrimSpace(raw) {
-		case "", "cached", "prompt", "sidekick":
-		default:
-			return fmt.Errorf("unknown memory delivery %q", raw)
-		}
-	}
+
 	for key, raw := range update {
 		var err error
 		switch key {
@@ -468,8 +455,6 @@ func webSetRunParams(update map[string]any) error {
 			cfg.LLM.PromptCacheMode = raw
 		case "prompt_cache_ttl":
 			cfg.LLM.PromptCacheTTL = raw
-		case "memory_delivery":
-			cfg.MemoryDelivery = raw
 		}
 	}
 	// Load, mutate, save under the store's own lock discipline. The menu
@@ -543,35 +528,6 @@ func webSecretLengths() ([]miniapp.SecretEntry, error) {
 	return out, nil
 }
 
-// webMemories reads the newest entries of the current project's append-only
-// memory log for the dashboard. Read-only: the log has no rewrite operation,
-// so there is nothing to delete by and no metadata to show.
-func webMemories() ([]miniapp.MemoryEntry, error) {
-	projectRoot := defaultState.projectForSession(currentSessionID(defaultState.allowedUserID()))
-	if projectRoot == "" {
-		return []miniapp.MemoryEntry{}, nil
-	}
-	tail := memory.OpenMemoryFile(memoryLogPath(projectRoot)).Tail(30)
-	out := make([]miniapp.MemoryEntry, 0, len(tail))
-	for i, raw := range tail {
-		body := strings.TrimSpace(raw)
-		if line := strings.IndexByte(raw, '\n'); line >= 0 {
-			// The first line is the log's own date-and-session header, dropped
-			// the same way delivery drops it: the dashboard shows the claim,
-			// not when the agent wrote it down.
-			body = strings.TrimSpace(raw[line+1:])
-		}
-		if body == "" {
-			continue
-		}
-		out = append(out, miniapp.MemoryEntry{
-			ID:      fmt.Sprintf("log-%d", i+1),
-			Content: body,
-		})
-	}
-	return out, nil
-}
-
 // webLiveDeps is what the dashboard's live-request runner config is built from.
 type webLiveDeps struct {
 	sessionID           string
@@ -579,7 +535,6 @@ type webLiveDeps struct {
 	providerConfig      config.LLMProvider
 	modelConfig         llm.ProviderConfig
 	projectRoot         string
-	memory              memoryWiring
 	instructionProposer instruction.Proposer
 	skillContext        string
 	evaluationStore     *evaluation.Store
@@ -588,18 +543,16 @@ type webLiveDeps struct {
 // webLiveRunnerConfig builds the RunnerConfig the compaction button previews
 // from.
 //
-// Extracted for the same reason the bridge's is: the memory wiring can then be
-// asserted on the config a preview actually uses.
+
 func webLiveRunnerConfig(d webLiveDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
-		SessionID:        d.sessionID,
-		SystemPrompt:     prompt.System,
-		Model:            d.modelConfig,
-		ContextLimit:     d.providerConfig.ContextLimit,
-		MaxOutputTokens:  d.providerConfig.MaxOutputTokens,
-		WorkDir:          d.projectRoot,
-		MemoryFile:       d.memory.MemoryFile,
-		MemoryDelivery:   d.cfg.MemoryDelivery,
+		SessionID:       d.sessionID,
+		SystemPrompt:    prompt.System,
+		Model:           d.modelConfig,
+		ContextLimit:    d.providerConfig.ContextLimit,
+		MaxOutputTokens: d.providerConfig.MaxOutputTokens,
+		WorkDir:         d.projectRoot,
+
 		InstructionRules: internal.InstructionRules(d.projectRoot, d.instructionProposer),
 		SkillContext:     d.skillContext,
 		EvaluationStore:  d.evaluationStore,
@@ -641,10 +594,6 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 	// and the filesystem still decides what survives.
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
-	// The append-only log for the same project the request is built for, so the
-	// previewed request is built from exactly what a run would read.
-	memoryLog := memoryLogReader(projectRoot)
-	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	// No user text reaches this path, so the skill-feedback heuristic stays off
 	// and the proposal tool stays out of the catalogue, which is where it is on
@@ -657,7 +606,6 @@ func webLiveRequest(cfg *config.Config, store *sessionstore.Store, sess *session
 		providerConfig:      providerConfig,
 		modelConfig:         modelConfig,
 		projectRoot:         projectRoot,
-		memory:              wiring,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,

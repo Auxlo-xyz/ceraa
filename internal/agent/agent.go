@@ -12,7 +12,6 @@ import (
 	"ceraa/harness/evaluation"
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
-	"ceraa/harness/memory"
 	"ceraa/harness/operation"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -31,72 +30,6 @@ import (
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
 )
-
-// memoryLogPath is where the append-only Memory.md log lives for the project at
-// root, and the reader one RunnerConfig is handed for it.
-//
-// Same rule the Telegram bridge and the TUI follow, so one project has one log
-// wherever it is opened from: flat at the project root, never /tmp, and never in a
-// setting - the root is already the answer to where a project's data lives.
-//
-// Flat rather than memory/Memory.md beside AGENTS.md because MemoryFile.Append
-// opens with O_CREATE and creates no directory, so a run from a directory with no
-// memory/ subdirectory would fail every append.
-//
-// This surface passes ".", not a configured workspace root: the config below sets
-// no WorkDir, so the runner resolves relative paths against the process working
-// directory, and a log anchored anywhere else would be a second answer to "where
-// does this run work" - the same reason InstructionRules is handed ".". The cost
-// is that the CLI's log follows the directory it was launched from, which is the
-// directory its commands already run in.
-func memoryLogPath(root string) string {
-	return filepath.Join(root, "Memory.md")
-}
-
-func memoryLogReader(root string) *memory.MemoryFile {
-	return memory.OpenMemoryFile(memoryLogPath(root))
-}
-
-// memoryWiring is the memory-related half of the runner config: the reader for
-// the append-only log.
-//
-// One value rather than fields written into the literal, so the wiring can be
-// asserted without running a turn.
-type memoryWiring struct {
-	// MemoryFile is the runner's reader for the append-only log.
-	MemoryFile func() *memory.MemoryFile
-}
-
-func newMemoryWiring(memoryLog *memory.MemoryFile) memoryWiring {
-	return memoryWiring{
-		MemoryFile: func() *memory.MemoryFile { return memoryLog },
-	}
-}
-
-// cliLearnChain assembles the compaction learn hooks for one run: the memory
-// extractor when a credential is configured, followed by the append-only log,
-// so the log records what the checkpoint produced rather than feeding anything.
-// The extractor also appends its durable profile, preference, goal and
-// constraint claims to the same log.
-//
-// Nil when nothing is enabled. A non-nil no-op would read as wired while doing
-// nothing, which is the failure a credential-gated hook exists to avoid, and
-// compaction.ChainLearn treats nil as absent so the distinction is preserved all
-// the way to the call site.
-func cliLearnChain(modelConfig llm.ProviderConfig, memoryLog *memory.MemoryFile) func(context.Context, string, []sessionstore.Message, string) {
-	var chain func(context.Context, string, []sessionstore.Message, string)
-	if learn, enabled := memory.MakeLearner(modelConfig, memoryLog); enabled {
-		chain = learn
-	}
-	// The log writer is always chained when a log exists. It is not
-	// credential-gated, so an install with no extractor key still accumulates the
-	// checkpoint summaries - the extractor turning the summary into memories is
-	// optional; recording it is not.
-	if memoryLog != nil {
-		chain = compaction.ChainLearn(chain, internal.MemoryLogLearner(memoryLog))
-	}
-	return chain
-}
 
 func Run(user string) error {
 	cfg, err := config.Load()
@@ -145,15 +78,10 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	pcfg.PromptCacheMode = provider.PromptCacheMode
 	pcfg.PromptCacheTTL = provider.PromptCacheTTL
 	pcfg.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
-	memoryLog := memoryLogReader(".")
 	compactor := compaction.New(pcfg)
-	// One learn hook for the run: the extractor when a credential is configured.
-	compactor.Learn = cliLearnChain(pcfg, memoryLog)
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.ArchiveDir = cfg.SessionFile
-	// The append-only log for this run. Flat at the root, never /tmp.
-	wiring := newMemoryWiring(memoryLog)
 	skillContext, _ := skillStore.CatalogContext(2000)
 	modelConfig := llm.FromProvider(provider.URL, provider.APIKey, provider.Model)
 	modelConfig.PromptCacheMode = provider.PromptCacheMode
@@ -285,7 +213,6 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		provider:            provider,
 		modelConfig:         modelConfig,
 		resolveModel:        resolveModel,
-		memory:              wiring,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,
@@ -305,7 +232,6 @@ type agentRunDeps struct {
 	provider            config.LLMProvider
 	modelConfig         llm.ProviderConfig
 	resolveModel        func(context.Context) (llm.ProviderConfig, error)
-	memory              memoryWiring
 	instructionProposer instruction.Proposer
 	skillContext        string
 	evaluationStore     *evaluation.Store
@@ -313,9 +239,6 @@ type agentRunDeps struct {
 }
 
 // agentRunnerConfig builds the RunnerConfig for one CLI run.
-//
-// Extracted whole so the memory wiring can be asserted on the config a run
-// actually receives rather than on a copy assembled in a test.
 func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:           "cli",
@@ -331,8 +254,6 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 		ModelCatalogURL:     d.cfg.ModelCatalogURL,
 		ModelCatalogCache:   d.cfg.ModelCatalogCache,
 		ModelCatalogRefresh: time.Duration(d.cfg.ModelCatalogRefreshHours) * time.Hour,
-		MemoryFile:          d.memory.MemoryFile,
-		MemoryDelivery:      d.cfg.MemoryDelivery,
 		// The CLI runs in the process working directory: this config sets no
 		// WorkDir, so the runner resolves relative paths against it, and the
 		// instruction store has to resolve against the same place or a project's

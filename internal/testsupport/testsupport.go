@@ -13,8 +13,8 @@
 // that forgets cannot silently fall back to the real directory.
 //
 // Main also strips the CERAA_* variables a parent shell may have exported. The
-// redirect alone is not enough: the running supervisor puts its own CERAA_HOME,
-// CERAA_SESSION_FILE and CERAA_EXTRACT_KEY into any shell that shares its
+// redirect alone is not enough: the running supervisor puts its own CERAA_HOME
+// and CERAA_SESSION_FILE into any shell that shares its
 // environment, and those override the fixture a test just wrote. That is how
 // `go test` started from the supervisor failed tests that pass in a clean one.
 package testsupport
@@ -60,8 +60,7 @@ func Main(m *testing.M) {
 // inherited from a parent process are therefore never wanted, and leaving them
 // in place is not a harmless difference in environment, it changes what the
 // test asserts. CERAA_SESSION_FILE moved the store out from under the manual
-// compaction tests, and CERAA_EXTRACT_KEY turned the extractor back on for the
-// tests whose whole point is that it stays off without a key.
+// compaction tests.
 func ScrubCeraaEnv() {
 	for _, kv := range os.Environ() {
 		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "CERAA_") {

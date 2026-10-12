@@ -58,7 +58,7 @@ func TestStatusReportCarriesContextAndSessionFacts(t *testing.T) {
 // into a wall of text.
 func TestActionMenusKeepTheTitleFallback(t *testing.T) {
 	isolateState(t)
-	for _, name := range []string{"permission", "tools", "settings", "todos", "memory"} {
+	for _, name := range []string{"permission", "tools", "settings", "todos"} {
 		if _, ok := menuReportText(name, 1); ok {
 			t.Errorf("%q is an action list but was given a report body", name)
 		}

@@ -39,15 +39,6 @@ type ToolEntry struct {
 	Description string `json:"description"`
 }
 
-// MemoryEntry is one recent entry of the project's append-only memory log, as
-// the dashboard shows it. The log has no rewrite operation, so there is no id
-// to delete by and no metadata to show: the newest entries, oldest first, are
-// the whole account.
-type MemoryEntry struct {
-	ID      string `json:"id"`
-	Content string `json:"content"`
-}
-
 // SubscriptionEntry is one subscription provider's sign-in state. There is
 // no account identifier: no cheap source names the account, so the page shows
 // signed-in state and which provider is active rather than a name it cannot
@@ -319,22 +310,6 @@ func (s *Server) handleSetToolAllowed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleTools(w, r)
-}
-
-func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Memories == nil {
-		http.Error(w, "memories are not exposed on this surface", http.StatusServiceUnavailable)
-		return
-	}
-	entries, err := s.cfg.Memories()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if entries == nil {
-		entries = []MemoryEntry{}
-	}
-	writeJSON(w, map[string]any{"memories": entries})
 }
 
 func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
