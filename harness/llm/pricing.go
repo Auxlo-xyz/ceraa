@@ -429,11 +429,53 @@ func (c *CatalogClient) lookupLocked(model string) (ModelMetadata, error) {
 	}
 	metadata, ok := c.cache.Models[model]
 	if !ok {
+		if matched, unique := c.lookupByBareNameLocked(model); unique {
+			metadata = matched
+			ok = true
+		}
+	}
+	if !ok {
 		return ModelMetadata{}, fmt.Errorf("%w: %s", ErrModelNotFound, model)
 	}
 	metadata.PricingCurrent = c.fresh()
 	metadata.PricingFetchedAt = c.cache.FetchedAt
 	return metadata, nil
+}
+
+// lookupByBareNameLocked resolves a model named without its namespace, which is
+// what every provider reports and never what a catalog keyed by
+// "namespace/name" is indexed by.
+//
+// Without it the harness prices nothing: all 327 recorded runs carry
+// pricing_status=model_not_found and cost.known=false, because "gpt-5.6-luna"
+// is absent from a catalog that holds "openai/gpt-5.6-luna". Every cost figure
+// this harness has ever printed was therefore missing, on every provider.
+//
+// Only an unambiguous match counts. Two catalog entries can share a bare name
+// ("openai/x" and "azure/x"), and guessing between them would put a confident
+// wrong price on a bill, which is worse than reporting none. When the name is
+// ambiguous the result is no match and the caller reports model_not_found,
+// exactly as before.
+func (c *CatalogClient) lookupByBareNameLocked(model string) (ModelMetadata, bool) {
+	bare := strings.TrimSpace(model)
+	if bare == "" {
+		return ModelMetadata{}, false
+	}
+	var found ModelMetadata
+	matches := 0
+	for id, metadata := range c.cache.Models {
+		if slash := strings.IndexByte(id, '/'); slash >= 0 && id[slash+1:] == bare {
+			if matches == 0 {
+				found = metadata
+				found.ID = bare
+			}
+			matches++
+			if matches > 1 {
+				return ModelMetadata{}, false
+			}
+		}
+	}
+	return found, matches == 1
 }
 
 func (c *CatalogClient) fresh() bool {

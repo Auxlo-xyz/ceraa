@@ -168,3 +168,64 @@ func TestModelMetadataCalculatesBillingTypes(t *testing.T) {
 		t.Fatalf("unexpected cost: %+v", cost)
 	}
 }
+
+// Providers report bare model names; the catalog is keyed by namespace/name.
+// Every cost this harness printed was missing because the two never met.
+func TestLookupResolvesABareNameToItsNamespacedEntry(t *testing.T) {
+	client := catalogWith(t, map[string]ModelMetadata{
+		"openai/gpt-5.6-luna": {Pricing: ModelPricing{Input: TokenPrice{Base: "1.75"}, Output: TokenPrice{Base: "14"}}},
+	})
+	metadata, err := client.Lookup(context.Background(), "gpt-5.6-luna")
+	if err != nil {
+		t.Fatalf("bare name did not resolve: %v", err)
+	}
+	cost, ok := metadata.Cost(UsageInfo{InputTokens: 1000, OutputTokens: 100})
+	if !ok {
+		t.Fatal("the resolved entry produced no cost")
+	}
+	if cost.TotalUSD <= 0 {
+		t.Fatalf("cost = %v, want a positive figure", cost)
+	}
+}
+
+// Two entries can share a bare name. A price guessed between them is worse than
+// no price, so ambiguity has to stay a miss.
+func TestLookupRefusesAnAmbiguousBareName(t *testing.T) {
+	client := catalogWith(t, map[string]ModelMetadata{
+		"openai/shared": {},
+		"azure/shared":  {},
+	})
+	if _, err := client.Lookup(context.Background(), "shared"); err == nil {
+		t.Fatal("an ambiguous bare name resolved to a price")
+	}
+}
+
+// An exact hit still wins, including when some other entry shares the bare name.
+func TestLookupPrefersTheExactKey(t *testing.T) {
+	client := catalogWith(t, map[string]ModelMetadata{
+		"shared":       {Name: "the exact one"},
+		"azure/shared": {},
+	})
+	metadata, err := client.Lookup(context.Background(), "shared")
+	if err != nil || metadata.Name != "the exact one" {
+		t.Fatalf("exact key did not win: %q %v", metadata.Name, err)
+	}
+}
+
+func TestLookupStillMissesAnUnknownModel(t *testing.T) {
+	client := catalogWith(t, map[string]ModelMetadata{"openai/gpt-5.6-luna": {}})
+	if _, err := client.Lookup(context.Background(), "no-such-model"); err == nil {
+		t.Fatal("an unknown model resolved")
+	}
+}
+
+// catalogWith builds a client whose cache is already populated, so a test can
+// exercise lookup without standing up a server.
+func catalogWith(t *testing.T, models map[string]ModelMetadata) *CatalogClient {
+	t.Helper()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := NewCatalogClient("", t.TempDir()+"/catalog.json", 24*time.Hour)
+	client.Now = func() time.Time { return now }
+	client.cache = &modelCatalogCache{FetchedAt: now, Models: models}
+	return client
+}
