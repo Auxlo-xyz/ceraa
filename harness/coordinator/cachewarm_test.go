@@ -29,8 +29,39 @@ func TestCacheSignatureAppendsArePureExtensions(t *testing.T) {
 	}
 	extended := append(append([]llm.Item(nil), base...),
 		llm.Item{Kind: "text", Role: llm.RoleUser, Text: "three"})
-	if got := firstShapeChange(cacheSignature(base), cacheSignature(extended)); !strings.HasPrefix(got, "none(") {
-		t.Fatalf("an appended turn reported %q, want none(...)", got)
+	if got := firstShapeChange(cacheSignature(base), cacheSignature(extended)); got != "" {
+		t.Fatalf("an appended turn reported %q, want no regression", got)
+	}
+}
+
+// An append is the common case and must not read as a regression. The
+// production log made this concrete: 657 of 742 warnings were appends, so the
+// 85 real ones could not be told apart from ordinary conversation.
+func TestAppendIsNotReportedAsARegression(t *testing.T) {
+	base := cacheSignature([]llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "one"}})
+	extended := cacheSignature([]llm.Item{
+		{Kind: "text", Role: llm.RoleUser, Text: "one"},
+		{Kind: "text", Role: llm.RoleAssistant, Text: "two"},
+	})
+	note, regressed := classifyPrefixChange(base, extended)
+	if regressed {
+		t.Fatalf("an append reported %q as a regression", note)
+	}
+	if !strings.Contains(note, "appended") {
+		t.Fatalf("note = %q, want it to name the append", note)
+	}
+}
+
+// A shape that shrank past an identical prefix has the same property: every
+// byte the provider holds is still present and still in the same order.
+func TestTruncationToAnIdenticalPrefixIsNotARegression(t *testing.T) {
+	long := cacheSignature([]llm.Item{
+		{Kind: "text", Role: llm.RoleUser, Text: "one"},
+		{Kind: "text", Role: llm.RoleAssistant, Text: "two"},
+	})
+	short := cacheSignature([]llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "one"}})
+	if note, regressed := classifyPrefixChange(long, short); regressed {
+		t.Fatalf("truncating to an identical prefix reported %q", note)
 	}
 }
 

@@ -2563,10 +2563,10 @@ func logCachePrefix(sess *sessionstore.Session, step int, items []llm.Item, tool
 	// a prefix that never moved, and that false positive is what made it
 	// untrustworthy for the one comparison that pays.
 	if sess != nil && sess.PrefixSignature != "" {
-		note := firstShapeChange(sess.PrefixSignature, cur)
+		note, regressed := classifyPrefixChange(sess.PrefixSignature, cur)
 		switch {
-		case note == "":
-			diverged = "none"
+		case !regressed:
+			diverged = note
 		case sess.PrefixSignatureEpoch != sess.PrefixRewrites:
 			// A fold, a tier merge or a chain roll rewrote the front of the
 			// history since this signature was written. That is the rewrite the
@@ -2627,8 +2627,30 @@ func sessionSignature(sess *sessionstore.Session) string {
 // persisted, per-session form can make the same one. Both sides are already
 // signature strings, so this is a string walk and not a re-derivation.
 func firstShapeChange(prev, cur string) string {
+	if note, regressed := classifyPrefixChange(prev, cur); regressed {
+		return note
+	}
+	return ""
+}
+
+// classifyPrefixChange answers the two questions logCachePrefix asks with one
+// walk of the signatures: where the two shapes part ways, and whether that is a
+// real change to the prefix or a conversation that only grew.
+//
+// The two are not the same question and answering them with one function is what
+// made this instrument unusable. A pure extension returned a non-empty note, so
+// every ordinary turn that added a message was reported as a prefix regression:
+// 657 of the 742 warnings in the production log were appends, which buried the
+// 85 that were real. A warning that fires on normal operation trains its reader
+// to skip it, and then the regressions it exists to catch go unnoticed.
+//
+// A shape that only grew is a cache hit by construction: every byte the provider
+// already holds is still there, in the same order, and the request is the
+// previous one plus a suffix. Only a change at or before the end of the
+// overlapping prefix kills the cached bytes.
+func classifyPrefixChange(prev, cur string) (note string, regressed bool) {
 	if prev == cur {
-		return ""
+		return "none", false
 	}
 	a, b := strings.Split(prev, ","), strings.Split(cur, ",")
 	n := len(a)
@@ -2637,10 +2659,15 @@ func firstShapeChange(prev, cur string) string {
 	}
 	for i := 0; i < n; i++ {
 		if a[i] != b[i] {
-			return fmt.Sprintf("item%d", i)
+			return fmt.Sprintf("item%d", i), true
 		}
 	}
-	return fmt.Sprintf("none(first %d identical)", n)
+	// The overlapping prefix is identical. Whether the shape grew or shrank past
+	// it, the bytes the provider cached are untouched.
+	if len(b) > n {
+		return fmt.Sprintf("none(appended %d)", len(b)-n), false
+	}
+	return fmt.Sprintf("none(truncated %d)", n-len(b)), false
 }
 
 // disarmCacheWarm cancels any keepalive pending for this session.
