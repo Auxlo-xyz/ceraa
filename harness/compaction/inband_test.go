@@ -317,7 +317,7 @@ func TestRecentKeepsTheLastTwoExchangesDeliberately(t *testing.T) {
 		{Role: llm.RoleUser, Content: "Continue"},
 		{Role: llm.RoleUser, Content: "Gg"},
 	}
-	head, recent := selectMessageUnits(messages, 8000)
+	head, recent := selectMessageUnits(messages, 8000, true)
 	if len(recent) != 2 || recent[0].Content != "Continue" || recent[1].Content != "Gg" {
 		t.Fatalf("recent is not the last two exchanges: %+v", recent)
 	}

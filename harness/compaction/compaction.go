@@ -69,8 +69,18 @@ func EstimateTokens(s string) int {
 	return n
 }
 
-func estimateMessage(m sessionstore.Message) int {
-	n := EstimateTokens(m.Content) + EstimateTokens(m.Reasoning) + EstimateTokens(string(m.ReasoningDetails)) + EstimateTokens(m.ToolResult)
+// estimateMessage measures one message the way the receiving transport will.
+//
+// replayReasoning false excludes reasoning, because the Codex transport has no
+// case for it and sends none of it. This is the same correction the context
+// budget and the cost breakdown already got: with reasoning counted, a request
+// measured about a fifth larger than it is, and every threshold derived from this
+// figure moved with it.
+func estimateMessage(m sessionstore.Message, replayReasoning bool) int {
+	n := EstimateTokens(m.Content) + EstimateTokens(m.ToolResult)
+	if replayReasoning {
+		n += EstimateTokens(m.Reasoning) + EstimateTokens(string(m.ReasoningDetails))
+	}
 	for _, call := range m.AllToolCalls() {
 		n += EstimateTokens(call.Args) + EstimateTokens(call.Name) + 10
 	}
@@ -80,10 +90,10 @@ func estimateMessage(m sessionstore.Message) int {
 	return n + 10 // overhead
 }
 
-func estimateSession(sess *sessionstore.Session) int {
+func estimateSession(sess *sessionstore.Session, replayReasoning bool) int {
 	total := 0
 	for _, m := range sess.Messages {
-		total += estimateMessage(m)
+		total += estimateMessage(m, replayReasoning)
 	}
 	return total
 }
@@ -98,6 +108,13 @@ func estimateSession(sess *sessionstore.Session) int {
 // the request the provider actually saw carried 87k, so the card alarmed at a
 // threshold the trigger was never near.
 func EstimatedContext(sess *sessionstore.Session) int {
+	return EstimatedContextFor(sess, true)
+}
+
+// EstimatedContextFor is EstimatedContext measured as the named transport will
+// carry it. The provider-reported path is unaffected either way, because it reads
+// what the provider counted. Only the local fallback estimates change.
+func EstimatedContextFor(sess *sessionstore.Session, replayReasoning bool) int {
 	lastUsage := 0
 	lastAssistant := -1
 	for i, message := range sess.Messages {
@@ -115,11 +132,11 @@ func EstimatedContext(sess *sessionstore.Session) int {
 		}
 	}
 	if lastAssistant < 0 || lastUsage == 0 {
-		return estimateSession(sess)
+		return estimateSession(sess, replayReasoning)
 	}
 	trailing := 0
 	for _, message := range sess.Messages[lastAssistant+1:] {
-		trailing += estimateMessage(message)
+		trailing += estimateMessage(message, replayReasoning)
 	}
 	return lastUsage + trailing
 }
@@ -129,7 +146,7 @@ type messageUnit struct {
 	tokens   int
 }
 
-func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head []sessionstore.Message, recent []sessionstore.Message) {
+func selectMessageUnits(messages []sessionstore.Message, keepTokens int, replayReasoning bool) (head []sessionstore.Message, recent []sessionstore.Message) {
 	var units []messageUnit
 	var current []sessionstore.Message
 	// outstanding holds the ids of calls made inside the unit being built that
@@ -144,7 +161,7 @@ func selectMessageUnits(messages []sessionstore.Message, keepTokens int) (head [
 		}
 		tokens := 0
 		for _, message := range current {
-			tokens += estimateMessage(message)
+			tokens += estimateMessage(message, replayReasoning)
 		}
 		units = append(units, messageUnit{messages: current, tokens: tokens})
 		current = nil
@@ -567,6 +584,13 @@ type Compactor struct {
 	ResolveModel     func(context.Context) (llm.ProviderConfig, error)
 	LastPromptTokens int
 	OnUsage          func(llm.UsageInfo)
+
+	// replayReasoning is whether the transport that will carry a summary request
+	// sends stored reasoning back, and replayReasoningSet records that the owner
+	// has said. Unset means true, so a compactor nobody configured keeps
+	// measuring the whole conversation.
+	replayReasoning    bool
+	replayReasoningSet bool
 	// ArchiveDir is where the discarded head is kept for auditing. Empty disables
 	// archiving, so a caller that has nowhere to put it is unaffected.
 	//
@@ -648,7 +672,7 @@ const MinFoldGrowthTokens = 15000
 // growthSinceCheckpoint estimates the tokens arrived after the latest
 // checkpoint message. A session with no checkpoint yet returns the whole
 // session, so first folds are never gated.
-func growthSinceCheckpoint(sess *sessionstore.Session) int {
+func growthSinceCheckpoint(sess *sessionstore.Session, replayReasoning bool) int {
 	latest := -1
 	for i, message := range sess.Messages {
 		if message.Compaction != nil {
@@ -661,7 +685,7 @@ func growthSinceCheckpoint(sess *sessionstore.Session) int {
 	}
 	total := 0
 	for _, message := range sess.Messages[latest+1:] {
-		total += estimateMessage(message)
+		total += estimateMessage(message, replayReasoning)
 	}
 	return total
 }
@@ -683,8 +707,15 @@ const summaryAttempts = 2
 var summaryCooldown = 5 * time.Minute
 
 // New creates a compactor with default settings.
+//
+// The transport's answer is read here rather than pushed in by each caller,
+// because every caller would have to remember and the failure is silent: a
+// compactor that measures reasoning the transport drops folds history early, and
+// early folds cost a summarisation request every time they fire.
 func New(cfg llm.ProviderConfig) *Compactor {
-	return &Compactor{LLM: cfg, Settings: DefaultSettings(), ContextLimit: MaxTotalTokens, MaxOutputTokens: 20000}
+	c := &Compactor{LLM: cfg, Settings: DefaultSettings(), ContextLimit: MaxTotalTokens, MaxOutputTokens: 20000}
+	c.ReplaysReasoning(!llm.UsesCodexNative(cfg.BaseURL))
+	return c
 }
 
 func (c *Compactor) contextLimit() int {
@@ -750,11 +781,34 @@ func (c *Compactor) NeedsCompaction(sess *sessionstore.Session) bool {
 		return false
 	}
 	// Estimate request size including system prompt overhead
-	if EstimatedContext(sess) <= c.compactAt() {
+	if c.EstimatedContext(sess) <= c.compactAt() {
 		return false
 	}
 	// Growth gate: refuse to fold the same history twice. See MinFoldGrowthTokens.
-	return growthSinceCheckpoint(sess) > MinFoldGrowthTokens
+	return c.growthSinceCheckpoint(sess) > MinFoldGrowthTokens
+}
+
+// EstimatedContext measures the session as the transport that will carry it will
+// see it. Set by the runner from the same resolution the context budget uses.
+func (c *Compactor) EstimatedContext(sess *sessionstore.Session) int {
+	return EstimatedContextFor(sess, c.replaysReasoning())
+}
+
+// ReplaysReasoning records whether the transport sends stored reasoning back.
+func (c *Compactor) ReplaysReasoning(replayed bool) {
+	c.replayReasoning = replayed
+	c.replayReasoningSet = true
+}
+
+func (c *Compactor) growthSinceCheckpoint(sess *sessionstore.Session) int {
+	return growthSinceCheckpoint(sess, c.replaysReasoning())
+}
+
+func (c *Compactor) replaysReasoning() bool {
+	if c.replayReasoningSet {
+		return c.replayReasoning
+	}
+	return true
 }
 
 // IsOverflow checks like soraacode overflow.ts isOverflow
@@ -762,7 +816,7 @@ func (c *Compactor) IsOverflow(sess *sessionstore.Session) bool {
 	if !c.Settings.Auto {
 		return false
 	}
-	used := EstimatedContext(sess)
+	used := c.EstimatedContext(sess)
 	usable := c.contextLimit() - c.outputReserve()
 	return used >= usable
 }
@@ -994,7 +1048,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		offset = latestCompaction + 1
 		candidate = sess.Messages[offset:]
 	}
-	headMessages, recentMessages := selectMessageUnits(candidate, keepTokens)
+	headMessages, recentMessages := selectMessageUnits(candidate, keepTokens, c.replaysReasoning())
 	if len(headMessages) == 0 && previousSummary == "" {
 		return false, nil
 	}
@@ -1236,6 +1290,11 @@ func (c *Compactor) streamSummary(ctx context.Context, request llm.StreamRequest
 // client resolves the provider for this compaction. A compaction may run on a
 // different model from the one producing the run, which is the whole reason
 // ResolveModel exists.
+//
+// It does not re-read the transport for the flag. A resolution that swapped
+// transports mid-run would have the trigger and the request disagreeing, which
+// is worse than being one provider stale; the owner sets ReplaysReasoning from
+// the provider it configured the compactor with.
 func (c *Compactor) client(ctx context.Context) (*llm.StreamingClient, error) {
 	modelConfig := c.LLM
 	if c.ResolveModel != nil {

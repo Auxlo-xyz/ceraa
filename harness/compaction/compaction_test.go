@@ -20,7 +20,7 @@ func TestSelectMessageUnitsKeepsToolTurnWhole(t *testing.T) {
 		{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "call_2", Name: "read", Args: `{"path":"b"}`}}},
 		{Role: llm.RoleTool, ToolCallID: "call_2", ToolResult: "b"},
 	}
-	head, recent := selectMessageUnits(messages, 130)
+	head, recent := selectMessageUnits(messages, 130, true)
 	if len(head) != 3 {
 		t.Fatalf("expected first unit in head, got %d messages", len(head))
 	}
@@ -444,5 +444,69 @@ func TestMergeCheckpointsWithNoIndicesIsNoOp(t *testing.T) {
 	}
 	if sess.PrefixRewrites != 0 {
 		t.Fatal("an empty merge counted a prefix rewrite")
+	}
+}
+
+// The Codex transport sends no reasoning, so a fold trigger measured with it
+// fires on less real history than the gate was written for.
+func TestGrowthGateIsMeasuredAgainstWhatTheTransportSends(t *testing.T) {
+	build := func() *sessionstore.Session {
+		return &sessionstore.Session{Messages: []sessionstore.Message{
+			{Compaction: &sessionstore.CompactionInfo{Summary: "earlier"}},
+			{Role: llm.RoleUser, Content: "question"},
+			{Role: llm.RoleAssistant, Content: "answer", Reasoning: strings.Repeat("r", 40000)},
+		}}
+	}
+	c := New(llm.ProviderConfig{})
+	withIt := growthSinceCheckpoint(build(), true)
+	withoutIt := growthSinceCheckpoint(build(), false)
+	if withIt <= withoutIt {
+		t.Fatalf("growth counted with reasoning %d, without %d", withIt, withoutIt)
+	}
+	// Reasoning alone must not be able to open the gate.
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Compaction: &sessionstore.CompactionInfo{Summary: "earlier"}},
+		{Role: llm.RoleAssistant, Content: "short", Reasoning: strings.Repeat("r", 200000)},
+	}}
+	if growthSinceCheckpoint(sess, false) > MinFoldGrowthTokens {
+		t.Fatalf("unsent reasoning alone passed the %d-token growth gate", MinFoldGrowthTokens)
+	}
+	_ = c
+}
+
+// The keep budget decides how much recent history survives un-folded. Counting
+// reasoning there shrinks it, so the fold eats history the model still needed.
+func TestKeepBudgetHoldsMoreHistoryWhenReasoningIsNotReplayed(t *testing.T) {
+	var messages []sessionstore.Message
+	for i := 0; i < 12; i++ {
+		messages = append(messages,
+			sessionstore.Message{Role: llm.RoleUser, Content: fmt.Sprintf("q%d", i)},
+			sessionstore.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("a%d", i), Reasoning: strings.Repeat("r", 2000)},
+		)
+	}
+	// A keep budget that two exchanges of reasoning alone exceed, and that two
+	// exchanges of answer text sit well inside. Counting the reasoning evicts one
+	// of them; excluding it keeps both.
+	withIt := recentExchangeCount(messages, 500, true)
+	withoutIt := recentExchangeCount(messages, 500, false)
+	if withoutIt <= withIt {
+		t.Fatalf("kept %d exchanges counting reasoning, %d excluding it", withIt, withoutIt)
+	}
+}
+
+func recentExchangeCount(messages []sessionstore.Message, keep int, replayed bool) int {
+	_, recent := selectMessageUnits(messages, keep, replayed)
+	return len(recent)
+}
+
+// A compactor nobody configured must keep measuring everything.
+func TestReplaysReasoningDefaultsToTrue(t *testing.T) {
+	if !New(llm.ProviderConfig{}).replaysReasoning() {
+		t.Fatal("an unconfigured compactor stopped counting reasoning")
+	}
+	// And the transport decides it when the owner does not.
+	c := New(llm.ProviderConfig{BaseURL: "https://chatgpt.com/backend-api/codex"})
+	if c.replaysReasoning() {
+		t.Fatal("a Codex compactor still counts reasoning")
 	}
 }
