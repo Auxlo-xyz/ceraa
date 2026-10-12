@@ -3,7 +3,6 @@ package compaction
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -306,29 +305,31 @@ func (c *Compactor) FoldLedger() []FoldEntry {
 	return out
 }
 
-// recordFold appends one ledger entry and returns it. Callers record only after
-// a validated summary has been written, so the ledger never names a range that
-// was not folded.
-func (c *Compactor) recordFold(start, end, tier int) FoldEntry {
+// recordFold appends one ledger entry. Callers record only after a validated
+// summary has been written, so the ledger never names a range that was not
+// folded.
+//
+// It returns nothing. It used to return the entry because the caller needed its
+// ID to name a fold file; that file is gone, and the ledger is read in full
+// through FoldLedger rather than one entry at a time.
+func (c *Compactor) recordFold(start, end, tier int) {
 	c.foldMu.Lock()
 	defer c.foldMu.Unlock()
 	if c.runSeed == 0 {
 		c.runSeed = time.Now().UnixNano()
 	}
 	c.foldSeq++
-	entry := FoldEntry{
+	c.foldLedger = append(c.foldLedger, FoldEntry{
 		ID:         fmt.Sprintf("fold-%d-%d", c.runSeed, c.foldSeq),
 		Start:      start,
 		End:        end,
 		At:         time.Now().UTC(),
 		Tier:       tier,
 		Generation: "young",
-	}
-	c.foldLedger = append(c.foldLedger, entry)
+	})
 	if len(c.foldLedger) > maxFoldLedgerEntries {
 		c.foldLedger = c.foldLedger[len(c.foldLedger)-maxFoldLedgerEntries:]
 	}
-	return entry
 }
 
 // tierOf reads a checkpoint's tier, treating pre-tier checkpoints as tier 1
@@ -1039,15 +1040,24 @@ func (c *Compactor) mergeCheckpoints(ctx context.Context, sess *sessionstore.Ses
 	// for the same reason a fold does: the next request re-bills everything after
 	// the position it moved.
 	sess.PrefixRewrites++
-	entry := c.recordFold(first, first+1, nextTier)
-	if c.ArchiveDir != "" {
-		sources := make([]FoldMessage, 0, len(parts))
-		for _, summary := range parts {
-			text := redact.SecretsInText(summary)
-			sources = append(sources, FoldMessage{Role: "system", Text: text})
-		}
-		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
+	c.recordFold(first, first+1, nextTier)
+	// A merge leaves no hole in the transcript - the messages are all still
+	// there - but the summaries they produced are gone, folded into one. That is
+	// the only thing this rewrite discards, so it is what gets retained. It used
+	// to go to a fold file of its own, which was a second store holding a second
+	// copy of the same history in a shape nothing could read back.
+	absorbed := make([]string, 0, len(parts))
+	for _, summary := range parts {
+		absorbed = append(absorbed, redact.SecretsInText(summary))
 	}
+	c.writeArchive(sess.ID, ArchiveEntry{
+		Kind:     ArchiveMerge,
+		Seq:      len(sess.Messages),
+		At:       time.Now().UTC(),
+		Summary:  text,
+		Absorbed: absorbed,
+		Stats:    archiveStats(sess, len(sess.Messages)),
+	})
 }
 
 // dropOrphanToolResults removes any tool result whose call is not on the wire.
@@ -1236,10 +1246,10 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		c.LastOutcome = FoldFailed
 		return false, nil
 	}
-	// Archive before the rewrite, while the fold is still in hand. The summary is
-	// the only surviving account of this stretch, and without the fold there is no
-	// way to check that account later.
-	c.writeArchive(sess.ID, len(sess.Messages), text, foldMessages)
+	// The summary is the only surviving account of this stretch, and without the
+	// discarded messages there is no way to check that account later. It is
+	// written below, once the new transcript exists, so the entry can say what
+	// the fold turned the session into as well as what it removed.
 	if c.Learn != nil {
 		c.Learn(ctx, sess.ID, foldMessages, text)
 	}
@@ -1276,22 +1286,21 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 	// onward is re-billed at full price on the next request, which is why the
 	// pointerize boundary is tied to the checkpoint rather than to the turn.
 	sess.PrefixRewrites++
-	entry := c.recordFold(start, end, 1)
-	// Retain the fold source beside the archive: the summary is lossy, and
-	// without the original messages no later turn can decompress or verify
-	// it. Best-effort by design; a retention failure must not fail the fold.
-	if c.ArchiveDir != "" {
-		sources := make([]FoldMessage, 0, len(foldMessages))
-		for _, message := range foldMessages {
-			text := message.Content
-			if message.ToolResult != "" {
-				text += "\n[tool result]\n" + message.ToolResult
-			}
-			text = redact.SecretsInText(text)
-			sources = append(sources, FoldMessage{Role: string(message.Role), Text: text})
-		}
-		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
-	}
+	c.recordFold(start, end, 1)
+	// One store, one write, everything the fold produced: the discarded messages
+	// verbatim, the summary that replaced them, and what the turn cost. This
+	// used to also write a fold file holding a lossy flattening of the same
+	// messages, so every fold stored its discarded head twice.
+	stats := archiveStats(sess, len(sess.Messages))
+	stats.MessagesAfter = len(newMessages)
+	c.writeArchive(sess.ID, ArchiveEntry{
+		Kind:      ArchiveFold,
+		Seq:       len(sess.Messages),
+		At:        time.Now().UTC(),
+		Summary:   text,
+		Discarded: foldMessages,
+		Stats:     stats,
+	})
 	c.LastOutcome = FoldDone
 	return true, nil
 }

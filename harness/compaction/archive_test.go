@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"ceraa/harness/llm"
 	"ceraa/harness/redact"
 	"ceraa/harness/sessionstore"
 )
@@ -33,7 +34,7 @@ func headMessages() []sessionstore.Message {
 
 func TestArchiveKeepsTheDiscardedHead(t *testing.T) {
 	c, dir, id := archiveCompactor(t)
-	c.writeArchive(id, 125, "## Objective\nfix the index", headMessages())
+	c.writeArchive(id, ArchiveEntry{Seq: 125, Summary: "## Objective\nfix the index", Discarded: headMessages()})
 
 	raw, err := os.ReadFile(filepath.Join(dir, id+".compacted.json"))
 	if err != nil {
@@ -77,7 +78,7 @@ func TestArchiveRedactsStoredSecretValues(t *testing.T) {
 	t.Cleanup(redact.ResetLiterals)
 
 	c, dir, id := archiveCompactor(t)
-	c.writeArchive(id, 1, "summary", headMessages())
+	c.writeArchive(id, ArchiveEntry{Seq: 1, Summary: "summary", Discarded: headMessages()})
 
 	raw, err := os.ReadFile(filepath.Join(dir, id+".compacted.json"))
 	if err != nil {
@@ -97,10 +98,15 @@ func TestArchiveRedactsStoredSecretValues(t *testing.T) {
 	}
 }
 
-func TestArchiveRetainsOnlyTheNewestEntries(t *testing.T) {
+// Every entry is kept. This used to retain only the newest ArchiveKeep, which
+// meant the third fold in a session silently destroyed the first fold's only
+// copy of the messages it had discarded - the copy exists nowhere else, because
+// the live transcript no longer holds them either.
+func TestArchiveRetainsEveryEntry(t *testing.T) {
 	c, dir, id := archiveCompactor(t)
-	for seq := 1; seq <= ArchiveKeep+3; seq++ {
-		c.writeArchive(id, seq, "summary", headMessages())
+	const folds = 7
+	for seq := 1; seq <= folds; seq++ {
+		c.writeArchive(id, ArchiveEntry{Seq: seq, Summary: "summary", Discarded: headMessages()})
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, id+".compacted.json"))
 	if err != nil {
@@ -110,11 +116,17 @@ func TestArchiveRetainsOnlyTheNewestEntries(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Entries) != ArchiveKeep {
-		t.Fatalf("entries = %d, want %d", len(got.Entries), ArchiveKeep)
+	if len(got.Entries) != folds {
+		t.Fatalf("entries = %d, want %d; an old fold's discarded messages were deleted", len(got.Entries), folds)
 	}
-	if last := got.Entries[len(got.Entries)-1].Seq; last != ArchiveKeep+3 {
-		t.Errorf("newest seq = %d, want %d; the archive must keep the latest, not the oldest", last, ArchiveKeep+3)
+	// Oldest first, so a reader can address an entry by a stable index.
+	for i, entry := range got.Entries {
+		if entry.Seq != i+1 {
+			t.Fatalf("entry %d has seq %d; order changed and the recall tool addresses entries by index", i, entry.Seq)
+		}
+		if len(entry.Discarded) == 0 {
+			t.Fatalf("entry %d kept its summary but lost the messages it discarded", i)
+		}
 	}
 }
 
@@ -126,7 +138,7 @@ func TestArchiveSurvivesACorruptSidecar(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c.writeArchive(id, 7, "summary", headMessages())
+	c.writeArchive(id, ArchiveEntry{Seq: 7, Summary: "summary", Discarded: headMessages()})
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("a corrupt sidecar stopped the write: %v", err)
@@ -147,7 +159,7 @@ func TestArchiveIsOffWhenUnconfigured(t *testing.T) {
 	if c.ArchiveDir != "" {
 		t.Fatal("archiving should be off by default")
 	}
-	c.writeArchive("id", 1, "summary", headMessages()) // must not panic or write
+	c.writeArchive("id", ArchiveEntry{Seq: 1, Summary: "summary", Discarded: headMessages()}) // must not panic or write
 }
 
 // The archive is a diagnostic, never an input. If anything read it back into a
@@ -161,5 +173,126 @@ func TestArchiveDoesNotReachThePrompt(t *testing.T) {
 		if strings.Contains(instruction, leak) {
 			t.Errorf("the compaction instruction mentions %q; the archive must not be readable by the model", leak)
 		}
+	}
+}
+
+// A fold entry must carry what the turn cost. The summary says what happened;
+// the stats say what the happening cost. Without them a compaction is only
+// readable, not accountable - you cannot tell one that saved money from one
+// that spent 200k tokens to save them, which is the comparison that decides
+// whether the trigger threshold is set right.
+func TestAFoldEntryCarriesTheTurnCost(t *testing.T) {
+	c, dir, id := archiveCompactor(t)
+	sess := &sessionstore.Session{ID: id, Runs: []sessionstore.Run{{
+		ID: "run-9", Step: 3, Requests: 11,
+		Usage: llm.UsageInfo{
+			InputTokens: 900, OutputTokens: 120,
+			CachedInputTokens: 80000, CacheWriteTokens: 4000,
+		},
+		Cost:         llm.CostInfo{TotalUSD: 1.25, Known: true},
+		ProviderHost: "opencode.ai",
+		PricingModel: "openai/gpt-5.6-luna",
+	}}}
+
+	stats := archiveStats(sess, 355)
+	stats.MessagesAfter = 147
+	c.writeArchive(id, ArchiveEntry{
+		Kind: ArchiveFold, Seq: 355, Summary: "summary",
+		Discarded: headMessages(), Stats: stats,
+	})
+
+	var got ArchiveFile
+	raw, err := os.ReadFile(filepath.Join(dir, id+".compacted.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(got.Entries))
+	}
+	e := got.Entries[0]
+	if e.Kind != ArchiveFold {
+		t.Errorf("kind = %q, want %q", e.Kind, ArchiveFold)
+	}
+	if e.Stats.RunID != "run-9" || e.Stats.Step != 3 || e.Stats.Requests != 11 {
+		t.Errorf("run identity lost: %+v", e.Stats)
+	}
+	if e.Stats.CachedInputTokens != 80000 || e.Stats.CacheWriteTokens != 4000 {
+		t.Errorf("cache counts lost: %+v", e.Stats)
+	}
+	if e.Stats.InputTokens != 900 || e.Stats.OutputTokens != 120 {
+		t.Errorf("token counts lost: %+v", e.Stats)
+	}
+	if e.Stats.CostUSD != 1.25 || !e.Stats.CostKnown {
+		t.Errorf("cost lost or untrusted-but-unmarked: %+v", e.Stats)
+	}
+	if e.Stats.MessagesBefore != 355 || e.Stats.MessagesAfter != 147 {
+		t.Errorf("transcript sizes lost: %+v", e.Stats)
+	}
+	if e.Stats.ProviderHost != "opencode.ai" || e.Stats.Model != "openai/gpt-5.6-luna" {
+		t.Errorf("route attribution lost: %+v", e.Stats)
+	}
+	// The messages themselves must survive alongside the numbers.
+	if len(e.Discarded) != len(headMessages()) {
+		t.Errorf("discarded messages = %d, want %d", len(e.Discarded), len(headMessages()))
+	}
+}
+
+// A tier merge deletes no messages. What it deletes is the set of summaries it
+// folded into one, and that is the only thing the entry has to carry.
+func TestAMergeEntryKeepsTheAbsorbedSummaries(t *testing.T) {
+	c, dir, id := archiveCompactor(t)
+	absorbed := []string{"## Objective\nship the parser", "## State\ntests green"}
+	c.writeArchive(id, ArchiveEntry{
+		Kind: ArchiveMerge, Seq: 10, Summary: "merged",
+		Absorbed: absorbed, Stats: archiveStats(nil, 10),
+	})
+
+	var got ArchiveFile
+	raw, err := os.ReadFile(filepath.Join(dir, id+".compacted.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	e := got.Entries[0]
+	if e.Kind != ArchiveMerge {
+		t.Errorf("kind = %q, want %q", e.Kind, ArchiveMerge)
+	}
+	if len(e.Absorbed) != 2 || e.Absorbed[0] != absorbed[0] || e.Absorbed[1] != absorbed[1] {
+		t.Errorf("absorbed summaries = %v, want %v", e.Absorbed, absorbed)
+	}
+	if len(e.Discarded) != 0 {
+		t.Errorf("a merge discarded %d messages; a merge discards summaries, not messages", len(e.Discarded))
+	}
+}
+
+// An absent discarded set must stay absent rather than becoming an empty list,
+// or every merge entry would claim to have discarded nothing that reads as
+// something.
+func TestAMergeEntryHasNoEmptyDiscardedList(t *testing.T) {
+	c, dir, id := archiveCompactor(t)
+	c.writeArchive(id, ArchiveEntry{Kind: ArchiveMerge, Seq: 1, Summary: "merged", Absorbed: []string{"one"}})
+	raw, err := os.ReadFile(filepath.Join(dir, id+".compacted.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"discarded"`) {
+		t.Errorf("a merge entry wrote an absent field as an empty list: %s", raw)
+	}
+}
+
+// A session with no run has no run to attribute cost to. Recording zeros is the
+// honest answer; borrowing the previous turn's numbers would be worse than none.
+func TestArchiveStatsWithoutARunAreZeroNotGuessed(t *testing.T) {
+	s := archiveStats(&sessionstore.Session{ID: "x"}, 42)
+	if s.RunID != "" || s.InputTokens != 0 || s.CostKnown {
+		t.Errorf("stats invented for a session with no runs: %+v", s)
+	}
+	if s.MessagesBefore != 42 {
+		t.Errorf("the one thing known was lost: %+v", s)
 	}
 }

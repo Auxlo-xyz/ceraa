@@ -296,16 +296,23 @@ func TestNeedsCompactionRearmsAfterGrowth(t *testing.T) {
 }
 
 // Fold ids must be unique across Compactor instances: one instance is built
-// per run, so a plain sequence restarts at fold-1 every run and each run's
-// retention file overwrites the last.
+// per run, so a plain sequence restarts at fold-1 every run and two runs' folds
+// become indistinguishable in the ledger.
 func TestFoldIDsUniqueAcrossInstances(t *testing.T) {
-	first := (&Compactor{}).recordFold(0, 5, 1)
-	second := (&Compactor{}).recordFold(0, 5, 1)
-	if first.ID == "" || second.ID == "" {
+	first := &Compactor{}
+	first.recordFold(0, 5, 1)
+	second := &Compactor{}
+	second.recordFold(0, 5, 1)
+
+	a, b := first.FoldLedger(), second.FoldLedger()
+	if len(a) != 1 || len(b) != 1 {
+		t.Fatalf("ledger sizes = %d and %d, want 1 each", len(a), len(b))
+	}
+	if a[0].ID == "" || b[0].ID == "" {
 		t.Fatal("fold ids must not be empty")
 	}
-	if first.ID == second.ID {
-		t.Fatalf("fold ids collided across instances: %q", first.ID)
+	if a[0].ID == b[0].ID {
+		t.Fatalf("fold ids collided across instances: %q", a[0].ID)
 	}
 }
 
