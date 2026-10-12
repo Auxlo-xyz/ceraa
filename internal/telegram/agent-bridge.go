@@ -314,12 +314,28 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 				}
 			},
 			OnCompactionDone: func(ok bool, err error) {
-				if d.onTool != nil {
-					if ok {
-						d.onTool("compaction", "✅ Compaction completed")
-					} else if err != nil {
-						d.onTool("compaction", "⚠️ Compaction skipped")
+				if d.onTool == nil {
+					return
+				}
+				switch {
+				case ok:
+					d.onTool("compaction", "✅ Compaction completed")
+				case err != nil:
+					// The detail matters: "skipped" without it sent me looking
+					// for a cooldown when the fold had failed for want of a
+					// summary.
+					d.onTool("compaction", "⚠️ Compaction failed: "+err.Error())
+				default:
+					// ok=false with no error is a real outcome, four of them,
+					// and this branch used to be absent, so the chat was left
+					// showing a spinner that resolved into silence.
+					// "unknown" covers a caller that wired no compactor,
+					// which is the only way the outcome cannot be read.
+					outcome := "unknown"
+					if d.compactor != nil {
+						outcome = string(d.compactor.LastOutcome)
 					}
+					d.onTool("compaction", "⚠️ Compaction made no changes ("+outcome+")")
 				}
 			},
 			// Usage and cost still stay off the bus. That was written when the
@@ -805,6 +821,13 @@ func newCompactor(cfg *config.Config, providerID, sessionID string) *compaction.
 	pcfg.PromptCacheTTL = provider.PromptCacheTTL
 	pcfg.GeminiThoughtSignatures = llm.UsesGeminiThoughtSignatures(provider.Model, provider.URL)
 	compactor := compaction.New(pcfg)
+	// One line per fold. The compactor used to log nothing at all, so a fold that
+	// spent tens of thousands of input tokens and left no summary was
+	// indistinguishable from no fold, which is exactly how a 28-second compaction
+	// at 15:32 went unexamined for so long.
+	compactor.Logf = func(format string, args ...any) {
+		logger.Info(fmt.Sprintf(format, args...))
+	}
 	compactor.ContextLimit = provider.ContextLimit
 	compactor.MaxOutputTokens = provider.MaxOutputTokens
 	compactor.ArchiveDir = cfg.SessionFile

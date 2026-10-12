@@ -608,6 +608,25 @@ type Compactor struct {
 	LastPromptTokens int
 	OnUsage          func(llm.UsageInfo)
 
+	// LastOutcome names why the most recent Compact returned false. Four separate
+	// returns were the same (false, nil), so a caller could not tell a cooldown
+	// from a fold that produced no summary, and the status handler had no branch
+	// for either and said nothing.
+	//
+	// A side channel on the compactor rather than a wider return type, because the
+	// same (false, nil) shape is asserted by every existing caller and test and
+	// none of them is asking which stop they hit.
+	LastOutcome FoldOutcome
+
+	// Logf receives one line per fold: the outcome, the error, the messages
+	// before and after, the summary length and the prompt tokens spent.
+	//
+	// Optional, and nil means silent, so a caller with nowhere to log is
+	// unaffected. It exists because a fold that spends tens of thousands of input
+	// tokens and leaves no summary is otherwise indistinguishable from no fold at
+	// all, which is what a 28-second compaction leaving no trace turned out to be.
+	Logf func(format string, args ...any)
+
 	// replayReasoning is whether the transport that will carry a summary request
 	// sends stored reasoning back, and replayReasoningSet records that the owner
 	// has said. Unset means true, so a compactor nobody configured keeps
@@ -1043,8 +1062,62 @@ func dropOrphanToolResults(messages []sessionstore.Message) []sessionstore.Messa
 	return out
 }
 
+// FoldOutcome names why Compact returned false. The bool alone could not carry
+// this: four stops returned the same (false, nil), so "nothing to fold" and
+// "cooldown after a failure" and "the summariser returned nothing" were one value.
+type FoldOutcome string
+
+const (
+	// FoldDone is the only outcome that means the history was rewritten.
+	FoldDone FoldOutcome = "folded"
+	// FoldCooldown is a previous summary failed and the cooldown has not elapsed.
+	FoldCooldown FoldOutcome = "cooldown_after_failure"
+	// FoldNothingToFold means the selection left no head to summarise.
+	FoldNothingToFold FoldOutcome = "nothing_to_fold"
+	// FoldFailed means the summariser or the rewrite returned an error. An empty
+	// summary lands here too, because summarise validates its own output and
+	// rejects empty text, so it arrives as an error rather than as an empty
+	// string.
+	FoldFailed FoldOutcome = "failed"
+)
+
+// logf forwards to Logf when one is set.
+func (c *Compactor) logf(format string, args ...any) {
+	if c.Logf != nil {
+		c.Logf(format, args...)
+	}
+}
+
+// Compact folds the head of the conversation into a summary, records why it
+// returned false, and logs one line either way.
+//
+// The logging lives in this wrapper rather than at the exits so that a stop
+// added later is reported without anyone remembering to add a line for it. That
+// is the failure this replaces: four exits reported nothing, and the whole
+// subsystem logged nothing at all.
 func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
+	before := len(sess.Messages)
+	ok, err := c.compact(ctx, sess)
+	// Compaction hangs off a checkpoint Message, not off the Session, so the
+	// newest one is found by walking the transcript rather than off sess.
+	summary, summaries := 0, 0
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		if sess.Messages[i].Compaction == nil {
+			continue
+		}
+		summaries++
+		if summary == 0 {
+			summary = len(sess.Messages[i].Compaction.Summary)
+		}
+	}
+	c.logf("compaction: outcome=%s ok=%v err=%v messages=%d->%d summary_chars=%d checkpoints=%d prompt_tokens=%d",
+		c.LastOutcome, ok, err, before, len(sess.Messages), summary, summaries, c.LastPromptTokens)
+	return ok, err
+}
+
+func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bool, error) {
 	c.LastPromptTokens = 0
+	c.LastOutcome = FoldCooldown
 	if !c.attemptAllowed() {
 		return false, nil
 	}
@@ -1090,6 +1163,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		candidate = sess.Messages[offset:]
 	}
 	headMessages, recentMessages := selectMessageUnits(candidate, keepTokens, c.replaysReasoning())
+	c.LastOutcome = FoldNothingToFold
 	if len(headMessages) == 0 && previousSummary == "" {
 		return false, nil
 	}
@@ -1133,9 +1207,15 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 	text, err := c.summarise(ctx, foldSession, summaryOutput)
 	if err != nil {
 		c.noteSummaryFailure()
+		c.LastOutcome = FoldFailed
 		return false, err
 	}
+	// validateSummary already rejects empty text inside summarise, so this is a
+	// guard rather than a live path. It stays because a fold must never report
+	// success having kept nothing, and it reports FoldFailed because that is
+	// what an empty summary means everywhere else.
 	if text == "" {
+		c.LastOutcome = FoldFailed
 		return false, nil
 	}
 	// Archive before the rewrite, while the fold is still in hand. The summary is
@@ -1194,6 +1274,7 @@ func (c *Compactor) Compact(ctx context.Context, sess *sessionstore.Session) (bo
 		}
 		_, _ = RetainFold(filepath.Join(c.ArchiveDir, "folds"), entry.ID, sources)
 	}
+	c.LastOutcome = FoldDone
 	return true, nil
 }
 
