@@ -860,8 +860,9 @@ func TestReasoningArrivingOnTheContentChannelIsShownOnce(t *testing.T) {
 		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
 		case "sendRichMessage", "sendMessage":
 			nextID++
+			id := 100 + nextID
 			mu.Unlock()
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, 100+nextID)))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
 			return
 		}
 		mu.Unlock()
@@ -944,9 +945,10 @@ func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
 		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
 		case "sendRichMessage", "sendMessage":
 			nextID++
+			id := idOf(nextID)
 			created = append(created, text)
 			mu.Unlock()
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, idOf(nextID))))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
 			return
 		case "editMessageText":
 			if n, ok := body["message_id"].(float64); ok {
