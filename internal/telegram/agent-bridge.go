@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -42,7 +44,14 @@ import (
 	"ceraa/internal/xaiauth"
 )
 
-// memoryLogPath is where the append-only Memory.md log lives for the project at
+func credentialDebugTag(value string) string {
+	if value == "" {
+		return "empty"
+	}
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("len=%d sha256=%s", len([]rune(value)), hex.EncodeToString(sum[:4]))
+}
+
 // root.
 //
 // It is derived from the project root and never configured, because the project
@@ -565,6 +574,10 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 	}
 	if profile.APIKey != "" {
 		result.APIKey = profile.APIKey
+	} else if providerID == "opencode" {
+		// OpenCode credentials have their own encrypted namespace. Do not inherit
+		// the generic base-provider key, which CredentialFor would prefer.
+		result.APIKey = ""
 	}
 	if profile.Model != "" {
 		result.Model = profile.Model
@@ -730,6 +743,12 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			if err != nil {
 				return llm.ProviderConfig{}, err
 			}
+			logger.Info(fmt.Sprintf("opencode credential resolved source=%s %s", func() string {
+				if strings.TrimSpace(provider.APIKey) != "" {
+					return "profile"
+				}
+				return "ceraa_opencode"
+			}(), credentialDebugTag(credential.APIKey)))
 			// Zen is OpenAI-compatible, so it needs no transport of its own.
 			return opencodeauth.ApplyCredential(model, credential, sessionID), nil
 		case "gemini":
