@@ -37,7 +37,7 @@ func (w *WebSearchTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"query":                map[string]any{"type": "string", "description": "Web search query"},
+			"query":                map[string]any{"type": "string"},
 			"numResults":           map[string]any{"type": "integer", "description": fmt.Sprintf("Number of results (default: 8, max: %d)", maxNumResults)},
 			"livecrawl":            map[string]any{"type": "string", "description": "Live crawl mode: 'fallback' or 'preferred'"},
 			"type":                 map[string]any{"type": "string", "description": "Search type: 'auto', 'fast', or 'deep'"},

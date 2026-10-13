@@ -37,7 +37,7 @@ func (t *RunCommandWithSecretTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"command": map[string]any{"type": "string", "description": "Command to run"},
+			"command": map[string]any{"type": "string"},
 			"secret":  map[string]any{"type": "string", "description": "Name of the stored secret to inject"},
 			"env_var": map[string]any{"type": "string", "description": "Environment variable name to inject it as"},
 			"workdir": map[string]any{"type": "string", "description": "Directory to run in"},

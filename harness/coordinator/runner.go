@@ -462,6 +462,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
 	now := time.Now()
 	sess.Runs = append(sess.Runs, sessionstore.Run{ID: runID, User: user, Status: sessionstore.RunRunning, CreatedAt: now, UpdatedAt: now})
+	sess.AppendRunEvent(sessionstore.RunEvent{Type: sessionstore.RunEventStarted, RunID: runID, Status: sessionstore.RunRunning, CreatedAt: now})
 	if err := r.store.Save(sess); err != nil {
 		return Result{}, fmt.Errorf("save run: %w", err)
 	}
@@ -557,6 +558,20 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				}
 			}
 		}
+		eventType := sessionstore.RunEventCompleted
+		switch status {
+		case sessionstore.RunFailed:
+			eventType = sessionstore.RunEventFailed
+		case sessionstore.RunCanceled:
+			eventType = sessionstore.RunEventCanceled
+		case sessionstore.RunInterrupted:
+			eventType = sessionstore.RunEventInterrupted
+		}
+		event := sessionstore.RunEvent{Type: eventType, RunID: runID, Status: status, Step: 0, CreatedAt: time.Now()}
+		if runErr != nil {
+			event.Error = runErr.Error()
+		}
+		sess.AppendRunEvent(event)
 		if err := r.store.Save(sess); err != nil {
 			return err
 		}
@@ -1607,7 +1622,7 @@ func repairToolArguments(toolName string, args map[string]any) bool {
 }
 
 func activeToolNames(reg *tool.Registry) string {
-	items := reg.All()
+	items := reg.Offered()
 	names := make([]string, 0, len(items))
 	for _, item := range items {
 		names = append(names, item.Name())

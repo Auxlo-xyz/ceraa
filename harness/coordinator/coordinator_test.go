@@ -429,6 +429,12 @@ func TestRunnerPersistsOperationLedger(t *testing.T) {
 	if sess.Operations[0].Status != sessionstore.StatusCompleted || !sess.Operations[0].ResultPresent {
 		t.Fatalf("operation was not checkpointed: %+v", sess.Operations[0])
 	}
+	if len(sess.RunEvents) < 2 {
+		t.Fatalf("expected start and terminal run events, got %d", len(sess.RunEvents))
+	}
+	if sess.RunEvents[0].Type != sessionstore.RunEventStarted || sess.RunEvents[len(sess.RunEvents)-1].Type != sessionstore.RunEventCompleted {
+		t.Fatalf("unexpected run events: %+v", sess.RunEvents)
+	}
 	found := false
 	for _, message := range sess.Messages {
 		if message.Role == llm.RoleTool && message.ToolCallID == sess.Operations[0].ID {

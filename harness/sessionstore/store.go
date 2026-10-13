@@ -211,6 +211,7 @@ type Session struct {
 	Messages         []Message   `json:"messages"`
 	Operations       []Operation `json:"operations"`
 	Runs             []Run       `json:"runs,omitempty"`
+	RunEvents        []RunEvent  `json:"run_events,omitempty"`
 	Version          int         `json:"version"`
 	ParentID         string      `json:"parent_id,omitempty"`
 
@@ -383,6 +384,9 @@ func (s *Store) loadUnlocked(id string) (*Session, error) {
 	if sess.Runs == nil {
 		sess.Runs = []Run{}
 	}
+	if sess.RunEvents == nil {
+		sess.RunEvents = []RunEvent{}
+	}
 	return &sess, nil
 }
 
@@ -491,6 +495,9 @@ func Recover(sess *Session) bool {
 	if sess.Runs == nil {
 		sess.Runs = []Run{}
 	}
+	if sess.RunEvents == nil {
+		sess.RunEvents = []RunEvent{}
+	}
 
 	operations := make(map[string]*Operation, len(sess.Operations))
 	for i := range sess.Operations {
@@ -517,6 +524,9 @@ func Recover(sess *Session) bool {
 			sess.Runs[i].Status = RunInterrupted
 			sess.Runs[i].Error = "run interrupted before completion"
 			changed = true
+			if event, ok := sess.CurrentRunEvent(sess.Runs[i].ID); !ok || event.Status != RunInterrupted {
+				sess.AppendRunEvent(RunEvent{Type: RunEventInterrupted, RunID: sess.Runs[i].ID, Status: RunInterrupted, CreatedAt: time.Now(), Error: sess.Runs[i].Error})
+			}
 		}
 	}
 

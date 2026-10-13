@@ -140,7 +140,7 @@ func (b *BashTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"command": map[string]any{"type": "string", "description": "Bash command to execute"},
+			"command": map[string]any{"type": "string"},
 			"timeout": map[string]any{"type": "integer", "description": "Timeout in seconds (default 900, max 3600)."},
 		},
 		"required": []string{"command"},
@@ -241,7 +241,7 @@ func (w *WriteTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "File path"},
+			"path":    map[string]any{"type": "string"},
 			"content": map[string]any{"type": "string", "description": "File contents"},
 		},
 		"required": []string{"path", "content"},

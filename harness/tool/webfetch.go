@@ -31,7 +31,7 @@ func (w *WebFetchTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"url":     map[string]any{"type": "string", "description": "The HTTP or HTTPS URL to fetch content from"},
-			"format":  map[string]any{"type": "string", "enum": []string{"text", "markdown", "html"}, "description": "The format to return the content in. Defaults to markdown."},
+			"format":  map[string]any{"type": "string", "enum": []string{"text", "markdown", "html"}, "description": "Output format; defaults to markdown."},
 			"timeout": map[string]any{"type": "integer", "description": fmt.Sprintf("Optional timeout in seconds (maximum: %d)", maxTimeoutSecs)},
 		},
 		"required": []string{"url"},
