@@ -140,11 +140,16 @@ type ContextRunner interface {
 	RunContext(ctx context.Context, spec Spec) (string, error)
 }
 
+type cancelEntry struct {
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+}
+
 // LocalManager runs operations in goroutines within the current process.
 type LocalManager struct {
 	mu      sync.Mutex
 	results chan ResultEvent
-	cancels map[string]context.CancelCauseFunc
+	cancels map[string]cancelEntry
 	runner  ToolRunner
 	slots   chan struct{}
 	// queues are the sequential lanes, one channel each, and each drained by a
@@ -177,7 +182,7 @@ func NewWithBuffer(runner ToolRunner, capacity int) *LocalManager {
 	}
 	m := &LocalManager{
 		results: make(chan ResultEvent, capacity),
-		cancels: make(map[string]context.CancelCauseFunc),
+		cancels: make(map[string]cancelEntry),
 		runner:  runner,
 		queues:  make(map[string]chan queuedOperation),
 	}
@@ -283,8 +288,8 @@ func (m *LocalManager) SetConcurrencyLimit(limit int) {
 func (m *LocalManager) CancelAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for id, cancel := range m.cancels {
-		cancel(context.Canceled)
+	for id, entry := range m.cancels {
+		entry.cancel(context.Canceled)
 		delete(m.cancels, id)
 	}
 }
@@ -292,8 +297,8 @@ func (m *LocalManager) CancelAll() {
 func (m *LocalManager) Cancel(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cancel, ok := m.cancels[id]; ok {
-		cancel(context.Canceled)
+	if entry, ok := m.cancels[id]; ok {
+		entry.cancel(context.Canceled)
 		delete(m.cancels, id)
 	}
 }
@@ -314,7 +319,7 @@ func (m *LocalManager) AddSequential(op Operation, queue string) {
 		return
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
-	m.cancels[op.ID] = cancel
+	m.cancels[op.ID] = cancelEntry{ctx: ctx, cancel: cancel}
 	pending := m.queues[name]
 	if pending == nil {
 		// The buffer is sized for a whole batch, so a runner enqueuing one
@@ -355,7 +360,7 @@ func (m *LocalManager) add(op Operation) {
 		return
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
-	m.cancels[op.ID] = cancel
+	m.cancels[op.ID] = cancelEntry{ctx: ctx, cancel: cancel}
 	slots := m.slots
 	m.mu.Unlock()
 
@@ -764,7 +769,9 @@ func (m *LocalManager) execute(ctx context.Context, op Operation) {
 	result := m.dispatch(ctx, op)
 
 	m.mu.Lock()
-	delete(m.cancels, op.ID)
+	if entry, ok := m.cancels[op.ID]; ok && entry.ctx == ctx {
+		delete(m.cancels, op.ID)
+	}
 	m.mu.Unlock()
 
 	select {

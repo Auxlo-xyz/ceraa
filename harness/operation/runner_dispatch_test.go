@@ -52,7 +52,7 @@ func TestUnknownTypeIsDispatchedThroughRunner(t *testing.T) {
 // TestUnknownTypeWithoutRunnerStillFails pins that the fallback error is kept
 // when nothing can run the operation, so a genuine typo is still reported.
 func TestUnknownTypeWithoutRunnerStillFails(t *testing.T) {
-	manager := &LocalManager{results: make(chan ResultEvent, 4), cancels: map[string]context.CancelCauseFunc{}}
+	manager := &LocalManager{results: make(chan ResultEvent, 4), cancels: map[string]cancelEntry{}}
 	manager.Add(Operation{ID: "op1", Spec: Spec{Type: "nope"}, Status: StatusRunning})
 
 	select {

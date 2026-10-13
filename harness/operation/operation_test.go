@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"ceraa/harness/redact"
 	"ceraa/internal/secret"
+	"context"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -124,6 +125,61 @@ func TestCancelOperationRemovesFromManager(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
+func TestReplacementOperationKeepsCancellationOwnership(t *testing.T) {
+	started := make(chan int, 2)
+	releaseSecond := make(chan struct{})
+	var calls int
+	runner := toolRunnerFunc(func(ctx context.Context, spec Spec) (string, error) {
+		calls++
+		call := calls
+		started <- call
+		if call == 1 {
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+		select {
+		case <-releaseSecond:
+			return "done", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
+	mgr := New(runner)
+	mgr.Add(Operation{ID: "reused", Spec: Spec{Type: "custom"}})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first operation did not start")
+	}
+	mgr.Cancel("reused")
+	mgr.Add(Operation{ID: "reused", Spec: Spec{Type: "custom"}})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("replacement operation did not start")
+	}
+	select {
+	case <-mgr.Results():
+	case <-time.After(time.Second):
+		t.Fatal("first operation did not finish")
+	}
+	mgr.Cancel("reused")
+	select {
+	case result := <-mgr.Results():
+		if result.Status != StatusCanceled && result.Status != StatusFailed {
+			t.Fatalf("replacement status = %s, want cancellation", result.Status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement operation was no longer cancellable")
+	}
+	close(releaseSecond)
+}
+
+type toolRunnerFunc func(context.Context, Spec) (string, error)
+
+func (f toolRunnerFunc) RunTool(ctx context.Context, spec Spec) (string, error) {
+	return f(ctx, spec)
+}
 func TestQuestionAnswer(t *testing.T) {
 	const sessionID = "test-question-session"
 	const requestID = "question-1"

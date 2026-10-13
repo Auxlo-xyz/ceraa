@@ -14,6 +14,9 @@ func TestRunEventsRoundTripAndProjectLatest(t *testing.T) {
 	sess := &Session{ID: "events", Version: schemaVersion}
 	sess.AppendRunEvent(RunEvent{Type: RunEventStarted, RunID: "run1", Status: RunRunning, CreatedAt: now})
 	sess.AppendRunEvent(RunEvent{Type: RunEventFailed, RunID: "run1", Status: RunFailed, CreatedAt: now.Add(time.Second), Error: "provider stopped"})
+	if sess.RunEvents[0].Seq != 1 || sess.RunEvents[1].Seq != 2 {
+		t.Fatalf("event sequences = %d, %d", sess.RunEvents[0].Seq, sess.RunEvents[1].Seq)
+	}
 	if err := store.Save(sess); err != nil {
 		t.Fatal(err)
 	}
@@ -27,6 +30,39 @@ func TestRunEventsRoundTripAndProjectLatest(t *testing.T) {
 	}
 	if _, ok := loaded.CurrentRunEvent("missing"); ok {
 		t.Fatal("missing run unexpectedly projected")
+	}
+}
+
+func TestRunEventsReplayAndProjectAreReadOnly(t *testing.T) {
+	sess := &Session{}
+	sess.AppendRunEvent(RunEvent{Type: RunEventStarted, RunID: "run1", Status: RunRunning})
+	sess.AppendRunEvent(RunEvent{Type: RunEventStep, RunID: "run1", Status: RunRunning, Step: 1})
+	sess.AppendRunEvent(RunEvent{Type: RunEventCompleted, RunID: "run2", Status: RunCompleted})
+
+	replay := sess.ReplayRunEvents("run1")
+	if len(replay) != 2 || replay[0].Seq != 1 || replay[1].Seq != 2 {
+		t.Fatalf("replay = %+v", replay)
+	}
+	replay[0].Status = RunFailed
+	if sess.RunEvents[0].Status != RunRunning {
+		t.Fatal("replay changed session history")
+	}
+
+	projected := ProjectRunEvents(sess.RunEvents)
+	if projected["run1"].Step != 1 || projected["run2"].Status != RunCompleted {
+		t.Fatalf("projection = %+v", projected)
+	}
+	projected["run1"] = RunEvent{Status: RunFailed}
+	if sess.RunEvents[1].Status != RunRunning {
+		t.Fatal("projection changed session history")
+	}
+}
+
+func TestRunEventsAppendSequenceContinuesAfterLegacyEvents(t *testing.T) {
+	sess := &Session{RunEvents: []RunEvent{{Type: RunEventStarted, RunID: "run1"}, {Seq: 7, Type: RunEventStep, RunID: "run1"}}}
+	sess.AppendRunEvent(RunEvent{Type: RunEventFailed, RunID: "run1", Status: RunFailed})
+	if got := sess.RunEvents[len(sess.RunEvents)-1].Seq; got != 8 {
+		t.Fatalf("next sequence = %d, want 8", got)
 	}
 }
 
