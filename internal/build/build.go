@@ -15,8 +15,9 @@ const (
 	// Owner is the copyright holder.
 	Owner = "emperormk01"
 
-	// Notice is the one-line statement of terms, printed by `ceraa version`.
-	Notice = "Copyright (c) 2026 " + Owner + ". All rights reserved."
+	// Notice includes the required attribution. The complete license text is
+	// distributed separately in LICENSE and referenced by the CLI.
+	Notice = "Required Notice: Copyright " + Owner + " (https://github.com/emperormk01/ceraa)\nPolyForm Noncommercial License 1.0.0"
 
 	// LicenseURL points at the terms.
 	LicenseURL = "See the LICENSE file distributed with this software."

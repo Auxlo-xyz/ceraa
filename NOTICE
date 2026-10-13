@@ -1,13 +1,13 @@
 Ceraa
-Copyright (c) 2026 emperormk01. All rights reserved.
 
-Ceraa is proprietary software. It is not open source and carries no permission to
-redistribute, modify, or publish it. See the LICENSE file distributed with it.
+Required Notice: Copyright emperormk01 (https://github.com/emperormk01/ceraa)
 
-The binary carries this notice internally, printed by `ceraa version`, so that a
-copy found in someone else's hands states its own terms. That notice is evidence of
-what the terms were, not a protection mechanism: the software is readable by anyone
-holding a copy, and nothing here claims otherwise.
+Ceraa is licensed under the PolyForm Noncommercial License 1.0.0:
+https://polyformproject.org/licenses/noncommercial/1.0.0
 
-Third-party components used by this project remain under their own licences; see
+The license permits noncommercial use, including personal use, research, testing,
+hobby projects, and use by qualifying noncommercial organizations. Commercial use
+is not permitted under this license. See LICENSE for the complete terms.
+
+Third-party components used by this project remain under their own licenses; see
 go.mod for the dependency list and each dependency's own repository for its terms.

@@ -62,9 +62,7 @@ func TestRootRunEPassesTheJoinedPrompt(t *testing.T) {
 	}
 }
 
-// The notice has to be printed, not merely present in a file beside the
-// executable. A licence file does not travel: the single binary is what gets
-// copied, and a redistributor who never saw LICENSE cannot have been told.
+// `ceraa version` prints the version and the required PolyForm notice.
 func TestVersionPrintsTheTerms(t *testing.T) {
 	registerSubcommands()
 	var out bytes.Buffer
@@ -72,7 +70,7 @@ func TestVersionPrintsTheTerms(t *testing.T) {
 	verCmd.SetErr(&out)
 	verCmd.Run(verCmd, nil)
 	got := out.String()
-	for _, want := range []string{build.Version, build.Owner, "All rights reserved"} {
+	for _, want := range []string{build.Version, build.Owner, "Required Notice", "PolyForm Noncommercial"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("version output does not mention %q:\n%s", want, got)
 		}
