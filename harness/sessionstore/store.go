@@ -212,6 +212,7 @@ type Session struct {
 	Operations       []Operation `json:"operations"`
 	Runs             []Run       `json:"runs,omitempty"`
 	RunEvents        []RunEvent  `json:"run_events,omitempty"`
+	Attempts         []Attempt   `json:"attempts,omitempty"`
 	Version          int         `json:"version"`
 	ParentID         string      `json:"parent_id,omitempty"`
 
