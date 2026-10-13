@@ -19,8 +19,40 @@ const (
 	StatusBlocked   Status = "blocked"
 )
 
+// A plan item. The goal carries its own plan so the model can read back what it
+// committed to: a list that is only ever written is indistinguishable from a list
+// nobody keeps.
+type Todo struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority"`
+}
+
+const (
+	TodoPending    = "pending"
+	TodoInProgress = "in_progress"
+	TodoCompleted  = "completed"
+	TodoCancelled  = "cancelled"
+)
+
+// ParseTodos decodes the plan argument a tool carries, whatever JSON shape it
+// arrived in. One decoder for both writers keeps the legacy todowrite path and
+// update_goal agreeing on what a valid item is.
+func ParseTodos(value any) ([]Todo, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var todos []Todo
+	if err := json.Unmarshal(data, &todos); err != nil {
+		return nil, err
+	}
+	return todos, nil
+}
+
 type Goal struct {
 	Objective   string    `json:"objective"`
+	Todos       []Todo    `json:"todos,omitempty"`
 	Status      Status    `json:"status"`
 	TokenBudget int       `json:"token_budget,omitempty"`
 	TokensUsed  int       `json:"tokens_used,omitempty"`
@@ -120,4 +152,26 @@ func (s *Store) Clear(sessionID string) error {
 		return nil
 	}
 	return err
+}
+
+// Render lays a plan out as readable lines, for a reply that carries the plan
+// itself. A bare count would leave the model unable to see what it set.
+func Render(todos []Todo) string {
+	if len(todos) == 0 {
+		return "No items."
+	}
+	var b strings.Builder
+	for _, t := range todos {
+		mark := "  "
+		switch t.Status {
+		case TodoInProgress:
+			mark = ">>"
+		case TodoCompleted:
+			mark = "OK"
+		case TodoCancelled:
+			mark = "--"
+		}
+		fmt.Fprintf(&b, "%s [%s] %s (%s)\n", mark, t.Status, t.Content, t.Priority)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

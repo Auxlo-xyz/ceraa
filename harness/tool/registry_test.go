@@ -169,3 +169,18 @@ func TestAnUnusableRangeIsTreatedAsAbsent(t *testing.T) {
 		}
 	}
 }
+
+// todowrite was retired into update_goal's todos argument. Retired means hidden,
+// not deleted: sessions recorded before the merge still hold calls to it, and the
+// replay path resolves them by name, so removing it would strand that history.
+func TestTodowriteIsHiddenButStillExecutable(t *testing.T) {
+	reg := DefaultRegistry()
+	for _, offered := range reg.Offered() {
+		if offered.Name() == "todowrite" {
+			t.Fatal("todowrite is still offered to the model, so it was never retired")
+		}
+	}
+	if _, ok := reg.Get("todowrite"); !ok {
+		t.Fatal("todowrite no longer resolves, so a recorded call cannot replay")
+	}
+}

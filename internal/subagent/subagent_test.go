@@ -1,4 +1,4 @@
-package telegram
+package subagent
 
 import (
 	"context"
@@ -29,9 +29,9 @@ func TestSubagentsAreAttachedToTheRegistry(t *testing.T) {
 	if wired.Factory != nil {
 		t.Fatal("a fresh registry already has a subagent factory; the tool is meant to be inert until a run attaches one")
 	}
-	attachSubagents(registry, &subagentFactory{})
+	Attach(registry, &Factory{})
 	if wired.Factory == nil {
-		t.Error("attachSubagents left the task tool without a factory, so every call would fail")
+		t.Error("Attach left the task tool without a factory, so every call would fail")
 	}
 	if wired.MaxConcurrent != 5 {
 		t.Errorf("concurrency ceiling is %d, want 5", wired.MaxConcurrent)
@@ -61,7 +61,7 @@ func TestChildRegistryHasNoTaskTool(t *testing.T) {
 
 func TestChildSystemPromptInheritsTheParentAndAddsTheRole(t *testing.T) {
 	parent := "PARENT PROMPT MARKER"
-	for kind, roleStart := range subagentRolePrompt {
+	for kind, roleStart := range rolePrompt {
 		got := childSystemPrompt(parent, kind)
 		if !strings.Contains(got, parent) {
 			t.Errorf("%s child lost the parent prompt, so it behaves differently from the agent that spawned it", kind)
@@ -114,7 +114,7 @@ func TestNewSubagentWorksWithoutAnInitialisedChildrenMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &subagentFactory{store: store, parentSession: "parent-1"}
+	f := &Factory{Store: store, ParentSession: "parent-1"}
 	sub, id, err := f.NewSubagent("general")
 	if err != nil {
 		t.Fatalf("NewSubagent on a factory with a nil children map: %v", err)
@@ -150,15 +150,15 @@ func TestChildConsultTheParentCredentialResolver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &subagentFactory{
-		cfg:           &config.Config{},
-		store:         store,
-		parentSession: "p",
-		resolveModel: func(context.Context) (llm.ProviderConfig, error) {
+	f := &Factory{
+		Cfg:           &config.Config{},
+		Store:         store,
+		ParentSession: "p",
+		ResolveModel: func(context.Context) (llm.ProviderConfig, error) {
 			return llm.ProviderConfig{}, errors.New("resolver-was-consulted")
 		},
-		providerCfg:  config.LLMProvider{URL: "http://127.0.0.1:1", Model: "m"},
-		skillContext: "",
+		ProviderCfg:  config.LLMProvider{URL: "http://127.0.0.1:1", Model: "m"},
+		SkillContext: "",
 	}
 	sub, id, err := f.NewSubagent("general")
 	if err != nil {

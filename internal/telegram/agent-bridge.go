@@ -40,6 +40,7 @@ import (
 	"ceraa/internal/prompt"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
+	"ceraa/internal/subagent"
 	"ceraa/internal/xaiauth"
 )
 
@@ -354,21 +355,27 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	// its stores. Without this the task tool is registered and answers every call
 	// with "no factory is attached", which is the same failure the browser tool had:
 	// a tool the model can see and use that cannot do anything.
-	attachSubagents(registry, &subagentFactory{
-		cfg:             cfg,
-		user:            user,
-		parentSession:   sessionID,
-		projectRoot:     projectRoot,
-		providerID:      providerID,
-		providerCfg:     providerConfig,
-		resolveModel:    resolveModel,
-		reasoning:       reasoning,
-		parentPrompt:    prompt.System,
-		skillStore:      skillStore,
-		evaluationStore: evaluationStore,
-		store:           store,
-		skillContext:    skillContext,
+	//
+	// The factory lives in internal/subagent because neither front-end may own it;
+	// the wrapper below is what keeps a Telegram child on Telegram's own tool set.
+	subagent.Attach(registry, &subagent.Factory{
+		Cfg:             cfg,
+		User:            user,
+		ParentSession:   sessionID,
+		ProjectRoot:     projectRoot,
+		ProviderID:      providerID,
+		ProviderCfg:     providerConfig,
+		ResolveModel:    resolveModel,
+		Reasoning:       reasoning,
+		ParentPrompt:    prompt.System,
+		SkillStore:      skillStore,
+		SkillContext:    skillContext,
+		EvaluationStore: evaluationStore,
+		Store:           store,
 		WallClock:       operation.TaskTimeout,
+		NewRegistry: func(user string, skillStore *skills.Store) *tool.Registry {
+			return telegramRegistry(cfg, user, skillStore)
+		},
 	})
 	// Rule scoping is opt-in and off by default. Without credentials the
 	// deterministic pass alone runs, which scopes every rule that names a real

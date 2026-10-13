@@ -4,40 +4,45 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sync"
+
+	"ceraa/harness/goal"
 )
 
-// Todo maps to soraacode agent/core/src/session/todo.ts persisted TodoWrite
-type Todo struct {
-	Content  string `json:"content"`
-	Status   string `json:"status"` // pending, in_progress, completed, cancelled
-	Priority string `json:"priority"`
-}
+// Todo is the plan item. The record lives on the goal now, so the type is the
+// goal's: this alias keeps every existing caller compiling against it.
+type Todo = goal.Todo
 
+// Store reads and writes the plan carried by the goal record.
+//
+// The plan used to live in its own <id>.todos.json sidecar, which nothing ever
+// read back to the model: a todowrite answered with a count, and the plan was
+// invisible from then on. Carrying it on the goal makes get_goal the single
+// place a plan is both written and read. The pre-merge sidecar is adopted into
+// the goal on first access, so sessions that predate the move keep their plan.
 type Store struct {
-	mu  sync.Mutex
-	dir string
+	goals *goal.Store
+	dir   string
 }
 
 func New(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	store, err := goal.New(dir)
+	if err != nil {
 		return nil, err
 	}
-	return &Store{dir: dir}, nil
+	return &Store{goals: store, dir: dir}, nil
 }
 
 func (s *Store) path(sessionID string) string {
 	return filepath.Join(s.dir, sessionID+".todos.json")
 }
 
-// Load returns todos for session
-func (s *Store) Load(sessionID string) ([]Todo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// readLegacy loads the pre-merge sidecar. A missing file is not an error: it
+// means the session has no plan from before the move.
+func (s *Store) readLegacy(sessionID string) ([]Todo, error) {
 	b, err := os.ReadFile(s.path(sessionID))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Todo{}, nil
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -48,25 +53,53 @@ func (s *Store) Load(sessionID string) ([]Todo, error) {
 	return todos, nil
 }
 
-// Save persists todos, maps to soraacode TodoWrite tool
+// Load returns the plan for the session.
+func (s *Store) Load(sessionID string) ([]Todo, error) {
+	current, exists, err := s.goals.Load(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if exists && len(current.Todos) > 0 {
+		return current.Todos, nil
+	}
+	legacy, err := s.readLegacy(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(legacy) == 0 {
+		return nil, nil
+	}
+	// Adopt the legacy plan onto the goal, preserving every other field the goal
+	// already carries. Serving the legacy list without saving would leave two
+	// readable plans, which is the split this move exists to close.
+	current.Todos = legacy
+	if _, err := s.goals.Save(sessionID, current); err != nil {
+		return legacy, nil
+	}
+	_ = os.Remove(s.path(sessionID))
+	return legacy, nil
+}
+
+// Save persists the plan onto the goal record, leaving the objective, status and
+// counters untouched.
 func (s *Store) Save(sessionID string, todos []Todo) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	b, err := json.MarshalIndent(todos, "", "  ")
+	current, _, err := s.goals.Load(sessionID)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(sessionID), b, 0o644)
+	current.Todos = todos
+	_, err = s.goals.Save(sessionID, current)
+	return err
 }
 
-// Update sets single todo status, like soraacode interview flow
-func (s *Store) Update(sessionID string, content, status string) error {
+// Update sets a single item status, matched by content.
+func (s *Store) Update(sessionID, content, status string) error {
 	todos, err := s.Load(sessionID)
 	if err != nil {
 		return err
 	}
-	for i, t := range todos {
-		if t.Content == content {
+	for i := range todos {
+		if todos[i].Content == content {
 			todos[i].Status = status
 			return s.Save(sessionID, todos)
 		}

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,9 +106,10 @@ type TaskTool struct {
 }
 
 type taskRecord struct {
-	kind   string
-	brief  string
-	budget int
+	kind        string
+	description string
+	brief       string
+	budget      int
 }
 
 // ensure lazily creates the maps under the tool's lock: run is entered from one
@@ -230,6 +232,7 @@ func (t *TaskTool) run(ctx context.Context, spec operation.Spec) (string, error)
 	}
 	t.ensure()
 	kind, _ := spec.Args["subagent_type"].(string)
+	description, _ := spec.Args["description"].(string)
 	brief, _ := spec.Args["prompt"].(string)
 	resume, _ := spec.Args["task_id"].(string)
 	budget := DefaultRequestBudget()
@@ -259,7 +262,7 @@ func (t *TaskTool) run(ctx context.Context, spec operation.Spec) (string, error)
 			return "", fmt.Errorf("cannot start a %s subagent: %w", kind, err)
 		}
 		t.mu.Lock()
-		t.records[id] = taskRecord{kind: kind, brief: brief, budget: budget.Soft}
+		t.records[id] = taskRecord{kind: kind, description: strings.TrimSpace(description), brief: brief, budget: budget.Soft}
 		t.mu.Unlock()
 	}
 
@@ -268,12 +271,50 @@ func (t *TaskTool) run(ctx context.Context, spec operation.Spec) (string, error)
 		ctx, cancel = context.WithTimeout(ctx, t.WallClock)
 		defer cancel()
 	}
-	result, runErr := child.Run(ctx, brief, budget)
+	result, runErr := child.Run(ctx, t.briefWithSiblings(id, brief), budget)
+	// The record goes before the slot: once a caller sees the slot freed the
+	// child is over, and a record outliving it would accumulate for the life of
+	// the process while describing a run nobody can see any more.
+	t.clearRecord(id)
 	t.release(slot)
 	if runErr != nil {
 		return "", fmt.Errorf("subagent %s failed: %w", id, runErr)
 	}
 	return renderTaskResult(id, kind, result, budget), nil
+}
+
+// briefWithSiblings appends the other live tasks to a child's brief, by id,
+// kind and description.
+//
+// A child never sees the parent's conversation, so without this list a child
+// spawned alongside others cannot tell a file conflict from a coincidence: its
+// siblings do not exist anywhere in its input. Its own record is excluded, or
+// every child would be told about itself.
+func (t *TaskTool) briefWithSiblings(id, brief string) string {
+	t.mu.Lock()
+	var lines []string
+	for other, rec := range t.records {
+		if other == id {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- id=%s kind=%s description=%s", other, rec.kind, rec.description))
+	}
+	t.mu.Unlock()
+	if len(lines) == 0 {
+		return brief
+	}
+	// Sorted, because map order would make the same brief differ between runs.
+	sort.Strings(lines)
+	return brief + "\n\nConcurrent tasks running alongside this one (coordinate, do not duplicate):\n" +
+		strings.Join(lines, "\n")
+}
+
+// clearRecord drops a finished child's record so records only describe runs
+// that are still live.
+func (t *TaskTool) clearRecord(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.records, id)
 }
 
 // renderTaskResult wraps the child's report for the parent.

@@ -459,7 +459,12 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	// runner: the tool layer cannot import the coordinator, which imports this one.
 	r.Register(NewTaskTool())
 	r.Register(&QuestionTool{})
-	r.Register(&TodoWriteTool{})
+	// Registered hidden, not dropped. The plan it carries moved into
+	// update_goal's todos argument and the catalogue no longer offers it, but
+	// sessions recorded before the merge still call todowrite and the replay
+	// path resolves calls by name. Hiding it is what stops the model being
+	// taught a shape that no longer exists.
+	r.RegisterHidden(&TodoWriteTool{})
 	r.Register(&CreateGoalTool{})
 	r.Register(&GetGoalTool{})
 	r.Register(&UpdateGoalTool{})

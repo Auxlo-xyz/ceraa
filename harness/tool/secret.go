@@ -41,6 +41,7 @@ func (t *RunCommandWithSecretTool) Schema() map[string]any {
 			"secret":  map[string]any{"type": "string", "description": "Name of the stored secret to inject"},
 			"env_var": map[string]any{"type": "string", "description": "Environment variable name to inject it as"},
 			"workdir": map[string]any{"type": "string", "description": "Directory to run in"},
+			"timeout": map[string]any{"type": "integer", "description": "Timeout in seconds (default 900, max 3600)."},
 		},
 		"required": []string{"command", "secret", "env_var"},
 	}
@@ -62,6 +63,9 @@ func (t *RunCommandWithSecretTool) Translate(args map[string]any) (operation.Spe
 	}
 	return operation.Spec{Type: "run_command_with_secret", Args: map[string]any{
 		"command": command, "secret": strings.TrimSpace(name), "env_var": envVar, "workdir": workdir,
+		// Carried raw, exactly as bash carries it: the schema above lets the
+		// coordinator coerce first, and SpecTimeout reads what arrives.
+		"timeout": args["timeout"],
 	}}, nil
 }
 func (t *RunCommandWithSecretTool) TranslateResult(op operation.Operation) string { return op.Output }

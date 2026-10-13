@@ -18,9 +18,15 @@ type stubSubagent struct {
 	final    string
 	err      error
 	block    chan struct{}
+	briefs   []string
 }
 
 func (s *stubSubagent) Run(ctx context.Context, brief string, budget RequestBudget) (SubagentResult, error) {
+	// Recorded before blocking, so a test can read what a child was handed while
+	// the child is still running.
+	s.mu.Lock()
+	s.briefs = append(s.briefs, brief)
+	s.mu.Unlock()
 	if s.block != nil {
 		select {
 		case <-s.block:
@@ -34,6 +40,12 @@ func (s *stubSubagent) Run(ctx context.Context, brief string, budget RequestBudg
 		return SubagentResult{}, s.err
 	}
 	return SubagentResult{Final: s.final, Requests: s.requests, Yielded: s.requests >= budget.YieldAt}, nil
+}
+
+func (s *stubSubagent) seenBriefs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.briefs...)
 }
 
 // stubFactory hands out stubSubagents and records the ids it issues.
@@ -344,6 +356,115 @@ func TestRequestBudgetIsGraduated(t *testing.T) {
 	}
 	if b.HardAfter <= 0 {
 		t.Errorf("no grace after the yield, so a child told to wrap up is cut off mid-report: %d", b.HardAfter)
+	}
+}
+
+// A child spawned alongside others is told which other tasks are running, by id,
+// kind and description. A child never sees the parent's conversation, so without
+// this list it cannot tell a file conflict from a coincidence: its siblings do
+// not exist anywhere in its input.
+func TestTaskBriefListsConcurrentSiblingsByDescription(t *testing.T) {
+	factory := newStubFactory()
+	release := make(chan struct{})
+	shared := &stubSubagent{block: release}
+	factory.next = shared
+	tool := taskTool(factory)
+
+	start := func(description string) <-chan error {
+		errc := make(chan error, 1)
+		go func() {
+			sp, err := tool.Translate(map[string]any{"subagent_type": "general", "description": description, "prompt": "do the work"})
+			if err == nil {
+				_, err = tool.run(context.Background(), sp)
+			}
+			errc <- err
+		}()
+		return errc
+	}
+
+	errA := start("find the routes")
+	waitFor(t, "the first child's brief", func() bool { return len(shared.seenBriefs()) == 1 })
+
+	// The description is stored on the record while the child runs, because the
+	// record is what the sibling list of a later child is built from.
+	tool.mu.Lock()
+	rec, ok := tool.records["task-a"]
+	tool.mu.Unlock()
+	if !ok {
+		t.Fatal("no record for the running child")
+	}
+	if rec.description != "find the routes" {
+		t.Errorf("stored description is %q, want %q", rec.description, "find the routes")
+	}
+
+	errB := start("summarise the config")
+	waitFor(t, "the second child's brief", func() bool { return len(shared.seenBriefs()) == 2 })
+
+	briefs := shared.seenBriefs()
+	// The first child started alone and must not be told about itself.
+	if strings.Contains(briefs[0], "task-a") {
+		t.Errorf("a child was listed in its own brief:\n%s", briefs[0])
+	}
+	for _, want := range []string{"task-a", "kind=general", "find the routes"} {
+		if !strings.Contains(briefs[1], want) {
+			t.Errorf("the second child's brief does not carry %q, so it cannot tell who else is running:\n%s", want, briefs[1])
+		}
+	}
+
+	close(release)
+	for _, errc := range []<-chan error{errA, errB} {
+		if err := <-errc; err != nil {
+			t.Errorf("run: %v", err)
+		}
+	}
+	// A record outliving its child describes a run nobody can see, and the map
+	// would grow for the life of the process.
+	waitFor(t, "the records to clear", func() bool {
+		tool.mu.Lock()
+		defer tool.mu.Unlock()
+		return len(tool.records) == 0
+	})
+}
+
+func TestTaskRecordIsRemovedAfterCompletion(t *testing.T) {
+	tool := taskTool(newStubFactory())
+	sp := spec(t, tool, map[string]any{"subagent_type": "general", "description": "quick job", "prompt": "p"})
+	if _, err := tool.run(context.Background(), operationSpec(sp)); err != nil {
+		t.Fatal(err)
+	}
+	tool.mu.Lock()
+	defer tool.mu.Unlock()
+	if n := len(tool.records); n != 0 {
+		t.Errorf("%d records left after a completed child", n)
+	}
+}
+
+// The failure path takes a different route out of run, so it needs its own
+// assertion: a failed child is the one most likely to be retried, and a stale
+// record would then be listed as a live sibling.
+func TestTaskRecordIsRemovedWhenTheChildFails(t *testing.T) {
+	factory := newStubFactory()
+	factory.next = &stubSubagent{err: errors.New("provider exploded")}
+	tool := taskTool(factory)
+	sp := spec(t, tool, map[string]any{"subagent_type": "general", "description": "doomed", "prompt": "p"})
+	if _, err := tool.run(context.Background(), operationSpec(sp)); err == nil {
+		t.Fatal("a failing child reported success")
+	}
+	tool.mu.Lock()
+	defer tool.mu.Unlock()
+	if _, ok := tool.records["task-a"]; ok {
+		t.Error("the failed child's record was never removed, so it would be listed as a live sibling")
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

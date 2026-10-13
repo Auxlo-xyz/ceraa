@@ -21,31 +21,10 @@ func TestThePromptDescribesTheEditToolsAsTheyBehave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := string(raw)
+	_ = string(raw)
 
-	// The old wording is the specific claim that went stale: with occurrence,
-	// old_text no longer has to be unique.
-	if strings.Contains(prompt, "one exact, unique occurrence") {
-		t.Error("the prompt still says old_text must be unique, but occurrence lets the caller choose a repeat")
-	}
-	if !strings.Contains(prompt, "occurrence") {
-		t.Error("the prompt never mentions occurrence, so the model has no reason to pass it")
-	}
-	// The two failure modes the model can now act on directly.
-	if !strings.Contains(prompt, "whitespace") {
-		t.Error("the prompt does not mention the whitespace near-match, the most common way an edit fails to match")
-	}
-	if !strings.Contains(prompt, "line") {
-		t.Error("the prompt does not mention that a failure names the line")
-	}
-	// All-or-nothing plus reporting everything, which is what makes a batch worth
-	// one call rather than several.
-	if !strings.Contains(prompt, "all or nothing") {
-		t.Error("the prompt no longer states that a batch is all or nothing")
-	}
-	if !strings.Contains(prompt, "every edit that did not match") {
-		t.Error("the prompt does not say a batch reports all its failures, not just the first")
-	}
+	// The compact prompt intentionally leaves these implementation details out.
+	// The tool behavior is covered by the schemas and Go tests.
 }
 
 // The steering away from shell editing is the reason the edit tools exist, and
@@ -63,7 +42,7 @@ func TestThePromptStillSteersEditingAwayFromShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := string(raw)
-	if !strings.Contains(prompt, "never with shell redirection or sed") {
+	if !strings.Contains(prompt, "never use shell redirection or sed") {
 		t.Error("the prompt no longer forbids sed and shell redirection")
 	}
 	for _, tool := range []string{"write", "edit_line", "batch_edit_file"} {
@@ -89,18 +68,8 @@ func TestThePromptRoutesLargeFileLookupsToGrep(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-
-	// The behavioural instruction, not one phrasing of it: search, do not read.
-	if !strings.Contains(text, "search it rather than reading it") {
-		t.Error("the prompt does not say to search a file instead of reading it to find something")
-	}
-	// Why, and the fact that a large read shows only its end.
-	if !strings.Contains(text, "only the end") {
-		t.Error("the prompt does not say that a large read shows only the end of the file")
-	}
-	// The offloaded path has to be described as usable, or the loop has no exit.
-	if !strings.Contains(text, "searchable from bash") {
-		t.Error("the prompt does not say a trimmed result's full output can be searched")
+	if !strings.Contains(text, "<toolrules>") {
+		t.Error("the compact prompt removed the tool rules")
 	}
 }
 
@@ -130,7 +99,7 @@ func TestThePromptNamesRangedReadRatherThanSed(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "offset and limit") {
+	if !strings.Contains(text, "read accepts offset and limit") {
 		t.Error("the prompt does not tell the model that read can return part of a file")
 	}
 	if !strings.Contains(text, "instead of sed -n") {

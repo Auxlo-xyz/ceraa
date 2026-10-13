@@ -1,4 +1,10 @@
-package telegram
+// Package subagent builds child runs for the task tool.
+//
+// It lives outside both front-ends because neither may own it: the CLI must not
+// import Telegram, and a child's registry must be built the way its own
+// front-end builds one (NewRegistry), or a child would get a different tool set
+// from its parent.
+package subagent
 
 import (
 	"context"
@@ -19,7 +25,7 @@ import (
 	"ceraa/internal/logger"
 )
 
-// subagentFactory builds child runs for the task tool.
+// Factory builds child runs for the task tool.
 //
 // The tool layer cannot import the coordinator, which imports the tool layer, so
 // the seam is a factory supplied from here: the one place that knows how a run is
@@ -41,9 +47,9 @@ import (
 // It gets a **request budget**, graduated rather than hard, so a confused child
 // cannot spend indefinitely and still returns what it found.
 
-// subagentRolePrompt is prepended to the child's system prompt. It is a prompt, not
+// rolePrompt is prepended to the child's system prompt. It is a prompt, not
 // a tool description, so usage guidance belongs here rather than in a schema.
-var subagentRolePrompt = map[string]string{
+var rolePrompt = map[string]string{
 	"explore": "You are a read-only explorer working for another agent. Find things out and " +
 		"report file paths, line numbers, and what is actually there. Do not edit anything.",
 	"general": "You are a general-purpose agent working one self-contained job for another " +
@@ -52,31 +58,36 @@ var subagentRolePrompt = map[string]string{
 		"security, and anything that would break. Do not fix them; say what is wrong and why.",
 }
 
-type subagentFactory struct {
-	cfg           *config.Config
-	user          string
-	parentSession string
-	projectRoot   string
-	providerID    string
-	providerCfg   config.LLMProvider
-	// resolveModel is the parent's credential resolver. A subscription provider
+// Factory builds child runs for the task tool.
+type Factory struct {
+	Cfg           *config.Config
+	User          string
+	ParentSession string
+	ProjectRoot   string
+	ProviderID    string
+	ProviderCfg   config.LLMProvider
+	// ResolveModel is the parent's credential resolver. A subscription provider
 	// such as DeepSeek authenticates from the encrypted account grant rather
 	// than the profile's api key, and without this a child sends the plain key
 	// and is answered 401 while the parent succeeds on the same turn.
-	resolveModel    func(context.Context) (llm.ProviderConfig, error)
-	reasoning       llm.ReasonLevel
-	parentPrompt    string
-	skillStore      *skills.Store
-	skillContext    string
-	evaluationStore *evaluation.Store
-	store           *sessionstore.Store
-	// onChildUsage rolls a child's spend into the parent's, so a cheap fan-out and
+	ResolveModel    func(context.Context) (llm.ProviderConfig, error)
+	Reasoning       llm.ReasonLevel
+	ParentPrompt    string
+	SkillStore      *skills.Store
+	SkillContext    string
+	EvaluationStore *evaluation.Store
+	Store           *sessionstore.Store
+	// OnChildUsage rolls a child's spend into the parent's, so a cheap fan-out and
 	// an expensive one do not look identical in the event stream.
-	onChildUsage func(llm.UsageInfo)
+	OnChildUsage func(llm.UsageInfo)
 	// WallClock bounds one child regardless of what it is doing. Backgrounding makes
 	// cost worse rather than better, because a child keeps spending after the person
 	// stops watching.
 	WallClock time.Duration
+	// NewRegistry builds the child's tool set the way its front-end builds one, so
+	// a child gets the same tools as its parent. A nil seam falls back to the
+	// default registry rather than failing: a child with no tools is a wasted run.
+	NewRegistry func(user string, skillStore *skills.Store) *tool.Registry
 
 	mu       sync.Mutex
 	children map[string]*childRun
@@ -93,13 +104,13 @@ type childRun struct {
 	done     bool
 }
 
-var _ tool.SubagentFactory = (*subagentFactory)(nil)
+var _ tool.SubagentFactory = (*Factory)(nil)
 
-func (f *subagentFactory) NewSubagent(kind string) (tool.Subagent, string, error) {
-	if f.store == nil {
+func (f *Factory) NewSubagent(kind string) (tool.Subagent, string, error) {
+	if f.Store == nil {
 		return nil, "", fmt.Errorf("no session store is available for subagents")
 	}
-	if _, ok := subagentRolePrompt[kind]; !ok {
+	if _, ok := rolePrompt[kind]; !ok {
 		return nil, "", fmt.Errorf("unknown subagent kind %q", kind)
 	}
 	f.mu.Lock()
@@ -112,13 +123,13 @@ func (f *subagentFactory) NewSubagent(kind string) (tool.Subagent, string, error
 		f.children = make(map[string]*childRun)
 	}
 	f.counter++
-	id := fmt.Sprintf("%s-sub-%s-%d", f.parentSession, kind, f.counter)
+	id := fmt.Sprintf("%s-sub-%s-%d", f.ParentSession, kind, f.counter)
 	f.children[id] = &childRun{id: id, kind: kind}
 	f.mu.Unlock()
 
-	if err := f.store.Save(&sessionstore.Session{
+	if err := f.Store.Save(&sessionstore.Session{
 		ID:       id,
-		ParentID: f.parentSession,
+		ParentID: f.ParentSession,
 		Version:  2,
 		Messages: []sessionstore.Message{},
 	}); err != nil {
@@ -127,7 +138,7 @@ func (f *subagentFactory) NewSubagent(kind string) (tool.Subagent, string, error
 		f.mu.Unlock()
 		return nil, "", fmt.Errorf("create child session: %w", err)
 	}
-	logger.Info(fmt.Sprintf("subagent started: id=%s kind=%s parent=%s", id, kind, f.parentSession))
+	logger.Info(fmt.Sprintf("subagent started: id=%s kind=%s parent=%s", id, kind, f.ParentSession))
 	return &childAgent{factory: f, id: id, kind: kind}, id, nil
 }
 
@@ -136,20 +147,20 @@ func (f *subagentFactory) NewSubagent(kind string) (tool.Subagent, string, error
 // The same session is reused, so the child's context and therefore its warm cache
 // survive. It is also re-checked against its budget on every resume: a child that
 // is resumed is a child that can outlive the run which started it.
-func (f *subagentFactory) SubagentFor(id string) (tool.Subagent, error) {
+func (f *Factory) SubagentFor(id string) (tool.Subagent, error) {
 	f.mu.Lock()
 	child, known := f.children[id]
 	f.mu.Unlock()
 	if !known {
 		return nil, fmt.Errorf("no subagent with that id")
 	}
-	sess, err := f.store.Load(id)
+	sess, err := f.Store.Load(id)
 	if err != nil {
 		return nil, fmt.Errorf("load child session: %w", err)
 	}
 	// A task id is not a capability. Without this a parent could name another
 	// session's child and read its transcript through the brief it supplies.
-	if sess.ParentID != f.parentSession {
+	if sess.ParentID != f.ParentSession {
 		return nil, fmt.Errorf("that task belongs to a different session")
 	}
 	return &childAgent{factory: f, id: id, kind: child.kind}, nil
@@ -159,7 +170,7 @@ func (f *subagentFactory) SubagentFor(id string) (tool.Subagent, error) {
 // because the factory outlives every child it creates and Run has to know which
 // session it is driving.
 type childAgent struct {
-	factory *subagentFactory
+	factory *Factory
 	id      string
 	kind    string
 }
@@ -174,7 +185,11 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		defer cancel()
 	}
 
-	registry := telegramRegistry(f.cfg, f.user, f.skillStore)
+	newRegistry := f.NewRegistry
+	if newRegistry == nil {
+		newRegistry = tool.DefaultRegistryForUser
+	}
+	registry := newRegistry(f.User, f.SkillStore)
 	// Two guards against nesting, not one: Translate refuses a nested call, and the
 	// tool is not in the child's registry at all. A guard that only exists in one
 	// place is a guard that a crafted call walks around.
@@ -182,23 +197,23 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 
 	runner := coordinator.New(coordinator.RunnerConfig{
 		SessionID:           c.id,
-		Reasoning:           f.reasoning,
-		SystemPrompt:        childSystemPrompt(f.parentPrompt, c.kind),
-		Model:               llm.FromProvider(f.providerCfg.URL, f.providerCfg.APIKey, f.providerCfg.Model),
-		ResolveModel:        f.resolveModel,
-		ContextLimit:        f.providerCfg.ContextLimit,
-		MaxOutputTokens:     f.providerCfg.MaxOutputTokens,
-		WorkDir:             f.projectRoot,
-		ToolOutputDir:       filepath.Join(f.cfg.SessionFile, "subagent-output"),
-		MaxToolResultChars:  f.cfg.MaxToolResultChars,
-		MaxConcurrentTools:  f.cfg.MaxConcurrentTools,
-		GoalDir:             f.cfg.SessionFile,
-		ModelCatalogURL:     f.cfg.ModelCatalogURL,
-		ModelCatalogCache:   f.cfg.ModelCatalogCache,
-		ModelCatalogRefresh: time.Duration(f.cfg.ModelCatalogRefreshHours) * time.Hour,
+		Reasoning:           f.Reasoning,
+		SystemPrompt:        childSystemPrompt(f.ParentPrompt, c.kind),
+		Model:               llm.FromProvider(f.ProviderCfg.URL, f.ProviderCfg.APIKey, f.ProviderCfg.Model),
+		ResolveModel:        f.ResolveModel,
+		ContextLimit:        f.ProviderCfg.ContextLimit,
+		MaxOutputTokens:     f.ProviderCfg.MaxOutputTokens,
+		WorkDir:             f.ProjectRoot,
+		ToolOutputDir:       filepath.Join(f.Cfg.SessionFile, "subagent-output"),
+		MaxToolResultChars:  f.Cfg.MaxToolResultChars,
+		MaxConcurrentTools:  f.Cfg.MaxConcurrentTools,
+		GoalDir:             f.Cfg.SessionFile,
+		ModelCatalogURL:     f.Cfg.ModelCatalogURL,
+		ModelCatalogCache:   f.Cfg.ModelCatalogCache,
+		ModelCatalogRefresh: time.Duration(f.Cfg.ModelCatalogRefreshHours) * time.Hour,
 
-		SkillContext:    f.skillContext,
-		EvaluationStore: f.evaluationStore,
+		SkillContext:    f.SkillContext,
+		EvaluationStore: f.EvaluationStore,
 		// The budget is the point of the child, and it is enforced in the loop rather
 		// than here, because here is the only place that sees the turns a child takes
 		// after compaction and continuations.
@@ -213,12 +228,12 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 			// The child's own verdict is not forwarded: its spend is rolled into the
 			// parent's accumulator here, and the parent reconciles on the way out.
 			OnUsage: func(u llm.UsageInfo, _ llm.UsageTrust) {
-				if f.onChildUsage != nil {
-					f.onChildUsage(u)
+				if f.OnChildUsage != nil {
+					f.OnChildUsage(u)
 				}
 			},
 		},
-	}, f.store, registry)
+	}, f.Store, registry)
 
 	result, err := runner.Run(ctx, brief)
 	if err != nil {
@@ -259,20 +274,20 @@ func isBudgetStop(err error) bool {
 // in the main session; dropping it would produce a child that behaves differently
 // from the agent that spawned it.
 func childSystemPrompt(parent, kind string) string {
-	role := subagentRolePrompt[kind]
+	role := rolePrompt[kind]
 	if role == "" {
-		role = subagentRolePrompt["general"]
+		role = rolePrompt["general"]
 	}
 	return parent + "\n\n## Your role in this task\n\n" + role
 }
 
-// attachSubagents hands the registry a task tool wired to a factory built from
+// Attach hands the registry a task tool wired to a factory built from
 // this run's provider, project and stores.
 //
 // Attached rather than constructed in the registry because the tool layer cannot
 // import the coordinator, and because a child that used a different provider or
 // project from its parent would be a surprise rather than a delegation.
-func attachSubagents(registry *tool.Registry, factory *subagentFactory) {
+func Attach(registry *tool.Registry, factory *Factory) {
 	task, ok := registry.Get("task")
 	if !ok {
 		logger.Warn("subagents unavailable: the task tool is not registered")

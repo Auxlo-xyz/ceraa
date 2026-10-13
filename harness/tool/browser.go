@@ -338,9 +338,24 @@ func validateBrowserURL(raw string) error {
 	}
 	lowered := strings.ToLower(raw)
 	if !strings.HasPrefix(lowered, "http://") && !strings.HasPrefix(lowered, "https://") {
-		return errors.New("url must start with http:// or https://")
+		return errors.New(nonWebRefusal(raw))
 	}
 	return netguard.CheckURL(context.Background(), raw)
+}
+
+// nonWebRefusal explains the block instead of only stating it: the model is the
+// only reader, and it needs the scheme it used and where a local file belongs.
+func nonWebRefusal(raw string) string {
+	scheme := ""
+	if parsed, err := url.Parse(raw); err == nil {
+		scheme = strings.ToLower(parsed.Scheme)
+	}
+	if scheme == "" {
+		return fmt.Sprintf("%q does not look like a URL: a scheme such as https:// is required. "+
+			"For a local file, use browser_open_file with the path argument.", raw)
+	}
+	return fmt.Sprintf("the %s: scheme is refused by design; only http:// and https:// URLs may be opened. "+
+		"For a local file, use browser_open_file with the path argument.", scheme)
 }
 
 func (b *BrowserTool) TranslateResult(op operation.Operation) string {

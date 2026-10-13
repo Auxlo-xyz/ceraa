@@ -2,7 +2,6 @@ package operation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"ceraa/harness/document"
 	"ceraa/harness/event"
+	"ceraa/harness/goal"
 	"ceraa/harness/llm"
 	"ceraa/harness/primitives"
 	"ceraa/harness/question"
@@ -242,14 +242,12 @@ func clampShellTimeout(seconds int) time.Duration {
 func SpecTimeout(spec Spec) time.Duration {
 	requested, _ := spec.Args["timeout"].(int)
 	switch spec.Type {
-	case "shell":
+	case "shell", "run_command_with_secret":
+		// The secret command runs on the same shell primitive as bash, so it
+		// gets the same clamp and the same default.
 		if requested > 0 {
 			return clampShellTimeout(requested)
 		}
-		return defaultShellTimeout
-	case "run_command_with_secret":
-		// The secret path does not read the argument; it always runs on the
-		// shell default, so a waiter has to assume the same.
 		return defaultShellTimeout
 	case "task":
 		return TaskTimeout
@@ -648,29 +646,16 @@ func (m *LocalManager) dispatch(ctx context.Context, op Operation) ResultEvent {
 				result.LinesAdded, result.LinesRemoved = delta.added, delta.removed
 			}
 		case "todowrite":
-			// Maps to soraacode session/todo.ts TodoWrite
-			todosRaw, _ := op.Spec.Args["todos"]
-			sessionID, _ := op.Spec.Args["session_id"].(string)
-			if sessionID == "" {
-				sessionID = "default"
+			// The plan is carried by the goal record, so get_goal reads back what
+			// todowrite writes: one record instead of a sidecar nothing ever read.
+			planOutput, planErr := runTodoWrite(op.Spec.Args)
+			if planErr != nil {
+				result.Error = "todowrite failed: " + planErr.Error()
+				result.Status = StatusFailed
+				break
 			}
-			// Save via todo store
-			if dir, err := todoStoreDir(); err == nil {
-				if store, err := newTodoStore(dir); err == nil {
-					// Marshal and save
-					if data, err := json.Marshal(todosRaw); err == nil {
-						var todos []todo.Todo
-						if err := json.Unmarshal(data, &todos); err == nil {
-							_ = store.Save(sessionID, todos)
-							result.Output = fmt.Sprintf("Todos updated: %d items", len(todos))
-							result.Status = StatusCompleted
-							break
-						}
-					}
-				}
-			}
-			result.Error = "todowrite failed"
-			result.Status = StatusFailed
+			result.Output = planOutput
+			result.Status = StatusCompleted
 		case "question":
 			// Maps to soraacode tool/question.ts + question-manager poll with buttons
 			ques, _ := op.Spec.Args["question"].(string)
@@ -835,6 +820,33 @@ func todoStoreDir() (string, error) {
 
 func newTodoStore(dir string) (*todo.Store, error) {
 	return todo.New(dir)
+}
+
+// runTodoWrite stores the plan on the goal record and returns it rendered.
+// A save error is returned rather than swallowed: reporting a plan as written
+// when it was not is worse than failing, because the model keeps working from a
+// plan that was never stored.
+func runTodoWrite(args map[string]any) (string, error) {
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		sessionID = "default"
+	}
+	todos, err := goal.ParseTodos(args["todos"])
+	if err != nil {
+		return "", err
+	}
+	dir, err := todoStoreDir()
+	if err != nil {
+		return "", err
+	}
+	store, err := newTodoStore(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := store.Save(sessionID, todos); err != nil {
+		return "", err
+	}
+	return goal.Render(todos), nil
 }
 
 func listDirectory(path string) string {

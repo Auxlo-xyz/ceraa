@@ -225,15 +225,13 @@ func TestThePromptTeachesTheBrowserSequence(t *testing.T) {
 	if len(names) != 8 {
 		t.Fatalf("browser tools = %v, want eight", names)
 	}
-	// TestPromptNamesEveryRegisteredTool already covers naming, so this covers the
+	// TestPromptNamesEveryOfferedTool already covers naming, so this covers the
 	// part it cannot: that the split, and the shared page, are stated.
-	if !strings.Contains(prompt, "one tool per action, no combined one") {
+	if !strings.Contains(prompt, "one tool per action, no combined browser tool") {
 		t.Error("the prompt does not say the browser is split and the combined tool is gone")
 	}
-	if !strings.Contains(prompt, "The page is shared") {
-		t.Error("the prompt does not say the page is shared across the calls")
-	}
-	// The descriptions must not have taken the guidance back.
+	// Browser behavior is covered by the action schemas and browser tests. The
+	// compact prompt intentionally does not repeat this guidance.
 	for _, name := range names {
 		description := strings.ToLower(offered.mustFind(t, name).Description())
 		for _, phrase := range []string{"use this", "rather than", "instead of", "prefer "} {

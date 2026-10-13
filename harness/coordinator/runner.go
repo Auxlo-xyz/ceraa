@@ -880,24 +880,21 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			}
 			if !r.cfg.StopWhenIdle && goalContinuations < 100 {
 				if goalStore, goalErr := goal.New(r.cfg.GoalDir); goalErr == nil {
-					if current, exists, loadErr := goalStore.Load(r.cfg.SessionID); loadErr == nil && exists && current.Status == goal.StatusActive {
+					if current, exists, loadErr := goalStore.Load(r.cfg.SessionID); loadErr == nil && exists && current.Status == goal.StatusActive && strings.TrimSpace(current.Objective) != "" {
 						current.TokensUsed += runUsage.TotalTokens - goalUsageBase
 						goalUsageBase = runUsage.TotalTokens
 						current.Iterations++
-						if current.TokenBudget > 0 && current.TokensUsed >= current.TokenBudget {
-							current.Status = goal.StatusBlocked
-							current.Reason = "token budget exhausted"
-							_, _ = goalStore.Save(r.cfg.SessionID, current)
-						} else {
-							if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
-								goalContinuations++
-								sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Continue working autonomously on the active goal. Make progress, verify the result, and call update_goal when it is completed or blocked. Active goal: " + current.Objective})
-								if saveErr := r.store.Save(sess); saveErr != nil {
-									return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
-								}
-								step++
-								continue
+						// The budget is spend telemetry, never a stop condition: exhausting it
+						// must not block the goal or end the run. The goalContinuations cap
+						// bounds the loop on its own.
+						if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+							goalContinuations++
+							sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Continue working autonomously on the active goal. Make progress, verify the result, and call update_goal when it is completed or blocked. Active goal: " + current.Objective})
+							if saveErr := r.store.Save(sess); saveErr != nil {
+								return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
 							}
+							step++
+							continue
 						}
 					}
 				}

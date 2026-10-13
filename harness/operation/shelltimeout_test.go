@@ -46,7 +46,9 @@ func TestSpecTimeout(t *testing.T) {
 		{"shell without an argument uses the shell default", Spec{Type: "shell"}, defaultShellTimeout},
 		{"shell honors the argument", Spec{Type: "shell", Args: map[string]any{"timeout": 600}}, 600 * time.Second},
 		{"shell clamps the argument", Spec{Type: "shell", Args: map[string]any{"timeout": 86400}}, maxShellTimeout},
-		{"secret shell ignores the argument", Spec{Type: "run_command_with_secret", Args: map[string]any{"timeout": 5}}, defaultShellTimeout},
+		{"secret shell without an argument uses the shell default", Spec{Type: "run_command_with_secret"}, defaultShellTimeout},
+		{"secret shell honors the argument", Spec{Type: "run_command_with_secret", Args: map[string]any{"timeout": 5}}, 5 * time.Second},
+		{"secret shell clamps the argument", Spec{Type: "run_command_with_secret", Args: map[string]any{"timeout": 86400}}, maxShellTimeout},
 		{"task uses its child wall clock", Spec{Type: "task"}, TaskTimeout},
 		{"question waits for a human", Spec{Type: "question"}, questionTimeout},
 

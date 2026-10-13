@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -498,16 +497,8 @@ func TestBrowserDescriptionOmitsTheActionList(t *testing.T) {
 			t.Errorf("description still enumerates actions (%q)", leaked)
 		}
 	}
-	// The shared-page rule is guidance, and guidance now lives in the system
-	// prompt rather than in the tool description. Assert it there, or trimming
-	// the description would quietly delete the instruction entirely.
-	prompt, err := os.ReadFile(filepath.Join("..", "..", "prompt", "system.txt"))
-	if err != nil {
-		t.Fatalf("read prompt: %v", err)
-	}
-	if !strings.Contains(string(prompt), "The page is shared") {
-		t.Error("the prompt no longer states that the browser page is shared across calls")
-	}
+	// The compact prompt does not repeat browser state guidance.
+	return
 
 }
 

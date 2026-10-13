@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/secret"
+	"ceraa/internal/subagent"
 	"ceraa/internal/xaiauth"
 )
 
@@ -200,6 +202,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	}
 	compactor.ResolveModel = resolveModel
 	registry := tool.DefaultRegistryForUser(user, skillStore)
+	attachSubagents(registry, cfg, user, provider, resolveModel, skillStore, skillContext, evaluationStore, store)
 	// The CLI has a provider too, so a media view works the same way there.
 	// Rule scoping is opt-in and off by default. Without credentials the
 	// deterministic pass alone runs, which scopes every rule that names a real
@@ -219,6 +222,38 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	}), store, registry)
 	_, err = runner.Run(ctx, user)
 	return err
+}
+
+// attachSubagents wires the CLI's task tool to a factory built from this run's
+// provider, project and stores. The registry builds the task tool inert, so
+// without this every task call fails with "no factory is attached": a tool the
+// model can see and use that cannot do anything. It is a helper rather than
+// inline so the wiring can be asserted without driving a whole run.
+func attachSubagents(registry *tool.Registry, cfg *config.Config, user string, provider config.LLMProvider,
+	resolveModel func(context.Context) (llm.ProviderConfig, error),
+	skillStore *skills.Store, skillContext string,
+	evaluationStore *evaluation.Store, store *sessionstore.Store) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	subagent.Attach(registry, &subagent.Factory{
+		ParentSession:   agentRunID,
+		ProjectRoot:     cwd,
+		Reasoning:       llm.ReasonLevel(strings.TrimSpace(provider.Reasoning)),
+		ProviderID:      cfg.EffectiveProviderID(),
+		ProviderCfg:     provider,
+		ResolveModel:    resolveModel,
+		ParentPrompt:    prompt.System,
+		SkillStore:      skillStore,
+		SkillContext:    skillContext,
+		EvaluationStore: evaluationStore,
+		Store:           store,
+		WallClock:       operation.TaskTimeout,
+		NewRegistry:     tool.DefaultRegistryForUser,
+		Cfg:             cfg,
+		User:            user,
+	})
 }
 
 // agentRunDeps is what one CLI run's RunnerConfig is built from.
