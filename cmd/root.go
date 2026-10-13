@@ -4,6 +4,7 @@ import (
 	"ceraa/internal/agent"
 	"ceraa/internal/build"
 	"ceraa/internal/config"
+	"ceraa/internal/featuredocs"
 	"ceraa/internal/paths"
 	"ceraa/internal/procfile"
 	"ceraa/internal/telegram"
@@ -102,6 +103,19 @@ var doctorCmd = &cobra.Command{
 	Short: "Check configuration, provider, Telegram, workspace, and storage",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDoctor()
+	},
+}
+
+var docsCmd = &cobra.Command{
+	Use:   "docs",
+	Short: "Install bundled feature guidance",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := filepath.Join(paths.DataDir(), "docs")
+		if err := featuredocs.Install(path); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Feature guides installed in %s\n", path)
+		return nil
 	},
 }
 
@@ -348,6 +362,7 @@ func registerSubcommands() {
 	attach(restartCmd)
 	attach(setupCmd)
 	attach(doctorCmd)
+	attach(docsCmd)
 	attach(configCmd)
 	attach(configInitCmd)
 	attach(updateCmd)

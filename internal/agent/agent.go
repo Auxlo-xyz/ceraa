@@ -23,6 +23,7 @@ import (
 	"ceraa/internal/codexauth"
 	"ceraa/internal/config"
 	"ceraa/internal/deepseekauth"
+	"ceraa/internal/featuredocs"
 	"ceraa/internal/hermesauth"
 	"ceraa/internal/minimaxauth"
 	"ceraa/internal/opencodeauth"
@@ -46,6 +47,9 @@ func RunWithConfig(user string, cfg *config.Config) error {
 }
 
 func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) error {
+	if err := featuredocs.Install(filepath.Join(paths.DataDir(), "docs")); err != nil {
+		return fmt.Errorf("feature docs: %w", err)
+	}
 	// Open the encrypted credential store before anything can need a credential.
 	//
 	// The Telegram daemon does this, the CLI did not, so a provider profile chosen
