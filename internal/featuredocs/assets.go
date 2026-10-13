@@ -31,6 +31,20 @@ func Files() ([]string, error) {
 	return names, err
 }
 
+// DefaultDir returns the feature-guide directory beside an installed runtime.
+func DefaultDir() string {
+	if override := os.Getenv("CERAA_FEATURE_DOCS_DIR"); override != "" {
+		return override
+	}
+	if exe, err := os.Executable(); err == nil {
+		bin := filepath.Dir(exe)
+		if filepath.Base(bin) == "bin" {
+			return filepath.Join(filepath.Dir(bin), "docs")
+		}
+	}
+	return filepath.Join("docs")
+}
+
 // Install writes the binary-authoritative feature guides to the runtime docs
 // directory so the system prompt's navigation path exists for every run.
 func Install(dir string) error {

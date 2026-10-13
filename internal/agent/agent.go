@@ -47,7 +47,7 @@ func RunWithConfig(user string, cfg *config.Config) error {
 }
 
 func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) error {
-	if err := featuredocs.Install(filepath.Join(paths.DataDir(), "docs")); err != nil {
+	if err := featuredocs.Install(featuredocs.DefaultDir()); err != nil {
 		return fmt.Errorf("feature docs: %w", err)
 	}
 	// Open the encrypted credential store before anything can need a credential.

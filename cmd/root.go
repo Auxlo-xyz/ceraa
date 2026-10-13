@@ -110,7 +110,7 @@ var docsCmd = &cobra.Command{
 	Use:   "docs",
 	Short: "Install bundled feature guidance",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := filepath.Join(paths.DataDir(), "docs")
+		path := featuredocs.DefaultDir()
 		if err := featuredocs.Install(path); err != nil {
 			return err
 		}
