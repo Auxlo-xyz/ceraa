@@ -42,7 +42,7 @@ func (t *SkillUseTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "description": "Skill name exactly as listed"},
+			"name": map[string]any{"type": "string", "description": "Approved skill name"},
 		},
 		"required": []string{"name"},
 	}

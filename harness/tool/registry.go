@@ -128,18 +128,7 @@ func (r *Registry) Offered() []Tool {
 	return out
 }
 
-// toToolDef converts an internal Tool into a generic map for LLM schema.
-func toToolDef(t Tool) map[string]any {
-	return map[string]any{
-		"type": "function",
-		"function": map[string]any{
-			"name":        t.Name(),
-			"description": t.Description(),
-			"parameters":  t.Schema(),
-		},
-	}
-}
-
+// Tool definitions are converted directly by the coordinator.
 // BashTool - executes shell commands.
 type BashTool struct{}
 
@@ -295,16 +284,16 @@ func (e *EditTool) Name() string { return "edit_line" }
 // is the tool's contract, and a rule about when to prefer it over a sibling is
 // the prompt's job. TestDescriptionsCarryNoUsageGuidance enforces that split.
 func (e *EditTool) Description() string {
-	return "Replace one exact occurrence of old_text with new_text. " +
-		"old_text must be unique unless occurrence, 1-based, picks a repeat."
+	return "Replace one exact region in a file. The region may span multiple lines. " +
+		"The match must be unique unless occurrence, 1-based, picks a repeat."
 }
 func (e *EditTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":       map[string]any{"type": "string", "description": "File path"},
-			"old_text":   map[string]any{"type": "string", "description": "exact text to find"},
-			"new_text":   map[string]any{"type": "string", "description": "its replacement"},
+			"path":       map[string]any{"type": "string"},
+			"old_text":   map[string]any{"type": "string", "description": "Exact region to replace"},
+			"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
 			"occurrence": map[string]any{"type": "integer", "description": "1-based match index, optional"},
 		},
 		"required": []string{"path", "old_text", "new_text"},
@@ -343,22 +332,22 @@ type BatchEditFileTool struct{}
 
 func (b *BatchEditFileTool) Name() string { return "batch_edit_file" }
 func (b *BatchEditFileTool) Description() string {
-	return "Apply several old_text to new_text replacements to one file in a " +
-		"single write. Each must be unique unless it names occurrence, 1-based."
+	return "Apply multiple exact region replacements to one file atomically. " +
+		"Nothing is written if any replacement fails."
 }
 func (b *BatchEditFileTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "File path"},
+			"path": map[string]any{"type": "string"},
 			"edits": map[string]any{
 				"type":        "array",
 				"description": "applied in order, all or nothing",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"old_text":   map[string]any{"type": "string", "description": "exact text to find"},
-						"new_text":   map[string]any{"type": "string", "description": "its replacement"},
+						"old_text":   map[string]any{"type": "string", "description": "Exact region to replace"},
+						"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
 						"occurrence": map[string]any{"type": "integer", "description": "1-based match index, optional"},
 					},
 					"required": []string{"old_text", "new_text"},

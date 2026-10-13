@@ -113,7 +113,7 @@ func (t *ListSecretsTool) Description() string {
 		"provider credentials are not listed and cannot be used."
 }
 func (t *ListSecretsTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{}}
+	return map[string]any{"type": "object"}
 }
 func (t *ListSecretsTool) Translate(args map[string]any) (operation.Spec, error) {
 	return operation.Spec{Type: "list_secrets", Args: map[string]any{}}, nil

@@ -21,7 +21,7 @@ func (t *CreateGoalTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"objective":    map[string]any{"type": "string", "minLength": 1},
-			"token_budget": map[string]any{"type": "integer", "minimum": 0, "description": "Advisory spend tracking, recorded on the goal; it never blocks the goal or stops work."},
+			"token_budget": map[string]any{"type": "integer", "minimum": 0, "description": "Advisory, non-blocking spend budget."},
 		},
 		"required": []string{"objective"},
 	}
@@ -44,7 +44,7 @@ type GetGoalTool struct{}
 func (t *GetGoalTool) Name() string        { return "get_goal" }
 func (t *GetGoalTool) Description() string { return "Read the current persistent goal state." }
 func (t *GetGoalTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{}}
+	return map[string]any{"type": "object"}
 }
 func (t *GetGoalTool) Translate(args map[string]any) (operation.Spec, error) {
 	return operation.Spec{Type: "get_goal", Args: map[string]any{}}, nil
@@ -68,7 +68,7 @@ func (t *UpdateGoalTool) Schema() map[string]any {
 			"reason": map[string]any{"type": "string"},
 			"todos": map[string]any{
 				"type":        "array",
-				"description": "Replaces the session plan in full.",
+				"description": "Replaces the plan.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
