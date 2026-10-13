@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
-# Build the public release artifacts: four binaries, the system prompt, the
-# Mini App page, checksums.
+# Build the public release artifacts: four binaries, the Mini App page,
+# license files and checksums.
 #
-# The system prompt ships as a file, not embedded in the binary. Ceraa reads
-# prompt/system.txt from disk on purpose: there is exactly one copy, so an edit
-# cannot be silently shadowed by a stale build. That means a packaged install is
-# only complete if the prompt is beside the binary, and this script is what makes
-# that true. A release built without it installs cleanly and then runs the agent
-# on a one-line fallback, which is the worst way to fail.
-#
-# The prompt is not documentation and not a secret: it is the agent's behaviour,
-# 7KB, and without it the product does not work.
+# The system prompt is compiled into each binary from prompt/system.txt. It is
+# not staged as a sidecar, so a released binary remains self-contained.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -48,27 +41,14 @@ for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
       -o "dist/ceraa-$1-$2" .
 done
 
-# The one copy of the prompt, copied verbatim. The loader searches the executable
-# directory and its parent, so an install that places this beside the binary works.
-echo "release: staging prompt/system.txt"
-cp -f prompt/system.txt dist/system.txt
-
-# The Mini App page. Unlike the prompt it is embedded in the binary, so a
-# single-file install serves it with nothing else present: the page used to be
-# read from disk, which meant an install that skipped staging answered a 404
-# through a healthy tunnel. It is still published as a flat asset (a release
-# asset cannot contain a slash) so it can be inspected and checksummed. It is not
-# a way to change what an installed copy serves: the binary is the only source of
-# the page, and artifacts.yml checks this file against the one inside the binary
-# so the published copy cannot quietly disagree with what ships.
-# Checksummed for the same reason the prompt is: an asset nobody verifies is an
-# asset nobody checked.
+# The system prompt is compiled into the binary. The Mini App page is embedded
+# too and is published as a separate reviewable asset.
 echo "release: staging miniapp-index.html"
 cp -f internal/miniapp/assets/index.html dist/miniapp-index.html
 
 cp -f LICENSE NOTICE dist/
 
-( cd dist && sha256sum ceraa-* system.txt miniapp-index.html > SHA256SUMS )
+( cd dist && sha256sum ceraa-* miniapp-index.html > SHA256SUMS )
 
 echo "release: version $VERSION"
 echo "release: artifacts"

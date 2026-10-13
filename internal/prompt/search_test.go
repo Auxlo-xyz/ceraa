@@ -1,10 +1,10 @@
 package prompt
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	sourceprompt "ceraa/prompt"
 )
 
 // ripgrep is the search tool, unconditionally. The prompt says so, so ripgrep
@@ -53,11 +53,7 @@ func TestAPromptWithNoPlaceholderIsUntouched(t *testing.T) {
 // The shipped file must resolve, or the model receives a literal placeholder and
 // goes looking for the string "{{SEARCH}}".
 func TestTheShippedPromptResolvesToNoPlaceholder(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", SystemPromptPath))
-	if err != nil {
-		t.Skipf("prompt not readable from this package: %v", err)
-	}
-	resolved := Resolve(string(raw))
+	resolved := Resolve(string(sourceprompt.System))
 	if strings.Contains(resolved, "{{") {
 		t.Error("the shipped prompt still contains a placeholder after substitution")
 	}

@@ -52,10 +52,7 @@ jobs:
         run: go test -run FuzzOperationSpec -fuzz=FuzzOperationSpec -fuzztime=30s ./harness/coordinator/...
 
   dist:
-    # The public surface is a binary and a prompt file, and neither the build
-    # nor the loader is exercised by the test job. A release shipped a prompt
-    # the loader could not find, and install.sh masked it, so every automated
-    # check was green while a hand-installed release ran on a fallback prompt.
+    # The public surface is a self-contained binary plus reviewable assets.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -81,19 +78,15 @@ jobs:
       - name: The binary reports the version it was built for
         run: ./dist/ceraa-linux-amd64 version | head -1 | grep -qx 'ceraa 0.0.0-ci'
 
-      # The prompt must load from the layout the release actually ships: the
-      # binary and system.txt side by side. A fallback is silent, so assert on
-      # the absence of the warning rather than waiting for a behaviour change.
       - name: A packaged install does not run degraded
         run: |
           rm -rf /tmp/rel && mkdir -p /tmp/rel/work
           cp dist/ceraa-linux-amd64 /tmp/rel/ceraa
-          cp dist/system.txt /tmp/rel/system.txt
           cd /tmp/rel/work
           output=$(/tmp/rel/ceraa version 2>&1)
           echo "$output"
-          if echo "$output" | grep -q 'using a minimal fallback'; then
-            echo "::error::a binary and system.txt side by side runs on the fallback prompt"
+          if echo "$output" | grep -q 'minimal fallback'; then
+            echo "::error::the released binary fell back without a prompt sidecar"
             exit 1
           fi
 

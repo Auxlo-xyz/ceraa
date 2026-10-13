@@ -1,9 +1,8 @@
 #!/usr/bin/env sh
 # Install Ceraa from a prebuilt binary.
 #
-# The release contains compiled binaries only. There is no source in it, and this
-# script does not need any: a Go binary is a self-contained executable, so
-# installing Ceraa is a file download and nothing more.
+# The release contains compiled binaries only. The system prompt and Mini App are
+# embedded, so installation does not need source or sidecar assets.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Auxlo-xyz/ceraa/main/install.sh | sh
@@ -77,9 +76,8 @@ base="https://github.com/$REPO/releases/download/$VERSION"
 info "downloading"
 curl -fsSL -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
-# The system prompt is optional in the sense that an older release predates it, so
-# a 404 here is not fatal; it is only fatal that the binary then runs degraded.
-curl -fsSL -o "$tmp/system.txt" "$base/system.txt" 2>/dev/null || rm -f "$tmp/system.txt"
+# The system prompt is compiled into the binary. `prompt/system.txt` remains the
+# source file, and CERAA_SYSTEM_PROMPT is the explicit override for local edits.
 
 # Checksum. The line is "<sha256>  <filename>", so the filename is matched
 # exactly and not by prefix: a substring match would also accept
@@ -97,8 +95,6 @@ verify() {
 The download is corrupt or was tampered with. Do not run it."
 }
 verify "$asset"
-[ -f "$tmp/system.txt" ] && verify system.txt
-
 if [ "$VERIFY_ONLY" -eq 1 ]; then
   info "checksum OK. Not installing because --verify-only was passed."
   exit 0
@@ -121,29 +117,9 @@ mv "$tmp/$asset" "$INSTALL_DIR/ceraa" || die "could not write $INSTALL_DIR/ceraa
 
 info "installed $INSTALL_DIR/ceraa"
 
-# The system prompt ships as a file beside the binary, not inside it.
-#
-# Ceraa reads prompt/system.txt from disk and never embeds it, on purpose: there
-# is exactly one copy, so an edit cannot be silently shadowed by a stale build.
-# The loader already searches the executable's directory, so installing the file
-# next to the binary is all that is needed. Without this the agent runs on a
-# one-line fallback and most of its behaviour is gone.
-if [ -f "$tmp/system.txt" ]; then
-  prompt_dir="$INSTALL_DIR/prompt"
-  mkdir -p "$prompt_dir" || die "could not create $prompt_dir"
-  if cp -f "$tmp/system.txt" "$prompt_dir/system.txt"; then
-    info "installed $prompt_dir/system.txt"
-  else
-    info "warning: could not install the system prompt."
-    info "Ceraa will start on a minimal fallback prompt until you do:"
-    info "    mkdir -p $prompt_dir"
-    info "    curl -fsSL -o $prompt_dir/system.txt $base/system.txt"
-  fi
-else
-  info "warning: the release has no system.txt, so Ceraa will start degraded."
-fi
+# The system prompt is compiled into the binary. `prompt/system.txt` remains the
+# source file, and CERAA_SYSTEM_PROMPT is the explicit override for local edits.
 
-# Make it reachable without a PATH edit, but only if the user has to do it.
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *)

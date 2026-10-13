@@ -19,11 +19,8 @@
 # build and no linker flag can remove them. Measured on this binary: 23,652
 # functions remain recoverable, 1,456 of them named ceraa/*.
 #
-# On the system prompt: it is NOT in this binary and never was. internal/prompt
-# reads prompt/system.txt from disk at runtime and there is no go:embed anywhere in
-# the tree, so the text is absent from both a plain and a stripped build. That was
-# verified directly rather than assumed; an earlier note here claimed the opposite,
-# on the strength of a report that turned out to be wrong.
+# On the system prompt: it IS in this binary through prompt/embed.go. The source
+# file remains prompt/system.txt, and changing it requires a rebuild and release.
 #
 # Panic tracebacks and pprof keep working under these flags. garble is deliberately
 # not used: it breaks pprof symbolization, is a new supply-chain dependency in the
@@ -54,9 +51,8 @@ go build \
   .
 
 # The terms ship with the binary, and the notice is also compiled in. Both, because
-# they fail differently: a file beside the executable is lost the moment someone
-# copies the single binary, while the compiled-in notice cannot be removed by
-# someone who has not read the source.
+# they fail differently: the license files are included in source and release
+# assets, while the compiled-in notice travels with a copied binary.
 for doc in LICENSE NOTICE; do
   cp -f "$doc" bin/"$doc"
 done

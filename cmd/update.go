@@ -91,9 +91,7 @@ func applyUpdate(out io.Writer, ctx context.Context, tag, from string) error {
 	}
 	fmt.Fprintf(out, "Updated %s: %s -> %s\n", result.Binary, from, strings.TrimPrefix(result.Tag, "v"))
 	fmt.Fprintf(out, "Verified %q\n", result.Probed)
-	if result.Prompt != "" {
-		fmt.Fprintf(out, "Refreshed %s\n", result.Prompt)
-	}
+	// The downloaded binary contains the prompt and needs no sidecar refresh.
 	if pid, ok := runningServicePID(); ok {
 		fmt.Fprintln(out, runningServiceNotice(pid, result.Tag))
 	}

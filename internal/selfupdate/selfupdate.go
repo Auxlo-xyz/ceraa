@@ -66,7 +66,6 @@ const fetchBudget = 2 * time.Minute
 const (
 	maxBinaryBytes = 64 << 20
 	maxSumsBytes   = 1 << 20
-	maxPromptBytes = 4 << 20
 )
 
 // Status is what a check found.
@@ -92,7 +91,6 @@ func (s Status) String() string {
 type Result struct {
 	Tag      string
 	Binary   string
-	Prompt   string
 	Probed   string
 	Replaced bool
 }
@@ -215,22 +213,8 @@ func Apply(ctx context.Context, tag string) (Result, error) {
 	}
 	result.Probed = reported
 
-	// The prompt travels beside the binary and is part of the release, so it is
-	// refreshed in the same operation. A binary-only update against a prompt
-	// from three releases ago is an agent that behaves unlike anything tested.
-	// Fetched and verified before anything is committed, so a prompt that cannot
-	// be delivered costs the whole update rather than half of it.
-	promptPath, promptData, err := fetchPrompt(ctx, base, sums, target)
-	if err != nil {
-		return result, err
-	}
-	if promptPath != "" {
-		if err := replaceInPlace(promptPath, promptData, 0o644); err != nil {
-			return result, fmt.Errorf("refresh the system prompt: %w", err)
-		}
-		result.Prompt = promptPath
-	}
-
+	// The prompt is compiled into the candidate binary, so updating a binary is
+	// atomic and cannot leave a mismatched sidecar behind.
 	if err := os.Rename(candidate, target); err != nil {
 		return result, fmt.Errorf("replace %s: %w", target, err)
 	}
@@ -330,49 +314,7 @@ func probe(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-// promptTarget picks the file the loader would read, creating the installer's
-// layout when there is nothing to update yet.
-//
-// The order mirrors prompt.candidates exactly. Writing a second copy when one
-// already exists would leave a stale file that the loader may prefer, which is
-// the drift the single-copy rule exists to prevent.
-func promptTarget(executable string) string {
-	dir := filepath.Dir(executable)
-	for _, candidate := range []string{
-		filepath.Join(dir, "prompt", "system.txt"),
-		filepath.Join(dir, "system.txt"),
-	} {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
-		}
-	}
-	return filepath.Join(dir, "prompt", "system.txt")
-}
-
-// fetchPrompt downloads the release's system.txt when the release has one.
-//
-// Not every release predating the packaged prompt carries it, so a 404 is not a
-// failure: the binary can still be updated and the prompt left as it is. A
-// checksum mismatch is a failure, because the file is present and wrong.
-func fetchPrompt(ctx context.Context, base string, sums []byte, executable string) (string, []byte, error) {
-	name := "system.txt"
-	if _, err := checksumFor(sums, name); err != nil {
-		return "", nil, nil
-	}
-	data, err := fetch(ctx, base+"/"+name, maxPromptBytes)
-	if err != nil {
-		var httpErr *statusError
-		if errors.As(err, &httpErr) && httpErr.status == http.StatusNotFound {
-			return "", nil, nil
-		}
-		return "", nil, err
-	}
-	if err := verify(sums, name, data); err != nil {
-		return "", nil, err
-	}
-	return promptTarget(executable), data, nil
-}
-
+// Prompt is embedded in the binary and has no separate update result.
 // statusError carries the HTTP status so a caller can tell a missing asset from
 // a broken connection.
 type statusError struct {

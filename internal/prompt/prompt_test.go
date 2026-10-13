@@ -5,61 +5,49 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	sourceprompt "ceraa/prompt"
 )
 
-func TestLoadReadsTheCanonicalFile(t *testing.T) {
-	root, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatalf("abs: %v", err)
-	}
-	contents, err := os.ReadFile(filepath.Join(root, "prompt", "system.txt"))
-	if err != nil {
-		t.Fatalf("read canonical prompt: %v", err)
-	}
-	if strings.TrimSpace(string(contents)) == "" {
-		t.Fatal("canonical prompt is empty")
-	}
-	// The loader must find that same file, from the repository root.
+func TestLoadUsesTheEmbeddedPrompt(t *testing.T) {
 	previous, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatal(err)
 	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatalf("chdir: %v", err)
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	// The loader substitutes the search instruction, so its output is legitimately
-	// longer than the file. Compared through the same substitution rather than
-	// byte-for-byte, which is what pinned "the file is the prompt" and would now
-	// fail for a change that is the whole point of the loader.
-	want := resolveSearchTool(string(contents), SystemPromptPath)
+	t.Setenv("CERAA_SYSTEM_PROMPT", "")
+
+	want := resolveSearchTool(string(sourceprompt.System), "embedded prompt")
 	if got := load(); got != want {
-		t.Errorf("loader returned different content than the resolved file (%d vs %d bytes)", len(got), len(want))
+		t.Errorf("load() differs from embedded prompt: %d vs %d bytes", len(got), len(want))
 	}
 }
 
-// A missing prompt must not panic and must not return a full second copy, or the
-// two would drift apart again.
-func TestLoadFallsBackWithoutDuplicating(t *testing.T) {
+func TestLoadIgnoresStaleDiskPrompt(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "prompt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prompt", "system.txt"), []byte("stale prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	previous, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatal(err)
 	}
 	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	// Point the override at nothing so the executable-directory search cannot
-	// accidentally find the real file.
-	t.Setenv("CERAA_SYSTEM_PROMPT", filepath.Join(dir, "absent.txt"))
+	t.Setenv("CERAA_SYSTEM_PROMPT", "")
 
 	got := load()
-	if got != degraded {
-		t.Errorf("fallback = %q, want the minimal identity", got)
-	}
-	if len(got) > 400 {
-		t.Errorf("fallback is %d bytes, which is a second copy of the prompt rather than an identity", len(got))
+	if got == "stale prompt" || !strings.Contains(got, "You are Ceraa") {
+		t.Errorf("load() used the stale disk prompt: %q", got)
 	}
 }
 
@@ -67,7 +55,7 @@ func TestLoadPrefersTheOverride(t *testing.T) {
 	dir := t.TempDir()
 	custom := filepath.Join(dir, "mine.txt")
 	if err := os.WriteFile(custom, []byte("my own prompt"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
+		t.Fatal(err)
 	}
 	t.Setenv("CERAA_SYSTEM_PROMPT", custom)
 	if got := load(); got != "my own prompt" {
@@ -75,40 +63,23 @@ func TestLoadPrefersTheOverride(t *testing.T) {
 	}
 }
 
-// An empty override file must not be taken as the prompt; an empty system prompt
-// would leave the agent with no instructions at all.
 func TestLoadIgnoresAnEmptyOverride(t *testing.T) {
 	dir := t.TempDir()
 	empty := filepath.Join(dir, "empty.txt")
 	if err := os.WriteFile(empty, []byte("   \n"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
+		t.Fatal(err)
 	}
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	root, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatalf("abs: %v", err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
 	t.Setenv("CERAA_SYSTEM_PROMPT", empty)
-
-	if got := load(); got == strings.TrimSpace(got) && strings.TrimSpace(got) == "" {
-		t.Error("an empty override was accepted as the system prompt")
+	if got := load(); got == degraded || strings.TrimSpace(got) == "" {
+		t.Error("an empty override did not fall back to the embedded prompt")
 	}
 }
 
-// The loaded prompt must actually reach the model, so System is wired to the
-// file rather than left as the fallback.
 func TestSystemIsNotTheFallback(t *testing.T) {
 	if System == degraded {
-		t.Skip("test binary is running without the prompt on disk")
+		t.Fatal("System uses the minimal fallback despite the embedded prompt")
 	}
-	if !strings.Contains(System, "interactive coding agent") {
-		t.Errorf("System does not look like the canonical prompt: %.80q", System)
+	if !strings.Contains(System, "You are Ceraa") {
+		t.Errorf("System does not look like the embedded prompt: %.80q", System)
 	}
 }

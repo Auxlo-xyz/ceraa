@@ -3,79 +3,50 @@ package prompt
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+
+	sourceprompt "ceraa/prompt"
 )
 
 // System is the system prompt handed to the model.
 //
-// There is exactly one copy, at prompt/system.txt, and it is read from disk
-// rather than embedded. An earlier version embedded internal/prompt/system.txt
-// and then silently overrode it with the file on disk, which left two copies
-// that had to be kept in sync and made an edit to the embedded one look like it
-// had been lost. The canonical location is the file named below.
-//
-// Reading at runtime means editing the prompt needs a restart but not a rebuild.
+// The release contains this prompt in the binary. CERAA_SYSTEM_PROMPT remains
+// an explicit operator override for local or temporary prompt changes.
 var System string
 
-// degraded is used only when prompt/system.txt cannot be read. It is a minimal
-// identity rather than a second copy of the prompt, so the two cannot drift
-// apart, and the failure is logged instead of being invisible. It says "your name
-// is" rather than "you are" for the same reason the real prompt does: a model
-// reading a one-line description of itself treats it as a role and answers
-// identity questions from its model id instead.
+// degraded is used only as a defensive guard if the embedded asset is empty.
 const degraded = "Your name is Ceraa, a coding agent for software engineering."
 
-// SystemPromptPath is the canonical location, relative to the working directory.
+// SystemPromptPath is the source path used by the repository and override docs.
 const SystemPromptPath = "prompt/system.txt"
 
 func init() {
 	System = load()
 }
 
-// load reads the prompt, falling back to a minimal identity when it is missing
-// or unreadable.
-//
-// The path is resolved against the working directory first and then against the
-// directory holding the executable, so the prompt is still found when the bot is
-// launched from somewhere other than the repository root. A relative read alone
-// silently produced the embedded copy for exactly that reason.
+// load uses an explicit override when configured, then the embedded prompt.
+// Disk copies are intentionally ignored so a stale sidecar cannot override the
+// prompt compiled into the binary.
 func load() string {
-	for _, candidate := range candidates() {
-		contents, err := os.ReadFile(candidate)
-		if err == nil && len(strings.TrimSpace(string(contents))) > 0 {
-			return resolveSearchTool(string(contents), candidate)
+	if override := os.Getenv("CERAA_SYSTEM_PROMPT"); override != "" {
+		if contents, err := os.ReadFile(override); err == nil && len(strings.TrimSpace(string(contents))) > 0 {
+			return resolveSearchTool(string(contents), override)
 		}
 	}
-	fmt.Fprintf(os.Stderr,
-		"ceraa: system prompt not found at %s (also tried the executable directory); using a minimal fallback. Run from the repository root or set CERAA_SYSTEM_PROMPT.\n",
-		SystemPromptPath)
+	if len(strings.TrimSpace(string(sourceprompt.System))) > 0 {
+		return resolveSearchTool(string(sourceprompt.System), "embedded prompt")
+	}
+	fmt.Fprintln(os.Stderr, "ceraa: embedded system prompt is empty; using a minimal fallback.")
 	return degraded
 }
 
 // searchLine is the literal-search instruction, and it is static.
-//
-// There is no environment branch and no placeholder. ripgrep is provisioned at
-// startup, so by the time this reaches the model there is one correct line, and a
-// prompt that never varies is a prompt that stays byte-identical in the cached
-// prefix for every turn. The earlier version picked between rg and grep by
-// probing PATH, which put a per-deployment value into the prefix to save a
-// sentence.
 const searchLine = `Use rg, which is provisioned for you: rg -n "pattern" PATH to find a literal with line ` +
 	`numbers, rg --files PATH to list files, and -g to filter by type such as -g "*.ts". It respects ` +
 	`.gitignore, so do not exclude directories by hand.`
 
-// resolveSearchTool substitutes the search instruction.
-//
-// It does not provision anything. Provisioning used to happen here, from a
-// package init, which meant it was invisible: no log line, no deliberate place in
-// the startup sequence, and it ran for any command that transitively imported
-// this package, including `ceraa --version`. It is now an explicit step in the
-// service startup, which reports what it did.
 func resolveSearchTool(text, source string) string {
 	resolved := strings.ReplaceAll(text, "{{SEARCH}}", searchLine)
-	// A placeholder left in place reaches the model as an instruction to search
-	// for the literal string {{SEARCH}}, so it is reported rather than shipped.
 	if strings.Contains(resolved, "{{") {
 		fmt.Fprintf(os.Stderr,
 			"ceraa: %s still contains an unresolved placeholder after substitution; check the spelling.\n", source)
@@ -83,31 +54,4 @@ func resolveSearchTool(text, source string) string {
 	return resolved
 }
 
-// Resolve returns the prompt as the model receives it.
-//
-// Exported so a test asserting on the shipped guidance reads what the model
-// reads, rather than the file with a placeholder still in it.
 func Resolve(text string) string { return resolveSearchTool(text, SystemPromptPath) }
-
-func candidates() []string {
-	paths := []string{SystemPromptPath}
-	if override := os.Getenv("CERAA_SYSTEM_PROMPT"); override != "" {
-		// An override takes precedence, so it is tried first.
-		paths = append([]string{override}, paths...)
-	}
-	if executable, err := os.Executable(); err == nil {
-		directory := filepath.Dir(executable)
-		paths = append(paths,
-			filepath.Join(directory, SystemPromptPath),
-			// The release ships system.txt flat, beside the binary, so that a
-			// user who downloads the two files by hand and drops them in one
-			// directory gets a working install. This candidate is what makes
-			// that layout load. install.sh creates the prompt/ directory
-			// itself, so it masked the gap: the installer worked, the release
-			// page did not, and nothing tested the release page.
-			filepath.Join(directory, "system.txt"),
-			filepath.Join(directory, "..", SystemPromptPath),
-		)
-	}
-	return paths
-}

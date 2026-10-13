@@ -172,43 +172,8 @@ func TestNormalizeTagOnlyAcceptsAVersion(t *testing.T) {
 	}
 }
 
-// The loader tries prompt/system.txt in the executable's directory before the
-// flat system.txt beside it, so the updater has to refresh the one that will
-// actually be read. Writing a second copy instead is how a stale prompt survives
-// an update that looks successful.
-func TestPromptTargetFollowsTheLoaderOrder(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "ceraa")
-
-	// Nothing exists: take the installer's layout, and the refresh creates it.
-	if got, want := promptTarget(target), filepath.Join(dir, "prompt", "system.txt"); got != want {
-		t.Errorf("promptTarget = %q, want %q", got, want)
-	}
-
-	// A hand install has system.txt flat beside the binary. That file is the one
-	// the loader reads second, and it exists, so it wins over creating a
-	// directory the loader would look at first but find empty.
-	flat := filepath.Join(dir, "system.txt")
-	if err := os.WriteFile(flat, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := promptTarget(target); got != flat {
-		t.Errorf("promptTarget = %q, want the existing flat %q", got, flat)
-	}
-
-	// The installer layout wins over the flat file when both exist, because the
-	// loader reads it first.
-	nested := filepath.Join(dir, "prompt", "system.txt")
-	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(nested, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := promptTarget(target); got != nested {
-		t.Errorf("promptTarget = %q, want the installer's %q", got, nested)
-	}
-}
+// The loader no longer reads disk prompt files because the prompt is embedded.
+// Self-update therefore never needs a prompt target.
 
 func TestAssetNameIsWhatTheReleasePublishes(t *testing.T) {
 	name, err := assetName()
@@ -306,17 +271,15 @@ func stubTarget(t *testing.T) (string, string) {
 	return dir, path
 }
 
-func TestApplyReplacesTheBinaryAndCreatesThePromptLayout(t *testing.T) {
+func TestApplyReplacesTheBinary(t *testing.T) {
 	dir, target := stubTarget(t)
 
 	asset, _ := assetName()
 	updated := []byte("#!/bin/sh\necho 'ceraa 0.5.0'\n")
-	prompt := []byte("the prompt shipped with 0.5.0")
-	sums := []byte(releaseLine(asset, updated) + releaseLine("system.txt", prompt))
+	sums := []byte(releaseLine(asset, updated))
 	stubRelease(t, "v0.5.0", map[string][]byte{
 		asset:        updated,
 		"SHA256SUMS": sums,
-		"system.txt": prompt,
 	})
 
 	result, err := Apply(context.Background(), "")
@@ -348,15 +311,10 @@ func TestApplyReplacesTheBinaryAndCreatesThePromptLayout(t *testing.T) {
 		t.Errorf("the replaced binary is not executable: %v", info.Mode())
 	}
 
-	promptPath := filepath.Join(dir, "prompt", "system.txt")
-	written, err := os.ReadFile(promptPath)
-	if err != nil {
-		t.Fatalf("the prompt was not written into the installer layout: %v", err)
+	// Prompt is embedded in the replacement binary, so no sidecar is written.
+	if _, err := os.Stat(filepath.Join(dir, "prompt", "system.txt")); err == nil {
+		t.Error("a prompt sidecar was written for an embedded prompt")
 	}
-	if string(written) != string(prompt) {
-		t.Errorf("prompt = %q, want %q", written, prompt)
-	}
-
 	// The staged candidate must not be left behind next to the binary.
 	leftovers, err := filepath.Glob(filepath.Join(dir, ".ceraa-update-*"))
 	if err != nil {
@@ -455,10 +413,9 @@ func TestApplyRejectsATagThatIsNotAVersion(t *testing.T) {
 	}
 }
 
-// A release that predates the packaged prompt has no system.txt to refresh, and
-// that must not fail the binary update.
-func TestApplySucceedsWhenTheReleaseHasNoPrompt(t *testing.T) {
-	dir, target := stubTarget(t)
+// A release no longer carries a prompt sidecar; the binary is self-contained.
+func TestApplyDoesNotCreatePromptSidecar(t *testing.T) {
+	_, target := stubTarget(t)
 	asset, _ := assetName()
 	updated := []byte("#!/bin/sh\necho 'ceraa 0.5.0'\n")
 	stubRelease(t, "v0.5.0", map[string][]byte{
@@ -469,8 +426,8 @@ func TestApplySucceedsWhenTheReleaseHasNoPrompt(t *testing.T) {
 	if _, err := Apply(context.Background(), ""); err != nil {
 		t.Fatalf("Apply without a prompt: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "prompt", "system.txt")); err == nil {
-		t.Error("a prompt was written for a release that does not ship one")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(target), "prompt", "system.txt")); err == nil {
+		t.Error("a prompt sidecar was written for an embedded prompt release")
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("the binary was not replaced: %v", err)
