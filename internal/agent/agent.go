@@ -14,8 +14,10 @@ import (
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/operation"
+	"ceraa/harness/runtime"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
+
 	"ceraa/harness/tool"
 	"ceraa/internal"
 	"ceraa/internal/claudeauth"
@@ -214,7 +216,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 	// and the filesystem still decides what survives.
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
-	runner := coordinator.New(agentRunnerConfig(agentRunDeps{
+	runner := runtime.New(agentRunnerConfig(agentRunDeps{
 		cfg:                 cfg,
 		provider:            provider,
 		modelConfig:         modelConfig,
@@ -223,7 +225,7 @@ func RunWithConfigContext(ctx context.Context, user string, cfg *config.Config) 
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,
 		compactor:           compactor,
-	}), store, registry)
+	}), store, registry).Coordinator
 	_, err = runner.Run(ctx, user)
 	return err
 }

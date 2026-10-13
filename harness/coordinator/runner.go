@@ -376,6 +376,14 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 	return r
 }
 
+// Operations returns the manager owned by the coordinator.
+func (r *Runner) Operations() *operation.LocalManager {
+	if r == nil {
+		return nil
+	}
+	return r.opMgr
+}
+
 type toolRunner struct {
 	reg *tool.Registry
 }
