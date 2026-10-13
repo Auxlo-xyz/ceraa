@@ -1,22 +1,36 @@
 # Setting secrets
 
-User integration secrets are stored encrypted and are separate from normal
-configuration and provider credentials.
+Ceraa user secrets are managed in the Telegram Mini App. Do not ask the user to
+paste a secret into a Telegram task message or a shell command.
 
-## Telegram commands
+## Add a secret
 
-- `/secrets`: list the names of user secrets.
-- `/setsecret NAME VALUE`: store or replace one user secret.
-- `/delsecret NAME`: delete one user secret.
+1. Open the Ceraa Mini App from Telegram.
+2. Open the **Agents, Providers & Secrets** tab.
+3. Find the **AES-256 Secret Store** panel.
+4. Choose **+ Add secret**.
+5. Enter the secret name and value.
+6. Save it from the Mini App.
 
-Use a private chat when entering a secret. Never put a secret in a task,
-committed file, log, screenshot, or tool result.
+Secret values are entered into a password field and are not echoed. The Mini App
+shows names and byte lengths, not secret values.
 
-The `list_secrets` tool returns names only. The
-`run_command_with_secret` tool can inject a named user secret into a command's
-environment for one execution. Ceraa does not list its own provider
-credentials through that tool, and those credentials cannot be passed through
-it.
+## Manage existing secrets
 
-If a command needs a secret, use the stored name and the required environment
-variable name. Do not echo the variable or print the environment.
+The same panel lets the user see stored secret names and delete a secret. A
+secret deletion is permanent unless the user adds it again.
+
+The Mini App uses the authenticated secret endpoints. It is the user-facing
+feature for managing user secrets. The Telegram `/secrets`, `/setsecret`, and
+`/delsecret` commands are not the navigation guidance for this feature.
+
+## Agent use
+
+The model may use `list_secrets` to see allowed user-secret names. It never
+receives secret values from that listing. If a command needs one, use
+`run_command_with_secret` with the stored name and an environment-variable name.
+Never echo the variable, print the environment, put the value in a file, or
+include it in a result or log.
+
+Ceraa's own provider credentials are separate and are not exposed through the
+user-secret listing or command-injection path.
