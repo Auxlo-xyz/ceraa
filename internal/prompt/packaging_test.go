@@ -31,7 +31,7 @@ func TestReleasedBinaryRunsWithoutPromptSidecar(t *testing.T) {
 	work := t.TempDir()
 	cmd := exec.Command(bin, "version")
 	cmd.Dir = work
-	cmd.Env = append(os.Environ(), "CERAA_SYSTEM_PROMPT=")
+	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("running the released binary: %v\n%s", err, out)

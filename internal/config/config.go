@@ -232,8 +232,8 @@ func DefaultConfig() *Config {
 
 // WorkspaceRootEnv is the environment override for the agent's workspace root.
 //
-// It takes precedence over the config file, the same way CERAA_SYSTEM_PROMPT
-// takes precedence over the built-in prompt path: an environment variable is a
+// It takes precedence over the config file, as do other supported environment
+// variables, but prompt text is intentionally not configurable at runtime.// takes precedence over the built-in prompt path: an environment variable is a
 // deliberate setting for one invocation, a config file is the standing default.
 // The installer writes this into the config rather than exporting it, so this is
 // here for the cases an installer cannot cover, such as a container image or a

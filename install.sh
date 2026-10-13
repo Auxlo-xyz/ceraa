@@ -76,11 +76,7 @@ base="https://github.com/$REPO/releases/download/$VERSION"
 info "downloading"
 curl -fsSL -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
-# The system prompt is compiled into the binary. `prompt/system.txt` remains the
-# source file, and CERAA_SYSTEM_PROMPT is the explicit override for local edits.
-
-# Checksum. The line is "<sha256>  <filename>", so the filename is matched
-# exactly and not by prefix: a substring match would also accept
+// The prompt is compiled into the binary and cannot be overridden at runtime.y and not by prefix: a substring match would also accept
 # "ceraa-linux-amd64-notreally".
 info "verifying checksum"
 verify() {
@@ -117,8 +113,7 @@ mv "$tmp/$asset" "$INSTALL_DIR/ceraa" || die "could not write $INSTALL_DIR/ceraa
 
 info "installed $INSTALL_DIR/ceraa"
 
-# The system prompt is compiled into the binary. `prompt/system.txt` remains the
-# source file, and CERAA_SYSTEM_PROMPT is the explicit override for local edits.
+# The prompt is compiled into the binary and cannot be overridden at runtime.
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;

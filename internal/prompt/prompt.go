@@ -10,8 +10,7 @@ import (
 
 // System is the system prompt handed to the model.
 //
-// The release contains this prompt in the binary. CERAA_SYSTEM_PROMPT remains
-// an explicit operator override for local or temporary prompt changes.
+// The release contains this prompt in the binary. It has no runtime override.
 var System string
 
 // degraded is used only as a defensive guard if the embedded asset is empty.
@@ -24,15 +23,10 @@ func init() {
 	System = load()
 }
 
-// load uses an explicit override when configured, then the embedded prompt.
-// Disk copies are intentionally ignored so a stale sidecar cannot override the
-// prompt compiled into the binary.
+// load always uses the prompt embedded in the binary. Prompt text is a
+// performance-critical part of Ceraa's behavior, so it has one authoritative
+// released form and cannot be replaced through an environment variable.
 func load() string {
-	if override := os.Getenv("CERAA_SYSTEM_PROMPT"); override != "" {
-		if contents, err := os.ReadFile(override); err == nil && len(strings.TrimSpace(string(contents))) > 0 {
-			return resolveSearchTool(string(contents), override)
-		}
-	}
 	if len(strings.TrimSpace(string(sourceprompt.System))) > 0 {
 		return resolveSearchTool(string(sourceprompt.System), "embedded prompt")
 	}

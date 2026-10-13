@@ -41,8 +41,7 @@ func TestTheSearchLineIsStatic(t *testing.T) {
 	}
 }
 
-// A prompt with no placeholder is passed through untouched, which is what keeps
-// CERAA_SYSTEM_PROMPT working.
+// A prompt with no placeholder is passed through untouched.
 func TestAPromptWithNoPlaceholderIsUntouched(t *testing.T) {
 	text := "a prompt that says nothing about search"
 	if got := resolveSearchTool(text, "test"); got != text {

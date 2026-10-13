@@ -19,7 +19,6 @@ func TestLoadUsesTheEmbeddedPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("CERAA_SYSTEM_PROMPT", "")
 
 	want := resolveSearchTool(string(sourceprompt.System), "embedded prompt")
 	if got := load(); got != want {
@@ -43,35 +42,10 @@ func TestLoadIgnoresStaleDiskPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("CERAA_SYSTEM_PROMPT", "")
 
 	got := load()
 	if got == "stale prompt" || !strings.Contains(got, "You are Ceraa") {
 		t.Errorf("load() used the stale disk prompt: %q", got)
-	}
-}
-
-func TestLoadPrefersTheOverride(t *testing.T) {
-	dir := t.TempDir()
-	custom := filepath.Join(dir, "mine.txt")
-	if err := os.WriteFile(custom, []byte("my own prompt"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CERAA_SYSTEM_PROMPT", custom)
-	if got := load(); got != "my own prompt" {
-		t.Errorf("load() = %q, want the override contents", got)
-	}
-}
-
-func TestLoadIgnoresAnEmptyOverride(t *testing.T) {
-	dir := t.TempDir()
-	empty := filepath.Join(dir, "empty.txt")
-	if err := os.WriteFile(empty, []byte("   \n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CERAA_SYSTEM_PROMPT", empty)
-	if got := load(); got == degraded || strings.TrimSpace(got) == "" {
-		t.Error("an empty override did not fall back to the embedded prompt")
 	}
 }
 
