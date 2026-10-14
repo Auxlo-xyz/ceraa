@@ -161,10 +161,27 @@ func TestVerifyProviderShapesTheBodyForTheOpenCodeContract(t *testing.T) {
 			t.Errorf("tools = %v, missing %q, which the free tier looks for", got, want)
 		}
 	}
-	// The verification sends no tools of its own, so the ones added to satisfy
-	// the gateway must not be advertised as callable.
-	if body["tool_choice"] != "none" {
-		t.Errorf("tool_choice = %v, want none; the ping carries no real tools to call", body["tool_choice"])
+	// The verification sends no tools of its own. The pair added to satisfy
+	// the gateway used to be marked uncallable with "none", but the gateway
+	// now refuses "none", so the key must be absent. A verification ping
+	// never executes an answer.
+	if _, present := body["tool_choice"]; present {
+		t.Errorf("tool_choice is present on a verification ping; the gateway refuses \"none\" and absent passes")
+	}
+	// The injected pair must carry the gateway markers with coherent
+	// schemas, or the verification fails for a reason that reads like a bad
+	// key. This is the seam the contract lives or dies on.
+	for _, entry := range body["tools"].([]any) {
+		tool := entry.(map[string]any)
+		function := tool["function"].(map[string]any)
+		name := function["name"].(string)
+		marker := llm.OpenCodeMarkerFor(name)
+		if marker == "" {
+			continue
+		}
+		if desc, _ := function["description"].(string); !strings.Contains(desc, marker) {
+			t.Errorf("injected tool %q lacks the gateway marker", name)
+		}
 	}
 }
 

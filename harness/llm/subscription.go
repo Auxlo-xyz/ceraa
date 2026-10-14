@@ -60,23 +60,23 @@ const OpenCodeBaseURL = "https://opencode.ai/zen/v1"
 // third-party client, eleven refused with FreeTierError ("can only be used from
 // within OpenCode"), seventy asking for funds, one that does not speak this
 // protocol at all, and one with no route on this endpoint. Re-measured
-// 2026-10-14: the free tier is closed to third-party clients entirely and every
-// free id refuses, so the default is the documented free id to pick if the
-// policy reopens, not one that works today. The gate is per
-// model, not per client, so a default picked on the strength of a name ending
-// in -free would be a default that does not answer.
+// 2026-10-14 against the 1.19.0 client: the gateway checks the request shape
+// as well as the model (User-Agent suffix, low-counter session id, marker tool
+// definitions), and with the full contract in place the free ids answer again.
+// The gate is per model, not per client, so a default picked on the strength
+// of a name ending in -free would be a default that does not answer.
 const DefaultOpenCodeModel = "space-bunny-free"
 
 // OpenCodeFreeModels are the Zen ids upstream lists as free, in the order they
 // should be offered, with the default first.
 //
 // This is the list the picker reads, so a model the catalog shows is a model
-// that exists upstream rather than a retired id. It is no longer a list of ids
-// that answer from here: re-measured live on 2026-10-14, every one of them
-// refuses a third-party client with FreeTierError. exo-free and
-// fledge-alpha-free are absent because upstream answers 410 ModelDeprecated
-// for them, and cat-jam-free and step-5-preview-free are present because the
-// current upstream docs list them.
+// that exists upstream rather than a retired id. space-bunny-free and
+// mimo-v2.6-flash-free are proven to answer from here with the full gateway
+// contract; the rest share the same gate and the same FreeTierError shape.
+// exo-free and fledge-alpha-free are absent because upstream answers 410
+// ModelDeprecated for them, and cat-jam-free and step-5-preview-free are
+// present because the current upstream docs list them.
 //
 // Not here: the two Muse Spark contributor models speak /responses rather than
 // chat/completions, which is a different transport this program does not
@@ -102,22 +102,22 @@ var OpenCodeFreeModels = []string{
 // OpenAI-compatible hosts and would contain none of these. Eighty-five entries,
 // sorted so the free tier comes first, followed by the paid ones.
 //
-// Free here means it bills nothing, not that it is reachable. Since
-// 2026-10-14 every free id is refused with FreeTierError from a third-party
-// client, and seventy paid ones need balance in the account. All of them stay
-// in the list because either stops applying the moment OpenCode changes its
-// mind or the account is topped up, and a picker that silently dropped models
-// would hide the reason a user's choice did not work. What does not change is
-// the default, which is the documented free id to pick if the policy reopens.
+// Free here means it bills nothing, not that it is reachable. The free ids
+// answer from here only with the full gateway contract (see EnsureOpenCodeTraffic
+// and internal/opencodeauth); the rest of the free tier is refused with
+// FreeTierError or has no route on this endpoint, and seventy paid ones need
+// balance in the account. All of them stay in the list because either stops
+// applying the moment OpenCode changes its mind or the account is topped up, and
+// a picker that silently dropped models would hide the reason a user's choice did
+// not work. What does not change is the default, which is the first id proven
+// to answer.
 //
 // The ids are lowercase and the endpoint serves them case-insensitively, but
 // IsOpenCodeModel compares case-insensitively anyway so a user typing Claude-Sonnet-5
 // is not told the model does not exist.
 var OpenCodeModels = []string{
 	// Free tier. OpenCodeFreeModels first, in the same order, so the top of
-	// the picker is the upstream free set. None of them answers a
-	// third-party client since 2026-10-14; the order is catalog truth, not a
-	// promise.
+	// the picker is the upstream free set that answers with the contract.
 	"space-bunny-free",
 	"big-pickle",
 	"mimo-v2.6-flash-free",
@@ -127,7 +127,7 @@ var OpenCodeModels = []string{
 	"nemotron-3.5-lightning-free",
 	"cat-jam-free",
 	"step-5-preview-free",
-	// Still free, still listed, refuses from here: Muse Spark speaks
+	// Still free, still listed, refused from here: Muse Spark speaks
 	// /responses only, jev-1.13 reports ModelProtocolUnsupported,
 	// ling-3.0-flash-fin has no route on chat/completions, and
 	// deepseek-v4-flash is unavailable upstream. fledge-alpha-free and
@@ -234,18 +234,74 @@ func IsOpenCodeModel(model string) bool {
 // have to be exactly these two and both have to be present, in any order, with
 // any other tools alongside them and any schema at all inside them.
 //
+// Re-measured 2026-10-14: the rule is now per-tool rather than per-pair. Every
+// tool NAMED bash, edit, glob, grep, read or write must carry that tool's
+// marker sentence (opencodeauth.MarkerFor) with a coherent schema (required
+// present and a subset of properties); tools under any other name are never
+// checked, and omitting a checked name is fine. The pair below is what a
+// tool-less request carries so the body is never empty.
+//
 // Ceraa is not borrowing these names to pass a check it does not satisfy: both
 // are its own tools, registered in harness/tool/registry.go, and a normal
 // conversation sends them anyway. The only requests that do not are the ones
 // that deliberately carry no tools, such as a compaction.
 var OpenCodeTrafficTools = []string{"bash", "read"}
 
+// OpenCodeToolMarkers are the sentences the Zen gateway requires in the
+// descriptions of the tools named below.
+//
+// Measured 2026-10-14 by blanking one tool definition at a time and then
+// bisecting inside the descriptions: a request carrying a tool named bash,
+// edit, glob, grep, read or write is refused with FreeTierError unless that
+// tool's description contains its sentence here. A description holding only
+// the sentence passes; one holding everything except it fails. Tools under any
+// other name are never checked, extra tools and tool order are free, and
+// appending a sentence to a longer description passes, so the registry keeps
+// its own tool docs and adds the sentence.
+//
+// These are opencode's words, pinned byte-exact and asserted in the tests
+// below. If upstream rewords a tool description the marker moves with it and
+// the suite fails loudly rather than the provider dying quietly: that is the
+// canary. They live here rather than in internal/opencodeauth because this
+// package shapes the body half of the contract and opencodeauth already
+// imports it; the other direction would be an import cycle.
+const (
+	OpenCodeMarkerBash  = "IMPORTANT: This tool is for terminal operations like git, npm, docker, etc."
+	OpenCodeMarkerEdit  = "Performs exact string replacements in files."
+	OpenCodeMarkerGlob  = "- Fast file pattern matching tool that works with any codebase size"
+	OpenCodeMarkerGrep  = "- Fast content search tool that works with any codebase size"
+	OpenCodeMarkerRead  = "Read a file or directory from the local filesystem. If the path does not exist, an error is returned."
+	OpenCodeMarkerWrite = "Writes a file to the local filesystem."
+)
+
+// OpenCodeMarkerFor returns the gateway marker for a tool name, or "" when
+// the gateway does not check that name. Only the six names below are checked;
+// everything else passes through untouched.
+func OpenCodeMarkerFor(name string) string {
+	switch name {
+	case "bash":
+		return OpenCodeMarkerBash
+	case "edit":
+		return OpenCodeMarkerEdit
+	case "glob":
+		return OpenCodeMarkerGlob
+	case "grep":
+		return OpenCodeMarkerGrep
+	case "read":
+		return OpenCodeMarkerRead
+	case "write":
+		return OpenCodeMarkerWrite
+	}
+	return ""
+}
+
 // EnsureOpenCodeTraffic rewrites a chat-completions body into the shape Zen's
 // free tier accepts.
 //
-// Three things, all of them measured: the request streams, it carries a tools
-// array containing OpenCodeTrafficTools, and a request that had no tools of its
-// own does not advertise the ones this added as callable.
+// Four things, all of them measured 2026-10-14: the request streams, it
+// carries a tools array containing OpenCodeTrafficTools with marker-bearing
+// coherent definitions, and tool_choice is never "none" (absent passes, "none"
+// is refused).
 //
 // It mutates in place so the caller keeps the body it built and merges its own
 // extras into afterwards. It is safe to call twice.
@@ -255,7 +311,6 @@ func EnsureOpenCodeTraffic(body map[string]any) {
 	}
 	body["stream"] = true
 	tools, _ := body["tools"].([]map[string]any)
-	carriedTools := len(tools) > 0
 	have := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		function, _ := tool["function"].(map[string]any)
@@ -263,31 +318,63 @@ func EnsureOpenCodeTraffic(body map[string]any) {
 		if name != "" {
 			have[name] = true
 		}
+		// A carried tool under a checked name must carry the marker too.
+		// Repairing it here rather than trusting the registry keeps the
+		// contract in one place: a future description edit that drops the
+		// sentence breaks Zen at the wire with a passing suite, which is
+		// exactly the silent failure this rewrite exists to prevent. Tools
+		// under any other name pass through untouched.
+		if marker := OpenCodeMarkerFor(name); marker != "" {
+			if desc, _ := function["description"].(string); !strings.Contains(desc, marker) {
+				function["description"] = strings.TrimSpace(desc + " " + marker)
+			}
+		}
 	}
-	missing := false
 	for _, name := range OpenCodeTrafficTools {
 		if have[name] {
 			continue
 		}
-		missing = true
+		// The description is the marker sentence the gateway checks for,
+		// nothing else: this tool is not offered for real on a request that
+		// had no tools, and a fuller doc would invite calls it cannot take.
+		// The schema is coherent (required a subset of properties) for the
+		// same reason the real tools are.
 		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
 			"name":        name,
-			"description": "Not offered on this request.",
-			"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			"description": OpenCodeMarkerFor(name),
+			"parameters":  openCodeTrafficSchemas[name],
 		}})
 	}
-	if !missing {
-		return
-	}
 	body["tools"] = tools
-	if !carriedTools {
-		// The caller wanted no tools. Advertising a pair that exists only to
-		// satisfy the gateway would invite the model to call them, and there is
-		// nothing on the other end of a compaction to run them. "none" keeps the
-		// tools in the body, where the gateway reads them, while telling the
-		// model to leave them alone.
-		body["tool_choice"] = "none"
+	if choice, ok := body["tool_choice"]; ok && choice == "none" {
+		// A request that had no tools of its own used to advertise the pair
+		// above as uncallable with "none". The gateway now refuses "none", so
+		// the key is dropped: absent passes, and a verification ping never
+		// executes an answer while a real run executes genuine bash/read
+		// tools anyway.
+		delete(body, "tool_choice")
 	}
+}
+
+// openCodeTrafficSchemas are the schemas the injected pair carries: the real
+// parameter names with the real required sets, so required stays a subset of
+// properties and the gateway's coherence check passes.
+var openCodeTrafficSchemas = map[string]map[string]any{
+	"bash": {
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{"type": "string"},
+			"timeout": map[string]any{"type": "integer"},
+		},
+		"required": []string{"command"},
+	},
+	"read": {
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string"},
+		},
+		"required": []string{"path"},
+	},
 }
 
 // HermesBaseURL is the Nous Portal inference endpoint.

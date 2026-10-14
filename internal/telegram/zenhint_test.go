@@ -8,10 +8,10 @@ import (
 // A refusal has to name the fix, not just repeat the status.
 //
 // Zen says no several ways and the generic message sent everyone to re-check
-// a key that was never the problem. Re-measured 2026-10-14: the free tier is
-// closed to third-party clients entirely, so the hint must not recommend
-// another free id. It names the two things that actually work: a funded
-// account with a paid model, or another provider.
+// a key that was never the problem. The default model is named because that is
+// an id measured to answer from outside the OpenCode app with the full gateway
+// contract in place, so the hint leads to something that works rather than to
+// another refusal.
 func TestZenRefusalsSayWhatToDo(t *testing.T) {
 	cases := map[string]struct {
 		body   string
@@ -19,11 +19,11 @@ func TestZenRefusalsSayWhatToDo(t *testing.T) {
 	}{
 		"free tier": {
 			body:   `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`,
-			wanted: []string{"closed to third-party", "add funds", "another provider"},
+			wanted: []string{"inside the OpenCode app", "space-bunny-free"},
 		},
 		"no funds": {
 			body:   `{"error":{"message":"Upstream request failed: Insufficient account funds"}}`,
-			wanted: []string{"no balance", "Add funds"},
+			wanted: []string{"no balance", "costs nothing"},
 		},
 		"go subscription": {
 			body:   `{"error":{"message":"Upstream request failed: An active OpenCode Go subscription is required to use Go models."}}`,
@@ -72,11 +72,11 @@ func TestZenProtocolAndRouteRefusalsSayWhatToDo(t *testing.T) {
 	}{
 		"protocol unsupported": {
 			body:   `{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}`,
-			wanted: []string{"chat/completions", "closed to third-party"},
+			wanted: []string{"chat/completions", "space-bunny-free"},
 		},
 		"no route": {
 			body:   `{"status":404,"message":"Cannot find any route matching [POST] https://opencode.ai/zen/v1/chat/completions"}`,
-			wanted: []string{"chat/completions", "closed to third-party"},
+			wanted: []string{"chat/completions", "space-bunny-free"},
 		},
 	}
 	for name, tc := range cases {

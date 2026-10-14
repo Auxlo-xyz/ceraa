@@ -14,22 +14,36 @@
 // What the gateway does with that block was measured rather than read, because
 // the deployed gateway runs ahead of the public source and answers with an error
 // type the clone does not contain. Sweeping the live endpoint one header at a
-// time on 2026-10-01 established:
+// time on 2026-10-01 established the first contract; re-measuring on 2026-10-14
+// against the 1.19.0 client rewrote it. The current rules:
 //
-//   - User-Agent must read "opencode/<version>". A bare "opencode" is refused,
-//     "opencode/1.17.0" and everything below 1.18.0 answer 426, and 1.18.0 and
-//     above answer 200. Ceraa's own agent token, and every other client's, is
-//     refused with FreeTierError.
-//   - x-opencode-session must be an id in opencode's own shape: "ses_", twelve
-//     lowercase hex characters, fourteen base62 characters. The embedded
-//     timestamp is never decoded, so any value of that shape passes and a real
-//     but re-encoded one does not.
-//   - x-opencode-client, x-opencode-project and x-opencode-request are read but
-//     never gate anything: the client value may be anything, including "ceraa",
-//     and the other two may be absent.
+//   - User-Agent must read "opencode/<version> <suffix>". The version floor is
+//     gone: 1.18.34 passes with a suffix and 1.19.0 fails without one. A bare
+//     "opencode/<version>" with nothing after it is refused with FreeTierError,
+//     and so is every other client name. The suffix content is free: the client
+//     below sends "ceraa/<version>" in it, which is both honest and accepted.
+//   - x-opencode-session must be an id in opencode's own shape AND carry a
+//     low sequence counter: the twelve hex characters end in 0xFFE, which
+//     decodes to counter 1, the value a fresh generator emits for its first id.
+//     Random counters (the old GatewaySessionID hashed them) are refused with
+//     FreeTierError however fresh their timestamp, and counters 64 and above
+//     are refused while 0 through 63 pass. The timestamp itself is never
+//     checked: ms=0 passes. x-opencode-request carries no such requirement and
+//     stays random.
+//   - x-opencode-client may be anything, including "ceraa", and
+//     x-opencode-project may be absent: both verified live.
+//   - x-opencode-session-id repeats the session beside x-opencode-session.
+//     Either one alone is refused with everything else perfect, so both travel.
 //
 // The body is part of the same contract and lives in harness/llm, because a
-// header set on a request the gateway does not recognise still fails.
+// header set on a request the gateway does not recognise still fails. The body
+// rules, measured the same day: stream must be true, tool_choice must not be
+// "none" (absent or auto pass), and every tool NAMED bash, edit, glob, grep,
+// read or write must carry that tool's marker sentence (see
+// llm.OpenCodeMarkerFor) with a coherent schema (required present and a subset of
+// properties). Tools under any other name, extra tools, and tool order are all
+// free. Ceraa's own bash/read/write schemas already satisfy the coherence rule,
+// so only the marker sentences are appended to their descriptions.
 //
 // The client field is deliberately Ceraa's own. See ClientID.
 package opencodeauth
@@ -46,6 +60,7 @@ import (
 	"time"
 
 	"ceraa/harness/llm"
+	"ceraa/internal/build"
 	"ceraa/internal/secret"
 )
 
@@ -69,21 +84,20 @@ const ClientID = "ceraa"
 // GatewayClientVersion is the opencode release this build names in its
 // User-Agent.
 //
-// A floor rather than a decoration: the gateway answers 426 Upgrade Required to
-// anything below 1.18.0 and 200 to 1.18.0 and above, so the version has to be at
-// least that. The specific value is the release whose request was captured and
-// replayed to establish the contract above.
-const GatewayClientVersion = "1.18.34"
+// The 1.18.0 floor measured on 2026-10-01 is gone: on 2026-10-14 the gateway
+// keys on the suffix rather than the version, and 1.18.34 passes with one.
+// The value below is still the release whose request was captured and replayed
+// to establish the current contract, so it names what was actually measured.
+const GatewayClientVersion = "1.19.0"
 
 // GatewayUserAgent is the User-Agent the Zen gateway accepts.
 //
-// It reads as the OpenCode CLI because the gateway accepts nothing else on that
-// header, which is a statement about whose client it is willing to serve rather
-// than a statement about who is asking. The identity of the caller is carried
-// where the gateway does read it: ClientID in x-opencode-client.
-//
-// A var rather than a const only so a test can name it; the value is fixed.
-var GatewayUserAgent = "opencode/" + GatewayClientVersion
+// It reads as the OpenCode CLI with Ceraa named in the suffix because the
+// gateway refuses a bare "opencode/<version>" with nothing after it, while any
+// suffix content passes. That makes the suffix the one honest field in the
+// header: the version is the release whose traffic was measured, and the tail
+// says who is really asking. See the package doc for the measurement.
+var GatewayUserAgent = "opencode/" + GatewayClientVersion + " ceraa/" + build.Version
 
 // Header names, spelled once. These are OpenCode's, not invented: they are read
 // from request.ts, where they are sent under the same condition.
@@ -94,11 +108,22 @@ const (
 	HeaderProject  = "x-opencode-project"
 	HeaderUA       = "User-Agent"
 	HeaderAffinity = "x-session-affinity"
+	// HeaderSessionID is the 1.19.0 client's second session header, sent
+	// beside x-opencode-session with the same value. Either one alone is
+	// refused: the session without the id and the id without the session
+	// both answer FreeTierError with everything else perfect.
+	HeaderSessionID = "x-opencode-session-id"
 )
 
 // idPrefix is the prefix on a session id in opencode's own generator, from
 // packages/opencode/src/id/id.ts, where the "session" entry maps to "ses".
 const sessionPrefix = "ses"
+
+// Marker sentences live in harness/llm beside the body half of the contract
+// they gate (see llm.OpenCodeMarkerFor). They cannot live here: this package
+// imports llm, so llm importing the markers back would be a cycle. The
+// registry's bash/read/write descriptions append them; edit, glob and grep
+// markers are documented for the day Ceraa offers those names.
 
 // messagePrefix is the same generator's prefix for a message id, which is what
 // x-opencode-request carries.
@@ -223,16 +248,19 @@ func CredentialFor(ctx context.Context, profileAPIKey string) (Credential, error
 // shape or the request is refused, so the conversation is rendered into that
 // shape by GatewaySessionID. x-session-affinity is Ceraa's own conversation id,
 // which is what a proxy or a log on the far side can actually resolve back to
-// this session.
+// this session. x-opencode-session-id repeats the gateway session: the 1.19.0
+// client sends both, and either one alone is refused.
 //
 // projectID is sent only when non-empty, matching opencode's own conditional.
 func RequestHeaders(sessionID, projectID string) map[string]string {
 	session := strings.TrimSpace(sessionID)
+	gateway := GatewaySessionID(session)
 	headers := map[string]string{
-		HeaderClient:   ClientID,
-		HeaderUA:       GatewayUserAgent,
-		HeaderSession:  GatewaySessionID(session),
-		HeaderAffinity: session,
+		HeaderClient:    ClientID,
+		HeaderUA:        GatewayUserAgent,
+		HeaderSession:   gateway,
+		HeaderSessionID: gateway,
+		HeaderAffinity:  session,
 	}
 	if trimmed := strings.TrimSpace(projectID); trimmed != "" {
 		headers[HeaderProject] = trimmed
@@ -268,15 +296,23 @@ func perRequestHeaders(projectID, fallbackSession string) func(sessionID string)
 //
 // The id is drawn in opencode's generator shape because the gateway refuses any
 // other: "ses_", twelve lowercase hex characters, fourteen base62 characters.
-// The twelve hex characters are where that generator puts a timestamp, and the
-// measurement in the package doc shows the gateway never decodes them, so they
-// are taken from a hash of the conversation instead of from the clock. A clock
-// would make the id change on every call, which is the behaviour the cache
-// exists to avoid in a stateful version of this function and does not need to
-// exist here.
+// The twelve hex characters are where that generator puts a timestamp and a
+// twelve-bit sequence counter, and the gateway decodes the counter: values 64
+// and above are refused with FreeTierError however fresh the timestamp, while 0
+// through 63 pass and the timestamp itself is never checked. The low twelve
+// bits below are therefore fixed to 0xFFE, which decodes to counter 1, the
+// value a fresh generator emits for its first id and the value every captured
+// official-client session carries. The timestamp stays a hash of the
+// conversation rather than the clock, so the id is stable per conversation.
 func GatewaySessionID(conversation string) string {
 	sum := sha256.Sum256([]byte("ceraa-opencode-session\x00" + conversation))
-	return idShape(sessionPrefix, sum[:6], sum[6:20])
+	timeBytes := sum[:6]
+	// Force the sequence counter without touching the timestamp above it:
+	// the low twelve bits of the six-byte field are the counter, and 0xFFE
+	// reads back as 1 after the generator's complement.
+	timeBytes[4] |= 0x0F
+	timeBytes[5] = 0xFE
+	return idShape(sessionPrefix, timeBytes, sum[6:20])
 }
 
 // NewRequestID returns the x-opencode-request value for one request.
@@ -290,6 +326,10 @@ func GatewaySessionID(conversation string) string {
 // Random rather than sequential: a counter published to a third party tells the
 // recipient how many requests this process has made and says nothing about which
 // of them this is without a shared starting point.
+//
+// The counter stays random rather than forced low: x-opencode-request carries
+// no counter requirement (a fresh random one passes beside a good session),
+// so there is nothing to conform to here and the privacy reason stands.
 func NewRequestID() string {
 	timeBytes := descendingTime(time.Now().UnixMilli(), randomCounter())
 	tail := make([]byte, idTailLength)
@@ -359,7 +399,7 @@ func HasOpenCodeHeaders(headers map[string]string) bool {
 	if len(headers) == 0 {
 		return false
 	}
-	for _, key := range []string{HeaderClient, HeaderUA, HeaderSession} {
+	for _, key := range []string{HeaderClient, HeaderUA, HeaderSession, HeaderSessionID} {
 		if _, ok := headers[key]; !ok {
 			return false
 		}

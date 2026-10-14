@@ -141,24 +141,32 @@ func TestTheFreeModelsAreInTheCatalogAndFirst(t *testing.T) {
 	}
 }
 
-// A retired model id must not be offered. Upstream answers 410
-// ModelDeprecated for exo-free and fledge-alpha-free, so either of them
-// sitting in the free set or the catalog would make the picker send a user
-// into a refusal.
+// A model that cannot answer from here must not be presented as one that can.
+// jev-1.13 and ling-3.0-flash-fin answer ModelProtocolUnsupported and 404
+// respectively; either of them sitting in the free answer set would make the
+// hint send a user into a refusal.
 func TestTheFreeAnswerSetDropsTheOnesThatRefuse(t *testing.T) {
-	refused := []string{"exo-free", "fledge-alpha-free", "jev-1.13-free", "ling-3.0-flash-fin-free", "deepseek-v4-flash-free"}
+	refused := []string{"jev-1.13-free", "ling-3.0-flash-fin-free", "deepseek-v4-flash-free"}
 	for _, id := range refused {
 		for _, free := range OpenCodeFreeModels {
 			if id == free {
-				t.Errorf("%q is retired or refuses from here but is listed as a free answer", id)
+				t.Errorf("%q does not answer from here but is listed as a free answer", id)
 			}
 		}
 	}
-	// The 410-deprecated ids are gone upstream, not merely gated, so they
-	// must not be in the catalog either. The merely refused ones stay
-	// listed: dropping them would hide the reason a user's choice did not
-	// work.
+}
+
+// A retired model id must not be offered anywhere. Upstream answers 410
+// ModelDeprecated for exo-free and fledge-alpha-free, so either of them in
+// the free set or the catalog would make the picker send a user into a
+// refusal for an id that no longer exists.
+func TestTheCatalogDropsDeprecatedIds(t *testing.T) {
 	for _, id := range []string{"exo-free", "fledge-alpha-free"} {
+		for _, free := range OpenCodeFreeModels {
+			if id == free {
+				t.Errorf("%q is retired upstream but is listed as a free answer", id)
+			}
+		}
 		if IsOpenCodeModel(id) {
 			t.Errorf("%q is retired upstream but is still in the catalog", id)
 		}

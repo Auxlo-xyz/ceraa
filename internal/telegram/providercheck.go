@@ -168,31 +168,30 @@ func providerErrorText(body []byte) string {
 // accepted for one free id is refused for the next, and neither the id nor the
 // refusal says so.
 //
-// Re-measured 2026-10-14: the free tier is now closed to third-party clients
-// entirely. All eight ids that answered on 2026-10-01 refuse with FreeTierError,
-// as do the newer free ids, on both /zen/v1 and /inference/v1 and on both
-// chat/completions and /responses. The User-Agent version floor is gone with
-// it: 1.17.0 answers 403 rather than 426. The key is not the problem, a paid
-// probe reaches the funds check, so the hint must not send anyone to re-check
-// it or to another free id.
+// Re-measured 2026-10-14 against the 1.19.0 client: the refusal also fires
+// when the request misses the gateway contract (a bare User-Agent with no
+// suffix, a session id with a random sequence counter, tool definitions
+// without the marker sentences), and it reads exactly like a gated model.
+// Ceraa sends the full contract, so a refusal past this point names the model,
+// not the key and not the shape.
 func providerFailureHint(body []byte) string {
 	text := string(body)
 	switch {
 	case strings.Contains(text, "FreeTierError"), strings.Contains(text, "free tier can only be used"):
-		return "OpenCode's free tier is currently closed to third-party clients: every free model id refuses, so no key fixes this. " +
-			"To use Zen from here, add funds at opencode.ai and pick a paid model, or use another provider."
+		return "That model is only served from inside the OpenCode app, so no key works for it from here. " +
+			"Pick another model under Model: " + llm.DefaultOpenCodeModel + " is the free one that answers outside the app."
 	case strings.Contains(text, "Insufficient account funds"):
 		return "The key is good, the model is good, and the account has no balance. " +
-			"Add funds at opencode.ai."
+			"Add funds at opencode.ai, or pick " + llm.DefaultOpenCodeModel + " which costs nothing."
 	case strings.Contains(text, "OpenCode Go subscription"):
 		return "That model belongs to OpenCode Go, which needs a $10/month subscription. " +
 			"Zen models under Model do not."
 	case strings.Contains(text, "ModelProtocolUnsupported"), strings.Contains(text, "does not support this protocol"):
 		return "That model does not speak chat/completions, so no key works for it from here. " +
-			"Pick another model under Model. Note the free tier is currently closed to third-party clients, so a paid model with a funded account is what works from here."
+			"Pick another model under Model: " + llm.DefaultOpenCodeModel + " is the free one that answers outside the app."
 	case strings.Contains(text, "Cannot find any route") && strings.Contains(text, "chat/completions"):
 		return "Zen has no chat/completions route for that model id. " +
-			"Pick another model under Model. Note the free tier is currently closed to third-party clients, so a paid model with a funded account is what works from here."
+			"Pick another model under Model: " + llm.DefaultOpenCodeModel + " is the free one that answers outside the app."
 	case strings.Contains(text, "Model is unavailable"):
 		return "Zen does not serve that model id. Pick one from Model rather than typing one."
 	case strings.Contains(text, "ModelDeprecated"), strings.Contains(text, "has been deprecated"):

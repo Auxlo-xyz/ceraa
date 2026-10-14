@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ceraa/harness/llm"
 )
 
 // TestResolvePathFromPrefersExplicitBase pins that a relative path resolves
@@ -182,5 +184,32 @@ func TestTodowriteIsHiddenButStillExecutable(t *testing.T) {
 	}
 	if _, ok := reg.Get("todowrite"); !ok {
 		t.Fatal("todowrite no longer resolves, so a recorded call cannot replay")
+	}
+}
+
+// Tools named like opencode's are checked by the Zen gateway against their
+// marker sentences with coherent schemas, and the rewrite in EnsureOpenCodeTraffic
+// repairs descriptions at the wire — but a schema it cannot repair is a
+// required name missing from properties. This pins the registry side: every
+// offered tool under a checked name must already be coherent, so the wire
+// rewrite only ever appends a sentence.
+func TestCheckedToolSchemasAreCoherent(t *testing.T) {
+	reg := DefaultRegistry()
+	for _, offered := range reg.Offered() {
+		marker := llm.OpenCodeMarkerFor(offered.Name())
+		if marker == "" {
+			continue
+		}
+		schema := offered.Schema()
+		props, _ := schema["properties"].(map[string]any)
+		required, _ := schema["required"].([]string)
+		if len(required) == 0 {
+			t.Errorf("tool %q is gateway-checked but carries no required array", offered.Name())
+		}
+		for _, name := range required {
+			if _, ok := props[name]; !ok {
+				t.Errorf("tool %q requires %q, which is not in its properties", offered.Name(), name)
+			}
+		}
 	}
 }

@@ -35,14 +35,15 @@ func TestClientIDIsCeraa(t *testing.T) {
 	}
 }
 
-// The gateway keys on the User-Agent and refuses everything below opencode
-// 1.18.0 with 426. A UA of "ceraa/x" is answered FreeTierError for the very
-// models this integration exists to reach, so this assertion is the one that
-// says the provider works at all.
+// The gateway keys on the User-Agent. First measured 2026-10-01 as a version
+// floor (426 below 1.18.0); re-measured 2026-10-14 as a suffix rule: a bare
+// "opencode/<version>" with nothing after it is refused FreeTierError at any
+// version, while any suffix content passes. The suffix is where this program
+// stays honest, naming itself beside the measured release.
 //
 // The version is parsed rather than compared as a string because "1.9.0" sorts
 // before "1.18.0" as text and is above it as a number, and it is 1.9.0 and every
-// other such value that the floor exists to reject.
+// other such value that the old floor existed to reject.
 func TestGatewayUserAgentMeetsTheVersionFloor(t *testing.T) {
 	if !strings.HasPrefix(GatewayUserAgent, "opencode/") {
 		t.Fatalf("GatewayUserAgent = %q, want the opencode/ prefix; anything else is refused FreeTierError", GatewayUserAgent)
@@ -62,11 +63,23 @@ func TestGatewayUserAgentMeetsTheVersionFloor(t *testing.T) {
 	if major < 1 || (major == 1 && minor < 18) {
 		t.Errorf("GatewayUserAgent = %q is below the 1.18.0 floor; the gateway answers 426 to it", GatewayUserAgent)
 	}
+	fields := strings.Fields(GatewayUserAgent)
+	if len(fields) < 2 || !strings.HasPrefix(fields[1], "ceraa/") {
+		t.Errorf("GatewayUserAgent = %q carries no ceraa/ suffix; a bare version is refused FreeTierError", GatewayUserAgent)
+	}
 }
 
 // x-opencode-session is the other half of what the gateway keys on, and it
 // accepts nothing outside opencode's own id grammar: "ses_", twelve lowercase
 // hex characters, fourteen base62 characters. Anything else is FreeTierError.
+//
+// The grammar alone stopped being enough on 2026-10-14: the gateway decodes
+// the twelve-bit sequence counter in the hex field and refuses counters 64
+// and above however fresh the timestamp, while 0 through 63 pass and the
+// timestamp itself is never checked. The id below therefore fixes the low
+// twelve bits to 0xFFE (counter 1, what a fresh generator emits first) while
+// the timestamp stays a hash of the conversation, keeping the id deterministic
+// per conversation.
 //
 // A conversation maps to one id and keeps it, because that is the pairing the
 // real client uses: every request in a conversation carries that conversation's
@@ -76,6 +89,16 @@ func TestGatewaySessionIDIsOpencodeShapedAndStable(t *testing.T) {
 	first := GatewaySessionID("ses-ceraa-conversation")
 	if !shape.MatchString(first) {
 		t.Errorf("GatewaySessionID = %q, want ses_ + 12 lowercase hex + 14 base62", first)
+	}
+	var field uint64
+	if _, err := fmt.Sscanf(first[4:16], "%x", &field); err != nil {
+		t.Fatalf("GatewaySessionID = %q: %v", first, err)
+	}
+	// The generator complements (timestamp << 12 | counter), so the counter
+	// the gateway reads back is the complement of the field's low twelve
+	// bits. This id fixes those bits to 0xFFE, which reads back as 1.
+	if counter := ^field & 0xfff; counter >= 64 {
+		t.Errorf("GatewaySessionID = %q carries counter %d; the gateway refuses 64 and above", first, counter)
 	}
 	if again := GatewaySessionID("ses-ceraa-conversation"); again != first {
 		t.Errorf("the same conversation produced two ids: %q then %q", first, again)
@@ -98,6 +121,10 @@ func TestRequestHeadersPairSessionAndAffinity(t *testing.T) {
 	// header, where something downstream can resolve it back to this session.
 	if headers[HeaderSession] != GatewaySessionID("ses-abc") {
 		t.Errorf("%s = %q, want the conversation rendered into opencode's shape", HeaderSession, headers[HeaderSession])
+	}
+	// The session id repeats the session: either one alone is refused.
+	if headers[HeaderSessionID] != headers[HeaderSession] {
+		t.Errorf("%s = %q, want the gateway session %q", HeaderSessionID, headers[HeaderSessionID], headers[HeaderSession])
 	}
 	if headers[HeaderAffinity] != "ses-abc" {
 		t.Errorf("%s = %q, want ses-abc, the real conversation", HeaderAffinity, headers[HeaderAffinity])
@@ -201,9 +228,19 @@ func TestApplyCredentialConfiguresTheProvider(t *testing.T) {
 	// A profile that set its own contract wins rather than being overwritten.
 	own := llm.ProviderConfig{ExtraHeaders: map[string]string{
 		HeaderClient: "profile-owned", HeaderUA: "profile-ua", HeaderSession: "profile-ses",
+		HeaderSessionID: "profile-ses-id",
 	}}
 	if kept := ApplyCredential(own, Credential{APIKey: "zk-1"}, "ses-cfg"); kept.ExtraHeaders[HeaderClient] != "profile-owned" {
 		t.Errorf("a profile's own headers were replaced with %q", kept.ExtraHeaders[HeaderClient])
+	}
+	// A partial contract is completed rather than kept: three of the four
+	// headers pass the old check but the gateway refuses either session
+	// header alone, so keeping them would send a failing request.
+	partial := llm.ProviderConfig{ExtraHeaders: map[string]string{
+		HeaderClient: "profile-owned", HeaderUA: "profile-ua", HeaderSession: "profile-ses",
+	}}
+	if kept := ApplyCredential(partial, Credential{APIKey: "zk-1"}, "ses-cfg"); kept.ExtraHeaders[HeaderSessionID] == "" {
+		t.Error("a partial contract was kept without the session id; the gateway refuses it")
 	}
 }
 
