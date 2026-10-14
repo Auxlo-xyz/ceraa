@@ -1246,6 +1246,11 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		c.LastOutcome = FoldFailed
 		return false, nil
 	}
+	// Recorded file operations ride the one rewrite this fold already pays
+	// for: appending them here costs no extra prefix shift, and every copy of
+	// the summary below carries the same facts.
+	reads, writes := RecordedFiles(sess.Operations)
+	text = AppendRecorded(text, reads, writes)
 	// The summary is the only surviving account of this stretch, and without the
 	// discarded messages there is no way to check that account later. It is
 	// written below, once the new transcript exists, so the entry can say what
