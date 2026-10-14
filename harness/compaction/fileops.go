@@ -41,7 +41,7 @@ func RecordedFiles(ops []sessionstore.Operation) (reads, writes []string) {
 			continue
 		}
 		switch op.Tool {
-		case "read", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols":
+		case "read":
 			readSet[path] = true
 		case "write", "edit_line", "batch_edit_file":
 			writeSet[path] = true

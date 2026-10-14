@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,4 +173,28 @@ func TestReproduceIsGatedOnVulnIntent(t *testing.T) {
 			t.Error("reproduce offered without vuln intent")
 		}
 	}
+}
+
+// seamRunner resolves specs through a registry exactly like the coordinator's
+// toolRunner, so the test above proves the seam: Translate to operation manager
+// to executor to tool. It moved here from the language-server tests when those
+// were retired, because this is the only remaining test that drives the whole
+// path.
+type seamRunner struct {
+	reg *Registry
+}
+
+func (r *seamRunner) RunTool(ctx context.Context, spec operation.Spec) (string, error) {
+	t, ok := r.reg.Get(spec.Type)
+	if !ok {
+		return "", fmt.Errorf("unknown tool type: %s", spec.Type)
+	}
+	if runner, ok := t.(operation.ContextRunner); ok {
+		return runner.RunContext(ctx, spec)
+	}
+	runner, ok := t.(Runner)
+	if !ok {
+		return "", fmt.Errorf("tool %s does not support Run", spec.Type)
+	}
+	return runner.Run(spec)
 }

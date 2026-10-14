@@ -22,14 +22,13 @@ func TestRecordedFilesCountsCompletedFileToolsOnly(t *testing.T) {
 		fileOp("read", "a.go", "completed"),
 		fileOp("edit_line", "a.go", "completed"),
 		fileOp("write", "b.go", "completed"),
-		fileOp("lsp_references", "c.go", "completed"),
 		fileOp("read", "d.go", "failed"),
 		fileOp("bash", "e.go", "completed"),
 		fileOp("question", "", "completed"),
 	}
 	reads, writes := RecordedFiles(ops)
-	if len(reads) != 2 || reads[0] != "a.go" || reads[1] != "c.go" {
-		t.Errorf("reads = %v, want [a.go c.go] deduped and sorted", reads)
+	if len(reads) != 1 || reads[0] != "a.go" {
+		t.Errorf("reads = %v, want [a.go] deduped and sorted", reads)
 	}
 	if len(writes) != 2 || writes[0] != "a.go" || writes[1] != "b.go" {
 		t.Errorf("writes = %v, want [a.go b.go]", writes)
