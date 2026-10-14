@@ -269,6 +269,7 @@ func TestManualCompactionPersistsTheSummaryItPaidFor(t *testing.T) {
 		"## Progress\nRead the index code.\n" +
 		"## In-flight & Blocked\nNothing running.\n" +
 		"## Errors & Fixes\nNone.\n" +
+		"## User's consistent remarks\nNone given.\n" +
 		"## Relevant Files\ntypes.ts holds the index.\n" +
 		"## Decisions\nFix in place.\n" +
 		"## Next Steps\nRun the tests.\n" +
@@ -369,6 +370,7 @@ func TestManualCompactionGoesInBandByDefault(t *testing.T) {
 		"## Progress\nRead the index code.\n" +
 		"## In-flight & Blocked\nNothing running.\n" +
 		"## Errors & Fixes\nNone.\n" +
+		"## User's consistent remarks\nNone given.\n" +
 		"## Relevant Files\ntypes.ts holds the index.\n" +
 		"## Decisions\nFix in place.\n" +
 		"## Next Steps\nRun the tests.\n" +

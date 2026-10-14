@@ -483,6 +483,8 @@ What has been completed so far (terse bullets).
 What is running now, what is paused, and what is held up. Name the blocker for anything waiting on something else.
 ## Errors & Fixes
 What failed and the error as it read, what was tried, and what worked. Carry forward anything still unresolved.
+## User's consistent remarks
+Standing instructions the user has given, with where each came from.
 ## Relevant Files
 List files touched and their purpose.
 ## Decisions

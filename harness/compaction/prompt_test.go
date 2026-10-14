@@ -83,14 +83,19 @@ func summaryMissing(heading string) error {
 	return validateSummary(b.String())
 }
 
-// The template must still yield exactly the sections it always did, or a stored
-// summary written under the old prompt would fail validation under the new one.
+// The template's shape is a contract. A heading added anywhere but the middle
+// moves the first or last, which is what this pins; a heading removed from the
+// middle leaves the edges alone and is caught by the exact-list test beside it.
+//
+// Adding a required heading does not invalidate summaries already on disk:
+// validateSummary runs only on the summariser's fresh reply, never on a stored
+// checkpoint, so an old nine-section summary keeps being read as one.
 func TestTheHeadingsAreUnchangedByHardening(t *testing.T) {
 	got := requiredSummaryHeadings()
-	if len(got) != 9 {
-		t.Fatalf("the template now yields %d headings, want 9: %v", len(got), got)
+	if len(got) != 10 {
+		t.Fatalf("the template now yields %d headings, want 10: %v", len(got), got)
 	}
-	if got[0] != "Objective" || got[8] != "Design Lessons Learnt" {
-		t.Errorf("the first and last headings moved: %q ... %q", got[0], got[8])
+	if got[0] != "Objective" || got[9] != "Design Lessons Learnt" {
+		t.Errorf("the first and last headings moved: %q ... %q", got[0], got[9])
 	}
 }

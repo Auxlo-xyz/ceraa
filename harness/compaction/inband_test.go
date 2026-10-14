@@ -26,7 +26,7 @@ func validTestSummary() string {
 
 func TestTemplateRequiresTheWorkStateSections(t *testing.T) {
 	required := requiredSummaryHeadings()
-	want := []string{"Objective", "Progress", "In-flight & Blocked", "Errors & Fixes", "Relevant Files", "Decisions", "Next Steps", "Handoff", "Design Lessons Learnt"}
+	want := []string{"Objective", "Progress", "In-flight & Blocked", "Errors & Fixes", "User's consistent remarks", "Relevant Files", "Decisions", "Next Steps", "Handoff", "Design Lessons Learnt"}
 	if len(required) != len(want) {
 		t.Fatalf("template has %d headings, want %d: %v", len(required), len(want), required)
 	}
