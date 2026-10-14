@@ -29,11 +29,7 @@ func TestEachDebugActionIsItsOwnTool(t *testing.T) {
 	base := NewDebugTool()
 	tools := DebugActionTools(base)
 	byName := debugToolsByName(t, base)
-	want := []string{
-		"debug_launch", "debug_breakpoint", "debug_continue", "debug_step_over",
-		"debug_step_in", "debug_step_out", "debug_stack", "debug_variables",
-		"debug_status", "debug_terminate",
-	}
+	want := []string{"debug_launch", "debug_step", "debug_inspect"}
 	if len(tools) != len(want) {
 		t.Fatalf("debug actions = %d, want %d", len(tools), len(want))
 	}
@@ -70,9 +66,10 @@ func TestDebugOffersNoAttachOrEvaluate(t *testing.T) {
 		}
 	}
 	for _, def := range debugActionDefs {
-		switch def.action {
-		case "attach", "evaluate":
-			t.Errorf("action %q is registered; attach and evaluate are deliberately out of scope", def.action)
+		for _, action := range def.actions {
+			if action == "attach" || action == "evaluate" {
+				t.Errorf("action %q is registered; attach and evaluate are deliberately out of scope", action)
+			}
 		}
 	}
 }
@@ -91,7 +88,7 @@ func TestCombinedDebugIsNotOfferedButStillRuns(t *testing.T) {
 
 func TestDebugTranslatesIntoTheCombinedSpec(t *testing.T) {
 	tools := debugToolsByName(t, NewDebugTool())
-	spec, err := tools["debug_breakpoint"].Translate(map[string]any{"path": "main.go", "line": 12})
+	spec, err := tools["debug_step"].Translate(map[string]any{"path": "main.go", "line": 12})
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
@@ -101,11 +98,11 @@ func TestDebugTranslatesIntoTheCombinedSpec(t *testing.T) {
 	if _, err := tools["debug_launch"].Translate(map[string]any{}); err == nil {
 		t.Error("debug_launch accepted a call with no program")
 	}
-	if _, err := tools["debug_stack"].Translate(map[string]any{"path": "main.go"}); err == nil {
-		t.Error("debug_stack accepted a path it cannot use")
+	if _, err := tools["debug_inspect"].Translate(map[string]any{"path": "main.go"}); err == nil {
+		t.Error("debug_inspect accepted a path it cannot use")
 	}
-	if _, err := tools["debug_continue"].Translate(map[string]any{"action": "continue"}); err == nil {
-		t.Error("a single-action tool accepted an action argument")
+	if _, err := tools["debug_step"].Translate(map[string]any{"program": "main.go"}); err == nil {
+		t.Error("debug_step accepted a program argument it cannot use")
 	}
 }
 
@@ -125,16 +122,16 @@ func TestEveryDebugToolExplainsItself(t *testing.T) {
 // unrelated protocol failure.
 func TestDebugActionsRequireASession(t *testing.T) {
 	base := NewDebugTool()
-	for _, action := range []string{"continue", "step_over", "step_in", "step_out", "stack"} {
+	for _, action := range []string{"continue", "step_over", "step_in", "step_out", "stack", "variables", "breakpoint", "terminate"} {
 		_, err := base.RunContext(context.Background(), operation.Spec{
-			Type: "debug", Args: map[string]any{"action": action, "workdir": t.TempDir()},
+			Type: "debug", Args: map[string]any{"action": action, "workdir": t.TempDir(), "path": "main.go", "line": 3, "reference": 5},
 		})
 		if err == nil {
-			t.Errorf("debug_%s accepted a call with no session", action)
+			t.Errorf("debug mode %s accepted a call with no session", action)
 			continue
 		}
 		if !strings.Contains(err.Error(), "launch a program first") {
-			t.Errorf("debug_%s error = %q, want it to name the missing session", action, err.Error())
+			t.Errorf("debug mode %s error = %q, want it to name the missing session", action, err.Error())
 		}
 	}
 }
@@ -348,13 +345,15 @@ func TestDebugSeamLaunchBreakpointContinue(t *testing.T) {
 	if out := runOne("debug_launch", map[string]any{"program": "main.go"}, "op1"); !strings.Contains(out, "launched") {
 		t.Errorf("launch output = %q", out)
 	}
-	if out := runOne("debug_breakpoint", map[string]any{"path": "main.go", "line": 5}, "op2"); !strings.Contains(out, "bound at") {
+	// Setting a breakpoint declares the set and runs the program to it, so the
+	// stop is reached here rather than by a separate resume.
+	if out := runOne("debug_step", map[string]any{"path": "main.go", "line": 5}, "op2"); !strings.Contains(out, "bound at") || !strings.Contains(out, "stopped") {
 		t.Errorf("breakpoint output = %q", out)
 	}
-	if out := runOne("debug_continue", nil, "op3"); !strings.Contains(out, "stopped") {
-		t.Errorf("continue output = %q", out)
+	if out := runOne("debug_inspect", map[string]any{"mode": "stack"}, "op3"); !strings.Contains(out, "stack frames") {
+		t.Errorf("stack output = %q", out)
 	}
-	if out := runOne("debug_status", nil, "op4"); !strings.Contains(out, "stopped") {
+	if out := runOne("debug_inspect", map[string]any{"mode": "status"}, "op4"); !strings.Contains(out, "stopped") {
 		t.Errorf("status output = %q", out)
 	}
 }

@@ -69,23 +69,26 @@ func (t *DebugTool) Schema() map[string]any {
 
 func (t *DebugTool) Translate(args map[string]any) (operation.Spec, error) {
 	action, _ := args["action"].(string)
-	known := false
-	for _, def := range debugActionDefs {
-		if def.action == action {
-			known = true
-			break
-		}
-	}
-	if !known || action == "" {
-		return operation.Spec{}, fmt.Errorf("unknown debug action %q", action)
+	if action == "" {
+		return operation.Spec{}, fmt.Errorf("debug action is required")
 	}
 	translated := map[string]any{"action": action}
-	for _, key := range []string{"path", "line", "depth", "reference", "program", "args"} {
+	for _, key := range []string{"mode", "path", "line", "depth", "reference", "program", "args"} {
 		if value, present := args[key]; present && value != nil {
 			translated[key] = value
 		}
 	}
 	return operation.Spec{Type: "debug", Args: translated}, nil
+}
+
+// resolveMode reads the mode argument, defaulting to the tool's first action.
+func resolveMode(spec operation.Spec, fallback string) (string, error) {
+	mode, _ := spec.Args["mode"].(string)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return fallback, nil
+	}
+	return mode, nil
 }
 
 func (t *DebugTool) TranslateResult(op operation.Operation) string {
@@ -131,9 +134,14 @@ func (t *DebugTool) clearSession() {
 // Translate, because the workdir arrives on the spec after translation.
 func (t *DebugTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
 	action, _ := spec.Args["action"].(string)
-	switch action {
-	case "launch":
+	if action == "launch" {
 		return t.runLaunch(ctx, spec)
+	}
+	mode, err := resolveMode(spec, action)
+	if err != nil {
+		return "", err
+	}
+	switch mode {
 	case "status":
 		// Status is the question asked precisely when there is no session, so it
 		// answers rather than refusing. Every other action needs a live session
@@ -155,63 +163,86 @@ func (t *DebugTool) RunContext(ctx context.Context, spec operation.Spec) (string
 		}
 		t.clearSession()
 		return "debug session terminated", nil
+	case "breakpoint":
+		return t.runBreakpointAndRun(ctx, spec)
+	case "continue", "step_over", "step_in", "step_out":
+		return t.runStep(ctx, spec, mode)
+	case "stack", "variables":
+		return t.runInspect(ctx, spec, mode)
+	default:
+		return "", fmt.Errorf("unknown debug mode %q", mode)
 	}
+}
 
+// runBreakpointAndRun sets a breakpoint, declares the set, and waits for the
+// program to stop there. Declaring the set is what starts the program, so the
+// first breakpoint is reached without a separate resume.
+func (t *DebugTool) runBreakpointAndRun(ctx context.Context, spec operation.Spec) (string, error) {
+	manager, err := t.session()
+	if err != nil {
+		return "", err
+	}
+	path, _ := spec.Args["path"].(string)
+	line, err := debugPositiveInt("line", spec.Args["line"])
+	if err != nil {
+		return "", err
+	}
+	resolved, err := ResolvePathFrom(debugWorkdir(spec), path)
+	if err != nil {
+		return "", err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	bound, verified, err := manager.SetBreakpoint(callCtx, resolved, line)
+	if err != nil {
+		return "", err
+	}
+	// The breakpoint set is only complete once declared, and the adapter will
+	// not run the program until it is, so this runs on every set rather than
+	// relying on the caller to remember.
+	if err := manager.ConfigurationDone(callCtx); err != nil {
+		return "", err
+	}
+	if !verified {
+		return fmt.Sprintf("breakpoint requested at %s:%d, adapter bound %d but did not verify it; %s",
+			resolved, line, bound, formatDebugStatus(manager.Status())), nil
+	}
+	return fmt.Sprintf("breakpoint bound at %s:%d\n%s", resolved, bound, formatDebugStatus(manager.Status())), nil
+}
+
+func (t *DebugTool) runStep(ctx context.Context, spec operation.Spec, mode string) (string, error) {
 	manager, err := t.session()
 	if err != nil {
 		return "", err
 	}
 	callCtx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
-	switch action {
-	case "breakpoint":
-		path, _ := spec.Args["path"].(string)
-		line, err := debugPositiveInt("line", spec.Args["line"])
-		if err != nil {
-			return "", err
-		}
-		resolved, err := ResolvePathFrom(debugWorkdir(spec), path)
-		if err != nil {
-			return "", err
-		}
-		bound, verified, err := manager.SetBreakpoint(callCtx, resolved, line)
-		if err != nil {
-			return "", err
-		}
-		// The breakpoint set is only complete once declared, and dlv refuses
-		// every control request until it is, so this runs on every set rather
-		// than relying on the caller to remember.
-		if err := manager.ConfigurationDone(callCtx); err != nil {
-			return "", err
-		}
-		if !verified {
-			return fmt.Sprintf("breakpoint requested at %s:%d, adapter bound %d but did not verify it", resolved, line, bound), nil
-		}
-		return fmt.Sprintf("breakpoint bound at %s:%d", resolved, bound), nil
+	switch mode {
 	case "continue":
-		if err := manager.Continue(callCtx); err != nil {
-			return "", err
-		}
-		return formatDebugStatus(manager.Status()), nil
+		err = manager.Continue(callCtx)
 	case "step_over":
-		return t.step(callCtx, manager.StepOver)
+		err = manager.StepOver(callCtx)
 	case "step_in":
-		return t.step(callCtx, manager.StepIn)
+		err = manager.StepIn(callCtx)
 	case "step_out":
-		return t.step(callCtx, manager.StepOut)
-	case "stack":
-		depth := 20
-		if raw, ok := spec.Args["depth"]; ok {
-			if n, err := debugPositiveInt("depth", raw); err == nil {
-				depth = n
-			}
-		}
-		frames, err := manager.StackTrace(callCtx, depth)
-		if err != nil {
-			return "", err
-		}
-		return formatStack(frames), nil
-	case "variables":
+		err = manager.StepOut(callCtx)
+	}
+	if err != nil {
+		return "", err
+	}
+	return formatDebugStatus(manager.Status()), nil
+}
+
+// runInspect reads the stopped program. A reference expands variables; without
+// one it returns the stack, which is how a frame reference to expand is found.
+func (t *DebugTool) runInspect(ctx context.Context, spec operation.Spec, mode string) (string, error) {
+	manager, err := t.session()
+	if err != nil {
+		return "", err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	if mode == "variables" {
 		ref, err := debugPositiveInt("reference", spec.Args["reference"])
 		if err != nil {
 			return "", err
@@ -221,9 +252,18 @@ func (t *DebugTool) RunContext(ctx context.Context, spec operation.Spec) (string
 			return "", err
 		}
 		return formatVariables(vars), nil
-	default:
-		return "", fmt.Errorf("unknown debug action %q", action)
 	}
+	depth := 20
+	if raw, ok := spec.Args["depth"]; ok {
+		if n, err := debugPositiveInt("depth", raw); err == nil {
+			depth = n
+		}
+	}
+	frames, err := manager.StackTrace(callCtx, depth)
+	if err != nil {
+		return "", err
+	}
+	return formatStack(frames), nil
 }
 
 func (t *DebugTool) step(ctx context.Context, fn func(context.Context) error) (string, error) {
@@ -334,38 +374,40 @@ func formatVariables(vars []dap.Variable) string {
 func (t *DebugTool) Sequential() bool        { return true }
 func (t *DebugTool) SequentialQueue() string { return "debug" }
 
-// debugArgDef is one tool: the action, the name it is called by, and the
-// arguments it accepts.
+// debugArgDef is one tool: the name it is called by, the actions it performs,
+// and the arguments it accepts.
+//
+// Three tools, not ten. The per-action split solved a real problem on the
+// browser - the model bundled arguments belonging to different actions into one
+// call - but it was applied here mechanically and ten schemas is a permanent
+// per-request cost to avoid a mistake a schema already prevents. Merging the
+// actions keeps every capability and drops two thirds of the schema.
 type debugArgDef struct {
-	action      string
+	tool        string
+	actions     []string
 	required    []string
 	optional    []string
 	description string
 }
 
-// debugArgDefs describes each action. Usage guidance is deliberately absent
+// debugActionDefs describes each tool. Usage guidance is deliberately absent
 // (enforced by TestDescriptionsCarryNoUsageGuidance); the prompt carries it.
 var debugActionDefs = []debugArgDef{
-	{action: "launch", required: []string{"program"}, optional: []string{"args"},
-		description: "Start a Go program under the debugger, replacing any current session. Arguments is a space-separated argument string."},
-	{action: "breakpoint", required: []string{"path", "line"}, optional: nil,
-		description: "Set a breakpoint at a 1-based line and report the line the debugger actually bound."},
-	{action: "continue", description: "Resume the stopped program until it breaks again or exits."},
-	{action: "step_over", description: "Advance one line, running over any call on it."},
-	{action: "step_in", description: "Descend into the call on the current line."},
-	{action: "step_out", description: "Return from the current function to its caller, finishing the call frame."},
-	{action: "stack", optional: []string{"depth"},
-		description: "Return the call stack of the stopped program, innermost frame first."},
-	{action: "variables", required: []string{"reference"},
-		description: "Expand a reference returned by a scope listing into its name, type and value entries."},
-	{action: "status", description: "Report whether a session is running, stopped or exited. Takes no arguments."},
-	{action: "terminate", description: "Stop the debuggee, end the session, and release the program. Takes no arguments."},
+	{tool: "launch", actions: []string{"launch"}, required: []string{"program"}, optional: []string{"args"},
+		description: "Start a Go program under the debugger, replacing any current session. Args is a space-separated argument string."},
+	{tool: "step", actions: []string{"breakpoint", "continue", "step_over", "step_in", "step_out"},
+		optional:    []string{"mode", "path", "line"},
+		description: "Control a stopped program: resume it (mode continue), advance a line (step_over), descend into a call (step_in), or return (step_out). Supplying path and line sets a breakpoint and runs the program to it."},
+	{tool: "inspect", actions: []string{"stack", "variables", "status", "terminate"},
+		optional:    []string{"mode", "reference", "depth"},
+		description: "Read a stopped program: the call stack, the variables behind a scope reference, or the session state. Mode terminate stops the debuggee and ends the session."},
 }
 
 var debugArgDefs = map[string]struct {
 	kind        string
 	description string
 }{
+	"mode":      {"string", "Which action to take. debug_step: continue, step_over, step_in, step_out, or breakpoint (default). debug_inspect: stack, variables, status, or terminate (default stack)."},
 	"program":   {"string", "Path to the Go program to launch. Relative paths resolve against the session workdir."},
 	"args":      {"string", "Space-separated command-line arguments for the program."},
 	"path":      {"string", "Source file for the breakpoint. Relative paths resolve against the session workdir."},
@@ -374,15 +416,16 @@ var debugArgDefs = map[string]struct {
 	"reference": {"integer", "A reference returned by a scope or variables listing."},
 }
 
-// DebugActionTool is one debugger action presented as its own tool. It holds no
-// session of its own: every instance shares one DebugTool, so the program a
-// breakpoint binds to is the program continue resumes.
+// DebugActionTool is one debugger tool: a name, a small set of actions it owns,
+// and the arguments those actions accept. It holds no session of its own:
+// every instance shares one DebugTool, so the program a breakpoint binds to is
+// the program continue resumes.
 type DebugActionTool struct {
 	base *DebugTool
 	def  debugArgDef
 }
 
-func (t *DebugActionTool) Name() string { return "debug_" + t.def.action }
+func (t *DebugActionTool) Name() string { return "debug_" + t.def.tool }
 
 func (t *DebugActionTool) Description() string { return t.def.description }
 
@@ -400,21 +443,16 @@ func (t *DebugActionTool) Schema() map[string]any {
 	return schema
 }
 
-// Translate pins the action and defers to the shared driver, so the spec shape
-// is built once. The argument set is checked here against this tool's own
-// rules, because a shared check would let one action accept another's
-// arguments.
+// Translate pins the action to the tool's first action and defers to the shared
+// driver, so the spec shape is built once. The argument set is checked here
+// against this tool's own rules.
 func (t *DebugActionTool) Translate(args map[string]any) (operation.Spec, error) {
 	allowed := map[string]bool{}
 	for _, key := range append(append([]string{}, t.def.required...), t.def.optional...) {
 		allowed[key] = true
 	}
-	merged := map[string]any{"action": t.def.action}
+	merged := map[string]any{"action": t.def.actions[0]}
 	for key, value := range args {
-		if key == "action" {
-			return operation.Spec{}, fmt.Errorf(
-				"%s is a single-action tool and takes no %q argument; drop it", t.Name(), "action")
-		}
 		if !allowed[key] {
 			return operation.Spec{}, fmt.Errorf("%s does not accept %q", t.Name(), key)
 		}
@@ -447,7 +485,7 @@ func (t *DebugActionTool) RunContext(ctx context.Context, spec operation.Spec) (
 func (t *DebugActionTool) Sequential() bool        { return true }
 func (t *DebugActionTool) SequentialQueue() string { return "debug" }
 
-// DebugActionTools returns the per-action tools over one shared session.
+// DebugActionTools returns the three debugger tools over one shared session.
 func DebugActionTools(base *DebugTool) []Tool {
 	tools := make([]Tool, 0, len(debugActionDefs))
 	for _, def := range debugActionDefs {
