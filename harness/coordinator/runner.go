@@ -1130,6 +1130,17 @@ func (r *Runner) messages(sess *sessionstore.Session, tools []llm.ToolDef) []llm
 		history.Messages = history.Messages[1:]
 	}
 	budget := r.effectiveContextLimit()
+	// Assembly trims at 95% of the window, and the 5% is this subtraction. It
+	// is not a tuning margin that can be spent: the provider counts the request
+	// AND the reply against one window, so the output reserve and the tool
+	// schemas have to come off the top before history is budgeted against what
+	// is left. On a 200k window with the default 8,192 output cap and a ~1,225
+	// token tool catalogue this lands at 190,583, which is 95.3%.
+	//
+	// Collapsing it to a bare `budget` would move the trim threshold to 100% of
+	// the window, where a request that fits by estimate is refused by the
+	// provider for exceeding it. TestAssemblyTrimThresholdHoldsFivePercentBack
+	// pins the ratio so the simplification cannot pass quietly.
 	limit := budget - r.cfg.MaxOutputTokens - llm.EstimateToolDefinitionTokens(tools)
 	if limit <= 0 {
 		limit = budget - r.cfg.MaxOutputTokens

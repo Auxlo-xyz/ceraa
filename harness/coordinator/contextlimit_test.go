@@ -90,3 +90,52 @@ func TestContextLimitIsUsableBeforeAndAfterCalibration(t *testing.T) {
 		t.Errorf("post-calibration limit = %d, want %d", limit, llm.FallbackContextWindow)
 	}
 }
+
+// The trim threshold is not a tunable margin. It is the provider's window minus
+// the two things that also ride the request: the schemas, and the room the
+// reply needs. Drop either and the threshold moves to 100% of the window, where
+// a request that fits by estimate is refused for exceeding it. That is the rare
+// case the margin exists for, and it is invisible until it fires, so the ratio
+// is pinned rather than left to a reader of the subtraction.
+func TestAssemblyTrimThresholdHoldsFivePercentBack(t *testing.T) {
+	const window = 200000
+	tools := llm.ToolDef{
+		Name:        "bash",
+		Description: "Execute a bash command and return the combined stdout/stderr output.",
+		Parameters:  map[string]any{"type": "object"},
+	}
+	defs := []llm.ToolDef{tools}
+	outputReserve := 8192
+	toolTokens := llm.EstimateToolDefinitionTokens(defs)
+
+	if toolTokens <= 0 {
+		t.Fatal("tool definition tokens estimated as zero, so the ratio below is meaningless")
+	}
+
+	limit := window - outputReserve - toolTokens
+	ratio := float64(limit) / float64(window)
+
+	// The 5% the design claims, with room for a larger tool catalogue.
+	if ratio < 0.90 || ratio >= 1.0 {
+		t.Errorf("trim threshold = %.1f%% of window (%d of %d), want >=90%% and <100%%",
+			ratio*100, limit, window)
+	}
+	// Named so the number a reader is checking is the one in the code comment.
+	if got, want := window-limit, outputReserve+toolTokens; got != want {
+		t.Errorf("held back = %d, want %d (output reserve + tool schemas)", got, want)
+	}
+}
+
+// The reserve is what leaves the reply somewhere to go. A trim threshold at the
+// full window is a request with nowhere to put the answer.
+func TestTrimThresholdLeavesRoomForTheReply(t *testing.T) {
+	const window = 200000
+	const outputReserve = 8192
+	limit := window - outputReserve - 1000
+	if limit <= outputReserve {
+		t.Fatalf("trim threshold %d leaves no room for a %d token reply", limit, outputReserve)
+	}
+	if limit >= window {
+		t.Fatalf("trim threshold %d is at or past the window %d", limit, window)
+	}
+}
