@@ -353,10 +353,16 @@ func statusReport(chatID int64) (string, error) {
 	// like a cache that is not working. The count itself is the run-based one, so
 	// a rejected provider figure is replaced by our own measurement rather than
 	// printed.
-	report := fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s uncached input / %s output / %s reasoning reported\nCache read: %s%s\nSession: %s\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
+	// Pending decisions are read through the shared control facade so Telegram
+	// status does not maintain a second permission or question registry.
+	pending := 0
+	if sess, err := store.Load(currentSessionID(chatID)); err == nil {
+		pending = pendingDecisionCount(store, sess.ID)
+	}
+	report := fmt.Sprintf("📊 Status\n~%s / %s tokens (%d%%) estimated\n%s uncached input / %s output / %s reasoning reported\nCache read: %s%s\nSession: %s\nPending decisions: %d\nProject: `%s`\nMessages: %d\nProvider: %s\nModel: `%s`\nEndpoint: %s\nAgent: %s",
 		groupDigits(tokens), groupDigits(contextLimit), percent,
 		groupDigits(usageInput), groupDigits(usageOutput), groupDigits(usageReasoning),
-		cacheRead, inputNote, sessionTitle, defaultState.project(chatID), messages, activeProvider, model,
+		cacheRead, inputNote, sessionTitle, pending, defaultState.project(chatID), messages, activeProvider, model,
 		endpoint, agent)
 	// The tool-output cap is the one cost control that can be tuned, so it is
 	// reported with the figure that chooses it: what a lower cap would have saved.

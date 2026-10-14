@@ -88,7 +88,7 @@ func TestClaimDueProtectsExecutionAndPersistsResult(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("expected one claim: jobs=%+v err=%v", claimed, err)
 	}
-	if claimed[0].LastStatus != StatusRunning || claimed[0].RunCount != 1 {
+	if claimed[0].LastStatus != StatusRunning || claimed[0].RunCount != 1 || claimed[0].AttemptID != "job:1" {
 		t.Fatalf("unexpected claimed job: %+v", claimed[0])
 	}
 	claimedAgain, err := store.ClaimDue(base.Add(time.Second))
@@ -114,6 +114,28 @@ func TestClaimDueProtectsExecutionAndPersistsResult(t *testing.T) {
 	}
 }
 
+func TestCompletionRejectsLateAttempt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.json")
+	store, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, time.January, 2, 3, 0, 0, 0, time.UTC)
+	store.Now = func() time.Time { return base }
+	if err := store.Add(Job{ID: "job", Interval: time.Minute, NextRunAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := store.Claim("job", base)
+	if err != nil || first.AttemptID != "job:1" {
+		t.Fatalf("first claim = %+v, err=%v", first, err)
+	}
+	if err := store.CompleteAttempt("job", "old-attempt", StatusError, "late"); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatalf("expected stale attempt conflict, got %v", err)
+	}
+	if err := store.CompleteAttempt("job", first.AttemptID, StatusSuccess, ""); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestRunnerLoopPassesContextAndPersistsCallbackError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
 	store, err := New(path)

@@ -148,6 +148,10 @@ type Callbacks struct {
 	OnCost  func(llm.CostInfo, string)
 	OnDone  func(string)
 	OnError func(error)
+	// OnRunStarted and OnRunFinished expose durable run identity to transport
+	// owners without moving lifecycle ownership out of the coordinator.
+	OnRunStarted  func(string)
+	OnRunFinished func(string, sessionstore.RunStatus)
 }
 
 type Result struct {
@@ -204,6 +208,22 @@ type Runner struct {
 	trimmedMu    sync.Mutex
 	trimmedSeen  map[string]struct{}
 	trimmedOrder []string
+}
+
+// Launcher is the coordinator-owned execution seam used by transports that
+// already have a claimed request. Implementations must run through the
+// coordinator so Runner.Run acquires the session lock; callers must not create
+// another Runner for the same session.
+type Launcher interface {
+	Launch(context.Context, string) error
+}
+
+// Launch runs one user request through this coordinator. The returned result
+// is intentionally hidden because scheduler completion is fenced by its own
+// claimed attempt.
+func (r *Runner) Launch(ctx context.Context, user string) error {
+	_, err := r.Run(ctx, user)
+	return err
 }
 
 // ContextLimit reports the effective context budget and where it came from.
@@ -474,6 +494,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	if err := r.store.Save(sess); err != nil {
 		return Result{}, fmt.Errorf("save run: %w", err)
 	}
+	if r.cb.OnRunStarted != nil {
+		r.cb.OnRunStarted(runID)
+	}
 	var runUsage llm.UsageInfo
 	var runBreakdown llm.TokenBreakdown
 	// runRequests is the per-request split, persisted with the run on finish.
@@ -596,6 +619,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		}
 		if runErr != nil && r.cb.OnError != nil {
 			r.cb.OnError(runErr)
+		}
+		if r.cb.OnRunFinished != nil {
+			r.cb.OnRunFinished(runID, status)
 		}
 		return runErr
 	}

@@ -173,6 +173,8 @@ func (in *Inbox) Drain() []Submission {
 		select {
 		case s := <-in.enqueue:
 			out = append(out, s)
+		case s := <-in.out:
+			out = append(out, s)
 		default:
 			return out
 		}

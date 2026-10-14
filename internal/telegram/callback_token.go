@@ -32,6 +32,7 @@ const callbackTokenBytes = 8
 type pendingCallback struct {
 	SessionID string
 	RequestID string
+	ChatID    int64
 	Tool      string
 	// Answer is the text a question button submits. Empty for a permission, which
 	// carries its decision in the callback data instead.
@@ -145,17 +146,13 @@ func permissionKeyboard(p pendingCallback) map[string]any {
 func questionKeyboard(p pendingCallback, options []string, freeForm bool) map[string]any {
 	var rows [][]map[string]string
 	for _, opt := range options {
-		optRef := newCallbackToken(pendingCallback{
-			SessionID: p.SessionID,
-			RequestID: p.RequestID,
-			Answer:    opt,
-		})
+		optRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID, Answer: opt})
 		rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + optRef}})
 	}
 	// Without a way to type, the user is limited to the exact strings offered, which
 	// is wrong whenever the answer is a value, a path, or a name.
 	if freeForm || len(options) == 0 {
-		typeRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID})
+		typeRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID})
 		rows = append(rows, []map[string]string{{"text": "✍️ Type an answer", "callback_data": "qtype:" + typeRef}})
 	}
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})

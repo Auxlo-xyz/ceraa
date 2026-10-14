@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"ceraa/harness/permission"
-	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
 	"ceraa/harness/skills"
 	"ceraa/harness/todo"
@@ -785,17 +784,18 @@ func handleCallback(token string, q *callbackQuery) {
 			send(token, chatID, "That permission request has expired. Send the message again.")
 			return
 		}
-		if permission.Default.Answer(pending.SessionID, pending.RequestID, decision) {
-			dropCallbackToken(ref)
-			if decision == "allowAlways" && pending.Tool != "" {
-				permission.Default.AllowAlways(pending.Tool)
-				_ = defaultState.setAlwaysAllow(pending.Tool, true)
-			}
-			editCallback(token, chatID, q.Message.MessageID, "Permission "+decision+" recorded", nil)
-		} else {
+		store, err := configuredStore()
+		if err != nil || !answerTelegramPermission(store, pending.SessionID, pending.RequestID, decision) {
 			dropCallbackToken(ref)
 			send(token, chatID, "Permission request expired or was already answered")
+			return
 		}
+		dropCallbackToken(ref)
+		if decision == "allowAlways" && pending.Tool != "" {
+			permission.Default.AllowAlways(pending.Tool)
+			_ = defaultState.setAlwaysAllow(pending.Tool, true)
+		}
+		editCallback(token, chatID, q.Message.MessageID, "Permission "+decision+" recorded", nil)
 		return
 	}
 	if strings.HasPrefix(data, "qtype:") {
@@ -825,11 +825,12 @@ func handleCallback(token string, q *callbackQuery) {
 			send(token, chatID, "That question has expired. Ask again.")
 			return
 		}
-		if question.Default.Answer(pending.SessionID, pending.RequestID, pending.Answer) {
-			editCallback(token, chatID, q.Message.MessageID, "✓ Answered: "+pending.Answer, nil)
-		} else {
+		store, err := configuredStore()
+		if err != nil || !answerTelegramQuestion(store, pending.SessionID, pending.RequestID, pending.Answer) {
 			send(token, chatID, "Question already answered or expired")
+			return
 		}
+		editCallback(token, chatID, q.Message.MessageID, "✓ Answered: "+pending.Answer, nil)
 		return
 	}
 	if strings.HasPrefix(data, "run:stop") {

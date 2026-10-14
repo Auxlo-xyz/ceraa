@@ -18,6 +18,7 @@ import (
 
 	"ceraa/harness/event"
 	"ceraa/harness/llm"
+	"ceraa/harness/sessioncontrol"
 	"ceraa/harness/sessionstore"
 	"ceraa/internal/envs"
 	"ceraa/internal/logger"
@@ -104,7 +105,8 @@ type Config struct {
 	// the Telegram sessions: two frontends fighting over one transcript is the
 	// race that motivated a separate surface in the first place.
 	SessionID string
-	// Prompt runs one turn. Injected by the process that owns the runner, so
+	// Control is the transport-neutral facade for this surface's own session.
+	Control sessioncontrol.Service
 	// this package never imports one and a reader that has been admitted still
 	// cannot reach a tool through here.
 	Prompt func(context.Context, string) error
@@ -301,11 +303,16 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		actor, err := actorForUser(user, s.cfg.AllowID)
+		if err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if !s.admitted(user) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		s.mux.ServeHTTP(w, r)
+		s.mux.ServeHTTP(w, r.WithContext(withActor(r.Context(), actor)))
 	})
 }
 
@@ -1239,6 +1246,10 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 // for a conversation it cannot reach would be a small lie that costs somebody
 // an afternoon.
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if _, ok := actorFromContext(r.Context()); !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	if id := r.PathValue("id"); id != s.cfg.SessionID {
 		http.Error(w, "only this surface's own session can be cancelled from here", http.StatusNotFound)
 		return

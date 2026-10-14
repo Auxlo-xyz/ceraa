@@ -325,6 +325,15 @@ func (l *Loop) status() {
 	b.add("provider", provider)
 	b.add("session", l.session.SessionID())
 	b.add("workdir", l.session.WorkDir())
+	if status, err := l.session.Status(context.Background()); err == nil {
+		b.add("run", string(status.Status))
+		if status.CurrentRunID != "" {
+			b.add("run id", string(status.CurrentRunID))
+		}
+	} else if l.session.controller != nil {
+		// Keep the local status useful even when a persisted status read fails.
+		b.add("run", "unavailable")
+	}
 	if r := l.render; r != nil {
 		r.writeBlock("status", b.render(l.pal, "  ", l.pal.width()))
 		r.line("")

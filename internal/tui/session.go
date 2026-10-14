@@ -16,6 +16,7 @@ import (
 	"ceraa/harness/llm"
 	"ceraa/harness/operation"
 	"ceraa/harness/permission"
+	"ceraa/harness/sessioncontrol"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -33,6 +34,13 @@ import (
 	"ceraa/internal/secret"
 	"ceraa/internal/xaiauth"
 )
+
+// SessionController is the read-only controller seam used by the TUI.
+// Implementations may be local stores or an embedding application's controller;
+// the TUI does not define a cross-process transport.
+type SessionController interface {
+	Status(context.Context, sessioncontrol.StatusRequest) (sessioncontrol.SessionStatus, error)
+}
 
 // Session is one interactive conversation on the terminal.
 //
@@ -54,8 +62,9 @@ type Session struct {
 
 	// resolver is kept so a slash command can rebuild the runner against a
 	// different provider without reloading the whole config.
-	resolver func() (llm.ProviderConfig, config.LLMProvider, error)
-	registry func() (*tool.Registry, error)
+	resolver   func() (llm.ProviderConfig, config.LLMProvider, error)
+	registry   func() (*tool.Registry, error)
+	controller SessionController
 }
 
 // SessionOptions configures a Session.
@@ -70,6 +79,9 @@ type SessionOptions struct {
 	// permission prompts. It is a field so both go through one path and a test can
 	// drive either without a terminal.
 	ReadLine func(prompt string) (string, error)
+	// Controller supplies read-only lifecycle status for /status. It does not
+	// change how Ctrl-C cancels a turn or how `ceraa stop` stops a process.
+	Controller SessionController
 }
 
 // NewSession builds a session, opening the credential store and the file-backed
@@ -104,14 +116,22 @@ func NewSession(opts SessionOptions) (*Session, error) {
 		sid = newSessionID()
 	}
 	s := &Session{
-		cfg:     cfg,
-		store:   store,
-		render:  opts.Renderer,
-		perms:   permission.NewManager(),
-		session: sid,
-		workDir: cfg.WorkspaceRootPath(),
+		cfg:        cfg,
+		store:      store,
+		render:     opts.Renderer,
+		perms:      permission.NewManager(),
+		session:    sid,
+		workDir:    cfg.WorkspaceRootPath(),
+		controller: opts.Controller,
 	}
 	s.readLine = opts.ReadLine
+	if s.controller == nil {
+		control, err := sessioncontrol.New(sessioncontrol.Dependencies{Store: store})
+		if err != nil {
+			return nil, fmt.Errorf("session control: %w", err)
+		}
+		s.controller = control
+	}
 	if err := s.build(); err != nil {
 		return nil, err
 	}
@@ -362,6 +382,16 @@ func (s *Session) RunContext(ctx context.Context, userText string) error {
 	_, err := s.runner.Run(ctx, userText)
 	s.render.TurnEnd(err)
 	return err
+}
+
+// Status returns the persisted status through the optional read-only controller.
+// A missing controller is not an error in tests or embedders that only need the
+// conversation loop.
+func (s *Session) Status(ctx context.Context) (sessioncontrol.SessionStatus, error) {
+	if s == nil || s.controller == nil {
+		return sessioncontrol.SessionStatus{}, fmt.Errorf("tui: status controller is unavailable")
+	}
+	return s.controller.Status(ctx, sessioncontrol.StatusRequest{SessionID: sessioncontrol.SessionID(s.session)})
 }
 
 // SessionID reports the conversation id.

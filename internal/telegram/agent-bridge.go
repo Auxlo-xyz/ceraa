@@ -20,8 +20,10 @@ import (
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/operation"
-
 	"ceraa/harness/permission"
+
+	"ceraa/harness/question"
+	"ceraa/harness/sessioncontrol"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -126,6 +128,8 @@ type agentRunDeps struct {
 	onTool              func(string, string)
 	onAnswer            func(string)
 	onStepReasoningOnly func()
+	onRunStarted        func(string)
+	onRunFinished       func(string, sessionstore.RunStatus)
 }
 
 // agentRunnerConfig builds the RunnerConfig for one Telegram run.
@@ -170,6 +174,8 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 			return decision == "allowOnce" || decision == "allowAlways", nil
 		},
 		Callbacks: coordinator.Callbacks{
+			OnRunStarted:  d.onRunStarted,
+			OnRunFinished: d.onRunFinished,
 			// Structured events go on the bus for every surface, not just the
 			// one that asked for this run. A subscriber that has no renderer of
 			// its own still has to be able to watch, which is what the Mini App
@@ -384,14 +390,13 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 	instructionProposer, _ := internal.ProposeScopes(modelConfig)
 
 	runConfig := agentRunnerConfig(agentRunDeps{
-		sessionID:      sessionID,
-		cfg:            cfg,
-		providerConfig: providerConfig,
-		modelConfig:    modelConfig,
-		resolveModel:   resolveModel,
-		reasoning:      reasoning,
-		projectRoot:    projectRoot,
-
+		sessionID:           sessionID,
+		cfg:                 cfg,
+		providerConfig:      providerConfig,
+		modelConfig:         modelConfig,
+		resolveModel:        resolveModel,
+		reasoning:           reasoning,
+		projectRoot:         projectRoot,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,
 		evaluationStore:     evaluationStore,
@@ -401,6 +406,25 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		onTool:              onTool,
 		onAnswer:            onAnswer,
 		onStepReasoningOnly: onStepReasoningOnly,
+		onRunStarted: func(runID string) {
+			if chatID, ok := telegramRunOwner(parent); ok {
+				actor := sessioncontrol.Actor{ID: fmt.Sprintf("telegram:%d", chatID), Source: "telegram", ChatID: chatID}
+				h := sessioncontrol.NewRunHandle(sessioncontrol.SessionID(sessionID), sessioncontrol.RunID(runID), nil, nil, permission.Default, question.Default)
+				if telegramLiveRuns.Register(h) == nil && telegramLiveRuns.BindActor(h, actor) == nil {
+					if value, ok := activeRuns.Load(chatID); ok {
+						if active, ok := value.(*activeRun); ok {
+							active.runID = runID
+						}
+					}
+				}
+			}
+		},
+		onRunFinished: func(runID string, _ sessionstore.RunStatus) {
+			if h, found := telegramLiveRuns.LookupRun(sessioncontrol.SessionID(sessionID), sessioncontrol.RunID(runID)); found {
+				h.MarkDone()
+				_ = telegramLiveRuns.Unregister(h)
+			}
+		},
 	})
 	// The warmer is attached here rather than inside agentRunnerConfig: it is a
 	// daemon-level object, not a property of the config a test asserts on, and

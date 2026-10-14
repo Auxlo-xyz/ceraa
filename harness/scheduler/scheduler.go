@@ -25,6 +25,7 @@ var (
 	ErrInvalidSchedule = errors.New("invalid schedule")
 	ErrScheduleInPast  = errors.New("schedule has no future run")
 	ErrNoRunner        = errors.New("runner callback is nil")
+	ErrAttemptConflict = errors.New("scheduler attempt conflicts with current execution")
 )
 
 type Status string
@@ -57,6 +58,7 @@ type Job struct {
 	RunCount   int           `json:"run_count"`
 	CreatedAt  time.Time     `json:"created_at"`
 	UpdatedAt  time.Time     `json:"updated_at"`
+	AttemptID  string        `json:"attempt_id,omitempty"`
 }
 
 type Callback func(context.Context, Job) error
@@ -242,6 +244,7 @@ func (s *Store) ClaimDue(now time.Time) ([]Job, error) {
 			job.LastError = ""
 			job.LastRunAt = now
 			job.RunCount++
+			job.AttemptID = fmt.Sprintf("%s:%d", job.ID, job.RunCount)
 			job.NextRunAt = next
 			job.UpdatedAt = now
 			claimed = append(claimed, cloneJob(*job))
@@ -286,6 +289,7 @@ func (s *Store) Claim(id string, now time.Time) (Job, bool, error) {
 			job.LastError = ""
 			job.LastRunAt = now
 			job.RunCount++
+			job.AttemptID = fmt.Sprintf("%s:%d", job.ID, job.RunCount)
 			job.NextRunAt = next
 			job.UpdatedAt = now
 			claimed = cloneJob(*job)
@@ -296,7 +300,20 @@ func (s *Store) Claim(id string, now time.Time) (Job, bool, error) {
 	return claimed, found && claimed.ID != "", err
 }
 
+// Complete records a job result for callers that do not use attempt fencing.
+// New execution paths should use CompleteAttempt.
 func (s *Store) Complete(id string, status Status, runError string) error {
+	return s.complete(id, "", status, runError)
+}
+
+// CompleteAttempt records a result only if attemptID is still the current
+// claimed execution. A late callback from an older attempt cannot overwrite a
+// newer claim after recovery or retry.
+func (s *Store) CompleteAttempt(id, attemptID string, status Status, runError string) error {
+	return s.complete(id, attemptID, status, runError)
+}
+
+func (s *Store) complete(id, attemptID string, status Status, runError string) error {
 	if status != StatusSuccess && status != StatusError {
 		return fmt.Errorf("%w: completion status %q", ErrInvalidSchedule, status)
 	}
@@ -310,6 +327,9 @@ func (s *Store) Complete(id string, status Status, runError string) error {
 		for i := range doc.Jobs {
 			if doc.Jobs[i].ID != id {
 				continue
+			}
+			if attemptID != "" && doc.Jobs[i].AttemptID != attemptID {
+				return fmt.Errorf("%w: job %q attempt %q", ErrAttemptConflict, id, attemptID)
 			}
 			doc.Jobs[i].LastStatus = status
 			doc.Jobs[i].LastError = runError
@@ -325,6 +345,14 @@ func (s *Store) Finish(id string, runError error) error {
 		return s.Complete(id, StatusSuccess, "")
 	}
 	return s.Complete(id, StatusError, runError.Error())
+}
+
+// FinishAttempt is the fenced form of Finish.
+func (s *Store) FinishAttempt(id, attemptID string, runError error) error {
+	if runError == nil {
+		return s.CompleteAttempt(id, attemptID, StatusSuccess, "")
+	}
+	return s.CompleteAttempt(id, attemptID, StatusError, runError.Error())
 }
 
 func (s *Store) MarkSuccess(id string) error {
@@ -405,7 +433,7 @@ func (s *Store) RunWithInterval(ctx context.Context, interval time.Duration, cal
 					s.mu.Unlock()
 				}()
 				runError := callback(ctx, job)
-				_ = s.Finish(job.ID, runError)
+				_ = s.FinishAttempt(job.ID, job.AttemptID, runError)
 			}(job)
 		}
 		select {

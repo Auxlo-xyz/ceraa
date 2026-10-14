@@ -366,6 +366,7 @@ func registerSubcommands() {
 	attach(configCmd)
 	attach(configInitCmd)
 	attach(updateCmd)
+	attach(sessionsCmd)
 }
 
 func Execute() {

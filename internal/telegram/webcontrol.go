@@ -1132,9 +1132,8 @@ func webStatus(tunnelAddr func() string) func() (map[string]any, error) {
 				return true
 			}
 			entry := map[string]any{
-				"chat":    chat,
-				"session": run.sessionID,
-				"title":   run.sessionID,
+				"chat":  chat,
+				"title": "Untitled session",
 			}
 			if store == nil {
 				store, _ = configuredStore()

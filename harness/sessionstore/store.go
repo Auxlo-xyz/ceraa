@@ -202,19 +202,20 @@ type Run struct {
 }
 
 type Session struct {
-	ID               string      `json:"id"`
-	Title            string      `json:"title,omitempty"`
-	TitleSource      string      `json:"title_source,omitempty"`
-	TitleGeneratedAt time.Time   `json:"title_generated_at,omitempty"`
-	TitleAttempts    int         `json:"title_attempts,omitempty"`
-	TitleLastAttempt time.Time   `json:"title_last_attempt,omitempty"`
-	Messages         []Message   `json:"messages"`
-	Operations       []Operation `json:"operations"`
-	Runs             []Run       `json:"runs,omitempty"`
-	RunEvents        []RunEvent  `json:"run_events,omitempty"`
-	Attempts         []Attempt   `json:"attempts,omitempty"`
-	Version          int         `json:"version"`
-	ParentID         string      `json:"parent_id,omitempty"`
+	ID               string           `json:"id"`
+	Title            string           `json:"title,omitempty"`
+	TitleSource      string           `json:"title_source,omitempty"`
+	TitleGeneratedAt time.Time        `json:"title_generated_at,omitempty"`
+	TitleAttempts    int              `json:"title_attempts,omitempty"`
+	TitleLastAttempt time.Time        `json:"title_last_attempt,omitempty"`
+	Messages         []Message        `json:"messages"`
+	Operations       []Operation      `json:"operations"`
+	Runs             []Run            `json:"runs,omitempty"`
+	RunEvents        []RunEvent       `json:"run_events,omitempty"`
+	Attempts         []Attempt        `json:"attempts,omitempty"`
+	ExternalActions  []ExternalAction `json:"external_actions,omitempty"`
+	Version          int              `json:"version"`
+	ParentID         string           `json:"parent_id,omitempty"`
 
 	// PrefixRewrites counts how many times this session has rewritten the front
 	// of the prompt: a fold, a tier merge, or a checkpoint-chain roll.
@@ -296,6 +297,7 @@ func (s *Session) Clear() error {
 	s.Messages = []Message{}
 	s.Operations = []Operation{}
 	s.Runs = []Run{}
+	s.ExternalActions = []ExternalAction{}
 	// The rewrite counter goes with the transcript: an empty session has rewritten
 	// nothing.
 	s.PrefixRewrites = 0
@@ -387,6 +389,12 @@ func (s *Store) loadUnlocked(id string) (*Session, error) {
 	}
 	if sess.RunEvents == nil {
 		sess.RunEvents = []RunEvent{}
+	}
+	if sess.Attempts == nil {
+		sess.Attempts = []Attempt{}
+	}
+	if sess.ExternalActions == nil {
+		sess.ExternalActions = []ExternalAction{}
 	}
 	return &sess, nil
 }
@@ -499,6 +507,9 @@ func Recover(sess *Session) bool {
 	if sess.RunEvents == nil {
 		sess.RunEvents = []RunEvent{}
 	}
+	if sess.ExternalActions == nil {
+		sess.ExternalActions = []ExternalAction{}
+	}
 
 	operations := make(map[string]*Operation, len(sess.Operations))
 	for i := range sess.Operations {
@@ -602,11 +613,12 @@ func (s *Store) Fork(parentID string, messageIndex int) (*Session, error) {
 	}
 	childID := parentID + "-fork-" + fmt.Sprintf("%d", len(parent.Messages))
 	child := &Session{
-		ID:         childID,
-		ParentID:   parentID,
-		Version:    schemaVersion,
-		Messages:   make([]Message, messageIndex+1),
-		Operations: []Operation{},
+		ID:              childID,
+		ParentID:        parentID,
+		Version:         schemaVersion,
+		Messages:        make([]Message, messageIndex+1),
+		Operations:      []Operation{},
+		ExternalActions: []ExternalAction{},
 	}
 	copy(child.Messages, parent.Messages[:messageIndex+1])
 	if err := s.Save(child); err != nil {

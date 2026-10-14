@@ -7,6 +7,7 @@ import (
 	"ceraa/harness/permission"
 	"ceraa/harness/question"
 	"ceraa/harness/scheduler"
+	"ceraa/harness/sessioncontrol"
 	"ceraa/harness/tool"
 	"ceraa/internal/buddyauth"
 	"ceraa/internal/claudeauth"
@@ -564,6 +565,22 @@ var promptQueue = struct {
 
 var activeRuns sync.Map
 
+// telegramLiveRuns is the process-wide registry shared by Telegram entry points.
+// The renderer map remains local to chat for compatibility, while this registry
+// carries exact session/run identity and authenticated ownership.
+var telegramLiveRuns = sessioncontrol.NewRegistry()
+
+type telegramRunOwnerKey struct{}
+
+func withTelegramRunOwner(ctx context.Context, chatID int64) context.Context {
+	return context.WithValue(ctx, telegramRunOwnerKey{}, chatID)
+}
+
+func telegramRunOwner(ctx context.Context) (int64, bool) {
+	chatID, ok := ctx.Value(telegramRunOwnerKey{}).(int64)
+	return chatID, ok && chatID != 0
+}
+
 // activeRun is the cancellable state of the run in progress for one chat.
 type activeRun struct {
 	cancel context.CancelFunc
@@ -571,6 +588,7 @@ type activeRun struct {
 	// stopped rather than as a failure.
 	stop      func()
 	sessionID string
+	runID     string
 }
 
 // stopActiveRun cancels the chat's current run, if there is one. It reports
@@ -584,14 +602,29 @@ func stopActiveRun(chatID int64) (bool, string) {
 	if !ok || run == nil {
 		return false, ""
 	}
-	// stop() cancels through the renderer, which holds the same cancel func, so
-	// the stopped flag and the cancellation cannot disagree.
+	// Prefer the exact registry handle when the callback has published it.
+	if run.runID != "" {
+		actor := sessioncontrol.Actor{ID: fmt.Sprintf("telegram:%d", chatID), Source: "telegram", ChatID: chatID}
+		if _, eligible := telegramLiveRuns.CancellationEligible(sessioncontrol.SessionID(run.sessionID), sessioncontrol.RunID(run.runID), actor); eligible {
+			if run.stop != nil {
+				run.stop()
+			} else if run.cancel != nil {
+				run.cancel()
+			}
+			return true, run.sessionID
+		}
+	}
+	// Preserve the renderer-owned stop fallback for runs that have not published
+	// their coordinator identity yet, and for legacy callers/tests.
 	if run.stop != nil {
 		run.stop()
 		return true, run.sessionID
 	}
-	run.cancel()
-	return true, run.sessionID
+	if run.cancel != nil {
+		run.cancel()
+		return true, run.sessionID
+	}
+	return false, ""
 }
 
 // clearStopMessage is gone along with the companion Stop message. Cancelling is
@@ -1367,7 +1400,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 						// five minute timeout with nothing on screen to answer.
 						sendWithKeyboard(token, chatID,
 							"🔒 Permission required for `"+tool+"`\n"+summariseToolRequest(tool, e.Data["args"]),
-							permissionKeyboard(pendingCallback{SessionID: sessionID, RequestID: reqID, Tool: tool}))
+							permissionKeyboard(pendingCallback{SessionID: sessionID, RequestID: reqID, ChatID: chatID, Tool: tool}))
 					case event.TypeQuestion:
 						ques, _ := e.Data["question"].(string)
 						if ques == "" {
@@ -1391,7 +1424,7 @@ func handlePrompt(token string, chatID int64, prompt string, updateID int) {
 							}
 						}
 						freeForm, _ := e.Data["free_form"].(bool)
-						kb := questionKeyboard(pendingCallback{SessionID: sessionID, RequestID: reqID}, opts, freeForm)
+						kb := questionKeyboard(pendingCallback{SessionID: sessionID, RequestID: reqID, ChatID: chatID}, opts, freeForm)
 						if freeForm {
 							// Mark the message as one whose next plain reply is an
 							// answer, so the typed text is not mistaken for a task.
@@ -3361,6 +3394,11 @@ func buildMiniAppSurface(token string, allowID int64) (*miniapp.Server, error) {
 		Settings:    webSettings,
 		SetSettings: applyWebSettings,
 	}
+	control, err := telegramControl(store)
+	if err != nil {
+		return nil, fmt.Errorf("session control unavailable: %w", err)
+	}
+	cfg.Control = control
 	// The dashboard's backend. Wired before New copies the config, with the
 	// tunnel address resolving late through the holder: the tunnel does not
 	// exist until Start runs, and the status function must ask the live server

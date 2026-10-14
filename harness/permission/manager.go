@@ -3,6 +3,7 @@ package permission
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -19,9 +20,7 @@ func NewManager() *Manager {
 
 var Default = NewManager()
 
-func key(sessionID, requestID string) string {
-	return sessionID + ":" + requestID
-}
+func key(sessionID, requestID string) string { return sessionID + ":" + requestID }
 
 func (m *Manager) Create(parent context.Context, sessionID, requestID, toolName string, timeout time.Duration, ready func()) (string, error) {
 	m.mu.Lock()
@@ -44,8 +43,8 @@ func (m *Manager) Create(parent context.Context, sessionID, requestID, toolName 
 		timeout = 5 * time.Minute
 	}
 	select {
-	case decision := <-ch:
-		return decision, nil
+	case d := <-ch:
+		return d, nil
 	case <-parent.Done():
 		return "", parent.Err()
 	case <-time.After(timeout):
@@ -81,6 +80,20 @@ func (m *Manager) ClearAlways(toolName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.always, toolName)
+}
+
+func (m *Manager) Pending(sessionID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := sessionID + ":"
+	out := []string{}
+	for k := range m.pending {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			out = append(out, k[len(prefix):])
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *Manager) IsPending(sessionID, requestID string) bool {
