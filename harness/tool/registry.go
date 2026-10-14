@@ -444,6 +444,15 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	for _, actionTool := range BrowserActionTools(browser) {
 		r.Register(actionTool)
 	}
+	// One manager per project root, so a sequence of queries against one
+	// project reuses its server. Registered hidden for the same reason as the
+	// browser: the model is offered one tool per action, while the driver the
+	// specs resolve to stays executable under its combined name.
+	lspBase := NewLspTool()
+	r.RegisterHidden(lspBase)
+	for _, actionTool := range LspActionTools(lspBase) {
+		r.Register(actionTool)
+	}
 	// Registered without a factory and attached later by whoever knows how to build a
 	// runner: the tool layer cannot import the coordinator, which imports this one.
 	r.Register(NewTaskTool())
