@@ -453,6 +453,15 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	for _, actionTool := range LspActionTools(lspBase) {
 		r.Register(actionTool)
 	}
+	// One debug session, shared by every action, registered hidden like the
+	// browser and the language server. The debugger is the most privileged tool
+	// in the registry, so the offered surface is per action and the driver the
+	// specs resolve to is not itself offered.
+	debugBase := NewDebugTool()
+	r.RegisterHidden(debugBase)
+	for _, actionTool := range DebugActionTools(debugBase) {
+		r.Register(actionTool)
+	}
 	// Registered without a factory and attached later by whoever knows how to build a
 	// runner: the tool layer cannot import the coordinator, which imports this one.
 	r.Register(NewTaskTool())
