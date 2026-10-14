@@ -47,11 +47,10 @@
 // # The compiler is pure, and that is the point.
 //
 // Compile takes a string and bytes and returns a value and diagnostics. No
-// clock, no filesystem, no globals, every input path returns. This is the same
-// property as harness/verify.Decide and it is the same reason: a policy you can
-// read in one screen can be the definition of the policy rather than an
-// implementation of it, and it can be tested exhaustively instead of by
-// example. Everything impure about this package lives in Store.
+// clock, no filesystem, no globals, every input path returns. That is the
+// reason: a policy you can read in one screen can be the definition of the
+// policy rather than an implementation of it, and it can be tested exhaustively
+// instead of by example. Everything impure about this package lives in Store.
 //
 // There is deliberately no timestamp and no score on Instruction. A score is a
 // function of a clock, and a clock in this package is the exact volatility being

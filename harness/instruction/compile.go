@@ -163,9 +163,8 @@ func idFor(hash string) ID {
 // Compile turns one markdown instruction file into rules.
 //
 // It is pure and total: same inputs, same bytes out, every path returns. No
-// clock, no filesystem, no package state. That is the property
-// harness/verify.Decide holds and it is the same reason - a compiler you can read
-// in one screen can be the definition of the policy rather than an
+// clock, no filesystem, no package state. That is the point - a compiler you can
+// read in one screen can be the definition of the policy rather than an
 // implementation of it, and it can be tested exhaustively instead of by example.
 //
 // source is the project-relative path, carried for attribution and for pointing
