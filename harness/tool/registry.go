@@ -466,6 +466,11 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	r.Register(&CreateGoalTool{})
 	r.Register(&GetGoalTool{})
 	r.Register(&UpdateGoalTool{})
+	// Always registered, withdrawn below without vuln intent. Re-deriving a
+	// finding is a second look at evidence, and a tool the model can reach for
+	// unasked on every turn would tax the schema for a job that only exists
+	// when the user is hunting. The skill proposer is gated the same way.
+	r.Register(&ReproduceTool{})
 	// Read-only recovery for what compaction summarized away: the archive is
 	// pulled like a fetched page, never injected, so listing it beside the
 	// goals it resembles is honest about what it is.
@@ -514,6 +519,13 @@ func DefaultRegistryForUser(user string, skillStore *skills.Store) *Registry {
 	}
 	if !skillEnabled {
 		registry.Remove(SkillProposalName)
+	}
+	// Gated on the problem, not the tool: without a vulnerability in the
+	// conversation the re-derivation has nothing to check, and the catalogue
+	// stays at its steady-state cost.
+	vulnEnabled := strings.Contains(lower, "vuln") || strings.Contains(lower, "exploit") || strings.Contains(lower, "cve") || strings.Contains(lower, "taint")
+	if !vulnEnabled {
+		registry.Remove(ReproduceName)
 	}
 	return registry
 }
