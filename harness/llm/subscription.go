@@ -52,29 +52,36 @@ const OpenCodeBaseURL = "https://opencode.ai/zen/v1"
 
 // DefaultOpenCodeModel is the model selected when Zen is chosen without one.
 //
-// Space Bunny, because it is the first of the models measured to answer from
+// Space Bunny, because it was the first of the models measured to answer from
 // outside OpenCode and it streams, returns reasoning, and costs nothing.
 //
 // The free name on Zen is not a promise that the model answers here. Sweeping
 // all eighty-five ids with a real key on 2026-10-01 gave eight that answer a
 // third-party client, eleven refused with FreeTierError ("can only be used from
 // within OpenCode"), seventy asking for funds, one that does not speak this
-// protocol at all, and one with no route on this endpoint. The gate is per
+// protocol at all, and one with no route on this endpoint. Re-measured
+// 2026-10-14: the free tier is closed to third-party clients entirely and every
+// free id refuses, so the default is the documented free id to pick if the
+// policy reopens, not one that works today. The gate is per
 // model, not per client, so a default picked on the strength of a name ending
 // in -free would be a default that does not answer.
 const DefaultOpenCodeModel = "space-bunny-free"
 
-// OpenCodeFreeModels are the Zen ids measured to answer a third-party client on
-// chat/completions, in the order they should be offered, with the default first.
+// OpenCodeFreeModels are the Zen ids upstream lists as free, in the order they
+// should be offered, with the default first.
 //
-// This is the list the picker and the failure hint both read, so a model the
-// hint recommends is a model the picker is already showing in the same order.
-// Re-measured live on 2026-10-01 with the full header and body contract in
-// place: all eight returned 200.
+// This is the list the picker reads, so a model the catalog shows is a model
+// that exists upstream rather than a retired id. It is no longer a list of ids
+// that answer from here: re-measured live on 2026-10-14, every one of them
+// refuses a third-party client with FreeTierError. exo-free and
+// fledge-alpha-free are absent because upstream answers 410 ModelDeprecated
+// for them, and cat-jam-free and step-5-preview-free are present because the
+// current upstream docs list them.
 //
-// Not here, though also free: the two Muse Spark contributor models answer only
-// on /responses rather than chat/completions, which is a different transport
-// this program does not speak.
+// Not here: the two Muse Spark contributor models speak /responses rather than
+// chat/completions, which is a different transport this program does not
+// speak; jev-1.13-free reports ModelProtocolUnsupported and
+// ling-3.0-flash-fin-free has no route on this endpoint.
 var OpenCodeFreeModels = []string{
 	"space-bunny-free",
 	"big-pickle",
@@ -83,7 +90,8 @@ var OpenCodeFreeModels = []string{
 	"longcat-2.5-preview-free",
 	"nemotron-3-ultra-free",
 	"nemotron-3.5-lightning-free",
-	"fledge-alpha-free",
+	"cat-jam-free",
+	"step-5-preview-free",
 }
 
 // OpenCodeModels lists the model ids Zen serves, in the order they should be
@@ -94,21 +102,22 @@ var OpenCodeFreeModels = []string{
 // OpenAI-compatible hosts and would contain none of these. Eighty-five entries,
 // sorted so the free tier comes first, followed by the paid ones.
 //
-// Free here means it bills nothing, not that it is reachable. OpenCodeFreeModels
-// are the free ids that answer from here; the rest of the free tier is refused
-// with FreeTierError or has no route on this endpoint, and seventy paid ones need
-// balance in the account. All of them stay in the list because either stops
-// applying the moment OpenCode changes its mind or the account is topped up, and
-// a picker that silently dropped models would hide the reason a user's choice did
-// not work. What does not change is the default, which is the first id measured
-// to answer.
+// Free here means it bills nothing, not that it is reachable. Since
+// 2026-10-14 every free id is refused with FreeTierError from a third-party
+// client, and seventy paid ones need balance in the account. All of them stay
+// in the list because either stops applying the moment OpenCode changes its
+// mind or the account is topped up, and a picker that silently dropped models
+// would hide the reason a user's choice did not work. What does not change is
+// the default, which is the documented free id to pick if the policy reopens.
 //
 // The ids are lowercase and the endpoint serves them case-insensitively, but
 // IsOpenCodeModel compares case-insensitively anyway so a user typing Claude-Sonnet-5
 // is not told the model does not exist.
 var OpenCodeModels = []string{
-	// Free tier. OpenCodeFreeModels first, in the order they were measured to
-	// answer, so the top of the picker is the set that works.
+	// Free tier. OpenCodeFreeModels first, in the same order, so the top of
+	// the picker is the upstream free set. None of them answers a
+	// third-party client since 2026-10-14; the order is catalog truth, not a
+	// promise.
 	"space-bunny-free",
 	"big-pickle",
 	"mimo-v2.6-flash-free",
@@ -116,10 +125,13 @@ var OpenCodeModels = []string{
 	"longcat-2.5-preview-free",
 	"nemotron-3-ultra-free",
 	"nemotron-3.5-lightning-free",
-	"fledge-alpha-free",
-	// Still free, still listed, not answers: Muse Spark speaks /responses only,
-	// jev-1.13 reports ModelProtocolUnsupported, ling-3.0-flash-fin has no route
-	// on chat/completions, and deepseek-v4-flash is unavailable upstream.
+	"cat-jam-free",
+	"step-5-preview-free",
+	// Still free, still listed, refuses from here: Muse Spark speaks
+	// /responses only, jev-1.13 reports ModelProtocolUnsupported,
+	// ling-3.0-flash-fin has no route on chat/completions, and
+	// deepseek-v4-flash is unavailable upstream. fledge-alpha-free and
+	// exo-free are gone entirely: upstream answers 410 ModelDeprecated.
 	"muse-spark-1.3-contributor-free",
 	"muse-spark-1.2-contributor-free",
 	"jev-1.13-free",

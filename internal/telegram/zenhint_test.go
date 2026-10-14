@@ -7,10 +7,11 @@ import (
 
 // A refusal has to name the fix, not just repeat the status.
 //
-// Zen says no three different ways and the generic message sent everyone to
-// re-check a key that was never the problem. The default model is named because
-// that is the one id measured to answer from outside the OpenCode app, so the
-// hint has to lead to something that works rather than to another refusal.
+// Zen says no several ways and the generic message sent everyone to re-check
+// a key that was never the problem. Re-measured 2026-10-14: the free tier is
+// closed to third-party clients entirely, so the hint must not recommend
+// another free id. It names the two things that actually work: a funded
+// account with a paid model, or another provider.
 func TestZenRefusalsSayWhatToDo(t *testing.T) {
 	cases := map[string]struct {
 		body   string
@@ -18,11 +19,11 @@ func TestZenRefusalsSayWhatToDo(t *testing.T) {
 	}{
 		"free tier": {
 			body:   `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`,
-			wanted: []string{"inside the OpenCode app", "space-bunny-free"},
+			wanted: []string{"closed to third-party", "add funds", "another provider"},
 		},
 		"no funds": {
 			body:   `{"error":{"message":"Upstream request failed: Insufficient account funds"}}`,
-			wanted: []string{"no balance", "costs nothing"},
+			wanted: []string{"no balance", "Add funds"},
 		},
 		"go subscription": {
 			body:   `{"error":{"message":"Upstream request failed: An active OpenCode Go subscription is required to use Go models."}}`,
@@ -31,6 +32,10 @@ func TestZenRefusalsSayWhatToDo(t *testing.T) {
 		"bad key": {
 			body:   `{"error":{"type":"AuthError","message":"Invalid API key."}}`,
 			wanted: []string{"did not accept that key"},
+		},
+		"deprecated": {
+			body:   `{"type":"error","error":{"type":"ModelDeprecated","message":"Model exo-free has been deprecated."}}`,
+			wanted: []string{"retired", "from Model"},
 		},
 	}
 	for name, tc := range cases {
@@ -67,11 +72,11 @@ func TestZenProtocolAndRouteRefusalsSayWhatToDo(t *testing.T) {
 	}{
 		"protocol unsupported": {
 			body:   `{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}`,
-			wanted: []string{"chat/completions", "space-bunny-free"},
+			wanted: []string{"chat/completions", "closed to third-party"},
 		},
 		"no route": {
 			body:   `{"status":404,"message":"Cannot find any route matching [POST] https://opencode.ai/zen/v1/chat/completions"}`,
-			wanted: []string{"chat/completions", "space-bunny-free"},
+			wanted: []string{"chat/completions", "closed to third-party"},
 		},
 	}
 	for name, tc := range cases {
