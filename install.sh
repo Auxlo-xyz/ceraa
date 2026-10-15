@@ -76,7 +76,7 @@ base="https://github.com/$REPO/releases/download/$VERSION"
 info "downloading"
 curl -fsSL -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
-// The prompt is compiled into the binary and cannot be overridden at runtime.y and not by prefix: a substring match would also accept
+# Match by suffix and not by prefix: a substring match would also accept
 # "ceraa-linux-amd64-notreally".
 info "verifying checksum"
 verify() {
