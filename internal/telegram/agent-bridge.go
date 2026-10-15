@@ -529,6 +529,15 @@ func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvi
 		// OpenCode credentials have their own encrypted namespace. Do not inherit
 		// the generic base-provider key, which CredentialFor would prefer.
 		result.APIKey = ""
+	} else if providerID != "default" {
+		// A key held in the secret store for this provider wins over the
+		// inherited base key. Without this a provider onboarded with a
+		// store-held key sends the base provider's key on every run while
+		// verification, which uses the pasted key, passes: a valid key and
+		// a 401 on every real call. That was the custom-provider incident.
+		if key, err := secret.Get("provider_api_key_" + providerID); err == nil {
+			result.APIKey = key
+		}
 	}
 	if profile.Model != "" {
 		result.Model = profile.Model

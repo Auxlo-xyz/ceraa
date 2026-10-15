@@ -218,3 +218,52 @@ func TestTelegramResolverAcceptsOpenCodeFromTheProfileKey(t *testing.T) {
 		t.Errorf("ExtraHeaders = %v, the contract was not applied on the profile path", model.ExtraHeaders)
 	}
 }
+
+// A provider onboarded with a store-held key must send that key, not the
+// base provider's. The custom-provider incident: verification uses the pasted
+// key and passes, while every real run inherited the base (Atria) key and
+// failed 401 with a valid key sitting in the store.
+func TestActiveProviderConfigPrefersStoreKeyOverBaseKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatalf("secret store: %v", err)
+	}
+	if err := secret.Set("provider_api_key_custom", "custom-key"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// The global state may hold a real custom profile; keep it out of the
+	// way and put it back afterwards.
+	prior, hadPrior := defaultState.providerProfiles()["custom"]
+	if hadPrior {
+		if _, err := defaultState.removeProviderProfile("custom"); err != nil {
+			t.Fatalf("clear: %v", err)
+		}
+	}
+	defer func() {
+		if hadPrior {
+			_ = defaultState.setProviderProfile("custom", prior)
+		} else {
+			_, _ = defaultState.removeProviderProfile("custom")
+		}
+	}()
+	cfg := &config.Config{
+		LLM: config.LLMProvider{URL: "https://api.atria-asi.ai/v1", Model: "m", APIKey: "base-key"},
+		ProviderProfiles: map[string]config.ProviderProfile{
+			"custom": {URL: "https://discovery-api.intern-ai.org.cn/v1", Model: "deepseek-v4-flash-0731"},
+		},
+	}
+	got := activeProviderConfig(cfg, "custom")
+	if got.APIKey != "custom-key" {
+		t.Errorf("API key = %q, want the store-held custom key; runs would send the base key and fail 401", got.APIKey)
+	}
+	if got.Model != "deepseek-v4-flash-0731" {
+		t.Errorf("model = %q, want the profile's", got.Model)
+	}
+	// A profile that names its own key keeps it: the store is a fallback,
+	// not an override.
+	cfg.ProviderProfiles["custom"] = config.ProviderProfile{URL: "https://discovery-api.intern-ai.org.cn/v1", Model: "m", APIKey: "profile-key"}
+	if got := activeProviderConfig(cfg, "custom"); got.APIKey != "profile-key" {
+		t.Errorf("API key = %q, want the profile's own key", got.APIKey)
+	}
+}
