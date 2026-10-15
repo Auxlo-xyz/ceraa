@@ -42,9 +42,20 @@ func TestActiveLLMUsesSelectedProviderProfile(t *testing.T) {
 }
 
 func TestDefaultProviderFallsBackToLLMConfig(t *testing.T) {
-	cfg := Config{LLM: LLMProvider{URL: "url", Model: "model"}, ActiveProvider: "missing"}
+	cfg := Config{LLM: LLMProvider{URL: "url", Model: "model"}}
 	if active := cfg.ActiveLLM(); active.URL != "url" || active.Model != "model" {
 		t.Fatalf("unexpected fallback provider: %+v", active)
+	}
+}
+
+// A named id with no profile must not silently run on the base block. That
+// inheritance sent one provider's runs to another's endpoint with no error,
+// so a missing name fails closed as unconfigured.
+func TestMissingNamedProviderFailsClosedWithoutBase(t *testing.T) {
+	t.Setenv("CERAA_HOME", t.TempDir())
+	cfg := Config{LLM: LLMProvider{URL: "url", Model: "model"}, ActiveProvider: "missing"}
+	if active := cfg.ActiveLLM(); active.URL != "" || active.Model != "" {
+		t.Fatalf("missing provider resolved to %+v, want unconfigured", active)
 	}
 }
 

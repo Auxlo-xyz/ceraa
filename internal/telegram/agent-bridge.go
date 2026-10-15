@@ -512,6 +512,16 @@ func telegramProviderUsesGeminiThoughtSignatures(_ string, provider config.LLMPr
 
 func activeProviderConfig(cfg *config.Config, providerID string) config.LLMProvider {
 	result := cfg.LLM
+	// "default" and "config" both name the base block itself (the latter is
+	// what EffectiveProviderID reports when the base block serves without a
+	// named active provider). Both keep the legacy merge so existing
+	// base-block installs keep working. Every other id resolves standalone:
+	// no field inherits the base block, and an empty URL stays empty and
+	// fails closed as unconfigured instead of silently running on another
+	// provider's endpoint and key.
+	if providerID != "default" && providerID != "config" {
+		result = config.LLMProvider{}
+	}
 	profile, ok := cfg.ProviderProfile(providerID)
 	if custom, exists := defaultState.providerProfiles()[providerID]; exists {
 		profile = custom

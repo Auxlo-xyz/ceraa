@@ -299,6 +299,30 @@ func mergeProfile(base LLMProvider, profile ProviderProfile) LLMProvider {
 	return base
 }
 
+// standaloneProfile builds a provider from a profile alone, with no base
+// block underneath. A named profile resolves only from what it names: an
+// empty URL stays empty and fails closed as unconfigured instead of silently
+// running on another provider's endpoint and key. Optional tunables
+// (reasoning, limits, caching) keep their zero values, which all mean
+// "provider default" downstream.
+func standaloneProfile(profile ProviderProfile) LLMProvider {
+	return LLMProvider{
+		URL:                profile.URL,
+		Model:              profile.Model,
+		Reasoning:          profile.Reasoning,
+		ReasoningEfforts:   profile.ReasoningEfforts,
+		ReasoningDefault:   profile.ReasoningDefault,
+		ReasoningMandatory: profile.ReasoningMandatory,
+		APIKey:             profile.APIKey,
+		ContextLimit:       profile.ContextLimit,
+		MaxOutputTokens:    profile.MaxOutputTokens,
+		PromptCacheMode:    profile.PromptCacheMode,
+		PromptCacheTTL:     profile.PromptCacheTTL,
+		Subscription:       profile.Subscription,
+		HermesProvider:     profile.HermesProvider,
+	}
+}
+
 // EffectiveProviderID names the provider that will actually serve, whether it came
 // from config.json or from the runtime selection.
 //
@@ -356,11 +380,46 @@ func (c *Config) ActiveLLM() LLMProvider {
 	if id == "" {
 		id = "default"
 	}
+	if id == "default" {
+		// Grandfathered: the base block serves the default id exactly as
+		// before, so existing installs keep working.
+		profile, ok := c.ProviderProfile(id)
+		if !ok {
+			return c.withRuntimeSelection(c.LLM)
+		}
+		return c.withRuntimeSelection(mergeProfile(c.LLM, profile))
+	}
+	// Named profiles resolve standalone: from the config profile, else from
+	// the runtime selection for this id, never from the base block. An
+	// empty URL stays empty and fails closed as unconfigured.
 	profile, ok := c.ProviderProfile(id)
 	if !ok {
-		return c.withRuntimeSelection(c.LLM)
+		profile = ProviderProfile{}
 	}
-	return c.withRuntimeSelection(mergeProfile(c.LLM, profile))
+	return c.withRuntimeSelectionFor(id, standaloneProfile(profile))
+}
+
+// withRuntimeSelectionFor adopts the runtime-selected provider, but only when
+// it names this id. Adopting any runtime selection regardless of id sent one
+// provider's runs to another's endpoint whenever the two disagreed, with no
+// error anywhere.
+func (c *Config) withRuntimeSelectionFor(id string, base LLMProvider) LLMProvider {
+	if strings.TrimSpace(base.URL) != "" {
+		return base
+	}
+	state, profile, found := activeRuntimeSelection()
+	if !found || state.Provider != id || strings.TrimSpace(profile.URL) == "" {
+		return base
+	}
+	merged := mergeProfile(base, profile)
+	// Reasoning lives beside the profile in the runtime state rather than inside
+	// it, and is a session setting the menu maintains, so it has to be picked up
+	// separately or the CLI silently runs at the provider default while the daemon
+	// runs at the level the user chose.
+	if strings.TrimSpace(merged.Reasoning) == "" {
+		merged.Reasoning = state.Reasoning
+	}
+	return merged
 }
 
 // withRuntimeSelection adopts the provider the running service selected, but only

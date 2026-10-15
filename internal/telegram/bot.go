@@ -1270,7 +1270,8 @@ func Run() error {
 }
 
 func providerConfigured(cfg *config.Config) bool {
-	provider := activeProviderConfig(cfg, defaultState.provider())
+	id := defaultState.provider()
+	provider := activeProviderConfig(cfg, id)
 	// Subscription providers carry no API key in the profile: their credential
 	// comes from the encrypted native store at request time. Comparing against
 	// "hermes" alone meant a working Codex install read as unconfigured, so /start
@@ -1279,7 +1280,18 @@ func providerConfigured(cfg *config.Config) bool {
 	if llm.IsSubscription(provider.Subscription) {
 		return provider.Model != ""
 	}
-	return provider.URL != "" && provider.Model != "" && provider.APIKey != ""
+	if provider.URL == "" || provider.Model == "" {
+		return false
+	}
+	if provider.APIKey != "" {
+		return true
+	}
+	// A custom profile keeps its key in the secret store rather than the
+	// profile. Named profiles no longer inherit the base key, so without
+	// this lookup a working custom install reads as unconfigured and /start
+	// loops the user back to onboarding forever.
+	_, err := secret.Get("provider_api_key_" + id)
+	return err == nil
 }
 
 func normalizeCommandText(text string) string {

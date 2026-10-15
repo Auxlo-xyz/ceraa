@@ -1,9 +1,11 @@
 package telegram
 
 import (
+	"path/filepath"
 	"testing"
 
 	"ceraa/internal/config"
+	"ceraa/internal/secret"
 )
 
 // A subscription provider keeps its credential in the encrypted store rather than
@@ -38,5 +40,28 @@ func TestProviderConfiguredRejectsAPlainProviderWithoutAKey(t *testing.T) {
 	cfg.ActiveProvider = "custom"
 	if providerConfigured(cfg) {
 		t.Error("a plain provider with no API key was reported as configured")
+	}
+}
+
+// A custom profile keeps its key in the secret store rather than the profile,
+// and named profiles no longer inherit the base key. Without the store lookup
+// a working custom install reads as unconfigured and /start loops the user
+// back to onboarding forever.
+func TestProviderConfiguredAcceptsAStoreHeldCustomKey(t *testing.T) {
+	withProviderState(t, "custom", map[string]config.ProviderProfile{
+		"custom": {URL: "https://discovery-api.intern-ai.org.cn/v1", Model: "deepseek-v4-flash-0731"},
+	})
+	dir := t.TempDir()
+	if err := secret.Init(filepath.Join(dir, "secret.key"), filepath.Join(dir, "secrets.json")); err != nil {
+		t.Fatalf("secret store: %v", err)
+	}
+	if err := secret.Set("provider_api_key_custom", "custom-key"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.ActiveProvider = "custom"
+	if !providerConfigured(cfg) {
+		t.Error("a custom provider with a store-held key was reported as unconfigured")
 	}
 }
