@@ -45,12 +45,5 @@ func Commands() []CommandSpec {
 		{"detach", "Detach from the current session"},
 		{"attach", "Attach to the current session"},
 		{"worktree", "Show worktree information"},
-		{"secrets", "List encrypted secret names"},
-		{"setsecret", "Store an encrypted secret"},
-		{"delsecret", "Delete an encrypted secret"},
-		{"codex-login", "Start Codex device login"},
-		{"codex-status", "Show Codex login status"},
-		{"hermes-login", "Start Nous Portal device login"},
-		{"hermes-status", "Show Hermes login status"},
 	}
 }
