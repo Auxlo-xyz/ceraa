@@ -149,12 +149,14 @@ func questionKeyboard(p pendingCallback, options []string, freeForm bool) map[st
 		optRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID, Answer: opt})
 		rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + optRef}})
 	}
-	// Without a way to type, the user is limited to the exact strings offered, which
-	// is wrong whenever the answer is a value, a path, or a name.
-	if freeForm || len(options) == 0 {
-		typeRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID})
-		rows = append(rows, []map[string]string{{"text": "✍️ Type an answer", "callback_data": "qtype:" + typeRef}})
-	}
+	// The type-an-answer row is unconditional. Without a way to type, the user
+	// is limited to the exact strings offered, which is wrong whenever the
+	// answer is a value, a path, or a name — and offering options never means
+	// the answer must be one of them. freeForm still matters to the renderer:
+	// it marks the next plain message as an answer up front, while here the
+	// user opts into typing by tapping first.
+	typeRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID})
+	rows = append(rows, []map[string]string{{"text": "✍️ Type an answer", "callback_data": "qtype:" + typeRef}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}
 }

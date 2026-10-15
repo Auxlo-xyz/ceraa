@@ -13,6 +13,15 @@ type Manager struct {
 	pending map[string]chan string
 }
 
+// DefaultTimeout is how long a question waits for a human to answer.
+//
+// An hour, because a question is asked mid-run and the run holds its turn
+// until the answer arrives: a timeout shorter than the time it takes the
+// owner to look at their phone fails the run for no reason. There is no
+// run-level deadline above it, so the wait is bounded only by this and by
+// /stop.
+const DefaultTimeout = time.Hour
+
 func NewManager() *Manager {
 	return &Manager{pending: make(map[string]chan string)}
 }
@@ -44,7 +53,7 @@ func (m *Manager) CreateWithContext(parent context.Context, sessionID, requestID
 		m.mu.Unlock()
 	}()
 	if timeout == 0 {
-		timeout = 5 * time.Minute
+		timeout = DefaultTimeout
 	}
 	select {
 	case answer := <-ch:

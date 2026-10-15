@@ -224,8 +224,11 @@ const maxShellTimeout = 3600 * time.Second
 // argument of its own.
 const defaultWireTimeout = 30 * time.Second
 
-// questionTimeout bounds one question waiting for a human to answer it.
-const questionTimeout = 2 * time.Minute
+// questionTimeout bounds one question waiting for a human to answer it. It is
+// the manager's default rather than its own figure, so the two cannot drift:
+// the waiter sizes its deadline from this while the manager waits on its own,
+// and a pair that disagreed would cancel work the other was still running.
+const questionTimeout = question.DefaultTimeout
 
 func clampShellTimeout(seconds int) time.Duration {
 	requested := time.Duration(seconds) * time.Second

@@ -64,6 +64,19 @@ func TestSpecTimeout(t *testing.T) {
 	}
 }
 
+// A question holds its run until the human answers, so anything shorter than
+// the time it takes the owner to look at their phone fails the run for no
+// reason. An hour: there is no run-level deadline above it, so this and /stop
+// are the only bounds.
+func TestQuestionTimeoutIsAnHour(t *testing.T) {
+	if questionTimeout != time.Hour {
+		t.Errorf("question timeout = %v, want 1h", questionTimeout)
+	}
+	if got := SpecTimeout(Spec{Type: "question"}); got != time.Hour {
+		t.Errorf("SpecTimeout(question) = %v, want 1h", got)
+	}
+}
+
 // A spec with no arguments map at all is the common defensive case, and must not
 // panic on the nil lookup.
 func TestSpecTimeoutToleratesNilArgs(t *testing.T) {

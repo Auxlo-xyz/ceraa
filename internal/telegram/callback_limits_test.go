@@ -48,6 +48,29 @@ func TestRenderedQuestionKeyboardFitsTelegram(t *testing.T) {
 		pendingCallback{SessionID: "tg-test", RequestID: realisticCallID}, nil, true))
 }
 
+// Options are suggestions, never the only allowed answers: the type-an-answer
+// row is unconditional, even on a plain choice with free_form off. Tapping it
+// marks the next plain message as the answer, so a value, a path, or a name
+// outside the options is always reachable.
+func TestQuestionKeyboardAlwaysOffersTyping(t *testing.T) {
+	kb := questionKeyboard(
+		pendingCallback{SessionID: "tg-test", RequestID: realisticCallID},
+		[]string{"Restart now", "Remind me later"}, false)
+	rows, ok := kb["inline_keyboard"].([][]map[string]string)
+	if !ok {
+		t.Fatalf("question keyboard has no rows: %v", kb)
+	}
+	for _, row := range rows {
+		for _, btn := range row {
+			if btn["text"] == "✍️ Type an answer" {
+				assertUnderLimit(t, "question, type-an-answer", btn["callback_data"])
+				return
+			}
+		}
+	}
+	t.Error("a choice question with free_form off has no Type-an-answer button")
+}
+
 // A very long option is the worst case and must still fit, since the token is
 // fixed width.
 func TestRenderedQuestionKeyboardFitsWithAnEnormousOption(t *testing.T) {

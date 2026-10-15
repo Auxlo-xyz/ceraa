@@ -25,7 +25,7 @@ func (q *QuestionTool) Schema() map[string]any {
 			"options": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Answer options (2-4). Omit, or pass free_form, when the user should be able to answer in their own words.",
+				"description": "Answer options (2-4) offered as buttons. Omit, or pass free_form, when the user should be able to answer in their own words. The user can always type their own answer instead via the Type-an-answer button, so options are suggestions, never the only allowed answers.",
 			},
 			"free_form": map[string]any{
 				"type":        "boolean",
@@ -114,9 +114,10 @@ func (r *QuestionRunner) Run(spec operation.Spec) (string, error) {
 	for i, o := range opts {
 		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, o))
 	}
-	// Wait for answer via manager
-	// Timeout 5m
-	answer, err := question.Default.Create(sessionID, requestID, ques, opts, 0)
+	// Wait for answer via manager. The timeout is the manager's default: a
+	// question holds its run until the human answers, and nothing above it
+	// expires first.
+	answer, err := question.Default.Create(sessionID, requestID, ques, opts, question.DefaultTimeout)
 	if err != nil {
 		// Fallback: return display for non-interactive mode
 		data, _ := json.Marshal(map[string]any{"question": ques, "options": opts, "display": b.String()})
