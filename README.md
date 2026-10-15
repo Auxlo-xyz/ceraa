@@ -1,3 +1,5 @@
+![Ceraa](file_00000000c7008210ba34bc23c70dfbb2.png)
+
 # Ceraa
 
 Async-first Go coding agent with a durable Telegram bridge.
