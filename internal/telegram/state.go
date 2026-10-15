@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"ceraa/harness/llm"
+	"ceraa/harness/tool"
 	"ceraa/internal/config"
+	"ceraa/internal/logger"
 	"ceraa/internal/paths"
 	"encoding/json"
 	"errors"
@@ -56,6 +58,18 @@ func loadBridgeState() *bridgeState {
 func loadBridgeStateFromFile(path string) *bridgeState {
 	state := &bridgeState{path: path, ActiveSessions: make(map[string]string), Projects: make(map[string]string), SessionProjects: make(map[string]string), AlwaysAllow: make(map[string]bool)}
 	data, err := os.ReadFile(path)
+	// Whether the file names the allow list at all. The in-memory map starts
+	// non-nil, so its nilness after load says nothing: only the raw bytes
+	// tell a fresh state (or a pre-list one) apart from an explicit empty one.
+	allowKeyPresent := false
+	if err == nil {
+		var probe struct {
+			AlwaysAllow map[string]bool `json:"always_allow"`
+		}
+		if json.Unmarshal(data, &probe) == nil && probe.AlwaysAllow != nil {
+			allowKeyPresent = true
+		}
+	}
 	if err == nil {
 		if unmarshalErr := json.Unmarshal(data, state); unmarshalErr != nil {
 			state.loadErr = fmt.Errorf("parse bridge state: %w", unmarshalErr)
@@ -84,7 +98,29 @@ func loadBridgeStateFromFile(path string) *bridgeState {
 	if state.SessionProjects == nil {
 		state.SessionProjects = make(map[string]string)
 	}
-	if state.AlwaysAllow == nil {
+	if !allowKeyPresent {
+		// Never configured: a fresh state, or one written before the list
+		// existed. Default every registry tool to allowed and persist, so
+		// the choice reads as explicit from here on. A user who turns tools
+		// off later keeps an explicit (possibly empty) map, which is never
+		// reseeded: presence of the key, not its size, is what counts.
+		// A state that failed to load is left alone rather than seeded and
+		// saved, so a corrupt file is never paved over by defaults.
+		if state.loadErr == nil {
+			if state.AlwaysAllow == nil {
+				state.AlwaysAllow = make(map[string]bool)
+			}
+			for _, t := range tool.DefaultRegistryWithStores(nil).All() {
+				state.AlwaysAllow[t.Name()] = true
+			}
+			state.path = path
+			if err := state.save(); err != nil {
+				logger.Warn("allow-list seed not persisted: " + err.Error())
+			}
+		} else if state.AlwaysAllow == nil {
+			state.AlwaysAllow = make(map[string]bool)
+		}
+	} else if state.AlwaysAllow == nil {
 		state.AlwaysAllow = make(map[string]bool)
 	}
 	state.path = path

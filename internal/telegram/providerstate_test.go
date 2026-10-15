@@ -390,3 +390,43 @@ func TestSetActivePersistsTheSelection(t *testing.T) {
 		t.Fatalf("active = %q after switching to opencode; the switch did not stick", got)
 	}
 }
+
+// A state that never named the allow list gets every registry tool allowed,
+// so a fresh install (and an install from before the list existed) starts
+// with approvals off rather than prompting on every tool.
+func TestMissingAllowListSeedsEveryRegistryTool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge-state.json")
+	if err := os.WriteFile(path, []byte(`{"active_sessions":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := loadBridgeStateFromFile(path)
+	if len(state.AlwaysAllow) == 0 {
+		t.Fatal("allow list was not seeded on a state that never named it")
+	}
+	for _, name := range []string{"bash", "read", "write", "task", "webfetch"} {
+		if !state.AlwaysAllow[name] {
+			t.Errorf("tool %q not seeded as allowed", name)
+		}
+	}
+	// Persisted as explicit, so the next boot reads it back rather than
+	// reseeding.
+	again := loadBridgeStateFromFile(path)
+	if len(again.AlwaysAllow) != len(state.AlwaysAllow) {
+		t.Errorf("reseed changed the list: %d then %d", len(state.AlwaysAllow), len(again.AlwaysAllow))
+	}
+}
+
+// An explicit empty list is a user who turned everything off. Presence of
+// the key, not its size, is what counts: it must never reseed.
+func TestExplicitEmptyAllowListIsNeverReseeded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge-state.json")
+	if err := os.WriteFile(path, []byte(`{"active_sessions":{},"always_allow":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := loadBridgeStateFromFile(path)
+	if len(state.AlwaysAllow) != 0 {
+		t.Errorf("explicit empty allow list reseeded to %d tools", len(state.AlwaysAllow))
+	}
+}
