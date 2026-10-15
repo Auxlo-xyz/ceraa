@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ceraa/internal/config"
 )
@@ -72,5 +75,40 @@ func TestRunSetupPersistsConfiguration(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config permissions = %o", info.Mode().Perm())
+	}
+}
+
+// A 404 on /models means no catalogue lives under the base URL: a wrong base
+// path, not an unreachable host. Counting it as answered let a misconfigured
+// URL pass the gate.
+func TestCheckProviderTreatsModels404AsUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.LLM = config.LLMProvider{URL: server.URL, Model: "m", APIKey: "k"}
+	if got := checkProvider(cfg, 5*time.Second); got.Status != "FAIL" {
+		t.Errorf("checkProvider with 404 /models = %q, want FAIL", got.Status)
+	}
+}
+
+// The same probe answering the catalogue is a pass.
+func TestCheckProviderAcceptsModels200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.LLM = config.LLMProvider{URL: server.URL, Model: "m", APIKey: "k"}
+	if got := checkProvider(cfg, 5*time.Second); got.Status != "OK" {
+		t.Errorf("checkProvider with 200 /models = %q, want OK", got.Status)
 	}
 }

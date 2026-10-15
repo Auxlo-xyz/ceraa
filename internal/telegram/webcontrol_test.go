@@ -610,3 +610,29 @@ func TestWebToolsOmitsToolsThatNoLongerExist(t *testing.T) {
 		t.Error("bash is registered and allowed, so the filter dropped everything")
 	}
 }
+
+// The file browser is confined by routing, not by a ".." prefix check: the
+// collapsed path must name files/ or workspace/, and anything else is refused.
+// A prefix check for "/.." after Clean("/"+rel) could never fire, so it
+// pretended to guard what the switch actually guards. These pin the refusals
+// at the switch.
+func TestWebFilesRefusesEscapesAndForeignRoots(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CERAA_HOME", dir)
+	t.Setenv("CERAA_FILES_DIR", filepath.Join(dir, "files"))
+	t.Setenv("CERAA_WORKSPACE_ROOT", filepath.Join(dir, "workspace"))
+	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"../etc", "../../etc/passwd", "/etc/passwd", "..", "secret", "other/x"} {
+		if _, err := webFiles(rel); err == nil {
+			t.Errorf("webFiles(%q) succeeded, want refusal", rel)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "files", "note.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := webFiles("files"); err != nil {
+		t.Errorf("webFiles(files) failed: %v", err)
+	}
+}

@@ -1059,10 +1059,21 @@ func webDeleteSession(id string) error {
 // the workspace root are reachable: anything else, including ".." escapes and
 // absolute paths, is refused. The browser shows user files, not a shell.
 func webFiles(rel string) ([]miniapp.FileEntry, error) {
-	clean := filepath.Clean("/" + strings.ReplaceAll(rel, "\\", "/"))
-	if strings.HasPrefix(clean, "/..") || clean == "/.." {
-		return nil, fmt.Errorf("path escapes the file roots")
+	slash := strings.ReplaceAll(rel, "\\", "/")
+	// Dot-dot is refused as input even though Clean below would collapse it:
+	// a browser path containing ".." is never legitimate, and refusing it
+	// says so instead of silently aliasing it onto a root.
+	for _, part := range strings.Split(slash, "/") {
+		if part == ".." {
+			return nil, fmt.Errorf("path escapes the file roots")
+		}
 	}
+	clean := filepath.Clean("/" + slash)
+	// No ".." check here on purpose: clean is rooted, so it can never hold a
+	// leading "..", and any check for one would be dead code pretending to be
+	// load-bearing. The confinement is the switch below, which routes only the
+	// collapsed files/ and workspace/ prefixes onto their roots and refuses
+	// everything else, so no collapsed path can name anything outside them.
 	var base string
 	rest := strings.TrimPrefix(clean, "/")
 	switch {

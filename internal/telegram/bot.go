@@ -909,6 +909,13 @@ func Run() error {
 				address, err := srv.StartTunnel()
 				if err != nil {
 					logger.Warn("Mini App tunnel unavailable: " + err.Error())
+					// The label above says "starting"; leaving it there
+					// advertises a surface that will never arrive. Take it
+					// back to plain instead. A later /web share sets a real
+					// address, and the watchdog only repairs live tunnels.
+					if cerr := clearChatMenuButton(token, "Web"); cerr != nil {
+						logger.Warn("Mini App menu button not cleared: " + cerr.Error())
+					}
 					return
 				}
 				logger.Info("Mini App shared at " + address)

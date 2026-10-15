@@ -150,20 +150,18 @@ func newRunRenderer(token string, chatID int64) *runRenderer {
 	return renderer
 }
 
-// ensureMessageLocked creates the assistant message once, and attaches the reply
-// keyboard to it.
+// ensureMessageLocked creates the assistant message once.
 //
 // The rich branch is the one production takes: the endpoint works, so the plain
-// fallback is dead in practice. Attaching the keyboard only to the fallback is why
-// a prompt finished with no keyboard while /status, which goes down the plain
-// path, looked correct. Both branches carry it.
+// fallback is dead in practice.
 //
-// editMessageReplyMarkup is documented for inline keyboards and answers
-// "inline keyboard expected" for a reply keyboard on a minority of calls (122
-// recorded against 2220 successes). This is the one place where a refusal cannot
-// be recovered later: the run would stay keyboardless for its whole life. One
-// bounded second attempt, then give up and say which end failed so a log can tell
-// this from the final-answer attach.
+// A reply keyboard cannot be attached to an already-sent message:
+// editMessageReplyMarkup accepts only an inline keyboard and answers "inline
+// keyboard expected" to a reply keyboard on every call (verified live against
+// the Bot API). The keyboard therefore travels only on sends. It is persistent
+// client-side, so every plain send in this chat (command replies, plain
+// fallbacks, fresh-send answers) is a carrier, and deleting any one message
+// cannot take it. No markup call is made here.
 //
 // Callers must hold r.mu.
 func (r *runRenderer) ensureMessageLocked() int {
@@ -179,11 +177,6 @@ func (r *runRenderer) ensureMessageLocked() int {
 	}
 	if messageID, err := sendRichMessage(r.token, r.chatID, seed); err == nil {
 		r.messageID = messageID
-		if err := attachReplyKeyboard(r.token, r.chatID, messageID); err != nil {
-			if retryErr := attachReplyKeyboard(r.token, r.chatID, messageID); retryErr != nil {
-				logger.Warn("reply keyboard attach failed at run start: " + retryErr.Error())
-			}
-		}
 		return messageID
 	}
 	// Carry the reply keyboard from creation. Every later step of the run only
@@ -978,15 +971,11 @@ func (r *runRenderer) publishFinalAnswer(answer string, messageID int) {
 						if sendPlainMessage(r.token, r.chatID, answer) == 0 {
 							logger.Warn("Telegram final answer could not be delivered")
 						}
-					} else if err := attachReplyKeyboard(r.token, r.chatID, messageID); err != nil {
-						// The answer landed but the keyboard did not. Reported rather
-						// than retried: editMessageReplyMarkup succeeds about 85% of
-						// the time, and hammering a rejection here turns one wasted
-						// call into several. Tagged with the end that failed so a log
-						// line names the caller instead of leaving two identical
-						// messages with different causes.
-						logger.Warn("reply keyboard attach failed on final answer: " + err.Error())
 					}
+					// An edit that succeeds leaves the content in place. No
+					// keyboard call follows: a reply keyboard cannot be put on
+					// an existing message, and the persistent keyboard rides
+					// on sends.
 				}
 			}
 		} else if messageID == 0 {
@@ -1229,49 +1218,11 @@ func isRichEditUnavailable(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.description == "rich edit is unavailable"
 }
 
-// attachReplyKeyboard puts the reply keyboard on a message that is already sent,
-// without touching its content.
-//
-// This is a separate call rather than a field on the send because the message was
-// created by the rich endpoint, whose payload is fixed. editMessageReplyMarkup
-// changes only the markup, so the rich rendering of tool calls and thoughts is
-// left alone. A rich send is the live path, so without this the run finishes with
-// no keyboard at all.
-func attachReplyKeyboard(token string, chatID int64, messageID int) error {
-	body, _ := json.Marshal(map[string]any{
-		"chat_id":      chatID,
-		"message_id":   messageID,
-		"reply_markup": keyboard.Main(),
-	})
-	resp, err := doTelegramPost(api("editMessageReplyMarkup", token), body)
-	if err != nil {
-		return err
-	}
-	if resp == nil {
-		return fmt.Errorf("editMessageReplyMarkup: empty response")
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("editMessageReplyMarkup: HTTP %d: %s", resp.StatusCode, raw)
-	}
-	var result struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return fmt.Errorf("editMessageReplyMarkup response: %w", err)
-	}
-	if !result.OK {
-		return fmt.Errorf("editMessageReplyMarkup: %s", result.Description)
-	}
-	return nil
-}
-
-// editTelegramHTMLMessage carries no reply markup. Attaching a reply keyboard
-// to editMessageText fails about 75% of the time, and thought messages are
-// collapsible rather than carriers, so there is nothing to gain and a wasted call
-// to lose on every streaming tick.
+// editTelegramHTMLMessage carries no reply markup. A reply keyboard cannot be
+// put on an existing message at all: editMessageReplyMarkup accepts only an
+// inline keyboard and answers "inline keyboard expected" otherwise. Thought
+// messages are collapsible rather than carriers, so there is nothing to gain
+// and a wasted call to lose on every streaming tick.
 func editTelegramHTMLMessage(token string, chatID int64, messageID int, text string) error {
 	return postTelegramEditMessage(token, map[string]any{
 		"chat_id":    chatID,

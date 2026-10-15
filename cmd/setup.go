@@ -98,9 +98,16 @@ func checkConfig(cfg *config.Config) doctorCheck {
 	provider := cfg.ActiveLLM()
 	// Subscription providers carry no API key in the profile; their credential is
 	// resolved from the encrypted store at request time, so demanding one here
-	// reported a working Codex install as unconfigured.
+	// reported a working Codex install as unconfigured. The same holds for a
+	// custom profile, whose key lives in the store rather than the profile.
 	subscription := isSubscriptionProvider(provider.Subscription)
-	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && provider.APIKey == "" && envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY") == "") {
+	apiKey := provider.APIKey
+	if apiKey == "" && !subscription {
+		if key, err := secret.Get("provider_api_key_" + cfg.EffectiveProviderID()); err == nil {
+			apiKey = key
+		}
+	}
+	if (provider.URL == "" && !subscription) || provider.Model == "" || (!subscription && apiKey == "" && envs.GetWith("CERAA_API_KEY", "OPENAI_API_KEY") == "") {
 		return doctorCheck{"config", "WARN", "provider is not configured; finish onboarding in Telegram"}
 	}
 	return doctorCheck{"config", "OK", fmt.Sprintf("provider=%s model=%s", cfg.EffectiveProviderID(), provider.Model)}
@@ -148,7 +155,15 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	if !validProviderURL(baseURL) {
 		return doctorCheck{"provider", "FAIL", "provider URL must use http:// or https://"}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/"), nil)
+	probeURL := strings.TrimRight(baseURL, "/")
+	// The /models catalogue exists on plain OpenAI-compatible endpoints and
+	// 404s anywhere else, so it is only probed where it means something. A
+	// subscription-routed provider keeps the old bare-base probe rather than
+	// failing on a route it never serves.
+	if provider.Subscription == "" {
+		probeURL += "/models"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		return doctorCheck{"provider", "FAIL", err.Error()}
 	}
@@ -161,9 +176,15 @@ func checkProvider(cfg *config.Config, timeout time.Duration) doctorCheck {
 	}
 	resp.Body.Close()
 	switch {
+	case resp.StatusCode == 404 && probeURL != strings.TrimRight(baseURL, "/"):
+		// A 404 on /models means no model catalogue lives under this base
+		// URL: a wrong base path, not an unreachable host. Counting it as
+		// answered let a misconfigured URL pass the gate.
+		return doctorCheck{"provider", "FAIL", "no models route under the base URL (HTTP 404)"}
 	case resp.StatusCode >= 200 && resp.StatusCode < 500:
-		// A 4xx still means the endpoint answered, which is all this proves. Saying
-		// "reachable" and nothing more, because that is what was checked.
+		// Any other 4xx still means the endpoint answered, which is all this
+		// proves. Saying "reachable" and nothing more, because that is what
+		// was checked.
 		return doctorCheck{"provider", "OK", fmt.Sprintf("endpoint answered (HTTP %d)", resp.StatusCode)}
 	default:
 		return doctorCheck{"provider", "FAIL", fmt.Sprintf("provider returned HTTP %d", resp.StatusCode)}

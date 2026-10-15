@@ -180,33 +180,35 @@ func TestTheAgentAnswerCarriesTheReplyKeyboard(t *testing.T) {
 }
 
 // A run creates its assistant message through the rich endpoint, whose payload
-// cannot carry markup, then attaches the keyboard with a markup-only call. Both
-// halves are required: drop the attach and the run ends with no keyboard, put the
-// markup in the rich payload and the endpoint's tool call and thought rendering
-// breaks.
+// cannot carry markup. The keyboard used to be attached afterwards with a
+// markup-only editMessageReplyMarkup call, but that endpoint accepts only an
+// inline keyboard and answers "inline keyboard expected" to a reply keyboard
+// on every call (verified live), so the attach could never succeed and only
+// produced 400s in the log. The keyboard travels on sends only and persists
+// client-side across messages.
 //
 // The creation is lazy: there is no message until the run has something to put in
 // it, because creating one up front left an empty cursor bubble at the top of every
-// run. The attach therefore happens on the first content rather than at
-// construction, which is what this drives.
-func TestARunEndsWithTheKeyboardAttached(t *testing.T) {
+// run.
+//
+// This test pins the absence: no editMessageReplyMarkup call in a run may
+// carry a reply keyboard.
+func TestARunMakesNoDoomedKeyboardEdit(t *testing.T) {
 	cap := beginCapture(t)
 	renderer := newRunRenderer("test-token", 1)
 	renderer.content("the answer")
 	renderer.finish("the answer")
 	renderer.close()
 
-	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
-		t.Fatalf("the run attached no keyboard: %v", cap.methods())
-	}
-	var markup map[string]any
 	for _, call := range cap.calls {
-		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
-			markup, _ = call.Body["reply_markup"].(map[string]any)
+		if !strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			continue
 		}
-	}
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the attach call did not carry the reply keyboard")
+		if markup, _ := call.Body["reply_markup"].(map[string]any); markup != nil {
+			if _, isReply := markup["keyboard"]; isReply {
+				t.Error("editMessageReplyMarkup carried a reply keyboard, which the Bot API always rejects")
+			}
+		}
 	}
 }
 
@@ -229,9 +231,16 @@ func TestEveryUserFacingReplyIsACarrier(t *testing.T) {
 		if carriesReplyKeyboard(call.Body) {
 			carriers++
 		}
+		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			if markup, _ := call.Body["reply_markup"].(map[string]any); markup != nil {
+				if _, isReply := markup["keyboard"]; isReply {
+					t.Error("a reply keyboard went out on an edit, which the Bot API always rejects; keyboards travel on sends only")
+				}
+			}
+		}
 	}
-	if carriers < 3 {
-		t.Errorf("only %d of 3 user-facing messages carry the keyboard, so deleting the rest would still take it away: %v",
+	if carriers < 2 {
+		t.Errorf("only %d of 2 sends carry the keyboard, so deleting the rest would still take it away: %v",
 			carriers, cap.methods())
 	}
 }
@@ -303,14 +312,13 @@ func TestKeyboardResetEndsWithAVisibleCarryingMessage(t *testing.T) {
 	}
 }
 
-// Attaching a reply keyboard to editMessageText fails about 75% of the time in
-// production (601 of 805 traced calls, all "inline keyboard expected"), while a
-// fresh send succeeds every time (339 of 339). So edits carry no markup, and the
-// keyboard rides on sends plus the markup-only editMessageReplyMarkup call.
+// Attaching a reply keyboard to an edit fails on every call in production
+// ("inline keyboard expected"), while a fresh send succeeds every time. So
+// edits carry no markup, and the keyboard rides on sends only.
 //
 // These tests assert the absence on purpose: the previous version of this file
 // asserted the opposite, pinning the bug in place and costing every streaming
-// tick a wasted 400 round trip.
+// run wasted 400 round trips.
 func TestContentEditsCarryNoReplyMarkup(t *testing.T) {
 	cap := beginCapture(t)
 	if err := editTelegramMessage("test-token", 1, 42, "the final answer"); err != nil {
@@ -325,7 +333,7 @@ func TestContentEditsCarryNoReplyMarkup(t *testing.T) {
 		if strings.HasSuffix(call.Method, "editMessageText") {
 			edits++
 			if _, present := call.Body["reply_markup"]; present {
-				t.Errorf("editMessageText carries reply_markup, which fails ~75%% in production: %#v", call.Body["reply_markup"])
+				t.Errorf("editMessageText carries reply_markup, which the Bot API rejects: %#v", call.Body["reply_markup"])
 			}
 		}
 	}
@@ -382,49 +390,48 @@ func TestTheRichEditPayloadStaysClean(t *testing.T) {
 	}
 }
 
-// The keyboard now reaches a rich-created message through editMessageReplyMarkup,
-// which changes only the markup and leaves the rich content alone. A rich send is
-// the live path, so if this stops happening the run finishes with no keyboard.
-func TestTheKeyboardIsAttachedToARichMessageSeparately(t *testing.T) {
+// The keyboard used to reach a rich-created message through
+// editMessageReplyMarkup. That endpoint accepts only an inline keyboard, so the
+// call failed on every run and the keyboard never arrived that way. Coverage
+// comes from sends: every plain send carries the keyboard and it persists
+// client-side. This test pins that no rich-created run attempts the dead edit.
+func TestARichRunMakesNoDoomedKeyboardEdit(t *testing.T) {
 	cap := beginCapture(t)
 	renderer := newRunRenderer("test-token", 1)
 	renderer.content("the streamed answer")
 	renderer.finish("the streamed answer")
 	renderer.close()
 
-	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
-		t.Fatalf("no editMessageReplyMarkup was sent, so a rich-created run ends with no keyboard: %v", cap.methods())
-	}
-	var markup map[string]any
 	for _, call := range cap.calls {
-		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
-			markup, _ = call.Body["reply_markup"].(map[string]any)
+		if !strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			continue
 		}
-	}
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("editMessageReplyMarkup did not carry the reply keyboard")
+		if markup, _ := call.Body["reply_markup"].(map[string]any); markup != nil {
+			if _, isReply := markup["keyboard"]; isReply {
+				t.Error("editMessageReplyMarkup carried a reply keyboard, which the Bot API always rejects")
+			}
+		}
 	}
 }
 
-// The final answer is the message the user reads, and the one that has to end up
-// carrying the keyboard. A suite that only exercised message creation passed
-// while this path stopped attaching anything, because no test drove it.
+// The final answer is the message the user reads. It used to end with a
+// markup-only editMessageReplyMarkup carrying the reply keyboard, which the
+// Bot API rejects on every call. The keyboard travels on sends only, so this
+// pins that the final-answer path makes no such call.
 func TestTheFinalAnswerEndsWithTheKeyboardAttached(t *testing.T) {
 	cap := beginCapture(t)
 	r := &runRenderer{token: "rich-fail-test-token", chatID: 1}
 	r.publishFinalAnswer("the final answer", 42)
 
-	if !calledMethod(cap.methods(), "editMessageReplyMarkup") {
-		t.Fatalf("the final answer attached no keyboard: %v", cap.methods())
-	}
-	var markup map[string]any
 	for _, call := range cap.calls {
-		if strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
-			markup, _ = call.Body["reply_markup"].(map[string]any)
+		if !strings.HasSuffix(call.Method, "editMessageReplyMarkup") {
+			continue
 		}
-	}
-	if _, isReply := markup["keyboard"]; !isReply {
-		t.Error("the final answer's attach did not carry the reply keyboard")
+		if markup, _ := call.Body["reply_markup"].(map[string]any); markup != nil {
+			if _, isReply := markup["keyboard"]; isReply {
+				t.Error("editMessageReplyMarkup carried a reply keyboard, which the Bot API always rejects")
+			}
+		}
 	}
 }
 

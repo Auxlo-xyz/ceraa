@@ -229,3 +229,14 @@ func TestSessionAndWorkspaceRootsArePinnableOutsideTheTree(t *testing.T) {
 		t.Errorf("WorkspaceRootPath() = %q, want the pinned data dir", cfg.WorkspaceRootPath())
 	}
 }
+
+// The default session dir must be absolute and derived from the config dir.
+// A relative default resolves against whatever cwd the daemon inherited,
+// which split session state across two trees on a host where the supervisor
+// starts elsewhere. An explicit value is still honoured as written.
+func TestDefaultSessionFileIsAbsoluteUnderTheConfigDir(t *testing.T) {
+	cfg := DefaultConfig()
+	if !filepath.IsAbs(cfg.SessionFile) {
+		t.Errorf("SessionFile = %q, want an absolute path", cfg.SessionFile)
+	}
+}

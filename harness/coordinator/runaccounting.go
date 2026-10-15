@@ -75,7 +75,14 @@ func (a *runAccounting) Add(delta llm.UsageInfo, local llm.TokenBreakdown, raw *
 	if traceCache && raw != nil {
 		// The provider's own usage object, verbatim. Everything else in this log
 		// is Ceraa's reading of it, and the reading is what is in question.
-		logger.Info(fmt.Sprintf("rawusage req=%d %s", a.requests, truncateRaw(string(*raw))))
+		// The raw field is last and may be empty, so it is appended rather
+		// than formatted inline: a trailing space after req=N reads as a
+		// dangling field.
+		line := fmt.Sprintf("rawusage req=%d", a.requests)
+		if truncated := truncateRaw(string(*raw)); truncated != "" {
+			line += " " + truncated
+		}
+		logger.Info(line)
 	}
 	if traceCache {
 		logger.Info(fmt.Sprintf(

@@ -214,9 +214,14 @@ func DefaultConfig() *Config {
 		// runner could never fall back to the model catalog's advertised window. Zero
 		// means "ask the catalog"; the resolver supplies a conservative default when
 		// the catalog is silent.
-		LLM:                      LLMProvider{MaxOutputTokens: 8192, PromptCacheMode: "auto"},
-		ProviderProfiles:         map[string]ProviderProfile{},
-		SessionFile:              "sessions",
+		LLM:              LLMProvider{MaxOutputTokens: 8192, PromptCacheMode: "auto"},
+		ProviderProfiles: map[string]ProviderProfile{},
+		// Absolute, derived from the config dir like the other store paths
+		// below. A relative default resolves against whatever cwd the daemon
+		// inherited, which split session state across two trees on a host
+		// where the supervisor starts elsewhere. An explicit value is still
+		// honoured as written.
+		SessionFile:              filepath.Join(base, "sessions"),
 		WorkspaceRoot:            defaultWorkspaceRoot(),
 		MaxToolResultChars:       12000,
 		MaxConcurrentTools:       8,
