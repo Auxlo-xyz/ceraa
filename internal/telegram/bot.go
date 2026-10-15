@@ -799,6 +799,11 @@ func Run() error {
 			}
 		}()
 	}
+	// Fold long idle sessions before their prompt-cache entry lapses, so a
+	// returning turn reprocesses the summary instead of the whole
+	// conversation. The keepalive holds the entry while a return is likely;
+	// this shrinks the session once it has not come.
+	go watchIdleSessions()
 	// Report completed device logins to the chat that started them.
 	registerCodexCompletion(token)
 	registerHermesCompletion(token)

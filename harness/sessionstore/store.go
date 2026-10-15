@@ -352,6 +352,20 @@ func (s *Store) Exists(id string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// LastModified reports when a session was last written, without loading it.
+//
+// The idle sweeper uses it as last activity: every completed turn saves, so
+// the file's mtime is the last time the conversation moved. No schema change,
+// no migration: a timestamp field would need backfilling for every existing
+// session, and the filesystem already records it.
+func (s *Store) LastModified(id string) (time.Time, error) {
+	info, err := os.Stat(s.path(id))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("stat session %s: %w", id, err)
+	}
+	return info.ModTime(), nil
+}
+
 func (s *Store) Load(id string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

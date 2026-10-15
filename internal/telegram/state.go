@@ -245,6 +245,23 @@ func (s *bridgeState) sessionID(chatID int64) string {
 	return key
 }
 
+// activeSessionIDs snapshots the chat to session binding for background
+// sweeps. A copy rather than the live map, so a sweep never holds the state
+// lock across session I/O and a /new mid-sweep is picked up next pass.
+func (s *bridgeState) activeSessionIDs() map[int64]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[int64]string, len(s.ActiveSessions))
+	for key, sessionID := range s.ActiveSessions {
+		chatID, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			continue
+		}
+		out[chatID] = sessionID
+	}
+	return out
+}
+
 func (s *bridgeState) setSession(chatID int64, sessionID string) error {
 	key := strconv.FormatInt(chatID, 10)
 	s.mu.Lock()
