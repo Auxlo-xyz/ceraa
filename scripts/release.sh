@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build the public release artifacts: four binaries, the Mini App page,
-# license files and checksums.
+# Build the public release artifacts: four binaries, license files and
+# checksums.
 #
-# The system prompt is compiled into each binary from prompt/system.txt. It is
-# not staged as a sidecar, so a released binary remains self-contained.
+# The system prompt is compiled into each binary from prompt/system.txt, and
+# the Mini App page likewise from internal/miniapp/assets/. Neither is staged
+# as a sidecar, so a released binary remains self-contained.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,14 +42,14 @@ for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
       -o "dist/ceraa-$1-$2" .
 done
 
-# The system prompt is compiled into the binary. The Mini App page is embedded
-# too and is published as a separate reviewable asset.
-echo "release: staging miniapp-index.html"
-cp -f internal/miniapp/assets/index.html dist/miniapp-index.html
-
+# The system prompt is compiled into the binary from prompt/system.txt and the
+# Mini App page likewise from internal/miniapp/assets/. No sidecars are
+# staged: the runtime serves both from memory and ignores copies beside the
+# executable, so shipping them only invites editing a file that changes
+# nothing.
 cp -f LICENSE NOTICE dist/
 
-( cd dist && sha256sum ceraa-* miniapp-index.html > SHA256SUMS )
+( cd dist && sha256sum ceraa-* LICENSE NOTICE > SHA256SUMS )
 
 echo "release: version $VERSION"
 echo "release: artifacts"
