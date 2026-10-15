@@ -53,7 +53,7 @@ func TestNormalizeCommandTextSupportsGroupBotMentions(t *testing.T) {
 func TestCommandCatalogCoversBridgeControls(t *testing.T) {
 	wanted := map[string]bool{
 		"status": false, "settings": false, "model": false, "tools": false,
-		"todos": false, "context": false, "search": false, "index": false,
+		"todos": false, "context": false,
 		"snapshots": false, "revert": false, "permission": false, "hub": false,
 	}
 	for _, command := range commandCatalog() {

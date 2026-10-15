@@ -865,10 +865,6 @@ func handleCallback(token string, q *callbackQuery) {
 		handleCompaction(token, chatID, "/compaction now")
 		return
 	}
-	if data == "search:prompt" {
-		send(token, chatID, "Send /search <query> to search the active project index.")
-		return
-	}
 	if data == "snapshots:list" {
 		handleSnapshotsCommand(token, chatID)
 		return

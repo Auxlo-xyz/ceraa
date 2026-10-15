@@ -34,8 +34,6 @@ func Commands() []CommandSpec {
 		{"cache", "Show cache hit rate by endpoint"},
 		{"compaction", "Show or run compaction"},
 		{"compaction_level", "Show compaction controls"},
-		{"search", "Search the workspace index"},
-		{"index", "Index a workspace"},
 		{"snapshots", "List file snapshots"},
 		{"revert", "Restore the latest snapshot"},
 		{"permission", "Open permission controls"},
