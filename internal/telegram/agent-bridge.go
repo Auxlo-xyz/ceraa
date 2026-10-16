@@ -118,6 +118,7 @@ type agentRunDeps struct {
 	modelConfig         llm.ProviderConfig
 	resolveModel        func(context.Context) (llm.ProviderConfig, error)
 	reasoning           llm.ReasonLevel
+	planMode            bool
 	projectRoot         string
 	instructionProposer instruction.Proposer
 	skillContext        string
@@ -140,6 +141,7 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 	return coordinator.RunnerConfig{
 		SessionID:           d.sessionID,
 		Reasoning:           d.reasoning,
+		PlanMode:            d.planMode,
 		ReasoningEfforts:    d.providerConfig.ReasoningEfforts,
 		ReasoningDefault:    d.providerConfig.ReasoningDefault,
 		SystemPrompt:        prompt.System,
@@ -396,6 +398,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		modelConfig:         modelConfig,
 		resolveModel:        resolveModel,
 		reasoning:           reasoning,
+		planMode:            agentMode == "plan",
 		projectRoot:         projectRoot,
 		instructionProposer: instructionProposer,
 		skillContext:        skillContext,

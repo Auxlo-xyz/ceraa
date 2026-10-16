@@ -23,6 +23,7 @@ import (
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/operation"
+	"ceraa/harness/question"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
@@ -38,9 +39,16 @@ type RunnerConfig struct {
 	// vocabulary, resolved from the catalog when the provider was added. Empty
 	// means unresolved, and the level is clamped conservatively rather than
 	// guessed at.
-	ReasoningEfforts   []string
-	ReasoningDefault   string
-	StopWhenIdle       bool
+	ReasoningEfforts []string
+	ReasoningDefault string
+	StopWhenIdle     bool
+	// PlanMode marks a run that is producing a plan rather than changing the
+	// tree. It is a refusal condition for the goal continuation loop: a plan
+	// touches no files by definition, so a continuation in plan mode can only
+	// produce more plan text, which is the one shape guaranteed to spend turns
+	// without ever converging. The front-end knows the mode and passes it here;
+	// the runner does not infer it from the prompt text.
+	PlanMode           bool
 	Model              llm.ProviderConfig
 	ContextLimit       int
 	MaxOutputTokens    int
@@ -923,30 +931,68 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				messageReasoning = ""
 			}
 			messageReasoningDetails := llm.MergeReasoningDetails(reasoningDetails)
-			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: messageReasoning, ReasoningDetails: messageReasoningDetails, Usage: usage})
-			if err := r.store.Save(sess); err != nil {
-				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
-			}
+
+			// The goal continuation decision is made before the answer is saved,
+			// because the pause case has to travel with the answer the owner reads.
+			//
+			// Three refusals sit ahead of the continuation, each a case where
+			// continuing would spend without progress:
+			//
+			//   - plan mode, which touches no files by definition, so every
+			//     continuation can only produce more plan text;
+			//   - a question still holding its channel open, where the run is
+			//     waiting on a human and continuing would answer with the model's
+			//     own guess, the fabrication the question exists to prevent;
+			//   - the token budget, which was written on every continuation and
+			//     read by nothing, so the only real ceiling was the continuation
+			//     count: a hundred turns of an unbounded run on a scheduled job
+			//     with nobody watching. Exhausting it pauses the goal rather than
+			//     failing the run, because the work already done is worth keeping.
+			continueGoal := false
+			continueObjective := ""
+			pauseReason := ""
 			if !r.cfg.StopWhenIdle && goalContinuations < 100 {
 				if goalStore, goalErr := goal.New(r.cfg.GoalDir); goalErr == nil {
 					if current, exists, loadErr := goalStore.Load(r.cfg.SessionID); loadErr == nil && exists && current.Status == goal.StatusActive && strings.TrimSpace(current.Objective) != "" {
 						current.TokensUsed += runUsage.TotalTokens - goalUsageBase
 						goalUsageBase = runUsage.TotalTokens
 						current.Iterations++
-						// The budget is spend telemetry, never a stop condition: exhausting it
-						// must not block the goal or end the run. The goalContinuations cap
-						// bounds the loop on its own.
-						if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
-							goalContinuations++
-							sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Continue working autonomously on the active goal. Make progress, verify the result, and call update_goal when it is completed or blocked. Active goal: " + current.Objective})
-							if saveErr := r.store.Save(sess); saveErr != nil {
-								return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
+						switch {
+						case r.cfg.PlanMode:
+							// Producing a plan is not progress the loop can continue.
+						case len(question.Default.Pending(r.cfg.SessionID)) > 0:
+							// An open question means the run is waiting on the human.
+						case current.TokenBudget > 0 && current.TokensUsed >= current.TokenBudget:
+							pauseReason = fmt.Sprintf("paused at token budget (%d of %d used)", current.TokensUsed, current.TokenBudget)
+							current.Status = goal.StatusPaused
+							current.Reason = pauseReason
+							if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+								logger.Warn("goal " + pauseReason)
 							}
-							step++
-							continue
+						default:
+							if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+								continueGoal = true
+								continueObjective = current.Objective
+							}
 						}
 					}
 				}
+			}
+			if pauseReason != "" {
+				answer = strings.TrimRight(answer, "\n") + "\n\n[goal " + pauseReason + ". Send a message to resume.]"
+			}
+			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: messageReasoning, ReasoningDetails: messageReasoningDetails, Usage: usage})
+			if err := r.store.Save(sess); err != nil {
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
+			}
+			if continueGoal {
+				goalContinuations++
+				sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: "Continue working autonomously on the active goal. Make progress, verify the result, and call update_goal when it is completed or blocked. Active goal: " + continueObjective})
+				if saveErr := r.store.Save(sess); saveErr != nil {
+					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
+				}
+				step++
+				continue
 			}
 			if r.cb.OnDone != nil {
 				r.cb.OnDone(answer)
