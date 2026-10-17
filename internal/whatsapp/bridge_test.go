@@ -10,6 +10,7 @@ package whatsapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,6 +35,13 @@ type stubRun struct {
 	final    string
 	err      error
 	block    chan struct{}
+	tools    []stubTool
+}
+
+// stubTool scripts one tool start the stub run reports to the bridge.
+type stubTool struct {
+	name string
+	args map[string]any
 }
 
 func (s *stubRun) run(_ context.Context, rc coordinator.RunnerConfig, prompt string) (coordinator.Result, error) {
@@ -41,9 +49,15 @@ func (s *stubRun) run(_ context.Context, rc coordinator.RunnerConfig, prompt str
 	s.calls++
 	s.prompts = append(s.prompts, prompt)
 	s.sessions = append(s.sessions, rc.SessionID)
+	tools := append([]stubTool(nil), s.tools...)
 	s.mu.Unlock()
 	if s.block != nil {
 		<-s.block
+	}
+	for _, tc := range tools {
+		if rc.Callbacks.OnToolStart != nil {
+			rc.Callbacks.OnToolStart("call", tc.name, tc.args)
+		}
 	}
 	if s.err != nil {
 		return coordinator.Result{}, s.err
@@ -639,4 +653,190 @@ func TestBridgeDoesNotShowTypingForStrangers(t *testing.T) {
 	if got := ft.presenceEvents(); len(got) != 0 {
 		t.Fatalf("a stranger got %d presence events, want 0", len(got))
 	}
+}
+
+// toolArgs builds the call-argument shape the coordinator hands to
+// OnToolStart: a wrapper map whose "args" is the raw JSON string.
+func toolArgs(jsonBody string) map[string]any {
+	return map[string]any{"tool": "x", "args": jsonBody}
+}
+
+// toolsWithFloorZero runs a chat with the tool throttle disabled, so a test
+// never waits on the real gap. It restores the floor on cleanup.
+func toolsWithFloorZero(t *testing.T) {
+	t.Helper()
+	saved := waToolFloor
+	waToolFloor = 0
+	t.Cleanup(func() { waToolFloor = saved })
+}
+
+func TestBridgeStreamsAToolCall(t *testing.T) {
+	run := &stubRun{
+		final: "done",
+		tools: []stubTool{{name: "bash", args: toolArgs(`{"command":"find /workspace -maxdepth 2"}`)}},
+	}
+	b, ft := testBridge(t.TempDir(), run)
+	toolsWithFloorZero(t)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	want := "*bash* `find /workspace -maxdepth 2`"
+	found := false
+	for _, s := range ft.sentTexts() {
+		if s.text == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no tool line %q; got %+v", want, ft.sentTexts())
+	}
+}
+
+func TestBridgeDoesNotRepeatTheSameToolCall(t *testing.T) {
+	call := stubTool{name: "read", args: toolArgs(`{"path":"a.go"}`)}
+	run := &stubRun{final: "done", tools: []stubTool{call, call}}
+	b, ft := testBridge(t.TempDir(), run)
+	toolsWithFloorZero(t)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	count := 0
+	for _, s := range ft.sentTexts() {
+		if s.text == "*read* `a.go`" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the same call sent %d times, want 1", count)
+	}
+}
+
+func TestBridgeToolLineNeverRendersThePayload(t *testing.T) {
+	run := &stubRun{
+		final: "done",
+		tools: []stubTool{{name: "write", args: toolArgs(`{"path":"main.go","content":"SECRET_BODY_VALUE"}`)}},
+	}
+	b, ft := testBridge(t.TempDir(), run)
+	toolsWithFloorZero(t)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	seenWant := false
+	for _, s := range ft.sentTexts() {
+		if strings.Contains(s.text, "SECRET_BODY_VALUE") {
+			t.Fatalf("a payload leaked into the chat: %q", s.text)
+		}
+		if s.text == "*write* `main.go`" {
+			seenWant = true
+		}
+	}
+	if !seenWant {
+		t.Fatalf("the identifying argument was not shown; got %+v", ft.sentTexts())
+	}
+}
+
+func TestBridgeBoundsToolLinesAndSummarises(t *testing.T) {
+	tools := make([]stubTool, 0, waToolLineCap+3)
+	for i := 0; i < waToolLineCap+3; i++ {
+		tools = append(tools, stubTool{name: "read", args: toolArgs(fmt.Sprintf(`{"path":"f%d.go"}`, i))})
+	}
+	run := &stubRun{final: "done", tools: tools}
+	b, ft := testBridge(t.TempDir(), run)
+	toolsWithFloorZero(t)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	lines, summary := 0, ""
+	for _, s := range ft.sentTexts() {
+		if strings.HasPrefix(s.text, "*read* ") {
+			lines++
+		}
+		if strings.Contains(s.text, "more tool calls") || strings.Contains(s.text, "more tool call") {
+			summary = s.text
+		}
+	}
+	if lines != waToolLineCap {
+		t.Fatalf("sent %d tool lines, want the cap of %d", lines, waToolLineCap)
+	}
+	if want := fmt.Sprintf("_+%d more tool calls_", 3); summary != want {
+		t.Fatalf("summary = %q, want %q", summary, want)
+	}
+}
+
+func TestBridgeThrottlesRapidToolCalls(t *testing.T) {
+	saved := waToolFloor
+	waToolFloor = time.Hour
+	t.Cleanup(func() { waToolFloor = saved })
+
+	run := &stubRun{
+		final: "done",
+		tools: []stubTool{
+			{name: "bash", args: toolArgs(`{"command":"ls"}`)},
+			{name: "read", args: toolArgs(`{"path":"b.go"}`)},
+		},
+	}
+	b, ft := testBridge(t.TempDir(), run)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	lines, summary := 0, ""
+	for _, s := range ft.sentTexts() {
+		if strings.HasPrefix(s.text, "*bash* ") || strings.HasPrefix(s.text, "*read* ") {
+			lines++
+		}
+		if strings.Contains(s.text, "more tool call") {
+			summary = s.text
+		}
+	}
+	if lines != 1 {
+		t.Fatalf("throttle let %d tool lines through, want 1", lines)
+	}
+	if want := "_+1 more tool call_"; summary != want {
+		t.Fatalf("summary = %q, want %q", summary, want)
+	}
+}
+
+func TestBridgeToolLineWithAPipeSurvivesSend(t *testing.T) {
+	run := &stubRun{
+		final: "done",
+		tools: []stubTool{{name: "bash", args: toolArgs(`{"command":"cat a.go | grep func"}`)}},
+	}
+	b, ft := testBridge(t.TempDir(), run)
+	toolsWithFloorZero(t)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	// A single piped line has no delimiter row under it, so the table
+	// renderer must leave it exactly as written.
+	want := "*bash* `cat a.go | grep func`"
+	for _, s := range ft.sentTexts() {
+		if s.text == want {
+			return
+		}
+	}
+	t.Fatalf("piped tool line was altered; want %q got %+v", want, ft.sentTexts())
 }

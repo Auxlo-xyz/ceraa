@@ -8,14 +8,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ceraa/harness/coordinator"
-	"ceraa/harness/operation"
+	"ceraa/harness/redact"
 	"ceraa/harness/sessionstore"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
@@ -42,7 +44,19 @@ const (
 	waNoAnswerNote = "Done."
 	// waFailNote covers runs that error. Detail stays in the log.
 	waFailNote = "Ceraa could not finish that run."
+	// waToolLineCap bounds how many tool lines one run may send, so a busy
+	// run cannot flood the chat. Anything past the cap, and anything
+	// throttled below, is reported once at the end.
+	waToolLineCap = 25
+	// waToolTargetMax bounds the identifying argument shown on a tool line.
+	waToolTargetMax = 60
 )
+
+// waToolFloor bounds how often a tool line goes out. WhatsApp is stricter than
+// Telegram about message volume, so a burst of fast tool calls is throttled and
+// what it loses is summarised at the end. It is a variable only so tests can
+// remove the delay instead of waiting on it.
+var waToolFloor = 1500 * time.Millisecond
 
 // RunFunc runs one turn through the coordinator. The bridge builds the
 // RunnerConfig (session plus WhatsApp-flavored callbacks); the caller
@@ -227,25 +241,63 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	stopTyping := b.startTyping(msg.ChatJID, tag)
 	defer stopTyping()
 
-	// Collect-first throttle: deltas accumulate and one final text goes
-	// out, plus at most one progress note on slow runs.
+	// Collect-first for the answer: deltas accumulate and one final text
+	// goes out. Tool calls are different: each is streamed as its own short
+	// message so the sender can watch the run work, bounded by a per-run cap
+	// and a minimum gap so a busy run cannot flood the chat.
 	var stream strings.Builder
 	var streamMu sync.Mutex
 	var doneText string
-	var lastTool string
-	rememberTool := func(name string) {
-		streamMu.Lock()
-		lastTool = name
-		streamMu.Unlock()
+	var toolMu sync.Mutex
+	toolSeen := map[string]struct{}{}
+	var toolLast time.Time
+	toolLines, toolSkipped := 0, 0
+	emitTool := func(name string, args map[string]any) {
+		line := toolLine(name, args)
+		if line == "" {
+			return
+		}
+		toolMu.Lock()
+		defer toolMu.Unlock()
+		if _, dup := toolSeen[line]; dup {
+			// The same call again in one run adds nothing the sender has
+			// not already seen, and a loop of them must not become a wall.
+			return
+		}
+		toolSeen[line] = struct{}{}
+		now := time.Now()
+		if toolLines >= waToolLineCap || (!toolLast.IsZero() && now.Sub(toolLast) < waToolFloor) {
+			toolSkipped++
+			return
+		}
+		toolLast = now
+		toolLines++
+		_ = b.send(context.Background(), msg.ChatJID, line)
+	}
+	toolSummary := func() {
+		toolMu.Lock()
+		skipped := toolSkipped
+		toolSkipped = 0
+		toolMu.Unlock()
+		if skipped == 0 {
+			return
+		}
+		noun := "tool calls"
+		if skipped == 1 {
+			noun = "tool call"
+		}
+		_ = b.send(context.Background(), msg.ChatJID, fmt.Sprintf("_+%d more %s_", skipped, noun))
 	}
 	progress := time.AfterFunc(waProgressAfter, func() {
-		streamMu.Lock()
-		note := waProgressNote
-		if lastTool != "" {
-			note += " (" + lastTool + ")"
+		toolMu.Lock()
+		streamed := toolLines > 0
+		toolMu.Unlock()
+		// Tool lines are the progress; the note is only for a run that has
+		// streamed nothing, such as a long stretch of thinking.
+		if streamed {
+			return
 		}
-		streamMu.Unlock()
-		_ = b.send(context.Background(), msg.ChatJID, note)
+		_ = b.send(context.Background(), msg.ChatJID, waProgressNote)
 	})
 	defer progress.Stop()
 
@@ -261,11 +313,8 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 				stream.WriteString(delta)
 				streamMu.Unlock()
 			},
-			OnToolStart: func(_ string, name string, _ map[string]any) {
-				rememberTool(name)
-			},
-			OnToolDone: func(_ string, name string, _ operation.ResultEvent) {
-				rememberTool(name)
+			OnToolStart: func(_ string, name string, args map[string]any) {
+				emitTool(name, args)
 			},
 			OnDone: func(final string) {
 				streamMu.Lock()
@@ -286,6 +335,7 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	res, err := b.run(ctx, rc, prompt)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("whatsapp run error tag=%s err=%.120s", tag, err))
+		toolSummary()
 		_ = b.send(ctx, msg.ChatJID, waFailNote)
 		return
 	}
@@ -301,6 +351,7 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	if final == "" {
 		final = waNoAnswerNote
 	}
+	toolSummary()
 	_ = b.send(ctx, msg.ChatJID, final)
 	logger.Info(fmt.Sprintf("whatsapp run sent tag=%s answerlen=%d", tag, len(final)))
 }
@@ -353,6 +404,77 @@ func (b *Bridge) send(ctx context.Context, chatJID, text string) error {
 		}
 	}
 	return nil
+}
+
+// toolLine renders one tool call as a WhatsApp line: the tool name in bold and
+// the one argument that identifies the call in monospace. Monospace is not
+// decoration - a path such as my_file_test.go carries two underscores, which
+// WhatsApp would otherwise read as an italic span and garble. An empty line
+// means there was nothing worth showing.
+func toolLine(name string, args map[string]any) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	line := "*" + name + "*"
+	if target := toolTarget(name, args); target != "" {
+		line += " `" + target + "`"
+	}
+	return line
+}
+
+// toolTarget pulls the identifying argument out of a call's arguments. They
+// arrive as a JSON string under "args"; it is decoded so that one field can be
+// read, never the map itself, because Go would render map[...] syntax and a
+// payload field such as a file body would dump the whole file into the chat.
+// Whatever is shown is redacted and bounded, following the rule in AGENTS.md
+// "Adding a tool".
+func toolTarget(name string, args map[string]any) string {
+	raw, _ := args["args"].(string)
+	if raw == "" {
+		return ""
+	}
+	var values map[string]any
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return ""
+	}
+	value, ok := values[toolArgKey(name)]
+	if !ok {
+		return ""
+	}
+	text := strings.Join(strings.Fields(redact.SecretsInText(fmt.Sprint(value))), " ")
+	if text == "" {
+		return ""
+	}
+	return truncateToolValue(text, waToolTargetMax)
+}
+
+// toolArgKey names the argument that identifies a call for a tool; every other
+// argument is payload or noise.
+func toolArgKey(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read", "write", "edit", "edit_line", "batch_edit_file", "move", "copy", "ls":
+		return "path"
+	case "bash":
+		return "command"
+	case "glob", "grep":
+		return "pattern"
+	case "webfetch":
+		return "url"
+	case "websearch":
+		return "query"
+	case "browser":
+		return "action"
+	}
+	return "value"
+}
+
+// truncateToolValue bounds a tool value on a rune boundary.
+func truncateToolValue(value string, limit int) string {
+	if limit <= 0 || utf8.RuneCountInString(value) <= limit {
+		return value
+	}
+	return string([]rune(value)[:limit]) + "..."
 }
 
 // sessionIDFor derives a stable session per DM chat.
