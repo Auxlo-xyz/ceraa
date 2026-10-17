@@ -37,6 +37,7 @@ import (
 	"ceraa/internal/paths"
 	"ceraa/internal/prompt"
 	"ceraa/internal/subagent"
+	"ceraa/internal/telegram/menus"
 	"ceraa/internal/whatsapp"
 
 	"go.mau.fi/whatsmeow"
@@ -311,15 +312,20 @@ func whatsAppStatusText() string {
 	if !whatsapp.LoadConfig().Enabled {
 		return "📱 WhatsApp\n\nBridge is off. Set CERAA_WHATSAPP_ENABLED=true and restart to enable it."
 	}
+	allow := len(whatsapp.EffectiveAllowList())
+	allowLine := fmt.Sprintf("\n\nAllow-list: %d number(s).", allow)
+	if allow == 0 {
+		allowLine = "\n\nAllow-list is empty, so nobody can reach Ceraa. Tap Allow a number and add the phone you message from."
+	}
 	status := whatsapp.LoadStatus()
 	if status.Linked {
 		jid := status.JID
 		if jid == "" {
 			jid = "this device"
 		}
-		return "📱 WhatsApp\n\nLinked as " + jid + ".\nMessage that number from your phone to talk to Ceraa."
+		return "📱 WhatsApp\n\nLinked as " + jid + "." + allowLine
 	}
-	return "📱 WhatsApp\n\nNot linked yet. Tap Link with QR code, then scan it from the phone:\nWhatsApp > Settings > Linked devices > Link a device."
+	return "📱 WhatsApp\n\nNot linked yet. Tap Link with QR code, then scan it from the phone:\nWhatsApp > Settings > Linked devices > Link a device." + allowLine
 }
 
 // whatsAppLinkNow starts pairing on demand and delivers the QR codes to
@@ -487,6 +493,55 @@ func whatsAppUnlink(token string, chatID int64) {
 	}
 	_ = whatsapp.SaveStatus(whatsapp.Status{})
 	send(token, chatID, "🔓 WhatsApp unlinked. Remove the \"Ceraa (Linux)\" entry in the phone's Linked devices too, then link again from the hub.")
+}
+
+// whatsAppAddAllowed stores one number in the hub-editable allow-list. An
+// invalid value re-arms the prompt so a mistyped number is retried instead of
+// dropped. This is the fix for the silent-nobody state: it lets the owner list
+// the phone they send from without editing an env file or restarting.
+func whatsAppAddAllowed(token string, chatID int64, raw string) {
+	if chatID == 0 {
+		return
+	}
+	entry, added, err := whatsapp.AddAllowListEntry(raw)
+	if err != nil {
+		// A mistyped number is the common case, so the capture stays open
+		// rather than sending the person back to the menu.
+		pendingWhatsAppAllow.Store(chatID, true)
+		send(token, chatID, "That number is not usable: "+err.Error()+".\n\nSend it in international format, digits only, e.g. 2348012345678, or send cancel.")
+		return
+	}
+	note := "✅ Allowed " + entry + "."
+	if !added {
+		note = "👥 " + entry + " was already allowed."
+	}
+	if status := whatsapp.LoadStatus(); status.JID != "" && whatsapp.SameNumber(status.JID, entry) {
+		note += "\n\nNote: that is the linked account itself, whose own messages Ceraa skips. Allow the phone you message from instead."
+	}
+	note += "\n\n" + whatsAppAllowSummary()
+	sendMenuMarkup(token, chatID, note, menus.InlineForChat("whatsapp", 0, chatID, currentSessionID(chatID)))
+}
+
+// whatsAppRemoveAllowed drops one number from the hub-editable allow-list. The
+// environment half is never touched, so a number the operator locked in stays
+// allowed; the callback re-renders the screen from the store either way.
+func whatsAppRemoveAllowed(token string, chatID int64, raw string) {
+	if chatID == 0 {
+		return
+	}
+	if _, err := whatsapp.RemoveAllowListEntry(raw); err != nil {
+		send(token, chatID, "Could not update the allow-list: "+err.Error())
+	}
+}
+
+// whatsAppAllowSummary renders the effective allow-list on one line for the
+// confirmation message.
+func whatsAppAllowSummary() string {
+	entries := whatsapp.EffectiveAllowList()
+	if len(entries) == 0 {
+		return "Allow-list is empty, so nobody can reach Ceraa yet."
+	}
+	return "Allow-list: " + strings.Join(entries, ", ")
 }
 
 // pairWhatsApp delivers pairing QR codes to the owner Telegram chat until

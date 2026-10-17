@@ -10,6 +10,7 @@ package whatsapp
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -433,6 +434,37 @@ func TestBridgeAllowsListedDigitsOnAnyServer(t *testing.T) {
 	}
 	if sent := ft.sentTexts(); len(sent) != 1 || sent[0].toJID != chat {
 		t.Errorf("outbound = %+v, want the reply back to the same chat", sent)
+	}
+}
+
+// A number the hub stored is admitted with no restart: the bridge reads the
+// store live, which is what makes the hub's allow-list button enough on its
+// own.
+func TestBridgeAllowsAStoredAllowListEntry(t *testing.T) {
+	restore := SetAllowListPathForTest(filepath.Join(t.TempDir(), "allowlist.json"))
+	defer restore()
+	if _, _, err := AddAllowListEntry("2348012345678"); err != nil {
+		t.Fatalf("seed allow-list: %v", err)
+	}
+	run := &stubRun{final: "pong"}
+	ft := newFakeTransport()
+	b := &Bridge{
+		transport: ft,
+		cfg:       Config{},
+		run:       run.run,
+		filesDir:  t.TempDir(),
+		active:    map[string]struct{}{},
+	}
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "stored-1",
+		Text:    "ping",
+	})
+	if run.callCount() != 1 {
+		t.Fatalf("a stored number started %d runs, want 1", run.callCount())
+	}
+	if sent := waitForOutbound(t, ft, 1); sent[0].text != "pong" {
+		t.Errorf("reply = %q, want pong", sent[0].text)
 	}
 }
 

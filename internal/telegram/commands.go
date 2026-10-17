@@ -45,6 +45,7 @@ var pendingModelSearch sync.Map
 var pendingProvider sync.Map
 var pendingSchedule sync.Map
 var pendingWhatsAppPhone sync.Map
+var pendingWhatsAppAllow sync.Map
 
 func commandNames() []map[string]string {
 	catalog := commandCatalog()
@@ -877,6 +878,14 @@ func handlePendingInput(token string, chatID int64, text string) bool {
 			return true
 		}
 		whatsAppLinkWithPhone(token, chatID, text)
+		return true
+	}
+	if _, ok := pendingWhatsAppAllow.LoadAndDelete(chatID); ok {
+		if strings.EqualFold(strings.TrimSpace(text), "cancel") {
+			send(token, chatID, "Allow-list change cancelled.")
+			return true
+		}
+		whatsAppAddAllowed(token, chatID, text)
 		return true
 	}
 	if value, ok := pendingTitleSetting.LoadAndDelete(chatID); ok {

@@ -382,7 +382,15 @@ func handleCallback(token string, q *callbackQuery) {
 		return
 	}
 	if strings.HasPrefix(data, "wa:") {
-		switch strings.TrimPrefix(data, "wa:") {
+		action := strings.TrimPrefix(data, "wa:")
+		if entry, ok := strings.CutPrefix(action, "allowrm:"); ok {
+			whatsAppRemoveAllowed(token, chatID, entry)
+			// Re-render from the store so the removed row disappears and the
+			// count drops on the same screen the tap came from.
+			editCallback(token, chatID, q.Message.MessageID, whatsAppStatusText(), menus.InlineForChat("whatsapp", 0, chatID, currentSessionID(chatID)))
+			return
+		}
+		switch action {
 		case "link":
 			whatsAppLinkNow(token, chatID)
 		case "phone":
@@ -391,6 +399,12 @@ func handleCallback(token string, q *callbackQuery) {
 			// re-rendering the menu, so there is one thing to reply to.
 			pendingWhatsAppPhone.Store(chatID, true)
 			send(token, chatID, "Send the WhatsApp phone number in international format, digits only with country code, e.g. 2348012345678.\n\nSend cancel to stop.")
+			return
+		case "allow":
+			// The number arrives as the next plain message, captured by
+			// handlePendingInput, same as phone linking.
+			pendingWhatsAppAllow.Store(chatID, true)
+			send(token, chatID, "Send the number to allow, international format, digits only with country code, e.g. 2348012345678.\n\nIt is the phone you message from, not the linked number.\n\nSend cancel to stop.")
 			return
 		case "unlink":
 			whatsAppUnlink(token, chatID)

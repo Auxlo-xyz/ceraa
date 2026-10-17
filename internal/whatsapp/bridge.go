@@ -139,6 +139,18 @@ func (m *Manager) serve(ctx context.Context) {
 	}
 }
 
+// allowed reports whether senderJID may use the bridge. The boot config carries
+// the environment seed; Allowed() adds the hub-editable store, so a number
+// added from the Hub applies on the next message without a restart. The boot
+// config is checked first so a cfg-only allow-list (a test's, or an install
+// with no store) never touches the file.
+func (b *Bridge) allowed(senderJID, selfJID string) bool {
+	if b.cfg.Allowed(senderJID, selfJID) {
+		return true
+	}
+	return Allowed(senderJID, selfJID)
+}
+
 // handle maps one DM to one run. It recovers so a bad message ends the
 // message, not the process.
 func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
@@ -156,7 +168,7 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 		logger.Info(fmt.Sprintf("whatsapp group skipped tag=%s", tag))
 		return
 	}
-	if !b.cfg.Allowed(msg.ChatJID, b.transport.SelfJID()) {
+	if !b.allowed(msg.ChatJID, b.transport.SelfJID()) {
 		// Fail closed: a stranger's message buys no run and no reply.
 		// The tag is a hash, so this line cannot be used to harvest
 		// the sender, only to confirm a skip happened.

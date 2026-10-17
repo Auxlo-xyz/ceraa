@@ -1101,11 +1101,48 @@ func WhatsAppMenu() map[string]any {
 			[]map[string]string{row("🔢 Link with phone number", "wa:phone")},
 		)
 	}
+	if enabled {
+		rows = append(rows, whatsAppAllowRows(row)...)
+	}
 	rows = append(rows, []map[string]string{
 		row("🔁 Refresh", "wa:refresh"),
 		row("◀️ Back", "menu:hub"),
 	})
 	return map[string]any{"inline_keyboard": rows}
+}
+
+// whatsAppAllowRows lists who may use the bridge and offers to add or remove a
+// number. This is the fix for the silent-nobody state: an empty allow-list
+// means owner-only, and the owner's own messages are skipped as FromMe, so the
+// screen has to say the list is empty rather than let a person pair a phone and
+// wonder why nothing answers.
+//
+// The two halves are shown apart on purpose. Environment entries are read-only
+// here (the hub never edits the operator's variable) and carry no remove
+// button; stored entries are removable. Showing them together with a remove
+// button would offer an action that silently does nothing.
+func whatsAppAllowRows(row func(text, data string) map[string]string) [][]map[string]string {
+	env := whatsapp.EnvAllowList()
+	stored := whatsapp.LoadAllowList()
+	const limit = 8
+	var rows [][]map[string]string
+	for i, entry := range env {
+		if i >= limit {
+			break
+		}
+		rows = append(rows, []map[string]string{row("👥 "+entry+" · env", "noop")})
+	}
+	for i, entry := range stored {
+		if i >= limit {
+			break
+		}
+		rows = append(rows, []map[string]string{row("🗑 "+entry, "wa:allowrm:"+entry)})
+	}
+	if len(env) == 0 && len(stored) == 0 {
+		rows = append(rows, []map[string]string{row("👥 Allow-list empty - only the linked account, whose own messages are skipped", "noop")})
+	}
+	rows = append(rows, []map[string]string{row("➕ Allow a number", "wa:allow")})
+	return rows
 }
 
 func Hub() map[string]any {
