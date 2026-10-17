@@ -285,9 +285,10 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	logger.Info(fmt.Sprintf("whatsapp run sent tag=%s answerlen=%d", tag, len(final)))
 }
 
-// send delivers one reply in bounded chunks.
+// send delivers one reply in bounded chunks. Markdown tables are rendered as
+// monospace blocks first, because a pipe table is unreadable in WhatsApp.
 func (b *Bridge) send(ctx context.Context, chatJID, text string) error {
-	for _, chunk := range splitText(text, waMaxChunk) {
+	for _, chunk := range splitText(formatTables(text), waMaxChunk) {
 		if _, err := b.transport.SendText(ctx, chatJID, chunk); err != nil {
 			logger.Warn(fmt.Sprintf("whatsapp send failed tag=%s err=%.80s", chatTag(chatJID), err))
 			return err
