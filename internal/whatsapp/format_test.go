@@ -1,5 +1,6 @@
-// Tests for format.go: GitHub pipe tables become monospace blocks that line up
-// in WhatsApp, and nothing else is touched.
+// Tests for format.go: GitHub pipe tables become a monospace grid that lines up
+// in WhatsApp, a table too wide for the grid becomes vertical rows, and nothing
+// else is touched.
 package whatsapp
 
 import (
@@ -68,12 +69,31 @@ func TestFormatTablesKeepsEscapedPipe(t *testing.T) {
 	}
 }
 
-func TestFormatTablesLeavesWideTableAlone(t *testing.T) {
+func TestFormatTablesRendersWideTableAsVerticalRows(t *testing.T) {
 	in := "| Ceraa component name | Resident memory use |\n" +
 		"|----------------------|---------------------|\n" +
-		"| ceraa start daemon | ~67 MB |"
-	if got := formatTables(in); got != in {
-		t.Errorf("a table over the width budget should be untouched\n got:\n%s\nwant:\n%s", got, in)
+		"| ceraa start daemon | ~67 MB |\n" +
+		"| whatsapp bridge | ~12 MB |"
+	want := "ceraa start daemon\n" +
+		"*Resident memory use*: ~67 MB\n" +
+		"\n" +
+		"whatsapp bridge\n" +
+		"*Resident memory use*: ~12 MB"
+	if got := formatTables(in); got != want {
+		t.Errorf("wide table should fall back to vertical rows\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestFormatTablesKeepsAWideCellOnOneLine(t *testing.T) {
+	// The bloat-table shape: a long path cell is the reason the grid does not fit,
+	// and a vertical row must not pad or wrap it, only label the other columns.
+	in := "| Path | Size |\n" +
+		"|---|---|\n" +
+		"| .gradle/jdks/OpenJDK17U-jdk_x64_linux_hotspot_17.0.15_6.tar.gz | 185M |"
+	want := ".gradle/jdks/OpenJDK17U-jdk_x64_linux_hotspot_17.0.15_6.tar.gz\n" +
+		"*Size*: 185M"
+	if got := formatTables(in); got != want {
+		t.Errorf("wide cell\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
 
