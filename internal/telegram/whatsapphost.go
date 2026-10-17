@@ -514,7 +514,7 @@ func whatsAppUnlink(token string, chatID int64) {
 		logger.Warn("WhatsApp session delete: " + err.Error())
 	}
 	_ = whatsapp.SaveStatus(whatsapp.Status{})
-	send(token, chatID, "🔓 WhatsApp unlinked. Remove the \"Ceraa (Linux)\" entry in the phone's Linked devices too, then link again from the hub.")
+	send(token, chatID, "🔓 WhatsApp unlinked. Remove the Ceraa entry in the phone's Linked devices too, then link again from the hub.")
 }
 
 // whatsAppAddAllowed stores one number in the hub-editable allow-list. An
