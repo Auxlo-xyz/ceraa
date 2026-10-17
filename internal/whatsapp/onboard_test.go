@@ -263,6 +263,22 @@ func TestRequestPairCodeLinkedRefusesBadSetup(t *testing.T) {
 	}
 }
 
+func TestPairDisplayCandidatesBrandedFirst(t *testing.T) {
+	got := pairDisplayCandidates()
+	if len(got) < 2 {
+		t.Fatalf("want at least a branded name and a fallback, got %v", got)
+	}
+	if got[0] != pairDisplayName {
+		t.Errorf("first candidate = %q, want the branded %q", got[0], pairDisplayName)
+	}
+	if got[1] != fallbackPairDisplayName {
+		t.Errorf("second candidate = %q, want the fallback %q", got[1], fallbackPairDisplayName)
+	}
+	if !strings.Contains(pairDisplayName, "Ceraa") {
+		t.Errorf("branded display name %q does not carry the Ceraa name", pairDisplayName)
+	}
+}
+
 func TestQRTimeoutWindows(t *testing.T) {
 	if got := QRTimeout(true); got != 60*time.Second {
 		t.Errorf("QRTimeout(first) = %v, want 60s", got)

@@ -21,7 +21,7 @@ func TestWhatsAppMenuStates(t *testing.T) {
 		if !strings.Contains(raw, "bridge is off") {
 			t.Errorf("disabled screen does not say the bridge is off: %s", raw)
 		}
-		if strings.Contains(raw, "wa:link") || strings.Contains(raw, "wa:unlink") {
+		if strings.Contains(raw, "wa:link") || strings.Contains(raw, "wa:unlink") || strings.Contains(raw, "wa:phone") {
 			t.Errorf("disabled screen offers a pairing action: %s", raw)
 		}
 	})
@@ -31,6 +31,9 @@ func TestWhatsAppMenuStates(t *testing.T) {
 		raw := mustJSON(WhatsAppMenu())
 		if !strings.Contains(raw, "wa:link") {
 			t.Errorf("unlinked screen has no Link button: %s", raw)
+		}
+		if !strings.Contains(raw, "wa:phone") {
+			t.Errorf("unlinked screen has no phone-number button: %s", raw)
 		}
 		if strings.Contains(raw, "wa:unlink") {
 			t.Errorf("unlinked screen offers Unlink: %s", raw)
@@ -51,6 +54,9 @@ func TestWhatsAppMenuStates(t *testing.T) {
 		}
 		if strings.Contains(raw, "wa:link\"") {
 			t.Errorf("linked screen still offers Link: %s", raw)
+		}
+		if strings.Contains(raw, "wa:phone") {
+			t.Errorf("linked screen still offers phone linking: %s", raw)
 		}
 	})
 }

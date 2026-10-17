@@ -385,6 +385,13 @@ func handleCallback(token string, q *callbackQuery) {
 		switch strings.TrimPrefix(data, "wa:") {
 		case "link":
 			whatsAppLinkNow(token, chatID)
+		case "phone":
+			// The number arrives as the next plain message, captured by
+			// handlePendingInput. Answer the tap with the prompt instead of
+			// re-rendering the menu, so there is one thing to reply to.
+			pendingWhatsAppPhone.Store(chatID, true)
+			send(token, chatID, "Send the WhatsApp phone number in international format, digits only with country code, e.g. 2348012345678.\n\nSend cancel to stop.")
+			return
 		case "unlink":
 			whatsAppUnlink(token, chatID)
 		}

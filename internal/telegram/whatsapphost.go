@@ -371,6 +371,93 @@ func whatsAppLinkNow(token string, chatID int64) {
 	go pairWhatsApp(token, chatID, transport, qrChan)
 }
 
+// whatsAppLinkWithPhone runs the 8-char code flow: the number is entered on
+// the phone instead of a QR being scanned. It needs a live socket, so the
+// manager connects first and the code is requested once the connection is
+// up, then a watcher flips the status when the phone completes the link.
+func whatsAppLinkWithPhone(token string, chatID int64, phone string) {
+	if chatID == 0 {
+		return
+	}
+	wcfg := whatsapp.LoadConfig()
+	if !wcfg.Enabled {
+		send(token, chatID, "WhatsApp is off. Set CERAA_WHATSAPP_ENABLED=true and restart.")
+		return
+	}
+	digits, err := whatsapp.NormalizePhone(phone)
+	if err != nil {
+		// Keep the capture open so a mistyped number can be corrected
+		// without going back to the menu.
+		pendingWhatsAppPhone.Store(chatID, true)
+		send(token, chatID, "That number is not usable: "+err.Error()+".\n\nSend it in international format, digits only, e.g. 2348012345678, or send cancel.")
+		return
+	}
+	transport := waTransportSnapshot()
+	if transport == nil {
+		created, cerr := whatsapp.NewChatTransport(context.Background(), wcfg)
+		if cerr != nil {
+			send(token, chatID, "WhatsApp start failed: "+cerr.Error())
+			return
+		}
+		waMu.Lock()
+		waTransport = created
+		waMu.Unlock()
+		transport = created
+	}
+	if transport.IsLoggedIn() {
+		waSaveLinkStatus(transport)
+		send(token, chatID, "WhatsApp is already linked. Tap Refresh in the hub to see it.")
+		return
+	}
+	cfg := waCfgSnapshot()
+	if cfg == nil {
+		send(token, chatID, "WhatsApp is not ready yet. Restart the daemon and try again.")
+		return
+	}
+	// A manager from an earlier attempt would fight over the socket, and the
+	// code flow must not have a QR channel open.
+	stopWhatsApp()
+	if err := waStartManager(cfg, transport, wcfg); err != nil {
+		send(token, chatID, "WhatsApp start failed: "+err.Error())
+		return
+	}
+	if !transport.PairingClient().WaitForConnection(20 * time.Second) {
+		send(token, chatID, "WhatsApp did not connect, so the pairing code was not requested. Try again in a moment.")
+		return
+	}
+	code, err := whatsapp.RequestPairCodeLinked(context.Background(), transport.PairingClient(), digits)
+	if err != nil {
+		logger.Warn("WhatsApp pair code: " + err.Error())
+		send(token, chatID, "WhatsApp refused the pairing code: "+err.Error()+"\n\nCheck the number and try again.")
+		return
+	}
+	send(token, chatID, fmt.Sprintf("🔢 Pairing code for +%s:\n\n%s\n\nOn the phone: WhatsApp > Settings > Linked devices > Link a device > Link with phone number instead, then type the code.\n\nIt expires in about two minutes; tap Link with phone number again if it lapses.", digits, code))
+	go awaitWhatsAppPhoneLink(transport, token, chatID)
+}
+
+// awaitWhatsAppPhoneLink watches for the phone completing the code entry.
+// There is no QR channel to read, so it polls the session until it is
+// paired. It gives up on the transport if a newer link attempt replaced
+// it, so a stale watcher never reports a link it no longer owns.
+func awaitWhatsAppPhoneLink(transport *whatsapp.ChatTransport, token string, chatID int64) {
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		if waTransportSnapshot() != transport {
+			return
+		}
+		if transport.IsLoggedIn() {
+			waSaveLinkStatus(transport)
+			send(token, chatID, "✅ WhatsApp linked. Message the linked number from your phone to talk to Ceraa.")
+			return
+		}
+	}
+	if waTransportSnapshot() != transport {
+		return
+	}
+	send(token, chatID, "The pairing code lapsed before the link completed. Open the hub and tap Link with phone number again.")
+}
+
 // whatsAppUnlink logs the device out, clears the local session and
 // returns the bridge to the unlinked idle state.
 func whatsAppUnlink(token string, chatID int64) {

@@ -1098,6 +1098,7 @@ func WhatsAppMenu() map[string]any {
 		rows = append(rows,
 			[]map[string]string{row("⚠️ Not linked yet", "noop")},
 			[]map[string]string{row("📱 Link with QR code", "wa:link")},
+			[]map[string]string{row("🔢 Link with phone number", "wa:phone")},
 		)
 	}
 	rows = append(rows, []map[string]string{

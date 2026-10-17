@@ -3,8 +3,8 @@
 // Telegram wiring: the bridge drives onboarding and sends every message
 // itself. For QR it calls GetQRChannel before Connect, renders each code
 // with RenderQRPNG, and sends the PNG bytes as a photo. For the 8-char
-// code flow it calls RequestPairCode and sends the returned string as
-// text. On expiry it applies NextLoginStatus with EventExpired and then
+// code flow it calls RequestPairCodeLinked and sends the returned string
+// as text. On expiry it applies NextLoginStatus with EventExpired and then
 // re-issues. Nothing here sends messages or starts a daemon.
 package whatsapp
 
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"ceraa/internal/logger"
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 )
@@ -43,13 +44,23 @@ type PairClient interface {
 	PairPhone(ctx context.Context, phone string, showPushNotification bool, clientType, clientDisplayName string) (string, error)
 }
 
-// Pairing display identity. Neutral Ceraa naming, no third-party brand.
+// Pairing display identity. Ceraa is preferred because it is what the
+// owner sees in Linked devices; the server validates the companion name
+// and rejects anything not shaped like "Browser (OS)", so a browser name
+// is kept as a fallback rather than trusted to pass.
 const (
-	pairClientType  = "Ceraa"
-	pairDisplayName = "Ceraa (Linux)"
-	maxPhoneDigits  = 15
-	minPhoneDigits  = 7
+	pairClientType          = "Ceraa"
+	pairDisplayName         = "Ceraa (Linux)"
+	fallbackPairDisplayName = "Chrome (Linux)"
+	maxPhoneDigits          = 15
+	minPhoneDigits          = 7
 )
+
+// pairDisplayCandidates lists the companion names to try, branded first.
+// Pure, so a test can pin the order without a client.
+func pairDisplayCandidates() []string {
+	return []string{pairDisplayName, fallbackPairDisplayName}
+}
 
 // NormalizePhone strips non-digits and validates E.164-ish input.
 func NormalizePhone(phone string) (string, error) {
@@ -101,6 +112,12 @@ func RequestPairCode(ctx context.Context, client PairClient, phone string) (stri
 // RequestPairCodeLinked runs the code flow against the concrete linked
 // client. The narrow PairClient above keeps offline tests hermetic; this
 // adapter carries the real client type the narrow shape cannot name.
+//
+// The companion name is tried branded first and the known-accepted
+// browser name second, because the server validates it: a rejected name
+// is a 400 on registration, which would otherwise make the whole
+// phone-number path fail. A failed attempt stores no linking cache, so
+// the retry is clean.
 func RequestPairCodeLinked(ctx context.Context, cli *whatsmeow.Client, phone string) (string, error) {
 	if cli == nil {
 		return "", errors.New("whatsapp: nil client")
@@ -112,7 +129,19 @@ func RequestPairCodeLinked(ctx context.Context, cli *whatsmeow.Client, phone str
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return cli.PairPhone(ctx, digits, true, whatsmeow.PairClientChrome, pairDisplayName)
+	candidates := pairDisplayCandidates()
+	var lastErr error
+	for i, name := range candidates {
+		code, err := cli.PairPhone(ctx, digits, true, whatsmeow.PairClientChrome, name)
+		if err == nil {
+			return code, nil
+		}
+		lastErr = err
+		if i+1 < len(candidates) {
+			logger.Info("whatsapp: companion name " + name + " rejected, retrying as " + candidates[i+1])
+		}
+	}
+	return "", lastErr
 }
 
 // LoginStatus is where owner linking stands.

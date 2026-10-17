@@ -44,6 +44,7 @@ type providerDraft struct {
 var pendingModelSearch sync.Map
 var pendingProvider sync.Map
 var pendingSchedule sync.Map
+var pendingWhatsAppPhone sync.Map
 
 func commandNames() []map[string]string {
 	catalog := commandCatalog()
@@ -870,6 +871,14 @@ func handleWorktree(token string, chatID int64, text string) {
 }
 
 func handlePendingInput(token string, chatID int64, text string) bool {
+	if _, ok := pendingWhatsAppPhone.LoadAndDelete(chatID); ok {
+		if strings.EqualFold(strings.TrimSpace(text), "cancel") {
+			send(token, chatID, "WhatsApp linking cancelled.")
+			return true
+		}
+		whatsAppLinkWithPhone(token, chatID, text)
+		return true
+	}
 	if value, ok := pendingTitleSetting.LoadAndDelete(chatID); ok {
 		if value.(string) == "model" {
 			if err := saveTitleModel(text); err != nil {
