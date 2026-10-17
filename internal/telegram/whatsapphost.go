@@ -244,7 +244,7 @@ func startWhatsAppBridge(cfg *config.Config) {
 	waMu.Lock()
 	waTransport = transport
 	waMu.Unlock()
-	if !transport.IsLoggedIn() {
+	if transport.SelfJID() == "" {
 		// Idle until the hub links it. No QR is issued here on purpose:
 		// the user opens the hub when they are ready to scan.
 		waSaveLinkStatus(transport)
@@ -298,7 +298,10 @@ func waCfgSnapshot() *config.Config {
 // failure only costs a stale hub label until the next successful write.
 func waSaveLinkStatus(transport *whatsapp.ChatTransport) {
 	status := whatsapp.Status{}
-	if transport != nil && transport.IsLoggedIn() {
+	// Paired is a fact about the stored session, not about the current
+	// socket: IsLoggedIn is false on a fresh boot even with a saved
+	// device, which would report a linked account as unlinked.
+	if transport != nil && transport.SelfJID() != "" {
 		status.Linked = true
 		status.JID = transport.SelfJID()
 	}
@@ -352,7 +355,7 @@ func whatsAppLinkNow(token string, chatID int64) {
 		waMu.Unlock()
 		transport = created
 	}
-	if transport.IsLoggedIn() {
+	if transport.SelfJID() != "" {
 		waSaveLinkStatus(transport)
 		send(token, chatID, "WhatsApp is already linked. Tap Refresh to see it.")
 		return
@@ -410,7 +413,7 @@ func whatsAppLinkWithPhone(token string, chatID int64, phone string) {
 		waMu.Unlock()
 		transport = created
 	}
-	if transport.IsLoggedIn() {
+	if transport.SelfJID() != "" {
 		waSaveLinkStatus(transport)
 		send(token, chatID, "WhatsApp is already linked. Tap Refresh in the hub to see it.")
 		return
@@ -471,7 +474,7 @@ func awaitWhatsAppPhoneLink(transport *whatsapp.ChatTransport, token string, cha
 		if waTransportSnapshot() != transport {
 			return
 		}
-		if transport.IsLoggedIn() {
+		if transport.SelfJID() != "" {
 			waSaveLinkStatus(transport)
 			send(token, chatID, "✅ WhatsApp linked. Message the linked number from your phone to talk to Ceraa.")
 			return

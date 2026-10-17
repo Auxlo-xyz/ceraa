@@ -85,7 +85,9 @@ func (t *ChatTransport) Disconnect() error {
 	return nil
 }
 
-// IsLoggedIn reports whether the session is paired.
+// IsLoggedIn reports a live, authenticated socket. It is false
+// before the client connects even when a session is stored, so it is
+// never the test for "is this account paired" - use SelfJID for that.
 func (t *ChatTransport) IsLoggedIn() bool {
 	return t.client.IsLoggedIn()
 }
