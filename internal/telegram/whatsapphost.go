@@ -427,7 +427,11 @@ func whatsAppLinkWithPhone(token string, chatID int64, phone string) {
 		send(token, chatID, "WhatsApp start failed: "+err.Error())
 		return
 	}
-	if !transport.PairingClient().WaitForConnection(20 * time.Second) {
+	// WaitForConnection waits for IsLoggedIn, which stays false until the
+	// link completes, so it can never pass during onboarding and the code
+	// was never requested on any network. The code flow needs a live
+	// socket, not a session: gate on the socket the request actually uses.
+	if !waitForWaSocket(transport.PairingClient(), 20*time.Second) {
 		send(token, chatID, "WhatsApp did not connect, so the pairing code was not requested. Try again in a moment.")
 		return
 	}
@@ -439,6 +443,21 @@ func whatsAppLinkWithPhone(token string, chatID int64, phone string) {
 	}
 	send(token, chatID, fmt.Sprintf("🔢 Pairing code for +%s:\n\n%s\n\nOn the phone: WhatsApp > Settings > Linked devices > Link a device > Link with phone number instead, then type the code.\n\nIt expires in about two minutes; tap Link with phone number again if it lapses.", digits, code))
 	go awaitWhatsAppPhoneLink(transport, token, chatID)
+}
+
+// waitForWaSocket polls until the client reports a live socket or the
+// deadline passes. It exists because the only wait the library offers,
+// WaitForConnection, also requires IsLoggedIn, so it is unusable before a
+// link exists - which is exactly when pairing needs a connection.
+func waitForWaSocket(client *whatsmeow.Client, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if client.IsConnected() {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return client.IsConnected()
 }
 
 // awaitWhatsAppPhoneLink watches for the phone completing the code entry.
