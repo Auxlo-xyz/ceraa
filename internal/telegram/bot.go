@@ -804,6 +804,11 @@ func Run() error {
 	// conversation. The keepalive holds the entry while a return is likely;
 	// this shrinks the session once it has not come.
 	go watchIdleSessions()
+	// WhatsApp rides inside the same daemon and the same pid slot: one
+	// process, two surfaces. Off by default; linking is driven from the
+	// hub, and a WhatsApp failure never takes Telegram down.
+	startWhatsAppBridge(cfg)
+	defer stopWhatsApp()
 	// Report completed device logins to the chat that started them.
 	registerCodexCompletion(token)
 	registerHermesCompletion(token)

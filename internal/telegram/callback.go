@@ -381,6 +381,18 @@ func handleCallback(token string, q *callbackQuery) {
 			menus.InlineForChat("secrets", 0, chatID, currentSessionID(chatID)))
 		return
 	}
+	if strings.HasPrefix(data, "wa:") {
+		switch strings.TrimPrefix(data, "wa:") {
+		case "link":
+			whatsAppLinkNow(token, chatID)
+		case "unlink":
+			whatsAppUnlink(token, chatID)
+		}
+		// Re-render from the status the daemon just wrote, so the screen
+		// matches the action even though pairing itself is asynchronous.
+		editCallback(token, chatID, q.Message.MessageID, whatsAppStatusText(), menus.InlineForChat("whatsapp", 0, chatID, currentSessionID(chatID)))
+		return
+	}
 	if strings.HasPrefix(data, "menu:") {
 		name := strings.TrimPrefix(data, "menu:")
 		// A menu that reports something has to say it. The generic handler used to
@@ -1000,6 +1012,8 @@ func menuReportText(name string, chatID int64) (string, bool) {
 			return "Status unavailable: " + err.Error(), true
 		}
 		return text, true
+	case "whatsapp":
+		return whatsAppStatusText(), true
 	}
 	return "", false
 }

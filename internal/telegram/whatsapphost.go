@@ -1,0 +1,454 @@
+package telegram
+
+// WhatsApp hosting: the bridge in ceraa/internal/whatsapp owns transport
+// and per-chat runs, and this file owns the two things only the daemon
+// can provide: a RunFunc wired like a Telegram run, and the boot hook
+// that starts the bridge beside the poll loop.
+//
+// The shape mirrors runAgentWithConfigContextAt above, minus the parts
+// that belong to a Telegram chat: no live-run registration (no Telegram
+// chat owns a WhatsApp run, so there is nothing to bind an actor to),
+// no keepalive recipe (the warmer stays Telegram's; a WhatsApp recipe
+// recorded here would clobber it), no plan mode (there is no chat state
+// to read one from), and no send_media (there is no WhatsApp sender
+// yet; outbound media is a named gap in the whatsapp package).
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"ceraa/harness/coordinator"
+	"ceraa/harness/evaluation"
+	"ceraa/harness/event"
+	"ceraa/harness/llm"
+	"ceraa/harness/operation"
+	"ceraa/harness/permission"
+	"ceraa/harness/sessionstore"
+	"ceraa/harness/skills"
+	"ceraa/harness/tool"
+	"ceraa/internal"
+	"ceraa/internal/config"
+	"ceraa/internal/logger"
+	"ceraa/internal/paths"
+	"ceraa/internal/prompt"
+	"ceraa/internal/subagent"
+	"ceraa/internal/whatsapp"
+
+	"go.mau.fi/whatsmeow"
+)
+
+// whatsappRunFunc adapts the bridge inlet to the full run path. The
+// bridge builds SessionID plus WhatsApp-flavored callbacks; everything
+// else (provider, stores, registry, authorization) is settled here,
+// the same way runAgentWithConfigContextAt settles it for Telegram.
+func whatsappRunFunc(cfg *config.Config) whatsapp.RunFunc {
+	return func(ctx context.Context, rc coordinator.RunnerConfig, userText string) (coordinator.Result, error) {
+		sessionID := rc.SessionID
+		if cfg.SkillFile == "" {
+			cfg.SkillFile = "skills"
+		}
+		if cfg.EvaluationFile == "" {
+			cfg.EvaluationFile = "evaluations.json"
+		}
+		store, err := sessionstore.New(cfg.SessionFile)
+		if err != nil {
+			return coordinator.Result{}, err
+		}
+		skillStore, err := skills.New(cfg.SkillFile)
+		if err != nil {
+			return coordinator.Result{}, err
+		}
+		evaluationStore, err := evaluation.New(cfg.EvaluationFile)
+		if err != nil {
+			return coordinator.Result{}, err
+		}
+		projectRoot := strings.TrimSpace(os.Getenv("CERAA_WHATSAPP_PROJECT"))
+		if projectRoot == "" {
+			// Unknown to the Telegram state, so this falls through to
+			// the configured workspace root. One chat surface, one
+			// default; per-chat projects are phase two.
+			projectRoot = defaultState.projectForSession(sessionID)
+		}
+		providerID := cfg.EffectiveProviderID()
+		providerConfig := activeProviderConfig(cfg, providerID)
+		modelConfig := llm.FromProvider(providerConfig.URL, providerConfig.APIKey, providerConfig.Model)
+		modelConfig.PromptCacheMode = providerConfig.PromptCacheMode
+		modelConfig.PromptCacheTTL = providerConfig.PromptCacheTTL
+		modelConfig.GeminiThoughtSignatures = telegramProviderUsesGeminiThoughtSignatures(providerID, providerConfig)
+		compactor := newCompactor(cfg, providerID, sessionID)
+		resolveModel := providerModelResolver(providerConfig, sessionID)
+		compactor.ResolveModel = resolveModel
+
+		skillContext, _ := skillStore.CatalogContext(2000)
+		reasoning := llm.ReasonLevel(effectiveReasoning(providerConfig, nil))
+		logger.Info(fmt.Sprintf("whatsapp run: provider=%s model=%s session=%s", providerID, providerConfig.Model, sessionID))
+		// DefaultRegistryForUser, not telegramRegistry: the Telegram
+		// registry carries a send_media bound to the Telegram chat, and
+		// a WhatsApp run delivering files to Telegram would be a
+		// surprise. Children share the same registry through
+		// NewRegistry for the same reason.
+		registry := tool.DefaultRegistryForUser(userText, skillStore)
+		subagent.Attach(registry, &subagent.Factory{
+			Cfg:             cfg,
+			User:            userText,
+			ParentSession:   sessionID,
+			ProjectRoot:     projectRoot,
+			ProviderID:      providerID,
+			ProviderCfg:     providerConfig,
+			ResolveModel:    resolveModel,
+			Reasoning:       reasoning,
+			ParentPrompt:    prompt.System,
+			SkillStore:      skillStore,
+			SkillContext:    skillContext,
+			EvaluationStore: evaluationStore,
+			Store:           store,
+			WallClock:       operation.TaskTimeout,
+			NewRegistry: func(user string, skillStore *skills.Store) *tool.Registry {
+				return tool.DefaultRegistryForUser(user, skillStore)
+			},
+		})
+		instructionProposer, _ := internal.ProposeScopes(modelConfig)
+
+		call := func(fn func(string)) func(string) {
+			if fn == nil {
+				return func(string) {}
+			}
+			return fn
+		}
+		onContent, onReasoning, onDone := call(rc.Callbacks.OnContent), call(rc.Callbacks.OnReasoning), call(rc.Callbacks.OnDone)
+		onToolStart, onToolDone := rc.Callbacks.OnToolStart, rc.Callbacks.OnToolDone
+		onStarted, onFinished := call(rc.Callbacks.OnRunStarted), rc.Callbacks.OnRunFinished
+		full := rc
+		full.Reasoning = reasoning
+		full.PlanMode = false
+		full.SystemPrompt = prompt.System
+		full.Model = modelConfig
+		full.ResolveModel = resolveModel
+		full.ContextLimit = providerConfig.ContextLimit
+		full.MaxOutputTokens = providerConfig.MaxOutputTokens
+		full.WorkDir = projectRoot
+		full.ToolOutputDir = cfg.ToolOutputDir
+		full.MaxToolResultChars = cfg.MaxToolResultChars
+		full.MaxConcurrentTools = cfg.MaxConcurrentTools
+		full.GoalDir = cfg.SessionFile
+		full.ModelCatalogURL = cfg.ModelCatalogURL
+		full.ModelCatalogCache = cfg.ModelCatalogCache
+		full.ModelCatalogRefresh = time.Duration(cfg.ModelCatalogRefreshHours) * time.Hour
+		full.InstructionRules = internal.InstructionRules(projectRoot, instructionProposer)
+		full.SkillContext = skillContext
+		full.EvaluationStore = evaluationStore
+		full.Compactor = compactor
+		full.ForcedCompaction = func() bool { return consumeForcedCompaction(sessionID) }
+		full.NeedsAuthorization = func(name string, args map[string]any) bool {
+			return needsPermission(name, fmt.Sprint(args))
+		}
+		full.AuthorizeTool = func(authCtx context.Context, callID, name string, args map[string]any) (bool, error) {
+			decision, decisionErr := permission.Default.Create(authCtx, sessionID, callID, name, 5*time.Minute, func() {
+				event.Default.Publish(event.Event{Type: event.TypePermission, SessionID: sessionID, Data: map[string]any{"tool": name, "args": args, "request_id": callID}})
+			})
+			if decisionErr != nil {
+				return false, decisionErr
+			}
+			return decision == "allowOnce" || decision == "allowAlways", nil
+		}
+		// Bus publishes mirror agentRunnerConfig so a WhatsApp run is
+		// visible on every subscriber (Mini App included), then the
+		// bridge callback carries it to the chat.
+		full.Callbacks.OnContent = func(content string) {
+			event.Default.Publish(event.Event{Type: event.TypeContent, SessionID: sessionID, Data: map[string]any{"delta": content}})
+			onContent(content)
+		}
+		full.Callbacks.OnReasoning = func(reasoning string) {
+			event.Default.Publish(event.Event{Type: event.TypeThinking, SessionID: sessionID, Data: map[string]any{"delta": reasoning}})
+			onReasoning(reasoning)
+		}
+		if rc.Callbacks.OnStepReasoningOnly != nil {
+			full.Callbacks.OnStepReasoningOnly = rc.Callbacks.OnStepReasoningOnly
+		}
+		full.Callbacks.OnToolStart = func(callID, name string, args map[string]any) {
+			event.Default.Publish(event.Event{Type: event.TypeToolStart, SessionID: sessionID, Data: map[string]any{"call_id": callID, "tool": name, "args": args}})
+			if onToolStart != nil {
+				onToolStart(callID, name, args)
+			}
+		}
+		full.Callbacks.OnToolDone = func(callID, name string, result operation.ResultEvent) {
+			event.Default.Publish(event.Event{Type: event.TypeToolEnd, SessionID: sessionID, Data: map[string]any{
+				"call_id": callID, "tool": name, "status": string(result.Status), "outcome": toolResultLabel(result),
+			}})
+			if onToolDone != nil {
+				onToolDone(callID, name, result)
+			}
+		}
+		full.Callbacks.OnDone = func(answer string) {
+			if answer != "" {
+				event.Default.Publish(event.Event{Type: event.TypeComplete, SessionID: sessionID, Data: map[string]any{"text": answer}})
+			}
+			onDone(answer)
+		}
+		full.Callbacks.OnRunStarted = func(runID string) {
+			logger.Info(fmt.Sprintf("whatsapp run active session=%s run=%s", sessionID, runID))
+			onStarted(runID)
+		}
+		full.Callbacks.OnRunFinished = func(runID string, status sessionstore.RunStatus) {
+			logger.Info(fmt.Sprintf("whatsapp run finished session=%s run=%s", sessionID, runID))
+			if onFinished != nil {
+				onFinished(runID, status)
+			}
+		}
+		// No CacheWarmer: the keepalive recipe is daemon-level and the
+		// recorded one belongs to Telegram. Recording a WhatsApp recipe
+		// here would clobber it, so WhatsApp sessions run without a
+		// keepalive until they get their own.
+		runner := coordinator.New(full, store, registry)
+		return runner.Run(ctx, userText)
+	}
+}
+
+// WhatsApp host state. The daemon owns one transport and at most one
+// manager for the whole process; the hub reaches them through these
+// accessors, because the menus package cannot see the daemon and must not
+// open the session database the daemon holds open.
+var (
+	waMu        sync.Mutex
+	waCfg       *config.Config
+	waTransport *whatsapp.ChatTransport
+	waManager   *whatsapp.Manager
+)
+
+// startWhatsAppBridge prepares the WhatsApp surface at boot. An enabled
+// bridge with a paired session starts serving immediately; an enabled but
+// unpaired bridge idles until the hub's Link button drives pairing, so
+// first pairing happens on demand instead of as a QR storm on every boot.
+// A failure never fails the boot: Telegram is the primary surface.
+func startWhatsAppBridge(cfg *config.Config) {
+	wcfg := whatsapp.LoadConfig()
+	waMu.Lock()
+	waCfg = cfg
+	waMu.Unlock()
+	if !wcfg.Enabled {
+		_ = whatsapp.SaveStatus(whatsapp.Status{})
+		return
+	}
+	transport, err := whatsapp.NewChatTransport(context.Background(), wcfg)
+	if err != nil {
+		logger.Warn("WhatsApp disabled: " + err.Error())
+		_ = whatsapp.SaveStatus(whatsapp.Status{})
+		return
+	}
+	waMu.Lock()
+	waTransport = transport
+	waMu.Unlock()
+	if !transport.IsLoggedIn() {
+		// Idle until the hub links it. No QR is issued here on purpose:
+		// the user opens the hub when they are ready to scan.
+		waSaveLinkStatus(transport)
+		logger.Info("WhatsApp bridge ready, not linked - open the hub to pair")
+		return
+	}
+	if err := waStartManager(cfg, transport, wcfg); err != nil {
+		logger.Warn("WhatsApp disabled: " + err.Error())
+	}
+	waSaveLinkStatus(transport)
+}
+
+// waStartManager connects and begins serving. The caller must have
+// reserved any QR channel before this, because Start is what connects.
+func waStartManager(cfg *config.Config, transport *whatsapp.ChatTransport, wcfg whatsapp.Config) error {
+	mgr := whatsapp.NewManager(transport, wcfg, whatsappRunFunc(cfg), "")
+	if err := mgr.Start(context.Background()); err != nil {
+		return err
+	}
+	waMu.Lock()
+	waManager = mgr
+	waMu.Unlock()
+	logger.Info("WhatsApp bridge started")
+	return nil
+}
+
+// stopWhatsApp ends the inlet loop and disconnects. Idempotent.
+func stopWhatsApp() {
+	waMu.Lock()
+	mgr := waManager
+	waManager = nil
+	waMu.Unlock()
+	if mgr != nil {
+		mgr.Stop()
+	}
+}
+
+func waTransportSnapshot() *whatsapp.ChatTransport {
+	waMu.Lock()
+	defer waMu.Unlock()
+	return waTransport
+}
+
+func waCfgSnapshot() *config.Config {
+	waMu.Lock()
+	defer waMu.Unlock()
+	return waCfg
+}
+
+// waSaveLinkStatus records the link state the menus render. A save
+// failure only costs a stale hub label until the next successful write.
+func waSaveLinkStatus(transport *whatsapp.ChatTransport) {
+	status := whatsapp.Status{}
+	if transport != nil && transport.IsLoggedIn() {
+		status.Linked = true
+		status.JID = transport.SelfJID()
+	}
+	if err := whatsapp.SaveStatus(status); err != nil {
+		logger.Warn("WhatsApp status save: " + err.Error())
+	}
+}
+
+// whatsAppStatusText is the body the hub shows above the pairing buttons.
+func whatsAppStatusText() string {
+	if !whatsapp.LoadConfig().Enabled {
+		return "📱 WhatsApp\n\nBridge is off. Set CERAA_WHATSAPP_ENABLED=true and restart to enable it."
+	}
+	status := whatsapp.LoadStatus()
+	if status.Linked {
+		jid := status.JID
+		if jid == "" {
+			jid = "this device"
+		}
+		return "📱 WhatsApp\n\nLinked as " + jid + ".\nMessage that number from your phone to talk to Ceraa."
+	}
+	return "📱 WhatsApp\n\nNot linked yet. Tap Link with QR code, then scan it from the phone:\nWhatsApp > Settings > Linked devices > Link a device."
+}
+
+// whatsAppLinkNow starts pairing on demand and delivers the QR codes to
+// the chat that asked. It reserves the QR channel before connecting,
+// because the library requires it ahead of Connect.
+func whatsAppLinkNow(token string, chatID int64) {
+	if chatID == 0 {
+		return
+	}
+	wcfg := whatsapp.LoadConfig()
+	if !wcfg.Enabled {
+		send(token, chatID, "WhatsApp is off. Set CERAA_WHATSAPP_ENABLED=true and restart.")
+		return
+	}
+	transport := waTransportSnapshot()
+	if transport == nil {
+		created, err := whatsapp.NewChatTransport(context.Background(), wcfg)
+		if err != nil {
+			send(token, chatID, "WhatsApp start failed: "+err.Error())
+			return
+		}
+		waMu.Lock()
+		waTransport = created
+		waMu.Unlock()
+		transport = created
+	}
+	if transport.IsLoggedIn() {
+		waSaveLinkStatus(transport)
+		send(token, chatID, "WhatsApp is already linked. Tap Refresh to see it.")
+		return
+	}
+	cfg := waCfgSnapshot()
+	if cfg == nil {
+		send(token, chatID, "WhatsApp is not ready yet. Restart the daemon and try again.")
+		return
+	}
+	// A manager from an earlier attempt would fight over the socket.
+	stopWhatsApp()
+	qrChan, err := transport.PairingClient().GetQRChannel(context.Background())
+	if err != nil {
+		send(token, chatID, "WhatsApp pairing could not start: "+err.Error())
+		return
+	}
+	if err := waStartManager(cfg, transport, wcfg); err != nil {
+		send(token, chatID, "WhatsApp start failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "📱 Starting WhatsApp linking. Scan the QR code that follows: WhatsApp > Settings > Linked devices > Link a device.")
+	go pairWhatsApp(token, chatID, transport, qrChan)
+}
+
+// whatsAppUnlink logs the device out, clears the local session and
+// returns the bridge to the unlinked idle state.
+func whatsAppUnlink(token string, chatID int64) {
+	if chatID == 0 {
+		return
+	}
+	waMu.Lock()
+	mgr := waManager
+	waManager = nil
+	transport := waTransport
+	waTransport = nil
+	waMu.Unlock()
+	if transport != nil && transport.IsLoggedIn() {
+		// Logout needs the live socket, so it runs before the disconnect.
+		if err := transport.PairingClient().Logout(context.Background()); err != nil {
+			logger.Warn("WhatsApp logout: " + err.Error())
+		}
+	}
+	if mgr != nil {
+		mgr.Stop()
+	}
+	if transport != nil {
+		_ = transport.Close()
+	}
+	if err := os.Remove(whatsapp.LoadConfig().DBPath()); err != nil && !os.IsNotExist(err) {
+		logger.Warn("WhatsApp session delete: " + err.Error())
+	}
+	_ = whatsapp.SaveStatus(whatsapp.Status{})
+	send(token, chatID, "🔓 WhatsApp unlinked. Remove the \"Ceraa (Linux)\" entry in the phone's Linked devices too, then link again from the hub.")
+}
+
+// pairWhatsApp delivers pairing QR codes to the owner Telegram chat until
+// the link completes or the window lapses. One channel, one attempt: a
+// lapsed window needs the Link button again, which the notice says.
+func pairWhatsApp(token string, chatID int64, transport *whatsapp.ChatTransport, qrChan <-chan whatsmeow.QRChannelItem) {
+	if chatID == 0 {
+		logger.Warn("WhatsApp not linked and no owner chat: set the Telegram user id so the QR code has somewhere to go")
+		return
+	}
+	pngPath := filepath.Join(paths.DataDir(), "whatsapp-qr.png")
+	sender := newTelegramMediaSender(token, chatID)
+	for item := range qrChan {
+		switch item.Event {
+		case "code":
+			png, err := whatsapp.RenderQRPNG(item.Code)
+			if err != nil {
+				logger.Warn("WhatsApp QR render: " + err.Error())
+				continue
+			}
+			if err := os.WriteFile(pngPath, png, 0o600); err != nil {
+				logger.Warn("WhatsApp QR save: " + err.Error())
+				continue
+			}
+			caption := "Scan with WhatsApp: Settings > Linked devices > Link a device."
+			if item.Timeout > 0 {
+				caption += fmt.Sprintf(" This code expires in about %s; a fresh one follows automatically.", item.Timeout.Round(time.Second))
+			}
+			if _, err := sender.SendMedia(context.Background(), pngPath, caption, tool.MediaPhoto); err != nil {
+				logger.Warn("WhatsApp QR delivery: " + err.Error())
+			}
+		case "success":
+			_ = os.Remove(pngPath)
+			waSaveLinkStatus(transport)
+			send(token, chatID, "✅ WhatsApp linked. Message the linked number from your phone to talk to Ceraa.")
+			return
+		case "timeout":
+			send(token, chatID, "WhatsApp linking lapsed before the scan. Tap Link with QR code again.")
+			return
+		case "error":
+			if item.Error != nil {
+				logger.Warn("WhatsApp pairing: " + item.Error.Error())
+			}
+			send(token, chatID, "WhatsApp pairing failed. Tap Link with QR code to retry.")
+			return
+		default:
+			// Re-issues arrive as fresh "code" events; anything else
+			// is logged and ignored.
+			logger.Info("WhatsApp pairing event: " + item.Event)
+		}
+	}
+}

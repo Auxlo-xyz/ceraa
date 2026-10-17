@@ -21,6 +21,7 @@ import (
 	"ceraa/internal/paths"
 	"ceraa/internal/qoderauth"
 	"ceraa/internal/secret"
+	"ceraa/internal/whatsapp"
 	"ceraa/internal/xaiauth"
 	"context"
 	"encoding/json"
@@ -47,7 +48,7 @@ var All = []string{
 	"status", "session", "provider", "model", "agent", "thinking", "project", "tools", "todos",
 	"context", "compaction_level", "file_browser", "settings", "permission",
 	"snapshots", "message_history", "skills_catalog", "worktree",
-	"skill", "schedule", "secrets",
+	"skill", "schedule", "secrets", "whatsapp",
 	"codex", "hermes", "xai", "minimax", "cline", "opencode", "deepseek", "claude", "qoder", "gemini", "workbuddy",
 }
 
@@ -194,6 +195,8 @@ func InlineForSession(name string, page int, sessionID string) map[string]any {
 		return toolsMenu()
 	case "secrets":
 		return SecretsMenu(storedUserSecrets())
+	case "whatsapp":
+		return WhatsAppMenu()
 	case "todos":
 		return todosMenu(sessionID)
 	case "codex":
@@ -1052,6 +1055,58 @@ func storedUserSecrets() []StoredSecret {
 	return out
 }
 
+// whatsAppHubLabel names the WhatsApp entry by state, so the hub answers
+// "is WhatsApp linked" without the user opening the menu.
+func whatsAppHubLabel() string {
+	if !whatsapp.LoadConfig().Enabled {
+		return "📱 WhatsApp · off"
+	}
+	if whatsapp.LoadStatus().Linked {
+		return "📱 WhatsApp · linked"
+	}
+	return "📱 WhatsApp · not linked"
+}
+
+// WhatsAppMenu is the pairing screen: the one place a phone user can link
+// or unlink the WhatsApp account without reading a log or editing an env
+// file. State comes from the environment (enabled) and the daemon-written
+// status file (linked, jid), because this package has no live client and
+// must not open the session database the daemon holds open.
+func WhatsAppMenu() map[string]any {
+	row := func(text, data string) map[string]string {
+		return map[string]string{"text": text, "callback_data": data}
+	}
+	enabled := whatsapp.LoadConfig().Enabled
+	status := whatsapp.LoadStatus()
+	var rows [][]map[string]string
+	switch {
+	case !enabled:
+		rows = append(rows,
+			[]map[string]string{row("⛔ WhatsApp bridge is off", "noop")},
+			[]map[string]string{row("Set CERAA_WHATSAPP_ENABLED=true, then restart", "noop")},
+		)
+	case status.Linked:
+		label := "✅ Linked"
+		if status.JID != "" {
+			label = "✅ Linked as " + status.JID
+		}
+		rows = append(rows,
+			[]map[string]string{row(label, "noop")},
+			[]map[string]string{row("🔓 Unlink device", "wa:unlink")},
+		)
+	default:
+		rows = append(rows,
+			[]map[string]string{row("⚠️ Not linked yet", "noop")},
+			[]map[string]string{row("📱 Link with QR code", "wa:link")},
+		)
+	}
+	rows = append(rows, []map[string]string{
+		row("🔁 Refresh", "wa:refresh"),
+		row("◀️ Back", "menu:hub"),
+	})
+	return map[string]any{"inline_keyboard": rows}
+}
+
 func Hub() map[string]any {
 	labels := map[string]string{
 		"status": "📊 Status", "session": "💬 Sessions", "provider": "🔌 Provider", "model": "🤖 Model", "agent": "🤖 Mode",
@@ -1060,8 +1115,9 @@ func Hub() map[string]any {
 		"settings": "⚙️ Settings", "permission": "🔒 Permissions",
 		"message_history": "🕘 History", "snapshots": "↩️ Snapshots", "skills_catalog": "🧩 Tools",
 		"worktree": "🌿 Worktree", "skill": "🧩 Skills", "schedule": "⏰ Schedule",
-		"secrets": "🔑 Secrets",
-		"codex":   codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
+		"secrets":  "🔑 Secrets",
+		"whatsapp": whatsAppHubLabel(),
+		"codex":    codexHubLabel(), "hermes": hermesHubLabel(), "xai": xaiHubLabel(), "minimax": minimaxHubLabel(), "cline": clineHubLabel(),
 		"opencode": openCodeHubLabel(), "deepseek": deepseekHubLabel(), "claude": claudeHubLabel(), "qoder": qoderHubLabel(),
 		"gemini": geminiHubLabel(), "workbuddy": workbuddyHubLabel(),
 	}
