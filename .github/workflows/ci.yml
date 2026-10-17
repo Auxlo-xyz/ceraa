@@ -5,12 +5,25 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # GitHub reads a release-triggered workflow from the default branch, so this
+  # file has to be on main before a published release will fire it.
+  release:
+    types: [published]
+  # Dispatch exists so the release check can be run without cutting a release,
+  # which is the only other way to exercise it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to check. Defaults to the latest.
+        required: false
+        type: string
 
 env:
   GOFLAGS: -mod=readonly
 
 jobs:
   test:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     strategy:
       matrix:
         os: [ubuntu-24.04, macos-15]
@@ -33,6 +46,7 @@ jobs:
         run: make test
 
   fuzz:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +67,7 @@ jobs:
 
   dist:
     # The public surface is a self-contained binary plus reviewable assets.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +106,7 @@ jobs:
           fi
 
   docker:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -99,3 +115,141 @@ jobs:
         run: |
           docker build -t ceraa-ci .
           docker run --rm ceraa-ci version
+
+  # The published release is the only thing a user downloads, and this is the
+  # one repo where it can be checked automatically: the source repo is private
+  # and its CI is off, while public repositories do not consume Actions minutes.
+  #
+  # Two releases shipped broken with every other signal green: one binary
+  # reported a version the tag did not name, and one release was missing its
+  # prompt. Both were silent - a wrong version still looks like a version, and a
+  # missing prompt only shows up later as an agent behaving unlike the build you
+  # tested. So these assertions read the artifact's own output rather than
+  # trusting a build that could have succeeded while the upload did not.
+  artifacts:
+    name: release artifacts
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      # gh needs a token, and it needs --repo explicitly below: this job never
+      # checks the repository out, so there is no remote for gh to infer from.
+      GH_TOKEN: ${{ github.token }}
+      TAG_INPUT: ${{ inputs.tag }}
+    steps:
+      - name: Resolve the tag under test
+        id: target
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${TAG_INPUT}"
+            if [ -z "$tag" ]; then
+              tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+            fi
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "checking $tag"
+
+      - name: Download the published assets
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh release download "${{ steps.target.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir out
+          ls -l out
+
+      # Nothing else is ever attached: no source, no tarball of the tree, no
+      # prompt sidecar. A file outside this set means the distribution policy
+      # changed by accident, so assert the whole set rather than only the files
+      # this job happens to read.
+      - name: The release carries exactly the documented assets
+        run: |
+          set -euo pipefail
+          want="LICENSE NOTICE SHA256SUMS ceraa-darwin-amd64 ceraa-darwin-arm64 ceraa-linux-amd64 ceraa-linux-arm64"
+          got=$(cd out && ls -1 | sort | tr '\n' ' ' | sed 's/ $//')
+          echo "expected: $want"
+          echo "present:  $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the attached assets are not the documented set"
+            exit 1
+          fi
+
+      # A checksum that does not match is a corrupt or substituted download, and
+      # it must fail before anything is executed.
+      #
+      # SHA256SUMS covers the four binaries plus LICENSE and NOTICE, so six
+      # entries, and it does not list itself. The count is asserted too, because
+      # a run that verified no files is green and means nothing.
+      - name: Checksums verify
+        run: |
+          set -euo pipefail
+          cd out
+          checked=$(sha256sum -c SHA256SUMS | grep -c ': OK$' || true)
+          echo "verified $checked file(s)"
+          if [ "$checked" -lt 6 ]; then
+            echo "::error::SHA256SUMS verified $checked of 6 files"
+            exit 1
+          fi
+
+      # The 0.1.1 bug: the binary reported 0.1.0 while the tag said 0.1.1. A user
+      # filing a bug names a version, and it has to be the real one. Both Linux
+      # builds are run here, the second under qemu, because a CGO_ENABLED=0 Go
+      # binary is static and runs as-is. This is the version line, not a search
+      # for a string that happens to be in the file.
+      - name: The Linux binaries report the version the tag names
+        run: |
+          set -euo pipefail
+          # Strip the leading v first, then build the expected line. The other
+          # order is a no-op: "ceraa v0.8.1" starts with a c, so ${want#v}
+          # leaves it alone and the check demands "ceraa v0.8.1" of a binary
+          # that correctly says "ceraa 0.8.1".
+          tag="${{ steps.target.outputs.tag }}"
+          want="ceraa ${tag#v}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+          chmod +x out/ceraa-linux-amd64 out/ceraa-linux-arm64
+          for entry in "ceraa-linux-amd64:" "ceraa-linux-arm64:qemu-aarch64-static"; do
+            bin="${entry%%:*}"
+            runner="${entry#*:}"
+            got=$($runner "./out/$bin" version 2>/dev/null | head -1)
+            echo "$bin says: $got"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$bin reports '$got' but the tag says '$want'"
+              exit 1
+            fi
+          done
+
+      # Neither Darwin binary can execute here, and there is no Intel macOS
+      # runner left on GitHub to run the x86_64 one either, so these two are
+      # checked rather than run: the CPU type in the Mach-O header, and the
+      # version the linker injected. Say checked, not tested.
+      - name: The Darwin binaries carry the tag version and the right architecture
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          python3 - "${tag#v}" <<'PY'
+          import struct, sys
+          version = sys.argv[1].encode()
+          want = {"ceraa-darwin-amd64": 0x01000007, "ceraa-darwin-arm64": 0x0100000C}
+          names = {0x01000007: "x86_64", 0x0100000C: "arm64"}
+          bad = 0
+          for name, cpu in want.items():
+              blob = open("out/" + name, "rb").read()
+              magic, cputype = struct.unpack("<II", blob[:8])
+              if magic != 0xFEEDFACF:
+                  print(f"::error::{name} is not a 64-bit Mach-O")
+                  bad += 1
+              elif cputype != cpu:
+                  print(f"::error::{name} is {names.get(cputype, hex(cputype))}, want {names[cpu]}")
+                  bad += 1
+              elif version not in blob:
+                  print(f"::error::{name} does not carry version {version.decode()}")
+                  bad += 1
+              else:
+                  print(f"{name}: Mach-O {names[cpu]}, carries {version.decode()}")
+          sys.exit(1 if bad else 0)
+          PY
