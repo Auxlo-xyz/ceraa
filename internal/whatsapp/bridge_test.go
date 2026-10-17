@@ -487,3 +487,64 @@ func TestChatTagRedactsTheJID(t *testing.T) {
 		t.Errorf("chatTag(\"\") = %q, want the empty marker", chatTag(""))
 	}
 }
+
+// A read receipt is sent for an accepted DM, addressed to the JIDs the
+// message arrived on rather than the phone form the allow-list is matched
+// against. The receipt is what turns the sender's ticks blue.
+func TestBridgeMarksAcceptedMessageRead(t *testing.T) {
+	run := &stubRun{final: "the answer"}
+	b, ft := testBridge(t.TempDir(), run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID:       "2348012345678@s.whatsapp.net",
+		ID:            "dm-lid-1",
+		Text:          "hello ceraa",
+		ReceiptChat:   "193471331729523@lid",
+		ReceiptSender: "193471331729523@lid",
+	})
+	reads := ft.readReceipts()
+	if len(reads) != 1 {
+		t.Fatalf("sent %d read receipts, want exactly 1", len(reads))
+	}
+	if reads[0].id != "dm-lid-1" {
+		t.Errorf("receipt id = %q, want the message id", reads[0].id)
+	}
+	if reads[0].chat != "193471331729523@lid" || reads[0].sender != "193471331729523@lid" {
+		t.Errorf("receipt addressed %q/%q, want the verbatim LID pair", reads[0].chat, reads[0].sender)
+	}
+}
+
+// A stranger buys no run and no reply, and no read receipt either: the read
+// is an acknowledgement, and the bridge does not acknowledge a message it
+// refuses.
+func TestBridgeDoesNotMarkStrangersRead(t *testing.T) {
+	run := &stubRun{final: "should never send"}
+	b, ft := testBridge(t.TempDir(), run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID:       "2349999999999@s.whatsapp.net",
+		ID:            "stranger-1",
+		Text:          "hi",
+		ReceiptChat:   "2349999999999@s.whatsapp.net",
+		ReceiptSender: "2349999999999@s.whatsapp.net",
+	})
+	if run.callCount() != 0 {
+		t.Fatalf("a stranger started %d runs, want 0", run.callCount())
+	}
+	if got := ft.readReceipts(); len(got) != 0 {
+		t.Fatalf("a stranger got %d read receipts, want 0", len(got))
+	}
+}
+
+// Own messages are never read back.
+func TestBridgeDoesNotMarkOwnMessagesRead(t *testing.T) {
+	run := &stubRun{final: "should never send"}
+	b, ft := testBridge(t.TempDir(), run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "own-2",
+		Text:    "echo",
+		FromMe:  true,
+	})
+	if got := ft.readReceipts(); len(got) != 0 {
+		t.Fatalf("own message got %d read receipts, want 0", len(got))
+	}
+}

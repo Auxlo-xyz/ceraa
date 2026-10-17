@@ -24,6 +24,14 @@ type outboundText struct {
 	text  string
 }
 
+// readReceipt is one captured MarkRead call: the JIDs the message arrived on
+// and its id.
+type readReceipt struct {
+	chat   string
+	sender string
+	id     string
+}
+
 type fakeTransport struct {
 	mu         sync.Mutex
 	loggedIn   bool
@@ -31,9 +39,11 @@ type fakeTransport struct {
 	incoming   chan InboundMessage
 	closed     bool
 	sent       []outboundText
+	reads      []readReceipt
 	nextID     int
 	connectErr error
 	sendErr    error
+	readErr    error
 }
 
 func newFakeTransport() *fakeTransport {
@@ -91,6 +101,19 @@ func (f *fakeTransport) SendText(ctx context.Context, toJID, text string) (strin
 	return id, nil
 }
 
+func (f *fakeTransport) MarkRead(ctx context.Context, receiptChat, receiptSender, messageID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return f.readErr
+	}
+	f.reads = append(f.reads, readReceipt{chat: receiptChat, sender: receiptSender, id: messageID})
+	return nil
+}
+
 func (f *fakeTransport) Incoming() <-chan InboundMessage {
 	return f.incoming
 }
@@ -112,6 +135,14 @@ func (f *fakeTransport) sentTexts() []outboundText {
 	defer f.mu.Unlock()
 	out := make([]outboundText, len(f.sent))
 	copy(out, f.sent)
+	return out
+}
+
+func (f *fakeTransport) readReceipts() []readReceipt {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]readReceipt, len(f.reads))
+	copy(out, f.reads)
 	return out
 }
 

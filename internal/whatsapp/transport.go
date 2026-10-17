@@ -26,6 +26,13 @@ type InboundMessage struct {
 	GroupJID  string
 	FromMe    bool
 	Timestamp time.Time
+	// ReceiptChat and ReceiptSender are the JIDs the message actually
+	// arrived on. ChatJID is rewritten to the phone form for the
+	// allow-list, and a read receipt is a separate stanza: sending it to a
+	// rewritten address is a guess about a namespace the message never
+	// used, so the verbatim pair is carried for MarkRead.
+	ReceiptChat   string
+	ReceiptSender string
 }
 
 // Transport is the narrow seam the bridge programs against.
@@ -37,6 +44,10 @@ type Transport interface {
 	// it for the owner-only allow-list mode.
 	SelfJID() string
 	SendText(ctx context.Context, toJID, text string) (string, error)
+	// MarkRead sends a read receipt, which is what turns a delivered
+	// message blue for its sender. chat and sender are the JIDs the
+	// message arrived on; sender is ignored outside group chats.
+	MarkRead(ctx context.Context, receiptChat, receiptSender, messageID string) error
 	Incoming() <-chan InboundMessage
 }
 
@@ -114,6 +125,26 @@ func (t *ChatTransport) SendText(ctx context.Context, toJID, text string) (strin
 		return "", err
 	}
 	return string(resp.ID), nil
+}
+
+// MarkRead sends a read receipt for one message. The receipt is addressed to
+// the JID the message arrived on, not the rewritten one: WhatsApp addresses
+// most DMs by LID, and a receipt is a separate stanza from the reply.
+func (t *ChatTransport) MarkRead(ctx context.Context, receiptChat, receiptSender, messageID string) error {
+	if messageID == "" {
+		return errors.New("whatsapp: mark read without a message id")
+	}
+	chat, err := parseRecipient(receiptChat)
+	if err != nil {
+		return err
+	}
+	var sender types.JID
+	if trimmed := strings.TrimSpace(receiptSender); trimmed != "" {
+		if sender, err = types.ParseJID(trimmed); err != nil {
+			return err
+		}
+	}
+	return t.client.MarkRead(ctx, []types.MessageID{types.MessageID(messageID)}, time.Now(), chat, sender)
 }
 
 // Incoming exposes the receive queue.
@@ -197,12 +228,14 @@ func mapInbound(evt *events.Message) (InboundMessage, bool) {
 		quoted = ext.GetContextInfo().GetStanzaID()
 	}
 	out := InboundMessage{
-		ChatJID:   info.Chat.String(),
-		ID:        string(info.ID),
-		Text:      body,
-		QuotedID:  quoted,
-		FromMe:    info.IsFromMe,
-		Timestamp: info.Timestamp,
+		ChatJID:       info.Chat.String(),
+		ID:            string(info.ID),
+		Text:          body,
+		QuotedID:      quoted,
+		FromMe:        info.IsFromMe,
+		Timestamp:     info.Timestamp,
+		ReceiptChat:   info.Chat.String(),
+		ReceiptSender: info.Sender.String(),
 	}
 	if info.IsGroup {
 		out.GroupJID = info.Chat.String()

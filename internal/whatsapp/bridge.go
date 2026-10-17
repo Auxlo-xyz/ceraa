@@ -175,6 +175,14 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 		logger.Info(fmt.Sprintf("whatsapp sender not allowed tag=%s", tag))
 		return
 	}
+	// An accepted message is read immediately, so the sender gets blue ticks
+	// when the run is queued rather than when it finishes. A failure here is
+	// cosmetic: it must not stop the run.
+	if msg.ID != "" {
+		if err := b.transport.MarkRead(ctx, msg.ReceiptChat, msg.ReceiptSender, msg.ID); err != nil {
+			logger.Warn(fmt.Sprintf("whatsapp read receipt failed tag=%s err=%.80s", tag, err))
+		}
+	}
 	prompt := strings.TrimSpace(msg.Text)
 	if msg.MediaPath != "" {
 		saved, err := SaveInboundMedia(msg, b.filesDir)
