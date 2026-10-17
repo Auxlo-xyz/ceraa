@@ -13,8 +13,13 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && [ -r "$HERE/env.sh" ]; then
+	# set -a, or sourcing only sets shell variables and none of them reach the
+	# child: every key in env.sh except the one exported below would be dropped
+	# silently, which is the whole reason the file exists.
+	set -a
 	# shellcheck disable=SC1091
 	. "$HERE/env.sh"
+	set +a
 fi
 export TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 
