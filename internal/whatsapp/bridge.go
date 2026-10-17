@@ -181,6 +181,10 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	if msg.ID != "" {
 		if err := b.transport.MarkRead(ctx, msg.ReceiptChat, msg.ReceiptSender, msg.ID); err != nil {
 			logger.Warn(fmt.Sprintf("whatsapp read receipt failed tag=%s err=%.80s", tag, err))
+		} else {
+			// A success is logged too: a fix you cannot observe is not a
+			// fix, and only a failure line made the receipt invisible.
+			logger.Info(fmt.Sprintf("whatsapp read receipt sent tag=%s", tag))
 		}
 	}
 	prompt := strings.TrimSpace(msg.Text)
