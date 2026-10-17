@@ -149,11 +149,30 @@ func (t *ChatTransport) handleEvent(evt any) {
 	if !ok {
 		return
 	}
+	inbound.ChatJID = phoneAddressed(inbound.ChatJID, msg.Info.SenderAlt)
 	select {
 	case t.incoming <- inbound:
 	default:
 		// Queue full: drop rather than stall the event loop.
 	}
+}
+
+// phoneAddressed rewrites a LID-addressed chat to its phone-number form.
+// WhatsApp addresses most direct messages by LID now, while the allow-list
+// holds phone numbers, so a listed owner is refused in silence: the digits
+// of a LID and of a number are different namespaces and can never match.
+// The library already resolved the alternate address on the stanza, so this
+// is a field read rather than a map lookup. An absent alternate keeps the
+// original JID, which still fails closed at the allow check.
+func phoneAddressed(chat string, alt types.JID) string {
+	parsed, err := types.ParseJID(chat)
+	if err != nil || parsed.Server != types.HiddenUserServer {
+		return chat
+	}
+	if alt.IsEmpty() || alt.Server != types.DefaultUserServer {
+		return chat
+	}
+	return alt.ToNonAD().String()
 }
 
 // mapInbound converts a library message. False means skip: own messages
