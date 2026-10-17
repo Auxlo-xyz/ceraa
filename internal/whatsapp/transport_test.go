@@ -32,6 +32,13 @@ type readReceipt struct {
 	id     string
 }
 
+// chatPresence is one captured ChatPresence call: the chat and whether the
+// indicator was turned on (composing) or off (paused).
+type chatPresence struct {
+	chat      string
+	composing bool
+}
+
 type fakeTransport struct {
 	mu         sync.Mutex
 	loggedIn   bool
@@ -40,6 +47,7 @@ type fakeTransport struct {
 	closed     bool
 	sent       []outboundText
 	reads      []readReceipt
+	presence   []chatPresence
 	nextID     int
 	connectErr error
 	sendErr    error
@@ -114,6 +122,16 @@ func (f *fakeTransport) MarkRead(ctx context.Context, receiptChat, receiptSender
 	return nil
 }
 
+func (f *fakeTransport) ChatPresence(ctx context.Context, chat string, composing bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.presence = append(f.presence, chatPresence{chat: chat, composing: composing})
+	return nil
+}
+
 func (f *fakeTransport) Incoming() <-chan InboundMessage {
 	return f.incoming
 }
@@ -143,6 +161,14 @@ func (f *fakeTransport) readReceipts() []readReceipt {
 	defer f.mu.Unlock()
 	out := make([]readReceipt, len(f.reads))
 	copy(out, f.reads)
+	return out
+}
+
+func (f *fakeTransport) presenceEvents() []chatPresence {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]chatPresence, len(f.presence))
+	copy(out, f.presence)
 	return out
 }
 

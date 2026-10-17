@@ -34,6 +34,10 @@ const (
 	waProgressNote = "Still working on it - I will reply when the run finishes."
 	// waMaxChunk bounds one outbound text; longer answers send in parts.
 	waMaxChunk = 4000
+	// waTypingRefresh re-sends the typing indicator while a run is active.
+	// WhatsApp expires the chat state after a few seconds, so a single send
+	// does not cover a long run.
+	waTypingRefresh = 8 * time.Second
 	// waNoAnswerNote covers runs that finish with no reply text.
 	waNoAnswerNote = "Done."
 	// waFailNote covers runs that error. Detail stays in the log.
@@ -218,6 +222,10 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 		b.mu.Unlock()
 	}()
 	logger.Info(fmt.Sprintf("whatsapp run started tag=%s session=%s", tag, sessionID))
+	// The typing indicator is the only sign of life a sender gets until the
+	// run finishes. The stop is deferred, so every exit from here clears it.
+	stopTyping := b.startTyping(msg.ChatJID, tag)
+	defer stopTyping()
 
 	// Collect-first throttle: deltas accumulate and one final text goes
 	// out, plus at most one progress note on slow runs.
@@ -295,6 +303,44 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	}
 	_ = b.send(ctx, msg.ChatJID, final)
 	logger.Info(fmt.Sprintf("whatsapp run sent tag=%s answerlen=%d", tag, len(final)))
+}
+
+// startTyping turns the typing indicator on for a chat and returns a function
+// that clears it. WhatsApp expires the chat state after a few seconds, so the
+// indicator is refreshed on a timer until the returned function runs. Both the
+// refresh and the clear are best-effort and never affect the run, and the
+// returned function is safe to call more than once.
+func (b *Bridge) startTyping(chat, tag string) func() {
+	send := func(composing bool) {
+		if err := b.transport.ChatPresence(context.Background(), chat, composing); err != nil {
+			logger.Warn(fmt.Sprintf("whatsapp chat presence failed tag=%s composing=%t err=%.80s", tag, composing, err))
+		}
+	}
+	send(true)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(waTypingRefresh)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				send(true)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(done)
+			wg.Wait()
+			send(false)
+		})
+	}
 }
 
 // send delivers one reply in bounded chunks. Markdown tables are rendered as

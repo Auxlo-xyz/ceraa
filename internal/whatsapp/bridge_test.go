@@ -548,3 +548,95 @@ func TestBridgeDoesNotMarkOwnMessagesRead(t *testing.T) {
 		t.Fatalf("own message got %d read receipts, want 0", len(got))
 	}
 }
+
+// waitForPresence polls the fake until n presence events are captured. The
+// typing indicator is sent from the handler goroutine, so a test must wait for
+// it rather than assume it landed.
+func waitForPresence(t *testing.T, ft *fakeTransport, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(ft.presenceEvents()) >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d presence events, have %d", n, len(ft.presenceEvents()))
+}
+
+// An accepted DM turns the typing indicator on and then off: composing is the
+// three-dot bubble the sender sees while the run is queued and running, and
+// paused takes it down when the run is done.
+func TestBridgeShowsTypingForAcceptedMessage(t *testing.T) {
+	run := &stubRun{final: "the answer"}
+	b, ft := testBridge(t.TempDir(), run)
+	chat := "2348012345678@s.whatsapp.net"
+	b.handle(context.Background(), InboundMessage{ChatJID: chat, ID: "dm-1", Text: "hello"})
+	got := ft.presenceEvents()
+	if len(got) != 2 {
+		t.Fatalf("got %d presence events, want composing then paused: %+v", len(got), got)
+	}
+	if !got[0].composing || got[1].composing {
+		t.Fatalf("want composing then paused, got %+v", got)
+	}
+	if got[0].chat != chat {
+		t.Errorf("presence sent to %q, want the chat %q", got[0].chat, chat)
+	}
+}
+
+// The indicator is up while the run is in flight, not only after it settles.
+func TestBridgeShowsTypingWhileTheRunIsInFlight(t *testing.T) {
+	block := make(chan struct{})
+	run := &stubRun{final: "done", block: block}
+	b, ft := testBridge(t.TempDir(), run)
+	done := make(chan struct{})
+	go func() {
+		b.handle(context.Background(), InboundMessage{
+			ChatJID: "2348012345678@s.whatsapp.net",
+			ID:      "dm-1",
+			Text:    "hello",
+		})
+		close(done)
+	}()
+	waitForPresence(t, ft, 1)
+	if got := ft.presenceEvents(); !got[0].composing {
+		t.Fatalf("indicator should be composing while the run is in flight, got %+v", got)
+	}
+	close(block)
+	<-done
+	got := ft.presenceEvents()
+	if len(got) != 2 || !got[0].composing || got[1].composing {
+		t.Fatalf("want composing then paused, got %+v", got)
+	}
+}
+
+// A run that errors still clears the indicator, so a failure cannot leave the
+// sender watching a typing bubble forever.
+func TestBridgeClearsTypingWhenTheRunFails(t *testing.T) {
+	run := &stubRun{err: errBridgeBoom}
+	b, ft := testBridge(t.TempDir(), run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "hello",
+	})
+	got := ft.presenceEvents()
+	if len(got) == 0 || got[len(got)-1].composing {
+		t.Fatalf("a failed run must end with paused, got %+v", got)
+	}
+}
+
+// A stranger buys no typing indicator, the same way a stranger buys no run and
+// no read receipt.
+func TestBridgeDoesNotShowTypingForStrangers(t *testing.T) {
+	run := &stubRun{final: "should never send"}
+	b, ft := testBridge(t.TempDir(), run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2349999999999@s.whatsapp.net",
+		ID:      "stranger-1",
+		Text:    "hi",
+	})
+	if got := ft.presenceEvents(); len(got) != 0 {
+		t.Fatalf("a stranger got %d presence events, want 0", len(got))
+	}
+}

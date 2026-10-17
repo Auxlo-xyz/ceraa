@@ -48,6 +48,11 @@ type Transport interface {
 	// message blue for its sender. chat and sender are the JIDs the
 	// message arrived on; sender is ignored outside group chats.
 	MarkRead(ctx context.Context, receiptChat, receiptSender, messageID string) error
+	// ChatPresence shows or clears the typing indicator in a chat. WhatsApp
+	// has no message for it: composing is the three-dot bubble and paused
+	// removes it, and the server expires the state after a few seconds, so a
+	// caller that needs it up longer re-sends it.
+	ChatPresence(ctx context.Context, chat string, composing bool) error
 	Incoming() <-chan InboundMessage
 }
 
@@ -145,6 +150,21 @@ func (t *ChatTransport) MarkRead(ctx context.Context, receiptChat, receiptSender
 		}
 	}
 	return t.client.MarkRead(ctx, []types.MessageID{types.MessageID(messageID)}, time.Now(), chat, sender)
+}
+
+// ChatPresence shows (composing) or clears (paused) the typing indicator in a
+// chat. It addresses the same JID the reply goes to, and like a read receipt it
+// is a separate stanza from any message.
+func (t *ChatTransport) ChatPresence(ctx context.Context, chat string, composing bool) error {
+	jid, err := parseRecipient(chat)
+	if err != nil {
+		return err
+	}
+	state := types.ChatPresencePaused
+	if composing {
+		state = types.ChatPresenceComposing
+	}
+	return t.client.SendChatPresence(ctx, jid, state, types.ChatPresenceMediaText)
 }
 
 // Incoming exposes the receive queue.
