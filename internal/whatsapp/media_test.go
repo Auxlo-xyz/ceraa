@@ -224,10 +224,4 @@ func TestRefuseEscapeDirectly(t *testing.T) {
 	}
 }
 
-// Outbound media is phase two: SendMedia must name the gap, not fail
-// silently or pretend to send.
-func TestSendMediaNamesTheGap(t *testing.T) {
-	if err := SendMedia(t.Context(), "chat@s.whatsapp.net", "/tmp/x.jpg"); err == nil {
-		t.Error("SendMedia succeeded with no send-media path, want the gap named")
-	}
-}
+// Outbound media moved to sendmedia.go, and is covered there.

@@ -1,9 +1,8 @@
-// Inbound media landing: files dir, never /tmp. Outbound media is out
-// of scope and fails naming the gap.
+// Inbound media landing: files dir, never /tmp. Outbound media sending
+// lives in sendmedia.go.
 package whatsapp
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -71,12 +70,6 @@ func SaveInboundMedia(msg InboundMessage, filesDir string) (string, error) {
 		return "", fmt.Errorf("ceraa whatsapp: save attachment: %w", closeErr)
 	}
 	return dest, nil
-}
-
-// SendMedia names the gap: outbound media sending is out of scope. There
-// is no Transport send-media path yet; text replies go via SendText.
-func SendMedia(_ context.Context, _, _ string) error {
-	return fmt.Errorf("ceraa whatsapp: outbound media sending is not supported yet (no Transport send-media path; phase two)")
 }
 
 // sanitizeName keeps a stable file stem from an id.

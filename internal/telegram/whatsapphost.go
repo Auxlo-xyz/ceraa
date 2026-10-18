@@ -10,8 +10,10 @@ package telegram
 // chat owns a WhatsApp run, so there is nothing to bind an actor to),
 // no keepalive recipe (the warmer stays Telegram's; a WhatsApp recipe
 // recorded here would clobber it), no plan mode (there is no chat state
-// to read one from), and no send_media (there is no WhatsApp sender
-// yet; outbound media is a named gap in the whatsapp package).
+// to read one from). send_media IS registered here, bound to the chat the
+// run belongs to: the sender lives in the whatsapp package and needs the
+// live whatsmeow client, which only the daemon holds, so the tool is
+// wired on this side of the seam the way it is for Telegram.
 
 import (
 	"context"
@@ -93,7 +95,14 @@ func whatsappRunFunc(cfg *config.Config) whatsapp.RunFunc {
 		// a WhatsApp run delivering files to Telegram would be a
 		// surprise. Children share the same registry through
 		// NewRegistry for the same reason.
+		//
+		// send_media is then registered here, bound to this run's chat,
+		// which is the only change from Telegram's shape: the tool is
+		// the same, the destination is not.
 		registry := tool.DefaultRegistryForUser(userText, skillStore)
+		if sender := waMediaSender(rc.ChatID); sender != nil {
+			registry.Register(&tool.SendMediaTool{Sender: sender})
+		}
 		subagent.Attach(registry, &subagent.Factory{
 			Cfg:             cfg,
 			User:            userText,
@@ -110,7 +119,15 @@ func whatsappRunFunc(cfg *config.Config) whatsapp.RunFunc {
 			Store:           store,
 			WallClock:       operation.TaskTimeout,
 			NewRegistry: func(user string, skillStore *skills.Store) *tool.Registry {
-				return tool.DefaultRegistryForUser(user, skillStore)
+				registry := tool.DefaultRegistryForUser(user, skillStore)
+				// A child delivers to the same chat as its parent,
+				// so it gets the same bound sender. Omitting it
+				// would make send_media work for the parent and
+				// not for the subagent that needed it.
+				if sender := waMediaSender(rc.ChatID); sender != nil {
+					registry.Register(&tool.SendMediaTool{Sender: sender})
+				}
+				return registry
 			},
 		})
 		instructionProposer, _ := internal.ProposeScopes(modelConfig)
@@ -286,6 +303,18 @@ func waTransportSnapshot() *whatsapp.ChatTransport {
 	waMu.Lock()
 	defer waMu.Unlock()
 	return waTransport
+}
+
+// waMediaSender returns a media sender bound to one chat, or nil when the
+// transport is not up. A nil is skipped rather than registered broken: a
+// tool the model can see and that fails on every call is the failure this
+// seam exists to prevent.
+func waMediaSender(chat string) tool.MediaSender {
+	transport := waTransportSnapshot()
+	if transport == nil {
+		return nil
+	}
+	return transport.MediaSender(chat)
 }
 
 func waCfgSnapshot() *config.Config {

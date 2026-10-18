@@ -299,6 +299,10 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	// OnRunFinished in runAgentWithConfigContextAt.
 	rc := coordinator.RunnerConfig{
 		SessionID: sessionID,
+		// ChatID is the chat the run is answering. It is bound here so a
+		// tool whose destination is that chat, such as send_media, cannot be
+		// aimed at a different conversation.
+		ChatID: msg.ChatJID,
 		Callbacks: coordinator.Callbacks{
 			OnContent: func(delta string) {
 				streamMu.Lock()

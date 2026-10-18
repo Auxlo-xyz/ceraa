@@ -31,7 +31,13 @@ import (
 )
 
 type RunnerConfig struct {
-	SessionID    string
+	SessionID string
+	// ChatID is the transport-native address of the chat the run belongs to: a
+	// Telegram chat id, or a WhatsApp JID. It is carried for tools whose
+	// destination is that chat, such as send_media, and is bound here rather
+	// than accepted as a tool argument, so a model can name a file and
+	// nothing else.
+	ChatID       string
 	SystemPrompt string
 	// Reasoning selects the level every request asks for.
 	Reasoning llm.ReasonLevel
