@@ -863,28 +863,37 @@ func (r *runRenderer) content(delta string) {
 	r.signalStream()
 }
 
-// markReasoningOnly records that the step which just ended produced no tool call,
-// which is how the coordinator defines a final answer. Everything on the content
-// channel so far was therefore reasoning.
+// markReasoningOnly records that the step which just ended carried tool calls, so
+// it was continuing work rather than answering, and everything the content channel
+// held at that point was reasoning.
 //
 // A provider is free to put its reasoning on the content channel and Atria does
 // exactly that when no reasoning level was requested, which the run log recorded
 // as reasoning="" next to an answer message that opened with the same sentence as
-// the thought block above it. The preview then showed the thinking a second time,
-// in a bubble meant for the answer, and it never recovered: the run ended with the
-// answer published into a message that had been carrying reasoning all along.
+// the thought block above it. The two channels cannot be told apart from the deltas
+// alone, because they interleave and the split lands mid-word, so the coordinator
+// reports the boundary and the renderer does not guess.
 //
-// There is no way to tell the two apart from the delta alone, because the split
-// lands mid-word and the channels interleave. The coordinator can tell, so it says
-// so rather than leaving the renderer to guess.
+// The text stays where the reader was watching it. Folding it into the thought and
+// deleting the preview made a sentence that was on screen vanish mid-run and
+// reappear inside the collapsed thought block, which reads as the run dropping
+// what it had just written. So a preview that has a message keeps that message,
+// and a step whose preview never opened one folds instead, because there is
+// nothing on screen to keep and discarding the text would lose it.
 func (r *runRenderer) markReasoningOnly() {
 	r.mu.Lock()
 	content := r.streamContent
 	messageID := r.messageID
 	sent := r.sentStream
-	// The answer message is released, not kept. Keeping it meant the next content
-	// delta landed on a message whose text had just been folded into a thought, so
-	// the run's next fragment overwrote the same bubble instead of opening one.
+	sentID := r.sentStreamID
+	// Cleared under the same lock that read them. Releasing the message matters as
+	// much as keeping the text: holding it meant the next content delta landed on
+	// the message carrying this reasoning and overwrote it. Holding sentStream let
+	// finish reuse the reasoning bubble for the final answer whenever the answer
+	// happened to open with the same words, which would take the reasoning back off
+	// the screen. The buffer has to go at the same time, or the render goroutine
+	// could open a message for this text after the branch below chose where it
+	// belongs and show it in both places.
 	r.messageID = 0
 	r.streamContent = ""
 	r.sentStream = ""
@@ -893,21 +902,21 @@ func (r *runRenderer) markReasoningOnly() {
 	if strings.TrimSpace(content) == "" {
 		return
 	}
-	// The text arrived on the content channel because the provider put it there, so
-	// it belongs to the thought. It is folded rather than dropped: dropping it lost
-	// the opening of a turn, and folding it is also what stops it being shown twice.
-	r.reasoning(content)
 	if messageID == 0 {
+		r.reasoning(content)
 		return
 	}
-	// The message this text was shown on is now redundant: its whole content lives
-	// in the thought. Leaving it meant the chat held the reasoning twice, once as
-	// the thought and once as an answer that never was. It is deleted only when it
-	// holds nothing but the folded text; if a real answer landed on it since, the
-	// sent text no longer matches and it is left alone.
-	if sent != "" && strings.TrimSpace(sent) == strings.TrimSpace(content) {
-		if err := deleteTelegramMessage(r.token, r.chatID, messageID); err != nil {
-			logger.Warn("Telegram folded reasoning cleanup failed: " + err.Error())
+	final := truncateStream(strings.TrimSpace(content))
+	// The creation seed already carries this text when the render goroutine got
+	// there first, and Telegram rejects a byte-identical edit as "message is not
+	// modified" (404 of those in the recorded incident, ending in 429 retry after
+	// 227s). The comparison is per message, not per text: the seed of a replacement
+	// message would otherwise read as this text already having been delivered.
+	if sentID != messageID || sent != final {
+		if err := r.editRichOrUnavailable(messageID, final); err != nil {
+			if fallbackErr := editTelegramMessage(r.token, r.chatID, messageID, final); fallbackErr != nil {
+				logger.Warn("Telegram reasoning preview publication failed: " + fallbackErr.Error())
+			}
 		}
 	}
 }

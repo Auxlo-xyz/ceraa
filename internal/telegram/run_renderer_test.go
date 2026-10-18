@@ -852,15 +852,22 @@ func TestEveryThoughtBlockAndToolCallGetsItsOwnMessage(t *testing.T) {
 // thought.
 func TestReasoningArrivingOnTheContentChannelIsShownOnce(t *testing.T) {
 	var mu sync.Mutex
+	created := make([]string, 0)
 	nextID := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		text, _ := body["text"].(string)
+		if rich, ok := body["rich_message"].(map[string]any); ok {
+			text, _ = rich["markdown"].(string)
+		}
 		mu.Lock()
 		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
 		case "sendRichMessage", "sendMessage":
 			nextID++
 			id := 100 + nextID
+			created = append(created, text)
 			mu.Unlock()
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
 			return
@@ -889,11 +896,117 @@ func TestReasoningArrivingOnTheContentChannelIsShownOnce(t *testing.T) {
 	if strings.TrimSpace(content) != "" {
 		t.Fatalf("the answer still carries text the thought is also showing: %q", content)
 	}
-	if !strings.Contains(thought, "partially populated now") {
-		t.Fatalf("the reasoning did not reach the thought: %q", thought)
-	}
 	if !strings.Contains(thought, "The first cold build exceeded") {
 		t.Fatalf("the reasoning that arrived on the content channel replaced the block instead of extending it: %q", thought)
+	}
+	// Shown exactly once, wherever it lands. A preview bubble that had been opened
+	// keeps the text and the thought does not take it; a step whose preview never
+	// opened folds it into the thought instead. Either is one showing, and the pair
+	// is the failure this guards: folded as well as kept would put the same
+	// sentence in the chat twice.
+	mu.Lock()
+	shown := 0
+	if strings.Contains(thought, "partially populated now") {
+		shown++
+	}
+	for _, text := range created {
+		if strings.Contains(text, "partially populated now") {
+			shown++
+		}
+	}
+	mu.Unlock()
+	if shown != 1 {
+		t.Fatalf("the content-channel reasoning was shown %d time(s), want exactly 1: thought=%q created=%q",
+			shown, thought, created)
+	}
+}
+
+// A preview the reader is already watching is kept, not folded away and deleted.
+//
+// Deletion is asserted against directly because the text surviving in the thought
+// is a different claim, and it was exactly that behaviour which made a sentence
+// vanish from the chat mid-run: the bubble disappeared and the copy inside the
+// collapsed thought block is not what the reader was looking at.
+//
+// The render goroutine is deliberately absent and the preview is opened by hand.
+// Which branch markReasoningOnly takes depends on whether a message exists at the
+// boundary, so a test that left that to scheduling would assert one of the two
+// outcomes about half the time.
+func TestAReasoningPreviewThatIsOnScreenIsKeptVisible(t *testing.T) {
+	var mu sync.Mutex
+	created := make([]string, 0)
+	deleted := make([]int, 0)
+	nextID := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		text, _ := body["text"].(string)
+		if rich, ok := body["rich_message"].(map[string]any); ok {
+			text, _ = rich["markdown"].(string)
+		}
+		mu.Lock()
+		switch r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:] {
+		case "sendRichMessage", "sendMessage":
+			nextID++
+			id := 100 + nextID
+			created = append(created, text)
+			mu.Unlock()
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, id)))
+			return
+		case "deleteMessage":
+			if n, ok := body["message_id"].(float64); ok {
+				deleted = append(deleted, int(n))
+			}
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	oldBase := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = oldBase }()
+
+	renderer := &runRenderer{token: "token", chatID: 42}
+	renderer.reasoning("The first cold build exceeded the timeout.")
+	renderer.content(" A retry should be much faster.")
+	// Opens the preview bubble synchronously, so the boundary below is guaranteed
+	// to arrive with a message on screen.
+	renderer.renderStream()
+
+	renderer.mu.Lock()
+	messageID := renderer.messageID
+	renderer.mu.Unlock()
+	if messageID == 0 {
+		t.Fatal("precondition: the preview bubble was never opened, so this exercises the fold branch")
+	}
+
+	renderer.markReasoningOnly()
+
+	renderer.mu.Lock()
+	thought := renderer.thought
+	content := renderer.streamContent
+	present := renderer.messageID
+	renderer.mu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deleted) != 0 {
+		t.Errorf("the preview the reader was watching was deleted: message ids %v", deleted)
+	}
+	if len(created) == 0 || !strings.Contains(created[len(created)-1], "A retry should be much faster") {
+		t.Errorf("the preview no longer carries the text that streamed into it: %q", created)
+	}
+	if strings.Contains(thought, "A retry should be much faster") {
+		t.Errorf("the kept preview was folded into the thought as well, so it is shown twice: %q", thought)
+	}
+	// Released rather than held: the next block has to open a bubble of its own,
+	// or it overwrites the reasoning that is meant to stay on screen.
+	if present != 0 {
+		t.Errorf("the preview message was kept bound to the run (id %d), so the next block would overwrite it", present)
+	}
+	if content != "" {
+		t.Errorf("the content buffer was left holding text for a message that no longer exists: %q", content)
 	}
 }
 
@@ -969,6 +1082,12 @@ func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
 	r.reasoning("The user wants a machine inventory.")
 	r.content(" Container: Debian 13.")
 	r.markReasoningOnly()
+	// Snapshotted here, before the tool call closes the thought block: closing
+	// publishes the block and empties it for the next one, so reading it at the end
+	// of the test reports "" for both branches and cannot tell them apart.
+	r.mu.Lock()
+	foldedInto := r.thought
+	r.mu.Unlock()
 	r.tool("c1", "🔄 "+toolNameToken("bash")+">_ Run command · df -h")
 	r.tool("c1", "✅ "+toolNameToken("bash")+">_ Run command completed")
 	// Prose written between two tool calls is its own block, not an edit of an
@@ -991,12 +1110,24 @@ func TestEveryBlockGetsItsOwnMessageAndNothingIsOverwritten(t *testing.T) {
 	if len(created) < 5 {
 		t.Fatalf("messages = %d, want a message per block: %q", len(created), created)
 	}
-	// Reasoning that arrived on the content channel belongs to the thought, so no
-	// message may start with it.
+	// Reasoning that arrived on the content channel is shown once: in the thought
+	// when the preview had no message to keep, in a message of its own when it did.
+	// The two destinations are mutually exclusive by construction, so both being
+	// true means the chat holds the same sentence twice and neither means it was
+	// dropped. Only creations are scanned for the second half: the thought is
+	// rewritten on the way out of its block, so counting edits would read the fold
+	// branch as a showing on both sides. What must never return is the earlier fix,
+	// which filed it in the thought and deleted the preview the reader was watching.
+	inThought := strings.Contains(foldedInto, "Container: Debian 13.")
+	inBubble := false
 	for _, text := range created {
-		if strings.HasPrefix(text, "Container:") {
-			t.Fatalf("reasoning was shown as an answer message: %q", text)
+		if strings.Contains(text, "Container: Debian 13.") {
+			inBubble = true
 		}
+	}
+	if inThought == inBubble {
+		t.Fatalf("the content-channel reasoning was %s: thought=%q created=%q",
+			map[bool]string{true: "shown twice", false: "lost"}[inThought], foldedInto, created)
 	}
 	// The prose written before the second tool call survives on a message of its
 	// own. It used to be edited into the same bubble the final answer went to,
