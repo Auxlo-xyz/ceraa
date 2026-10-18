@@ -661,22 +661,12 @@ func toolArgs(jsonBody string) map[string]any {
 	return map[string]any{"tool": "x", "args": jsonBody}
 }
 
-// toolsWithFloorZero runs a chat with the tool throttle disabled, so a test
-// never waits on the real gap. It restores the floor on cleanup.
-func toolsWithFloorZero(t *testing.T) {
-	t.Helper()
-	saved := waToolFloor
-	waToolFloor = 0
-	t.Cleanup(func() { waToolFloor = saved })
-}
-
 func TestBridgeStreamsAToolCall(t *testing.T) {
 	run := &stubRun{
 		final: "done",
 		tools: []stubTool{{name: "bash", args: toolArgs(`{"command":"find /workspace -maxdepth 2"}`)}},
 	}
 	b, ft := testBridge(t.TempDir(), run)
-	toolsWithFloorZero(t)
 
 	b.handle(context.Background(), InboundMessage{
 		ChatJID: "2348012345678@s.whatsapp.net",
@@ -700,7 +690,6 @@ func TestBridgeDoesNotRepeatTheSameToolCall(t *testing.T) {
 	call := stubTool{name: "read", args: toolArgs(`{"path":"a.go"}`)}
 	run := &stubRun{final: "done", tools: []stubTool{call, call}}
 	b, ft := testBridge(t.TempDir(), run)
-	toolsWithFloorZero(t)
 
 	b.handle(context.Background(), InboundMessage{
 		ChatJID: "2348012345678@s.whatsapp.net",
@@ -725,7 +714,6 @@ func TestBridgeToolLineNeverRendersThePayload(t *testing.T) {
 		tools: []stubTool{{name: "write", args: toolArgs(`{"path":"main.go","content":"SECRET_BODY_VALUE"}`)}},
 	}
 	b, ft := testBridge(t.TempDir(), run)
-	toolsWithFloorZero(t)
 
 	b.handle(context.Background(), InboundMessage{
 		ChatJID: "2348012345678@s.whatsapp.net",
@@ -754,7 +742,6 @@ func TestBridgeBoundsToolLinesAndSummarises(t *testing.T) {
 	}
 	run := &stubRun{final: "done", tools: tools}
 	b, ft := testBridge(t.TempDir(), run)
-	toolsWithFloorZero(t)
 
 	b.handle(context.Background(), InboundMessage{
 		ChatJID: "2348012345678@s.whatsapp.net",
@@ -779,11 +766,10 @@ func TestBridgeBoundsToolLinesAndSummarises(t *testing.T) {
 	}
 }
 
-func TestBridgeThrottlesRapidToolCalls(t *testing.T) {
-	saved := waToolFloor
-	waToolFloor = time.Hour
-	t.Cleanup(func() { waToolFloor = saved })
-
+func TestBridgeShowsEveryDistinctToolCall(t *testing.T) {
+	// Two distinct calls in the same instant. Both must appear: an earlier
+	// 1.5s floor dropped the second and replaced it with a "+1 more tool
+	// call" line, which hid a real call from the reader.
 	run := &stubRun{
 		final: "done",
 		tools: []stubTool{
@@ -799,20 +785,23 @@ func TestBridgeThrottlesRapidToolCalls(t *testing.T) {
 		Text:    "go",
 	})
 
-	lines, summary := 0, ""
+	sawBash, sawRead, summary := false, false, ""
 	for _, s := range ft.sentTexts() {
-		if strings.HasPrefix(s.text, "*bash* ") || strings.HasPrefix(s.text, "*read* ") {
-			lines++
+		switch {
+		case s.text == "*bash* `ls`":
+			sawBash = true
+		case s.text == "*read* `b.go`":
+			sawRead = true
 		}
 		if strings.Contains(s.text, "more tool call") {
 			summary = s.text
 		}
 	}
-	if lines != 1 {
-		t.Fatalf("throttle let %d tool lines through, want 1", lines)
+	if !sawBash || !sawRead {
+		t.Fatalf("a distinct tool call was dropped (bash=%t read=%t); got %+v", sawBash, sawRead, ft.sentTexts())
 	}
-	if want := "_+1 more tool call_"; summary != want {
-		t.Fatalf("summary = %q, want %q", summary, want)
+	if summary != "" {
+		t.Fatalf("two calls under the cap produced a summary %q, want none", summary)
 	}
 }
 
@@ -822,7 +811,6 @@ func TestBridgeToolLineWithAPipeSurvivesSend(t *testing.T) {
 		tools: []stubTool{{name: "bash", args: toolArgs(`{"command":"cat a.go | grep func"}`)}},
 	}
 	b, ft := testBridge(t.TempDir(), run)
-	toolsWithFloorZero(t)
 
 	b.handle(context.Background(), InboundMessage{
 		ChatJID: "2348012345678@s.whatsapp.net",

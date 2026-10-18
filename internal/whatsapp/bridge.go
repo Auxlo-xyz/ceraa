@@ -44,19 +44,14 @@ const (
 	waNoAnswerNote = "Done."
 	// waFailNote covers runs that error. Detail stays in the log.
 	waFailNote = "Ceraa could not finish that run."
-	// waToolLineCap bounds how many tool lines one run may send, so a busy
-	// run cannot flood the chat. Anything past the cap, and anything
-	// throttled below, is reported once at the end.
+	// waToolLineCap bounds how many tool lines one run may send, so a runaway
+	// loop cannot flood the chat. Anything past the cap is reported once at
+	// the end. There is deliberately no minimum gap between lines: a gap hid
+	// real tool calls from the reader, and the cap already bounds the volume.
 	waToolLineCap = 25
 	// waToolTargetMax bounds the identifying argument shown on a tool line.
 	waToolTargetMax = 60
 )
-
-// waToolFloor bounds how often a tool line goes out. WhatsApp is stricter than
-// Telegram about message volume, so a burst of fast tool calls is throttled and
-// what it loses is summarised at the end. It is a variable only so tests can
-// remove the delay instead of waiting on it.
-var waToolFloor = 1500 * time.Millisecond
 
 // RunFunc runs one turn through the coordinator. The bridge builds the
 // RunnerConfig (session plus WhatsApp-flavored callbacks); the caller
@@ -242,15 +237,14 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	defer stopTyping()
 
 	// Collect-first for the answer: deltas accumulate and one final text
-	// goes out. Tool calls are different: each is streamed as its own short
-	// message so the sender can watch the run work, bounded by a per-run cap
-	// and a minimum gap so a busy run cannot flood the chat.
+	// goes out. Tool calls are different: each distinct call is streamed as
+	// its own short message so the sender can watch the run work, with a
+	// per-run cap so a runaway loop cannot flood the chat.
 	var stream strings.Builder
 	var streamMu sync.Mutex
 	var doneText string
 	var toolMu sync.Mutex
 	toolSeen := map[string]struct{}{}
-	var toolLast time.Time
 	toolLines, toolSkipped := 0, 0
 	emitTool := func(name string, args map[string]any) {
 		line := toolLine(name, args)
@@ -265,12 +259,10 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 			return
 		}
 		toolSeen[line] = struct{}{}
-		now := time.Now()
-		if toolLines >= waToolLineCap || (!toolLast.IsZero() && now.Sub(toolLast) < waToolFloor) {
+		if toolLines >= waToolLineCap {
 			toolSkipped++
 			return
 		}
-		toolLast = now
 		toolLines++
 		_ = b.send(context.Background(), msg.ChatJID, line)
 	}
