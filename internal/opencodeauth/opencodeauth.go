@@ -143,15 +143,29 @@ var ErrNoCredential = errors.New("opencode credential not found")
 
 // Credential is a resolved Zen credential.
 //
-// APIKey is the whole of the grant: Zen's third-party path is a bearer token
-// documented with a curl example, so there is no OAuth flow to store and nothing
-// to refresh.
+// There are two grants. A keyed one is the stored API key and reaches the
+// whole catalog on the /zen/v1 root. A keyless one is the tier the CLI itself
+// uses when nothing is signed in: the origin knows "Bearer public", the header
+// contract and the body contract say the rest, and the served set is the
+// free-model whitelist. FreeTier records which one this is, because the two
+// also differ in route and in what a session id has to be.
+//
+// APIKey is the whole of the keyed grant: Zen's third-party path is a bearer
+// token documented with a curl example, so there is no OAuth flow to store and
+// nothing to refresh.
 type Credential struct {
 	APIKey string
+	// FreeTier marks the keyless grant. APIKey then carries the literal
+	// "public" the origin expects after "Bearer ", and the caller routes to
+	// the public base rather than the Zen one. It is derived from an absent
+	// stored key, never stored itself, so an existing encrypted blob keeps
+	// decoding the same way.
+	FreeTier bool
 	// ProjectID is the workspace the credential belongs to. Optional in
 	// opencode's own source, where the header is omitted when it is absent, and
 	// likewise optional here: an empty one sends no header rather than an empty
 	// value, because an empty x-opencode-project is worse than none.
+	// Keyless grants carry none: there is no account to belong to a workspace.
 	ProjectID string
 }
 
@@ -218,27 +232,39 @@ func Resolve(ctx context.Context) (Credential, error) {
 }
 
 // CredentialFor resolves the credential for a profile, preferring the profile's
-// own api_key and falling back to the encrypted store.
+// own api_key, then the encrypted store, and falling back to the keyless public
+// tier when neither has a key.
 //
-// The preference matters because Zen's credential is an API key rather than an
-// OAuth token, so the profile already has a field that can hold it. Requiring the
-// key to be moved into the encrypted store before the provider works would mean a
-// hand-written config does not. The store still contributes a project id when it
-// has one, since that is account state rather than a secret and a profile has
-// nowhere obvious to put it.
+// The preference matters because Zen's keyed credential is an API key rather than
+// an OAuth token, so the profile already has a field that can hold it. Requiring
+// the key to be moved into the encrypted store before the provider works would
+// mean a hand-written config does not. The store still contributes a project id
+// when it has one, since that is account state rather than a secret and a profile
+// has nowhere obvious to put it.
 //
-// ErrNoCredential is returned only when neither source has a key, so an install
-// configured either way passes.
+// The keyless fallback changes what ErrNoCredential means: there is now always a
+// credential, which is the point. The public tier is what the CLI itself runs on
+// with no account, it bills nothing, and it reaches opencode.ai live, so an
+// install without a key works rather than reporting a credential it does not
+// need. Callers that need to distinguish the two read FreeTier; use of the whole
+// catalog on the Zen route still requires a real key, and a profile that wants
+// one pastes it into the same two places as before.
 func CredentialFor(ctx context.Context, profileAPIKey string) (Credential, error) {
-	stored, storeErr := Load()
 	if key := strings.TrimSpace(profileAPIKey); key != "" {
+		stored, storeErr := Load()
+		if storeErr != nil {
+			return Credential{APIKey: key}, nil
+		}
 		stored.APIKey = key
 		return stored, nil
 	}
-	if storeErr != nil {
-		return Credential{}, storeErr
+	stored, storeErr := Load()
+	if storeErr == nil {
+		return stored, nil
 	}
-	return stored, nil
+	// No key anywhere: the keyless public tier is the credential, not an
+	// error. See CredentialFor.
+	return Credential{APIKey: PublicAPIKey, FreeTier: true}, nil
 }
 
 // RequestHeaders builds the header set for one gateway request.
@@ -304,6 +330,15 @@ func perRequestHeaders(projectID, fallbackSession string) func(sessionID string)
 // value a fresh generator emits for its first id and the value every captured
 // official-client session carries. The timestamp stays a hash of the
 // conversation rather than the clock, so the id is stable per conversation.
+//
+// A 2026-10-18 re-measure against the live gateway narrowed the passing window
+// on that day's build to counters 0 through 15 (hex[9] and hex[10] both 'f'),
+// with 64 and above still refused. That is stricter than the capture that set
+// the 0-63 rule, and the two disagree about counters 16-63; which of the two
+// reflects the permanent behavior is not settleable from one day's probing.
+// 0xFFE sits inside both windows, so the forced counter below does not move
+// until a measure says it must; the doc carries the disagreement so the next
+// probe checks it rather than trusting either number.
 func GatewaySessionID(conversation string) string {
 	sum := sha256.Sum256([]byte("ceraa-opencode-session\x00" + conversation))
 	timeBytes := sum[:6]
@@ -414,10 +449,35 @@ func HasOpenCodeHeaders(headers map[string]string) bool {
 // both carried the same refusal and the gap existed twice before it was found.
 //
 // Zen is OpenAI-compatible, so there is no native transport to select. The work
-// here is the credential, the base URL and the header contract.
+// here is the credential, the route, the header contract and the body contract.
+//
+// The two grants differ in route: the stored key reaches the Zen root, and the
+// keyless public tier reaches OpenCodePublicBaseURL regardless of what a stale
+// profile URL says, because the public bearer is refused there and staying on
+// the keyed path without a key is a guaranteed refusal rather than a config
+// question. ApplyCredential configures a provider config from a resolved Zen
+// credential for a conversation into opencode's session shape.
 func ApplyCredential(model llm.ProviderConfig, credential Credential, sessionID string) llm.ProviderConfig {
-	model.BaseURL = firstNonEmpty(model.BaseURL, llm.OpenCodeBaseURL)
 	model.APIKey = credential.APIKey
+	if credential.FreeTier {
+		// The public tier is authoritative about its route: the literal
+		// "public" bearer is rejected on the Zen root, so a profile URL that
+		// names /zen/v1 (mostly from a keyed profile whose key was removed)
+		// would send a guaranteed refusal rather than question it.
+		model.BaseURL = llm.OpenCodePublicBaseURL
+		if strings.TrimSpace(model.Model) == "" {
+			model.Model = llm.DefaultOpenCodePublicModel
+		}
+		// The tier answers a session that has never succeeded with 503 until
+		// one does, then answers everything after. Six attempts at the
+		// gateway schedule covers that admission: four is a coin, six is what
+		// the probe budget measured working.
+		if model.MaxRetries < OpenCodeFreeRetries {
+			model.MaxRetries = OpenCodeFreeRetries
+		}
+	} else {
+		model.BaseURL = firstNonEmpty(model.BaseURL, llm.OpenCodeBaseURL)
+	}
 	if !HasOpenCodeHeaders(model.ExtraHeaders) {
 		model.ExtraHeaders = RequestHeaders(sessionID, credential.ProjectID)
 	}
@@ -439,3 +499,24 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+// PublicAPIKey is the literal after "Bearer" the public tier authenticates
+// with. It is what the CLI itself sends when no account is signed in, and it
+// is refused on the keyed route, which is why Credential resolves it rather
+// than an empty string: an empty key would send no Authorization header at
+// all, and the public route refuses that too.
+const PublicAPIKey = "public"
+
+// OpenCodeFreeRetries is the retry budget the free tier gets.
+//
+// Measured rather than chosen: from 2026-10-18's probes, a session that has
+// never answered is refused with 503 for a number of rounds, then starts
+// answering bound to a slot and keeps answering for its whole life. The
+// successful admissions took between three and eight refused rounds before
+// the first 200; the default budget of three ends before several of those
+// windows open, while six at the gateway schedule (5s/15s/45s, then a 45s
+// plateau) spans every admission that was measured to open. The plateau is
+// the trade: a window that stays shut burns minutes of wall clock after the
+// first 45s, and OnRetry surfaces each wait so a caller can see it is not a
+// hang.
+const OpenCodeFreeRetries = 6

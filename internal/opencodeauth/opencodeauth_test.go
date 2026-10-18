@@ -335,10 +335,15 @@ func TestResolveAcceptsAContextLikeTheOAuthProviders(t *testing.T) {
 func TestCredentialForPrefersTheProfileKey(t *testing.T) {
 	initSecret(t)
 
-	// Neither source has a key: the caller is told so rather than handed a
-	// credential with an empty key that fails on the first request.
-	if _, err := CredentialFor(context.Background(), "  "); err != ErrNoCredential {
-		t.Errorf("err = %v, want ErrNoCredential", err)
+	// Neither source has a key: the keyless grant resolves instead of failing,
+	// so a credential is always in hand. The free assertions live in
+	// opencodeauth_free_test.go beside the grant they define.
+	free, err := CredentialFor(context.Background(), "  ")
+	if err != nil {
+		t.Fatalf("err = %v, want the keyless fallback", err)
+	}
+	if !free.FreeTier || free.APIKey != PublicAPIKey {
+		t.Errorf("credential = %+v, want the public tier", free)
 	}
 
 	// Store only.

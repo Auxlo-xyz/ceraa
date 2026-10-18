@@ -104,6 +104,11 @@ except Exception: pass' "$PIDFILE" 2>/dev/null)
 # process-group kill aimed at the caller. Plain nohup is not enough: it blocks
 # SIGHUP but not a SIGKILL to the group, which is exactly how the bot was lost once.
 launch() {
+	# A bot token exported in an ancestor shell (e.g. one that also set up
+	# another bot) once leaked in here and made the daemon poll the wrong bot,
+	# which 409-conflicted the other bot's bridge for hours. The launcher's
+	# env.sh is the owner-managed source of truth, so nothing inherited wins.
+	unset TELEGRAM_BOT_TOKEN
 	setsid nohup bash "$LAUNCHER" >>"$LOG" 2>&1 </dev/null &
 	disown 2>/dev/null || true
 }

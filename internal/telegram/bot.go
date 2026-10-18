@@ -3153,12 +3153,18 @@ func selectOpenCodeProvider(token string, chatID int64) {
 // openCodeEntryPoint is indirected the same way clineEntryPoint is, so a test
 // can assert the provider menu routes provider:opencode here without reaching for
 // a live endpoint.
+//
+// The keyless branch is first-class rather than a fallback message: the origin
+// knows a keyless grant (Bearer "public" on the /inference route) and the CLI
+// itself runs that way with no account, so a new user reaches a live provider on
+// one tap and onboarding stays a choice, not a toll. startOpenCodeOnboarding
+// remains reachable from this same screen via "Add key".
 var openCodeEntryPoint = func(token string, chatID int64) {
 	if opencodeauth.SignedIn() {
 		activateOpenCodeProvider(token, chatID, "")
 		return
 	}
-	startOpenCodeOnboarding(token, chatID)
+	activateOpenCodePublicProvider(token, chatID, "")
 }
 
 // startOpenCodeOnboarding asks for a key and nothing else, reusing the shared
@@ -3174,7 +3180,7 @@ var openCodeEntryPoint = func(token string, chatID int64) {
 // only has to establish that a credential exists.
 func startOpenCodeOnboarding(token string, chatID int64) {
 	pendingProvider.Store(chatID, openCodeDraft())
-	send(token, chatID, "Send your OpenCode Zen API key, or type cancel.\n\nPick the model afterwards from the Model menu.")
+	send(token, chatID, "Send your OpenCode Zen API key, or type cancel.\n\nUntil then the free tier stays reachable. Pick the model afterwards from the Model menu.")
 }
 
 // openCodeDraft is the onboarding state, split out so the stage it starts at can
@@ -3224,6 +3230,49 @@ func activateOpenCodeProvider(token string, chatID int64, model string) {
 		return
 	}
 	send(token, chatID, "🌌 OpenCode Zen activated with model "+model+". Send a task to use it.")
+}
+
+// activateOpenCodePublicProvider saves a keyless Zen profile on the public
+// route and makes it active.
+//
+// It does not reuse activateOpenCodeProvider with a different URL, and the
+// reason is the model catalog: the keyed list and the free whitelist are
+// different sets, and running the saved model through guardModel would push an
+// id the public route refuses with a warning that named the wrong rule
+// (guardModel validates against the keyed list). A free profile carries a free
+// model or nothing; a keyless grant never has the full catalog to fall back on.
+// The same logic makes the URL explicit here: a profile left pointing at the
+// keyed root would be rewritten by ApplyCredential at resolve time, but the
+// stored profile should already say what the session will actually use.
+//
+// A stored model that is not on the public whitelist is replaced by
+// DefaultOpenCodePublicModel rather than sent. The one realistic case is a
+// keyed free-list id the public tier does not serve; glm-5.3-flash-free and
+// space-bunny-free are on both, and the honest default is the model measured
+// live, same as DefaultOpenCodeModel upstream.
+func activateOpenCodePublicProvider(token string, chatID int64, model string) {
+	if model == "" {
+		if profile, ok := currentProfile(llm.OpenCodeSubscription); ok && llm.IsOpenCodePublicFreeModel(profile.Model) {
+			model = profile.Model
+		}
+	}
+	if !llm.IsOpenCodePublicFreeModel(model) {
+		model = llm.DefaultOpenCodePublicModel
+	}
+	profile := config.ProviderProfile{
+		URL:          llm.OpenCodePublicBaseURL,
+		Model:        model,
+		Subscription: llm.OpenCodeSubscription,
+	}
+	if err := defaultState.setProviderProfile(llm.OpenCodeSubscription, profile); err != nil {
+		send(token, chatID, "OpenCode profile save failed: "+err.Error())
+		return
+	}
+	if err := defaultState.setProvider(llm.OpenCodeSubscription); err != nil {
+		send(token, chatID, "OpenCode provider activation failed: "+err.Error())
+		return
+	}
+	send(token, chatID, "🌌 OpenCode Zen (free tier) activated with model "+model+".\n\nA pasted key can be added later from Provider → OpenCode Zen → 🔑 for the full catalog.")
 }
 
 // clineEntryPoint is the real entry point, indirected so a test can assert the
@@ -3330,6 +3379,15 @@ func selectSubscriptionModel(token string, chatID int64, providerID, model strin
 		send(token, chatID, "That is not a "+providerID+" model.")
 		return
 	}
+	// The keyless grant serves the public whitelist, and a keyed-only id on that
+	// route is a 401 with everything else in place, which the user cannot debug
+	// from the error text. OpenCode Zen is the only subscription whose reachable
+	// set shrinks without a credential, so it is the only one that needs the
+	// second check: every other provider's SignedIn covers the whole list.
+	if marker == llm.OpenCodeSubscription && !openCodeKeyed() && !llm.IsOpenCodePublicFreeModel(model) {
+		send(token, chatID, "That is not a model the free tier serves. Add a key from Provider → OpenCode Zen for the full catalog.")
+		return
+	}
 	profile := config.ProviderProfile{Model: model, Subscription: marker}
 	if existing, ok := currentProfile(providerID); ok {
 		profile = existing
@@ -3348,6 +3406,19 @@ func selectSubscriptionModel(token string, chatID int64, providerID, model strin
 		verb = "applied to"
 	}
 	send(token, chatID, "✅ Model "+model+" "+verb+" "+providerID+". Use 🔌 Provider to switch to it.")
+}
+
+// openCodeKeyed reports whether the OpenCode Zen grant in force is the keyed
+// one, mirroring menus.openCodeKeyless from the telegram side. A stored key or
+// a profile api_key means the keyed catalog; anything else is the free tier.
+func openCodeKeyed() bool {
+	if opencodeauth.SignedIn() {
+		return true
+	}
+	if profile, ok := currentProfile(llm.OpenCodeSubscription); ok {
+		return strings.TrimSpace(profile.APIKey) != ""
+	}
+	return false
 }
 
 // subscriptionMarkerFor maps a profile id to its subscription marker.

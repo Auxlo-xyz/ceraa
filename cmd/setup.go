@@ -219,12 +219,19 @@ func checkSubscriptionCredential(ctx context.Context, provider config.LLMProvide
 		// to refresh and a resolve is a presence check rather than proof the
 		// grant still works. Proving the key works would mean a completions
 		// call, which bills the account, and doctor is not the place for that.
+		//
+		// An absent key is no longer a failure since the keyless tier: the
+		// same route set the CLI itself serves with the "public" bearer
+		// resolves by definition, so the check says which grant is in force
+		// rather than treating keyless as unresolved.
 		credential, err := opencodeauth.CredentialFor(deadline, provider.APIKey)
 		if err != nil {
 			return doctorCheck{"provider", "FAIL", "OpenCode credential: " + err.Error()}
 		}
 		detail := "OpenCode Zen credential resolves"
-		if credential.ProjectID != "" {
+		if credential.FreeTier {
+			detail = "OpenCode Zen free tier resolves (no key stored; a key from opencode.ai widens the catalog)"
+		} else if credential.ProjectID != "" {
 			detail += " (project " + credential.ProjectID + ")"
 		}
 		return doctorCheck{"provider", "OK", detail}

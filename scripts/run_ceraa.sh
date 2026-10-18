@@ -12,7 +12,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && [ -r "$HERE/env.sh" ]; then
+# env.sh wins: an inherited TELEGRAM_BOT_TOKEN (e.g. from a shared shell that
+# also set up another bot) must not silently override the owner-managed file.
+if [ -r "$HERE/env.sh" ]; then
 	# set -a, or sourcing only sets shell variables and none of them reach the
 	# child: every key in env.sh except the one exported below would be dropped
 	# silently, which is the whole reason the file exists.

@@ -1299,16 +1299,53 @@ func claudeHubLabel() string {
 //
 // The third state says "add key" rather than "sign in", because there is no
 // login flow: the credential is an API key the user pastes. Calling it a
-// sign-in would promise a flow that does not exist.
+// sign-in would promise a flow that does not exist. The new fourth naming is
+// the keyless grant: the tier works without any credential at all, so "add
+// key" as the resting label claimed a requirement the provider does not have,
+// and a keyless user reading "add key" over an entry that already talks to the
+// gateway could not tell the tier was the reason it worked.
 func openCodeHubLabel() string {
 	switch {
 	case opencodeauth.SignedIn() && selection().ActiveProvider == llm.OpenCodeSubscription:
 		return "🌌 OpenCode Zen · active"
 	case opencodeauth.SignedIn():
 		return "🌌 OpenCode Zen · key added"
+	case selection().ActiveProvider == llm.OpenCodeSubscription:
+		return "🌌 OpenCode Zen · active (free)"
 	default:
-		return "🌌 OpenCode Zen · add key"
+		return "🌌 OpenCode Zen · free tier"
 	}
+}
+
+// openCodeKeyless reports whether the OpenCode Zen grant in force is the
+// keyless public tier.
+//
+// Mirrors opencodeauth.CredentialFor from the UI side: a stored key or a
+// profile api_key means the keyed catalog, and an absent one means the
+// free-tier list the origin serves with the "public" bearer.
+func openCodeKeyless() bool {
+	if opencodeauth.SignedIn() {
+		return false
+	}
+	if cfg, _ := config.Load(); cfg != nil {
+		if profile, ok := cfg.ProviderProfile("opencode"); ok && strings.TrimSpace(profile.APIKey) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// subscriptionModelChoices is the model list a provider's grants actually serve.
+//
+// Identical to llm.SubscriptionModels except for OpenCode Zen's keyless grant,
+// where the served set is the free whitelist and the keyed list would offer
+// models the route answers 401 with. Kept as a filter rather than spread
+// through the three renderers so the list and the validation cannot drift.
+func subscriptionModelChoices(subscription string) []string {
+	if subscription == llm.OpenCodeSubscription && openCodeKeyless() {
+		return llm.OpenCodePublicFreeModels
+	}
+	return llm.SubscriptionModels(subscription)
 }
 
 func codexHubLabel() string {
@@ -1377,6 +1414,17 @@ func subscriptionAuthMenu(label string, signedIn, active bool, entry string, key
 			row("🧠 Model", entry+":models"),
 			row(rekey, relogin),
 		})
+	case keyBased:
+		// The only keyBased provider also serves a keyless tier the origin
+		// knows, so the "nothing here yet" state is not a dead end: free tier
+		// activates as it is, and pasting a key trades the whitelist for the
+		// full catalog. Reaching onboarding from here is the same
+		// startOpenCodeOnboarding the other rows reach.
+		rows = append(rows, []map[string]string{
+			row("✨ Use free tier", entry),
+			row("🧠 Model", entry+":models"),
+			row(addKey, relogin),
+		})
 	default:
 		rows = append(rows, []map[string]string{row(addKey, entry)})
 	}
@@ -1394,7 +1442,7 @@ func subscriptionAuthMenu(label string, signedIn, active bool, entry string, key
 func subscriptionCatalogEntries(providerID string) []llm.ModelMetadata {
 	subscription := subscriptionForProvider(providerID)
 	label := subscriptionLabel(providerID)
-	models := llm.SubscriptionModels(subscription)
+	models := subscriptionModelChoices(subscription)
 	if len(models) == 0 {
 		return nil
 	}
@@ -1443,7 +1491,7 @@ func SubscriptionModelMenu(providerID string) map[string]any {
 
 func subscriptionModelMenu(providerID string) map[string]any {
 	subscription := subscriptionForProvider(providerID)
-	models := llm.SubscriptionModels(subscription)
+	models := subscriptionModelChoices(subscription)
 	if len(models) == 0 {
 		return map[string]any{"inline_keyboard": [][]map[string]string{
 			{{"text": "◀️ Back", "callback_data": "menu:" + providerID}},

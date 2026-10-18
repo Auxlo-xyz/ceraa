@@ -224,6 +224,64 @@ func IsOpenCodeModel(model string) bool {
 	return false
 }
 
+// OpenCodePublicBaseURL is the chat-completions root the OpenCode CLI itself
+// uses when it runs with no account behind it, validated live against
+// opencode.ai: POST /inference/openai/v1/chat/completions with
+// Authorization "Bearer public" answers 200 for the free tier, and the same
+// body without a session header both is and answers 403. The /zen/v1 root
+// answers 401 for every unauthenticated request, which is what makes the two
+// bases different services rather than two spellings of one.
+//
+// Measured 2026-10-18 by replaying a byte-exact CLI capture, then by building
+// the same shape by hand: the free route serves the models the CLI's own
+// catalog whitelists (the -free ids below), bills nothing, and answers
+// live SSE chunks on a streamed completion.
+const OpenCodePublicBaseURL = "https://opencode.ai/inference/openai/v1"
+
+// OpenCodePublicFreeModels lists the model ids the public (keyless) route is
+// known to serve, in the order they should be offered, with the one verified
+// live first.
+//
+// Provenance, both measured 2026-10-18: glm-5.3-flash-free answered with a
+// live streamed completion replayed from the CLI's own traffic after the
+// gate contract was met; the rest are read from the CLI's provider whitelist,
+// which the CLI filters for anonymous users, so an id on it is served rather
+// than guessed at. It says nothing about which of them answer: only the first
+// has been proven here, and the others share the gate and stay listed so a
+// user who picks one gets the gateway's own error rather than a missing id.
+var OpenCodePublicFreeModels = []string{
+	"glm-5.3-flash-free",
+	"space-bunny-free",
+	"deepseek-v4.1-flash-free",
+	"longcat-2.5-preview-free",
+	"mimo-v2.6-flash-free",
+	"nemotron-3-ultra-free",
+	"nemotron-3.5-lightning-free",
+	"nemotron-3.5-super-vl-free",
+	"beam-free",
+}
+
+// DefaultOpenCodePublicModel is the model selected when the public Zen tier is
+// chosen without one.
+//
+// glm-5.3-flash-free, because it is the one model measured answering the
+// public route from outside OpenCode with a live streamed completion. The same
+// honesty rule as DefaultOpenCodeModel applies: free and served are different
+// claims, and the default carries the served one.
+const DefaultOpenCodePublicModel = "glm-5.3-flash-free"
+
+// IsOpenCodePublicFreeModel reports whether a model id is one the public Zen
+// route is known to serve without a credential.
+func IsOpenCodePublicFreeModel(model string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	for _, known := range OpenCodePublicFreeModels {
+		if trimmed == known {
+			return true
+		}
+	}
+	return false
+}
+
 // OpenCodeTrafficTools are the tool names Zen's free tier looks for in a
 // request body.
 //
