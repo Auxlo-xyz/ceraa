@@ -412,7 +412,12 @@ func toolLine(name string, args map[string]any) string {
 	if name == "" {
 		return ""
 	}
-	line := "*" + name + "*"
+	// Telegram spells a tool name with spaces, and WhatsApp needs it more
+	// urgently than a cosmetic match: `_` is italic there, so a raw
+	// send_media inside *bold* renders with visible marks instead of the
+	// word. The original name still goes to toolTarget, which switches on
+	// the underscore spelling.
+	line := "*" + strings.ReplaceAll(name, "_", " ") + "*"
 	if target := toolTarget(name, args); target != "" {
 		line += " `" + target + "`"
 	}
@@ -449,7 +454,7 @@ func toolTarget(name string, args map[string]any) string {
 // argument is payload or noise.
 func toolArgKey(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "read", "write", "edit", "edit_line", "batch_edit_file", "move", "copy", "ls":
+	case "read", "write", "edit", "edit_line", "batch_edit_file", "move", "copy", "ls", "send_media":
 		return "path"
 	case "bash":
 		return "command"

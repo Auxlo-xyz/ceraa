@@ -686,6 +686,37 @@ func TestBridgeStreamsAToolCall(t *testing.T) {
 	}
 }
 
+// A tool name is rendered with spaces, the way the Telegram renderer spells
+// it. The raw name carries underscores, and `_` is italic in WhatsApp
+// markdown, so *send_media* would arrive with visible marks instead of the
+// word.
+func TestBridgeToolLineSpellsUnderscoredToolNames(t *testing.T) {
+	run := &stubRun{
+		final: "done",
+		tools: []stubTool{{name: "send_media", args: toolArgs(`{"path":"report.pdf"}`)}},
+	}
+	b, ft := testBridge(t.TempDir(), run)
+
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: "2348012345678@s.whatsapp.net",
+		ID:      "dm-1",
+		Text:    "go",
+	})
+
+	found := false
+	for _, s := range ft.sentTexts() {
+		if s.text == "*send media* `report.pdf`" {
+			found = true
+		}
+		if strings.Contains(s.text, "send_media") {
+			t.Fatalf("raw tool name with an underscore reached the chat: %q", s.text)
+		}
+	}
+	if !found {
+		t.Fatalf("no tool line %q; got %+v", "*send media* `report.pdf`", ft.sentTexts())
+	}
+}
+
 func TestBridgeDoesNotRepeatTheSameToolCall(t *testing.T) {
 	call := stubTool{name: "read", args: toolArgs(`{"path":"a.go"}`)}
 	run := &stubRun{final: "done", tools: []stubTool{call, call}}

@@ -44,7 +44,7 @@ type SendMediaTool struct {
 func (s *SendMediaTool) Name() string { return "send_media" }
 
 func (s *SendMediaTool) Description() string {
-	return "Send a file to the user on Telegram: an image, a document, a video, or audio. " +
+	return "Send a file to the user: an image, a document, a video, or audio. " +
 		"The destination is the chat you are already in, so name only the file."
 }
 
