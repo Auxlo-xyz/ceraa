@@ -1072,8 +1072,8 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// record, and rendering after the persist would read an operation
 				// row whose Status and Error had already been rewritten from this
 				// same event - two answers to "did this fail" taken a few lines
-				// apart.
-				results[result.OpID] = r.resultText(runID, result) + r.instructionNote(sess, result)
+				// apart. The goal close rides the same sum for the same reason.
+				results[result.OpID] = r.resultText(runID, result) + r.instructionNote(sess, result) + r.goalCloseNote(sess, result)
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
@@ -2203,6 +2203,44 @@ func (r *Runner) instructionNote(sess *sessionstore.Session, result operation.Re
 	}
 	r.instructions.Seen().Mark(ids...)
 	return note
+}
+
+// goalCloseNudge is the harness's own reminder on the one call that ends a goal.
+const goalCloseNudge = "<goal_complete>\n" +
+	"Goal closed as completed. Document the findings in a Markdown file before reporting: " +
+	"create a new .md in your workspace if there is none yet, otherwise append to an existing one. " +
+	"Keep it concise - the findings, not the process.\n" +
+	"</goal_complete>"
+
+// goalCloseNote asks for the findings to be written down while they are still in
+// context. Closing is the only moment that works: the run ends with an answer, and
+// anything not recorded there leaves with the transcript.
+//
+// It rides the model-facing result for the same reason instructionNote does -
+// persistResult ASSIGNS the bare tool output to the session record, so the file
+// keeps what the tool returned and a later reader does not have to know which
+// reminders the harness chose to fire at the time.
+//
+// Only the closing call fires it: a plan-only update carries an empty status, any
+// other status is not a completion, and a failed close closed nothing.
+func (r *Runner) goalCloseNote(sess *sessionstore.Session, result operation.ResultEvent) string {
+	if result.Status != operation.StatusCompleted {
+		return ""
+	}
+	for _, op := range sess.Operations {
+		if op.ID != result.OpID {
+			continue
+		}
+		if op.SpecType != "update_goal" {
+			return ""
+		}
+		status, _ := op.SpecArgs["status"].(string)
+		if strings.TrimSpace(status) != string(goal.StatusCompleted) {
+			return ""
+		}
+		return goalCloseNudge
+	}
+	return ""
 }
 
 // instructionTrigger reads what the completed operation was about.
