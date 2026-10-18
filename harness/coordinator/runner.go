@@ -1536,7 +1536,14 @@ func (r *Runner) resolveModelIdentity() string {
 		out.WriteString(" served by " + host)
 	}
 	out.WriteString(".\n")
-	out.WriteString("Answer questions about which model or provider is running from this, and do not guess. If a tool result contradicts it, trust this line and say so.\n")
+	// The closing sentence exists because a repeat of the same question was
+	// answered from the model's own earlier replies instead of this block. The
+	// config had been switched, this prompt already carried the new id, and the
+	// agent still reported the old one and then told the user the config was
+	// wrong. "Trust this line" cannot fix that once the model has decided what
+	// the line said, so it is pointed back at the block itself: the current
+	// prompt is the thing to read, and an earlier answer may predate a switch.
+	out.WriteString("Answer questions about which model or provider is running from this, and do not guess. If a tool result contradicts it, trust this line and say so. When asked again, re-read this exact block again.\n")
 	out.WriteString("</model-identity>")
 	return out.String()
 }
