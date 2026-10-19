@@ -112,7 +112,11 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 	if sessionID == "" {
 		sessionID = "default"
 	}
-	current, exists, err := store.Load(sessionID)
+	// The record is the owner's one goal, shared by every runner and every
+	// surface; the spec's session id is used only for the legacy sidecar
+	// adoption below, which addresses the per-session plan files the goal once
+	// lived in.
+	current, exists, err := store.Load(goal.GlobalKey)
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +167,7 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 		} else {
 			current.Todos = nil
 		}
-		saved, err := store.Save(sessionID, current)
+		saved, err := store.Save(goal.GlobalKey, current)
 		if err != nil {
 			return "", err
 		}
@@ -204,7 +208,7 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 			}
 			current.Todos = todos
 		}
-		saved, err := store.Save(sessionID, current)
+		saved, err := store.Save(goal.GlobalKey, current)
 		if err != nil {
 			return "", err
 		}

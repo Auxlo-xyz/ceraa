@@ -30,7 +30,10 @@ func runGoalContinuation(t *testing.T, sessionID string, seed goal.Goal, cfg fun
 	}
 	now := time.Now()
 	seed.CreatedAt, seed.UpdatedAt = now, now
-	if _, err := gs.Save(sessionID, seed); err != nil {
+	// The runner reads the owner's one goal, so the seed has to land on the
+	// global key whatever the session id is; per-session records are dead keys
+	// since the goal went global.
+	if _, err := gs.Save(goal.GlobalKey, seed); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,7 +69,7 @@ func runGoalContinuation(t *testing.T, sessionID string, seed goal.Goal, cfg fun
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	loaded, exists, err := gs.Load(sessionID)
+	loaded, exists, err := gs.Load(goal.GlobalKey)
 	if err != nil || !exists {
 		t.Fatalf("goal reload: exists=%v err=%v", exists, err)
 	}

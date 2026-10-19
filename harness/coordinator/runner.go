@@ -959,7 +959,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			pauseReason := ""
 			if !r.cfg.StopWhenIdle && goalContinuations < 100 {
 				if goalStore, goalErr := goal.New(r.cfg.GoalDir); goalErr == nil {
-					if current, exists, loadErr := goalStore.Load(r.cfg.SessionID); loadErr == nil && exists && current.Status == goal.StatusActive && strings.TrimSpace(current.Objective) != "" {
+					// The goal is the owner's one goal; this run continues it
+					// wherever it was created, so no session id enters the key.
+					if current, exists, loadErr := goalStore.Load(goal.GlobalKey); loadErr == nil && exists && current.Status == goal.StatusActive && strings.TrimSpace(current.Objective) != "" {
 						current.TokensUsed += runUsage.TotalTokens - goalUsageBase
 						goalUsageBase = runUsage.TotalTokens
 						current.Iterations++
@@ -972,11 +974,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 							pauseReason = fmt.Sprintf("paused at token budget (%d of %d used)", current.TokensUsed, current.TokenBudget)
 							current.Status = goal.StatusPaused
 							current.Reason = pauseReason
-							if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+							if _, saveErr := goalStore.Save(goal.GlobalKey, current); saveErr == nil {
 								logger.Warn("goal " + pauseReason)
 							}
 						default:
-							if _, saveErr := goalStore.Save(r.cfg.SessionID, current); saveErr == nil {
+							if _, saveErr := goalStore.Save(goal.GlobalKey, current); saveErr == nil {
 								continueGoal = true
 								continueObjective = current.Objective
 							}

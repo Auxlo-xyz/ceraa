@@ -11,6 +11,7 @@ import (
 
 	"ceraa/harness/coordinator"
 	"ceraa/harness/evaluation"
+	"ceraa/harness/goal"
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 
@@ -1012,6 +1013,10 @@ func webTodos(sessionID string) ([]miniapp.TodoEntry, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, fmt.Errorf("a session id is required")
 	}
+	// The plan is the one overall plan of the goal, not a per-session list: any
+	// session the dashboard is opened against shows the same plan the runs work
+	// from. The session id stays in the signature to keep the endpoint's shape,
+	// but it no longer selects the plan.
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
@@ -1020,7 +1025,7 @@ func webTodos(sessionID string) ([]miniapp.TodoEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	todos, err := store.Load(sessionID)
+	todos, err := store.Load(goal.GlobalKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1190,7 +1195,9 @@ func webSetTodo(sessionID, content, status string) error {
 	if err != nil {
 		return err
 	}
-	return store.Update(sessionID, content, status)
+	// Same one plan as the reads above: a status change from the Mini App lands
+	// on the record the runs continue from, whatever session was open.
+	return store.Update(goal.GlobalKey, content, status)
 }
 
 // webProjects lists the workspace's project directories with the current one,

@@ -224,6 +224,12 @@ func (c *childAgent) Run(ctx context.Context, brief string, budget tool.RequestB
 		// answer that cannot arrive, because the prompt it would surface is the
 		// parent's chat and nobody is looking at it for a child's question.
 		NeedsAuthorization: func(name string, args map[string]any) bool { return false },
+		// A child exists to return one answer to its parent. The goal went
+		// global, so without this a child that finds the owner's goal active
+		// would continue it inside the child run instead of answering, spending
+		// the goal's budget as someone who was never asked. goalclose_test.go
+		// pins the same flag on its runner for the same reason.
+		StopWhenIdle: true,
 		Callbacks: coordinator.Callbacks{
 			// The child's own verdict is not forwarded: its spend is rolled into the
 			// parent's accumulator here, and the parent reconciles on the way out.

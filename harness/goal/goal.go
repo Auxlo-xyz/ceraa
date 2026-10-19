@@ -19,6 +19,21 @@ const (
 	StatusBlocked   Status = "blocked"
 )
 
+// GlobalKey is the one key every goal read and write goes through. The goal is
+// the owner's single active goal, not a per-session one: a run on any surface
+// continues it, a pause observed in one chat is recoverable from another, and
+// the token budget is only meaningful if it is the same budget everywhere.
+//
+// Per-session keying grew when the store lived beside each session's records,
+// but nothing ever held two goals on purpose, and the split had a real cost:
+// pause a goal in one chat, then open another, and there is no goal to resume,
+// because the record exists only where it was created.
+//
+// The store keeps its key parameter so the legacy sidecar adoption in
+// tool.runGoal can still address the per-session files it migrates from; every
+// live caller passes this key.
+const GlobalKey = "global"
+
 // A plan item. The goal carries its own plan so the model can read back what it
 // committed to: a list that is only ever written is indistinguishable from a list
 // nobody keeps.

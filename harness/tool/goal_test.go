@@ -41,7 +41,7 @@ func TestCreateGoalReportsTheTimestampsItPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, exists, err := store.Load("s")
+	stored, exists, err := store.Load(goal.GlobalKey)
 	if err != nil || !exists {
 		t.Fatalf("load: %v exists=%v", err, exists)
 	}
@@ -195,7 +195,7 @@ func TestGetGoalOnAPlanOnlySessionSaysNoGoal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save("s", []todo.Todo{
+	if err := store.Save(goal.GlobalKey, []todo.Todo{
 		{Content: "map the diff", Status: goal.TodoPending, Priority: "high"},
 		{Content: "run the tests", Status: goal.TodoPending, Priority: "medium"},
 	}); err != nil {
@@ -305,7 +305,7 @@ func TestCreateGoalAdoptsAPlanWrittenBeforeAnyObjective(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save("s", []todo.Todo{{Content: "map the diff", Status: goal.TodoPending, Priority: "high"}}); err != nil {
+	if err := store.Save(goal.GlobalKey, []todo.Todo{{Content: "map the diff", Status: goal.TodoPending, Priority: "high"}}); err != nil {
 		t.Fatal(err)
 	}
 

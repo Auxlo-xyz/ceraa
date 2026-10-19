@@ -837,10 +837,9 @@ func newTodoStore(dir string) (*todo.Store, error) {
 // when it was not is worse than failing, because the model keeps working from a
 // plan that was never stored.
 func runTodoWrite(args map[string]any) (string, error) {
-	sessionID, _ := args["session_id"].(string)
-	if sessionID == "" {
-		sessionID = "default"
-	}
+	// The plan rides the one global goal record; see goal.GlobalKey. The spec's
+	// session id is not consulted: a plan written from any surface belongs to
+	// the same record the goal itself lives on.
 	todos, err := goal.ParseTodos(args["todos"])
 	if err != nil {
 		return "", err
@@ -853,7 +852,7 @@ func runTodoWrite(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := store.Save(sessionID, todos); err != nil {
+	if err := store.Save(goal.GlobalKey, todos); err != nil {
 		return "", err
 	}
 	return goal.Render(todos), nil
