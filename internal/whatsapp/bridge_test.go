@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -858,4 +859,60 @@ func TestBridgeToolLineWithAPipeSurvivesSend(t *testing.T) {
 		}
 	}
 	t.Fatalf("piped tool line was altered; want %q got %+v", want, ft.sentTexts())
+}
+
+// A transport that could not fetch an attachment still has to say so. The
+// alternative is the quiet failure that reads as the bot ignoring the
+// photo, and the sender has no other way to know a download was attempted.
+func TestBridgeDownloadFailureRepliesAndRunsNothing(t *testing.T) {
+	run := &stubRun{final: "should never send"}
+	b, ft := testBridge(t.TempDir(), run)
+	chat := "2348012345678@s.whatsapp.net"
+	b.handle(context.Background(), InboundMessage{
+		ChatJID:    chat,
+		ID:         "media-dl",
+		MediaError: "context deadline exceeded",
+	})
+	if run.callCount() != 0 {
+		t.Fatalf("undownloadable media started %d runs, want 0", run.callCount())
+	}
+	sent := ft.sentTexts()
+	if len(sent) != 1 {
+		t.Fatalf("undownloadable media produced %d texts, want 1", len(sent))
+	}
+	if sent[0].toJID != chat {
+		t.Errorf("reply went to %q, want %q", sent[0].toJID, chat)
+	}
+	if !strings.Contains(sent[0].text, "download") {
+		t.Errorf("reply = %q, want it to name the download", sent[0].text)
+	}
+}
+
+// The staged file the transport wrote is not the saved copy, so the bridge
+// owns removing it. Leaving it would leak one file per attachment into the
+// files dir forever.
+func TestBridgeRemovesTheStagingFileAfterSaving(t *testing.T) {
+	dir := t.TempDir()
+	staged := writeSizedFile(t, dir, ".stage-abc123.jpg", 64)
+	run := &stubRun{final: "got it"}
+	b, _ := testBridge(dir, run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID:   "2348012345678@s.whatsapp.net",
+		ID:        "stage-1",
+		Text:      "look",
+		MediaPath: staged,
+	})
+	if run.callCount() != 1 {
+		t.Fatalf("staged media started %d runs, want 1", run.callCount())
+	}
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("staging file survived: stat err = %v, want it removed", err)
+	}
+	saved, err := filepath.Glob(filepath.Join(dir, "wa-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(saved) != 1 {
+		t.Fatalf("saved copies = %v, want exactly the one the stage became", saved)
+	}
 }

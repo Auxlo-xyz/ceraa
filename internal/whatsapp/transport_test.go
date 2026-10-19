@@ -12,6 +12,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // Compile-time proof that the fake stays a valid Transport. If the
@@ -357,5 +361,103 @@ func TestFakeTransportNoSendOnClosedChannel(t *testing.T) {
 		}
 	default:
 		t.Fatal("closed channel should read closed immediately")
+	}
+}
+
+// dmEvent builds a direct-message event around a raw message body, so the
+// helpers that inspect that body can be driven without a connection.
+func dmEvent(m *waE2E.Message) *events.Message {
+	chat := types.JID{User: "2348012345678", Server: types.DefaultUserServer}
+	return &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+			ID:            "media-1",
+			Timestamp:     time.Unix(1700000000, 0),
+		},
+		Message: m,
+	}
+}
+
+// ptrLits are local because the generated proto fields are pointers and
+// the package exposes no constructor for them.
+func sp(v string) *string { return &v }
+func up(v uint64) *uint64 { return &v }
+
+func TestInboundMediaFindsAttachmentsAndSkipsPlainChat(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  *waE2E.Message
+		want bool
+		ext  string
+	}{
+		{name: "plain chat has no attachment", msg: &waE2E.Message{Conversation: sp("hi")}, want: false},
+		{name: "image", msg: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: sp("image/jpeg")}}, want: true, ext: ".jpg"},
+		{name: "video", msg: &waE2E.Message{VideoMessage: &waE2E.VideoMessage{Mimetype: sp("video/mp4")}}, want: true, ext: ".mp4"},
+		{name: "audio note", msg: &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: sp("audio/ogg")}}, want: true, ext: ".ogg"},
+		{name: "document", msg: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Mimetype: sp("application/pdf")}}, want: true, ext: ".pdf"},
+		{name: "sticker", msg: &waE2E.Message{StickerMessage: &waE2E.StickerMessage{Mimetype: sp("image/webp")}}, want: true, ext: ".webp"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := inboundMedia(c.msg)
+			if ok != c.want {
+				t.Fatalf("inboundMedia found=%v, want %v", ok, c.want)
+			}
+			if got.ext != c.ext {
+				t.Errorf("ext = %q, want %q", got.ext, c.ext)
+			}
+		})
+	}
+}
+
+// The declared length travels ahead of the fetch so a message that admits
+// to being a bomb is refused before anything allocates for it.
+func TestInboundMediaCarriesTheDeclaredLength(t *testing.T) {
+	got, ok := inboundMedia(&waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{Mimetype: sp("image/jpeg"), FileLength: up(4096)},
+	})
+	if !ok {
+		t.Fatal("image message not found")
+	}
+	if got.length != 4096 {
+		t.Errorf("length = %d, want the declared 4096", got.length)
+	}
+}
+
+func TestAMediaCaptionBecomesTheMessageBody(t *testing.T) {
+	evt := dmEvent(&waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: sp("image/jpeg"),
+		Caption:  sp("look at this"),
+	}})
+	inbound, ok := mapInbound(evt)
+	if !ok {
+		t.Fatal("captioned image not mapped")
+	}
+	if inbound.Text != "look at this" {
+		t.Errorf("Text = %q, want the caption", inbound.Text)
+	}
+}
+
+func TestAnImageWithoutACaptionMapsEmptyRatherThanFailing(t *testing.T) {
+	inbound, ok := mapInbound(dmEvent(&waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: sp("image/jpeg")}}))
+	if !ok {
+		t.Fatal("bare image not mapped")
+	}
+	if inbound.Text != "" {
+		t.Errorf("Text = %q, want empty", inbound.Text)
+	}
+}
+
+// A mime type can carry parameters ("audio/ogg; codecs=opus"); the lookup
+// must still find the suffix.
+func TestExtForMIMEIgnoresParametersAndUnknownTypes(t *testing.T) {
+	if got := extForMIME("audio/ogg; codecs=opus"); got != ".ogg" {
+		t.Errorf("extForMIME with parameters = %q, want .ogg", got)
+	}
+	if got := extForMIME("application/x-unknown-thing"); got != "" {
+		t.Errorf("extForMIME unknown = %q, want empty, an invented suffix is worse than none", got)
+	}
+	if got := extForMIME("   "); got != "" {
+		t.Errorf("extForMIME blank = %q, want empty", got)
 	}
 }

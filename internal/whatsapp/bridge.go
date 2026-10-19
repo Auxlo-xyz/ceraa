@@ -201,8 +201,20 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 		}
 	}
 	prompt := strings.TrimSpace(msg.Text)
+	if msg.MediaError != "" {
+		// The transport could not fetch the attachment. Saying so is the
+		// difference between "the bot ignored my photo" and "the bot
+		// tried and told me", and the reason stays in the log.
+		logger.Warn(fmt.Sprintf("whatsapp media download failed tag=%s err=%.80s", tag, msg.MediaError))
+		_ = b.send(ctx, msg.ChatJID, "Ceraa could not download that attachment.")
+		return
+	}
 	if msg.MediaPath != "" {
 		saved, err := SaveInboundMedia(msg, b.filesDir)
+		// The staging file is the transport's and the copy in the files
+		// dir replaces it, so it goes on both paths. Leaving it behind
+		// would leak one file per attachment.
+		_ = os.Remove(msg.MediaPath)
 		if err != nil {
 			logger.Warn(fmt.Sprintf("whatsapp media save failed tag=%s err=%.80s", tag, err))
 			_ = b.send(ctx, msg.ChatJID, "Ceraa could not save that attachment.")
