@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	"ceraa/harness/question"
 )
 
 // Telegram rejects a whole message whose inline_keyboard carries callback_data
@@ -42,14 +44,28 @@ type pendingCallback struct {
 var (
 	callbackTokenMu sync.Mutex
 	callbackTokens  = map[string]pendingCallback{}
-	// callbackTokenSeen is a sweep cursor so expiry is O(1) amortised rather than a
-	// full scan per render.
+	// callbackTokenSeen stores each token's expiry rather than its lit time, because
+	// one token does not have one lifetime: a permission button is stale after
+	// ten minutes, while a question button has to outlive the hour-long question
+	// it belongs to.
 	callbackTokenSeen = make(map[string]time.Time)
 )
+
+// callbackTokenTTL is the lifetime of a token the caller does not specifically
+// bound: the permission prompt, whose answer window is five minutes anyway.
+// Question tokens mint with a longer one from questionKeyboard.
+const callbackTokenTTL = 10 * time.Minute
 
 // newCallbackToken mints a token and returns it alongside the id it is stored
 // under, so the caller has only one value to thread through.
 func newCallbackToken(p pendingCallback) string {
+	return newCallbackTokenWithTTL(p, callbackTokenTTL)
+}
+
+// newCallbackTokenWithTTL mints a token that lives for ttl. The caller picks the
+// lifetime because the map sweep is the only thing that retires a token, and a
+// question's buttons must survive at least as long as the question does.
+func newCallbackTokenWithTTL(p pendingCallback, ttl time.Duration) string {
 	buf := make([]byte, callbackTokenBytes)
 	if _, err := rand.Read(buf); err != nil {
 		// crypto/rand failing is not a condition to ship a colliding token.
@@ -60,7 +76,7 @@ func newCallbackToken(p pendingCallback) string {
 	defer callbackTokenMu.Unlock()
 	sweepCallbackTokensLocked(time.Now())
 	callbackTokens[id] = p
-	callbackTokenSeen[id] = time.Now()
+	callbackTokenSeen[id] = time.Now().Add(ttl)
 	return id
 }
 
@@ -95,13 +111,8 @@ func dropCallbackToken(id string) {
 	delete(callbackTokenSeen, id)
 }
 
-// callbackTokenTTL matches the shortest thing a token can be waiting for: the
-// five minute permission timeout. A question can outlive it, so the sweep is a
-// backstop against an unanswered prompt leaking an entry, not a deadline.
-const callbackTokenTTL = 10 * time.Minute
-
-// sweepCallbackTokensLocked drops entries older than the TTL, visiting a bounded
-// number per call so a burst of renders cannot turn into a long pause.
+// sweepCallbackTokensLocked drops expired entries, visiting a bounded number per
+// call so a burst of renders cannot turn into a long pause.
 func sweepCallbackTokens(now time.Time) {
 	callbackTokenMu.Lock()
 	defer callbackTokenMu.Unlock()
@@ -110,8 +121,8 @@ func sweepCallbackTokens(now time.Time) {
 
 func sweepCallbackTokensLocked(now time.Time) {
 	checked := 0
-	for id, seen := range callbackTokenSeen {
-		if now.Sub(seen) > callbackTokenTTL {
+	for id, expires := range callbackTokenSeen {
+		if now.After(expires) {
 			delete(callbackTokens, id)
 			delete(callbackTokenSeen, id)
 		}
@@ -143,10 +154,17 @@ func permissionKeyboard(p pendingCallback) map[string]any {
 // A token per option, so the answer text never enters callback_data. It used to be
 // inlined whole: one ordinary sentence put the data at 109 bytes, so a question
 // with real options in it was rejected outright and could not be rendered at all.
+//
+// Every token here outlives the question itself: the manager waits an hour
+// (question.DefaultTimeout), so a button that dies at the generic ten-minute
+// sweep answers taps with "expired" while the card is still the live question.
 func questionKeyboard(p pendingCallback, options []string, freeForm bool) map[string]any {
 	var rows [][]map[string]string
+	newQuestionToken := func(p pendingCallback) string {
+		return newCallbackTokenWithTTL(p, question.DefaultTimeout+5*time.Minute)
+	}
 	for _, opt := range options {
-		optRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID, Answer: opt})
+		optRef := newQuestionToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID, Answer: opt})
 		rows = append(rows, []map[string]string{{"text": opt, "callback_data": "qans:" + optRef}})
 	}
 	// The type-an-answer row is unconditional. Without a way to type, the user
@@ -155,7 +173,7 @@ func questionKeyboard(p pendingCallback, options []string, freeForm bool) map[st
 	// the answer must be one of them. freeForm still matters to the renderer:
 	// it marks the next plain message as an answer up front, while here the
 	// user opts into typing by tapping first.
-	typeRef := newCallbackToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID})
+	typeRef := newQuestionToken(pendingCallback{SessionID: p.SessionID, RequestID: p.RequestID, ChatID: p.ChatID})
 	rows = append(rows, []map[string]string{{"text": "✍️ Type an answer", "callback_data": "qtype:" + typeRef}})
 	rows = append(rows, []map[string]string{{"text": "✕ Close", "callback_data": "close"}})
 	return map[string]any{"inline_keyboard": rows}

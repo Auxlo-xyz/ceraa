@@ -818,7 +818,7 @@ func handleCallback(token string, q *callbackQuery) {
 			return
 		}
 		store, err := configuredStore()
-		if err != nil || !answerTelegramPermission(store, pending.SessionID, pending.RequestID, decision) {
+		if err != nil || !answerTelegramPermission(store, pending.SessionID, pending.RequestID, decision, pending.ChatID) {
 			dropCallbackToken(ref)
 			send(token, chatID, "Permission request expired or was already answered")
 			return
@@ -852,17 +852,23 @@ func handleCallback(token string, q *callbackQuery) {
 		// qans:<token>. The answer text is behind the token: it used to be inlined
 		// and a single sentence overran the 64 byte limit, so questions with real
 		// options could not be rendered at all.
+		//
+		// Peek first, take on success: consuming the token before the answer
+		// lands turned one failed tap into a dead button - the retry tap then
+		// found nothing and read as "expired" while the question was still
+		// waiting. A tap that cannot be answered must leave its button intact.
 		ref := strings.TrimPrefix(data, "qans:")
-		pending, ok := takeCallbackToken(ref)
+		pending, ok := peekCallbackToken(ref)
 		if !ok {
 			send(token, chatID, "That question has expired. Ask again.")
 			return
 		}
 		store, err := configuredStore()
-		if err != nil || !answerTelegramQuestion(store, pending.SessionID, pending.RequestID, pending.Answer) {
+		if err != nil || !answerTelegramQuestion(store, pending.SessionID, pending.RequestID, pending.Answer, pending.ChatID) {
 			send(token, chatID, "Question already answered or expired")
 			return
 		}
+		takeCallbackToken(ref)
 		editCallback(token, chatID, q.Message.MessageID, "✓ Answered: "+pending.Answer, nil)
 		return
 	}

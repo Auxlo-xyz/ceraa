@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 
 	"ceraa/harness/event"
 	"ceraa/harness/permission"
@@ -35,24 +36,38 @@ func pendingDecisionCount(store *sessionstore.Store, sessionID string) int {
 	return len(pending.Decisions)
 }
 
-func answerTelegramPermission(store *sessionstore.Store, sessionID, requestID, decision string) bool {
+// telegramActor is the actor a Telegram surface acts as. It matches the actor
+// the run itself is started under (bot.go), so a button answer authorizes
+// against the same identity that owns the run rather than inheriting the
+// zero-value request the button tap arrives in.
+func telegramActor(chatID int64) sessioncontrol.ControlContext {
+	return sessioncontrol.ControlContext{Actor: sessioncontrol.Actor{
+		ID:     fmt.Sprintf("telegram:%d", chatID),
+		Source: "telegram",
+		ChatID: chatID,
+	}}
+}
+
+func answerTelegramPermission(store *sessionstore.Store, sessionID, requestID, decision string, chatID int64) bool {
 	control, err := telegramControl(store)
 	if err != nil {
 		return false
 	}
 	_, err = control.AnswerPermission(context.Background(), sessioncontrol.AnswerPermissionRequest{
 		SessionID: sessioncontrol.SessionID(sessionID), RequestID: requestID, Decision: decision,
+		Context: telegramActor(chatID),
 	})
 	return err == nil
 }
 
-func answerTelegramQuestion(store *sessionstore.Store, sessionID, requestID, answer string) bool {
+func answerTelegramQuestion(store *sessionstore.Store, sessionID, requestID, answer string, chatID int64) bool {
 	control, err := telegramControl(store)
 	if err != nil {
 		return false
 	}
 	_, err = control.AnswerQuestion(context.Background(), sessioncontrol.AnswerQuestionRequest{
 		SessionID: sessioncontrol.SessionID(sessionID), RequestID: requestID, Answer: answer,
+		Context: telegramActor(chatID),
 	})
 	return err == nil
 }
