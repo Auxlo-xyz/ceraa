@@ -388,3 +388,43 @@ func TestReasoningReplayedStopsAnUnnecessaryTrim(t *testing.T) {
 			len(build(true)), len(build(false)))
 	}
 }
+
+// The trim decision reads the provider's own count, not the local estimate.
+// Stored reasoning is the bulk of the estimate and none of it is counted by the
+// provider, so measuring locally fired the trim at a third of the real window
+// and, once a group crossed the local figure, dropped everything but the
+// system prompt.
+func TestTrimReadsTheProviderCountNotTheEstimate(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "first question"},
+		{Role: llm.RoleAssistant, Content: "first answer", Reasoning: strings.Repeat("r", 160000)},
+		{Role: llm.RoleUser, Content: "second question"},
+		// 20k counted by the provider for the request that produced this answer;
+		// the local estimate of the same history is past 40k.
+		{Role: llm.RoleAssistant, Content: "second answer", Usage: llm.UsageInfo{InputTokens: 20000}},
+	}}
+	req := New(sess, "system").BuildWithLimit(30000)
+	if len(req.Messages) != 5 {
+		t.Fatalf("the trim fired on the local estimate: %d messages left, want all 5", len(req.Messages))
+	}
+}
+
+// And the other side: when the provider's count is past the limit the trim
+// fires even though the local estimate would call the request small. The newest
+// exchange survives; the history behind it is what goes.
+func TestTrimFiresOnTheProviderCount(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "first question"},
+		{Role: llm.RoleAssistant, Content: "first answer", Reasoning: strings.Repeat("r", 160000)},
+		{Role: llm.RoleUser, Content: "second question"},
+		{Role: llm.RoleAssistant, Content: "second answer", Usage: llm.UsageInfo{InputTokens: 60000}},
+	}}
+	req := New(sess, "system").BuildWithLimit(30000)
+	if len(req.Messages) != 3 {
+		t.Fatalf("expected system plus the newest exchange, got %d messages", len(req.Messages))
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != llm.RoleAssistant || last.Text != "second answer" {
+		t.Fatalf("the newest exchange did not survive: %+v", last)
+	}
+}

@@ -246,11 +246,77 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 		req.Messages = append(req.Messages, item)
 	}
 
-	if limit > 0 && b.estimate(req.Messages) > limit {
+	if limit > 0 && requestSize(b.sess, req.Messages, b.replayReasoning) > limit {
 		req.Messages = trimCompleteTurns(req.Messages, limit, b.replayReasoning)
 	}
 	req.Usage = PruneResult{TokensRemaining: max(0, limit-b.estimate(req.Messages))}
 	return req
+}
+
+// requestSize measures the request about to be sent on the scale the provider
+// itself counts, because that is the only scale a trim decision can be made on.
+//
+// The local estimate over the rendered items charges stored reasoning at char/4,
+// and on the live opencode path that reasoning measured about 80% of the
+// estimate while the provider counted none of it: one request the provider saw
+// as 69k tokens estimated at 191k. Trimming on the local figure therefore fired
+// at about a third of the real window, and when a single group of turns crossed
+// the local figure the trim dropped everything but the system prompt - 42
+// items=1 collapses on one session, each one the model losing its entire
+// history mid-run.
+//
+// The provider has already reported the true size of the last request it
+// accepted, on the assistant message that produced it. That count plus a local
+// estimate of only the messages appended since - tool results and the new user
+// turn, which really do travel on the wire - is the size of the next request.
+// The provider's count includes the tool schemas, and the limit the runner
+// passes has already had them subtracted, so the comparison errs conservative by
+// the size of the catalogue: a few thousand tokens, on the safe side.
+//
+// A session with no reported usage yet has nothing to read, so it falls back to
+// the local estimate. That is the old behaviour, and it can only apply to the
+// first exchange, where there is no history to lose.
+func requestSize(sess *sessionstore.Session, rendered []llm.Item, replayReasoning bool) int {
+	last := 0
+	lastAssistant := -1
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		message := sess.Messages[i]
+		if message.Role != llm.RoleAssistant {
+			continue
+		}
+		if size := message.Usage.ContextTokens(); size > 0 {
+			last = size
+			lastAssistant = i
+			break
+		}
+	}
+	if last == 0 {
+		return EstimateMessagesFor(rendered, replayReasoning)
+	}
+	trailing := 0
+	for _, message := range sess.Messages[lastAssistant+1:] {
+		trailing += estimateStored(message, replayReasoning)
+	}
+	return last + trailing
+}
+
+// estimateStored measures one stored message the way compaction.estimateMessage
+// does. It is duplicated rather than imported because the builder is a leaf
+// package and the compactor sits above it; twelve lines is the cheaper side of
+// that seam. If the two drift, the trim and the trigger disagree about the size
+// of the same session.
+func estimateStored(m sessionstore.Message, replayReasoning bool) int {
+	n := EstimateTokens(m.Content) + EstimateTokens(m.ToolResult)
+	if replayReasoning {
+		n += EstimateTokens(m.Reasoning) + EstimateTokens(string(m.ReasoningDetails))
+	}
+	for _, call := range m.AllToolCalls() {
+		n += EstimateTokens(call.Args) + EstimateTokens(call.Name) + 10
+	}
+	if m.Compaction != nil {
+		n += EstimateTokens(m.Compaction.Summary) + EstimateTokens(m.Compaction.Recent)
+	}
+	return n + 10
 }
 
 // estimate measures the request the way the receiving transport will.
