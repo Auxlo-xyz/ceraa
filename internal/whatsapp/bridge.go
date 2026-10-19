@@ -360,7 +360,12 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 		final = waNoAnswerNote
 	}
 	toolSummary()
-	_ = b.send(ctx, msg.ChatJID, final)
+	// Emphasis is converted here rather than inside send, because send is
+	// also how the bridge speaks: a tool line, a vertical table label and a
+	// fixed reply already carry WhatsApp's own marks, and passing them
+	// through the converter would turn their bold into italic. Only this
+	// value is still model markdown when it arrives.
+	_ = b.send(ctx, msg.ChatJID, formatEmphasis(final))
 	logger.Info(fmt.Sprintf("whatsapp run sent tag=%s answerlen=%d", tag, len(final)))
 }
 

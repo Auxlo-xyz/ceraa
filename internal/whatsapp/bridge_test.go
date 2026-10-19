@@ -916,3 +916,26 @@ func TestBridgeRemovesTheStagingFileAfterSaving(t *testing.T) {
 		t.Fatalf("saved copies = %v, want exactly the one the stage became", saved)
 	}
 }
+
+// The model answers in markdown; the sender reads WhatsApp markup. This is
+// the whole feature end to end: markdown bold and italic in the run's final
+// text reach the chat as the marks WhatsApp actually renders, and the code
+// span inside it keeps its underscores.
+func TestAModelAnswerReachesWhatsAppWithEmphasisConverted(t *testing.T) {
+	run := &stubRun{final: "Use **sudo** and `_` for *quiet* mode, file `my_file.go`"}
+	b, ft := testBridge(t.TempDir(), run)
+	b.handle(context.Background(), InboundMessage{
+		ChatJID:   "2348012345678@s.whatsapp.net",
+		ID:        "dm-em",
+		Text:      "how",
+		Timestamp: time.Now(),
+	})
+	sent := ft.sentTexts()
+	if len(sent) != 1 {
+		t.Fatalf("produced %d outbound texts, want exactly 1", len(sent))
+	}
+	want := "Use *sudo* and `_` for _quiet_ mode, file `my_file.go`"
+	if sent[0].text != want {
+		t.Errorf("outbound = %q\nwant      = %q", sent[0].text, want)
+	}
+}

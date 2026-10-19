@@ -20,7 +20,8 @@ const waTableMaxWidth = 40
 // align on a phone, so it is laid out as vertical rows instead of staying as raw
 // pipes.
 //
-// Only tables are touched. Bold, headings and links are a separate change.
+// Only tables are touched. Emphasis is a separate pass in formatEmphasis,
+// which runs before this one; headings and links are still a separate change.
 func formatTables(text string) string {
 	lines := strings.Split(text, "\n")
 	out := make([]string, 0, len(lines))
@@ -129,8 +130,9 @@ func splitRow(line string) []string {
 // only when the block carries no usable table at all.
 //
 // Width is counted in runes, which is exact for Latin text and digits and only
-// approximate for double-width scripts. A cell keeps its markdown verbatim, so
-// an emphasis marker still counts toward its column.
+// approximate for double-width scripts. A cell may still carry emphasis marks,
+// since formatEmphasis has run by the time a table reaches here, and those
+// count toward its column like any other character.
 func renderTable(block []string) ([]string, bool) {
 	if len(block) < 2 {
 		return nil, false
@@ -222,7 +224,10 @@ func renderTableVertical(header []string, rows [][]string, cols int) []string {
 			}
 			label := ""
 			if c < len(header) {
-				label = header[c]
+				// The label may already carry WhatsApp's bold from the
+				// emphasis pass; the wrapper below adds it again, so the
+				// marks are taken back off first or the stars show.
+				label = trimEmphasis(header[c])
 			}
 			if label == "" {
 				out = append(out, value)
@@ -232,4 +237,190 @@ func renderTableVertical(header []string, rows [][]string, cols int) []string {
 		}
 	}
 	return out
+}
+
+// formatEmphasis rewrites markdown emphasis into the marks WhatsApp reads.
+//
+// WhatsApp has no markdown, so "**bold**" arrives literally as stars around a
+// word and a reply that looks bold in every other client looks like source
+// here. The two languages cannot be bridged by a string replace because they
+// disagree about the single asterisk: markdown italic is "*x*" and WhatsApp
+// bold is "*x*", the same two bytes carrying different meanings. The
+// translation is only sound while the source is still known to be model
+// markdown, so it runs on the answer alone and never on text the bridge wrote
+// itself - a tool line, a vertical table label and a fixed reply are already
+// in WhatsApp's own spelling, and running them through here would rewrite
+// bold as italic.
+//
+// Fenced blocks and inline code are left exactly as written. A star or an
+// underscore inside them belongs to the program or the path rather than to
+// emphasis, which is the same reason toolLine wraps a path in backticks.
+//
+// Only emphasis is converted. Headings, links and lists are still sent as
+// markdown, a separate change that formatTables already defers to.
+func formatEmphasis(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	for _, line := range lines {
+		if isFenceLine(line) {
+			inFence = !inFence
+			out = append(out, line)
+			continue
+		}
+		if inFence {
+			out = append(out, line)
+			continue
+		}
+		out = append(out, convertEmphasisLine(line))
+	}
+	return strings.Join(out, "\n")
+}
+
+// convertEmphasisLine scans one line left to right, so a mark this function
+// produced is never examined again. Repeated string replaces cannot do that,
+// and a "*x*" written by the bold rule would be read back as markdown italic
+// by the italic rule if they ran as separate passes.
+func convertEmphasisLine(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '`' {
+			n := runLen(s, i, '`')
+			if close := nextRun(s, i+n, '`', n); close >= 0 {
+				b.WriteString(s[i : close+n])
+				i = close + n
+				continue
+			}
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		if s[i] != '*' && s[i] != '_' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		ch := s[i]
+		n := runLen(s, i, ch)
+		// A lone underscore is WhatsApp's italic already, and in a path it
+		// is an identifier character. Leaving it costs nothing: markdown's
+		// "_x_" and WhatsApp's "_x_" are the same bytes.
+		if ch == '_' && n == 1 {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		if n > 3 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		content, next, ok := emphasisSpan(s, i+n, ch, n)
+		if !ok {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		open, close := emphasisMark(ch, n)
+		b.WriteString(open)
+		b.WriteString(convertEmphasisLine(content))
+		b.WriteString(close)
+		i = next
+	}
+	return b.String()
+}
+
+// emphasisSpan finds the closing run for an opener of n copies of ch starting
+// at after. It reports false for a run with no close, an empty span, or one
+// padded with space, which is how a bullet line like "* item" and a stray
+// asterisk are told apart from real emphasis.
+func emphasisSpan(s string, after int, ch byte, n int) (content string, next int, ok bool) {
+	close := nextRun(s, after, ch, n)
+	if close < 0 {
+		return "", 0, false
+	}
+	content = s[after:close]
+	if content == "" || content[0] == ' ' || content[0] == '\t' ||
+		content[len(content)-1] == ' ' || content[len(content)-1] == '\t' {
+		return "", 0, false
+	}
+	run := runLen(s, close, ch)
+	// "**a *b***" ends its inner italic on the same stars that close the
+	// bold, so the closing run is one star longer than the opener and holds
+	// the inner close as well. Those extra stars go into the content, where
+	// the recursive call turns them into the inner span. With an even
+	// number of inner stars there is no unmatched opener to close and the
+	// extras stay put, ready to be scanned as the stray they are.
+	if ch == '*' && run > n && oddSingleStars(content) {
+		extra := run - n
+		return content + s[close:close+extra], close + run, true
+	}
+	return content, close + n, true
+}
+
+// emphasisMark is the WhatsApp spelling of a markdown opener, and what its
+// closer must be. n==3 is bold carrying italic, which WhatsApp expresses as
+// bold marks around italic marks.
+func emphasisMark(ch byte, n int) (open, close string) {
+	if ch == '_' {
+		return "*", "*"
+	}
+	switch n {
+	case 1:
+		return "_", "_"
+	case 3:
+		return "*_", "_*"
+	default:
+		return "*", "*"
+	}
+}
+
+// oddSingleStars reports whether content closes over an unmatched single
+// asterisk, meaning one that opens a span whose close is outside it.
+func oddSingleStars(content string) bool {
+	count := 0
+	for i := 0; i < len(content); i++ {
+		if content[i] != '*' {
+			continue
+		}
+		if i > 0 && content[i-1] == '*' {
+			continue
+		}
+		n := runLen(content, i, '*')
+		if n%2 == 1 {
+			count += n
+		}
+		i += n - 1
+	}
+	return count%2 == 1
+}
+
+// runLen is the length of the run of b starting at i.
+func runLen(s string, i int, b byte) int {
+	start := i
+	for i < len(s) && s[i] == b {
+		i++
+	}
+	return i - start
+}
+
+// nextRun finds the first position at or after from holding a run of at least
+// n copies of b, and reports -1 when there is none.
+func nextRun(s string, from int, b byte, n int) int {
+	for i := from; i < len(s); i++ {
+		if s[i] != b {
+			continue
+		}
+		if runLen(s, i, b) >= n {
+			return i
+		}
+	}
+	return -1
+}
+
+// trimEmphasis strips outer emphasis marks from a cell. The vertical table
+// renderer wraps its own label in bold, and wrapping a label that already
+// carries WhatsApp's bold would show the stars rather than the word.
+func trimEmphasis(s string) string {
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "*_~"))
 }

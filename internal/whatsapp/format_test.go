@@ -133,3 +133,86 @@ func TestSendRendersTablesAsMonospace(t *testing.T) {
 		t.Errorf("outbound text\n got:\n%s\nwant:\n%s", got[0].text, want)
 	}
 }
+
+func TestFormatEmphasisRewritesMarkdownToWhatsAppMarks(t *testing.T) {
+	cases := map[string][2]string{
+		"bold":                    {"**strong**", "*strong*"},
+		"bold underscores":        {"__strong__", "*strong*"},
+		"italic":                  {"*nice*", "_nice_"},
+		"italic underscore":       {"_nice_", "_nice_"},
+		"bold with italic inside": {"**bold with *italic* inside**", "*bold with _italic_ inside*"},
+		"bold ending on italic":   {"**a *b***", "*a _b_*"},
+		"bold italic":             {"***both***", "*_both_*"},
+		"two spans":               {"**a** and *b*", "*a* and _b_"},
+		"unmatched stays":         {"a lone ** star", "a lone ** star"},
+	}
+	for name, tc := range cases {
+		in, want := tc[0], tc[1]
+		if got := formatEmphasis(in); got != want {
+			t.Errorf("%s:\n got: %q\nwant: %q", name, got, want)
+		}
+	}
+}
+
+// A bullet line opens with a star and no space rule would be a false
+// positive on it, so "* item" must survive the pass untouched.
+func TestFormatEmphasisLeavesBulletsAlone(t *testing.T) {
+	cases := map[string]string{
+		"bullet":      "* item one\n* item two",
+		"star in use": "2 * 3 * 4 = 24",
+		"hash note":   "see footnote * for details",
+	}
+	for name, in := range cases {
+		if got := formatEmphasis(in); got != in {
+			t.Errorf("%s changed:\n got: %q\nwant: %q", name, got, in)
+		}
+	}
+}
+
+// Emphasis inside code belongs to the program, not to the prose: a star in
+// a glob or an underscore in a filename must reach the reader as written.
+func TestFormatEmphasisSkipsCode(t *testing.T) {
+	cases := map[string]string{
+		"fenced": "```\n**not bold**\n*not italic*\n```",
+		"inline": "run `my_file_test.go` please",
+		"glob":   "matched `**/*.go` files",
+	}
+	for name, in := range cases {
+		if got := formatEmphasis(in); got != in {
+			t.Errorf("%s changed:\n got: %q\nwant: %q", name, got, in)
+		}
+	}
+}
+
+// The bridge speaks WhatsApp already: a tool line is bold by construction,
+// and the vertical table renderer wraps its own label. Neither may be passed
+// through the converter, which would turn that bold into italic.
+func TestBridgeAuthoredBoldIsNeverConverted(t *testing.T) {
+	if got := toolLine("bash", toolArgs(`{"command":"ls"}`)); got != "*bash* `ls`" {
+		t.Errorf("toolLine = %q, want its own WhatsApp bold kept", got)
+	}
+}
+
+// End to end: a header written as markdown bold reaches the vertical layout
+// as one bold label, not as stars wrapped around stars.
+func TestAVerticalTableLabelIsBoldExactlyOnce(t *testing.T) {
+	// Wide enough that renderTable gives up on the grid and lays the rows
+	// out vertically, which is the path that wraps its own label in bold.
+	// The label has to sit in column two or more: the vertical layout uses
+	// column one as the row title and never wraps it.
+	in := "| Person | **Role** |\n" +
+		"|--------|----------|\n" +
+		"| Ada | principal research scientist |\n" +
+		"| Grace | senior principal research scientist |\n"
+	converted := formatEmphasis(in)
+	if strings.Contains(converted, "**Role**") {
+		t.Errorf("header should have been converted to single-star bold, got:\n%s", converted)
+	}
+	out := formatTables(converted)
+	if !strings.Contains(out, "*Role*: ") {
+		t.Errorf("vertical label lost its bold wrapper, got:\n%s", out)
+	}
+	if strings.Contains(out, "**Role**") {
+		t.Errorf("label was wrapped twice, got:\n%s", out)
+	}
+}
