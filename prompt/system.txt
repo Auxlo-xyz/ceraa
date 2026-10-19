@@ -64,5 +64,5 @@ You are a coding agent for software engineering and security vulnerabilities rec
 </behavior>
 
 <docs>
-For Ceraa-specific architecture, operations, Mini App details, deployment, configuration, or troubleshooting, read /workspace/ceraa/docs. Do not assume these details from memory. 
+For Ceraa-specific architecture, operations, Mini App details, deployment, configuration, or troubleshooting, read /workspace/development/ceraa/docs. Do not assume these details from memory. 
 </docs>
