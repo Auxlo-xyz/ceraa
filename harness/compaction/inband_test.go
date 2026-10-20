@@ -212,6 +212,80 @@ func TestInBandCompactionSummarisesOverTheLiveRequest(t *testing.T) {
 	}
 }
 
+// A summariser must not recite a session that never existed. The stored prefix
+// through the fold boundary is exactly what the last accepted request rendered,
+// so replaying it shares the live request's positions and rides the provider's
+// cache; a stitched retrospective clone re-reads the same body at full price.
+func TestInBandSummariserReplaysTheStoredPrefix(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	sess := &sessionstore.Session{
+		ID: "tg-test",
+		Messages: []sessionstore.Message{
+			{Role: llm.RoleSystem, Content: "you are the agent", Usage: llm.UsageInfo{InputTokens: 100}},
+			{Role: llm.RoleUser, Content: "<conversation-checkpoint>", Compaction: &sessionstore.CompactionInfo{Summary: "prior facts from the last fold", Seq: 4}, Usage: llm.UsageInfo{InputTokens: 50}},
+			{Role: llm.RoleUser, Content: "fix the index", Usage: llm.UsageInfo{InputTokens: 30}},
+			{Role: llm.RoleAssistant, Content: "on it", ToolCalls: []sessionstore.ToolCallRef{{ID: "c1", Name: "read", Args: `{"path":"/repo/types.ts"}`}}, Usage: llm.UsageInfo{InputTokens: 30}},
+			{Role: llm.RoleTool, ToolCallID: "c1", ToolName: "read", ToolResult: strings.Repeat("a matching line\n", 200), Usage: llm.UsageInfo{InputTokens: 300}},
+			{Role: llm.RoleUser, Content: "keep going", Usage: llm.UsageInfo{InputTokens: 30}},
+			{Role: llm.RoleAssistant, Content: "halfway there", Usage: llm.UsageInfo{InputTokens: 30}},
+			{Role: llm.RoleUser, Content: "and now the final exchange", Usage: llm.UsageInfo{InputTokens: 30}},
+			{Role: llm.RoleAssistant, Content: "the final exchange is done", Usage: llm.UsageInfo{InputTokens: 30}},
+		},
+	}
+	original := make([]sessionstore.Message, len(sess.Messages))
+	copy(original, sess.Messages)
+	live := []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fix the index"}}
+	c := inBandCompactor(srv.server, live)
+	var captured *sessionstore.Session
+	base := c.LiveRequest
+	c.LiveRequest = func(ctx context.Context, s *sessionstore.Session) llm.StreamRequest {
+		if captured == nil {
+			captured = &sessionstore.Session{ID: s.ID, Messages: append([]sessionstore.Message(nil), s.Messages...)}
+		}
+		return base(ctx, s)
+	}
+	ok, err := c.Compact(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !ok {
+		t.Fatal("nothing was compacted")
+	}
+	if captured == nil {
+		t.Fatal("no summariser request reached LiveRequest")
+	}
+	// The summariser session must be a contiguous prefix of the STORED session:
+	// same room in the same order, checkpoints verbatim, no synthetic stitch in
+	// front, and no slice of the retained tail behind it.
+	if len(captured.Messages) >= len(original) {
+		t.Fatalf("summariser carries %d messages, want fewer than the retained tail allows (%d)", len(captured.Messages), len(original))
+	}
+	for i, message := range captured.Messages {
+		if message.Content != original[i].Content || message.ToolResult != original[i].ToolResult || message.Role != original[i].Role || message.ToolCallID != original[i].ToolCallID {
+			t.Fatalf("summariser position %d is not the stored prefix: got %s %q, want %s %q", i, message.Role, message.Content, original[i].Role, original[i].Content)
+		}
+		if message.Usage != (llm.UsageInfo{}) {
+			t.Errorf("summariser copy at %d kept live Usage %+v, want it zeroed so the fit estimate stays conservative", i, message.Usage)
+		}
+	}
+	foundCheckpoint := false
+	for _, message := range captured.Messages {
+		if message.Compaction != nil && message.Compaction.Summary == "prior facts from the last fold" {
+			foundCheckpoint = true
+		}
+	}
+	if !foundCheckpoint {
+		t.Error("the standing checkpoint did not ride along in the summariser prefix, so its unresolved items are dropped")
+	}
+	// The fold legitimately rewrites the transcript (the new checkpoint comes
+	// first and retained messages shift), but the standing head it kept must
+	// come through untouched.
+	if sess.Messages[0].Content != original[0].Content || sess.Messages[1].Content != original[1].Content {
+		t.Error("the rewrite disturbed the head standing checkpoint")
+	}
+}
+
 func TestInvalidSummariesAreRefusedWithNothingWritten(t *testing.T) {
 	srv := newSummaryServer(t, "Looks good, moving on.", "Still not a summary.")
 	defer srv.close()

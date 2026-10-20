@@ -1219,21 +1219,22 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 			next++
 		}
 	}
-	// Summarize the fold, not the whole history. The prior summary rides along
-	// so its unresolved items are carried forward into the new checkpoint.
-	foldSession := &sessionstore.Session{ID: sess.ID}
-	if previousSummary != "" {
-		foldSession.Messages = append(foldSession.Messages, sessionstore.Message{
-			Role:    llm.RoleSystem,
-			Content: "<conversation-checkpoint>",
-			Compaction: &sessionstore.CompactionInfo{
-				Summary: previousSummary,
-				Seq:     latestCompaction,
-			},
-		})
-	}
-	foldSession.Messages = append(foldSession.Messages, foldMessages...)
+	// Summarize the fold by replaying the live request's own prefix. The stored
+	// head through end IS the prefix the last accepted request rendered, so the
+	// summariser shares its positions instead of reciting an imaginary session:
+	// the cache already covers system, schema and the standing checkpoints, and
+	// only the appended instruction reads fresh. The prior summary rides along
+	// inside the head, so its unresolved items are still carried forward. The
+	// retained tail is dropped because scope beyond the fold must not be
+	// summarized, and copying without Usage keeps the zero fallback estimate
+	// instead of trusting live-run tokens already spent.
 	summaryOutput := c.summaryOutputTokens()
+	foldSession := &sessionstore.Session{ID: sess.ID}
+	for _, message := range sess.Messages[:end] {
+		copied := message
+		copied.Usage = llm.UsageInfo{}
+		foldSession.Messages = append(foldSession.Messages, copied)
+	}
 	text, err := c.summarise(ctx, foldSession, summaryOutput)
 	if err != nil {
 		c.noteSummaryFailure()
