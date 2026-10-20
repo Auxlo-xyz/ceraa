@@ -316,36 +316,6 @@ func TestFoldIDsUniqueAcrossInstances(t *testing.T) {
 	}
 }
 
-func TestCollapseChainLeavesShortChainAlone(t *testing.T) {
-	// The cap is the whole trade: while the chain is short it is free, because
-	// nothing ahead of the newest checkpoint has moved. Rolling early would pay
-	// a prefix rewrite for nothing.
-	c := &Compactor{Settings: DefaultSettings(), ContextLimit: 32000}
-	sess := &sessionstore.Session{ID: "s"}
-	for i := 0; i < MaxCheckpointChain; i++ {
-		sess.Messages = append(sess.Messages, sessionstore.Message{
-			Role:    llm.RoleSystem,
-			Content: "<conversation-checkpoint>",
-			Compaction: &sessionstore.CompactionInfo{
-				Summary: "summary",
-				Seq:     i,
-				Tier:    0,
-			},
-		})
-	}
-	before := len(sess.Messages)
-	rewrites := sess.PrefixRewrites
-	if c.collapseChain(t.Context(), sess) {
-		t.Fatal("a chain at the cap was collapsed")
-	}
-	if len(sess.Messages) != before {
-		t.Fatalf("messages changed: %d -> %d", before, len(sess.Messages))
-	}
-	if sess.PrefixRewrites != rewrites {
-		t.Fatal("a no-op collapse counted a prefix rewrite")
-	}
-}
-
 // A fold must never leave a tool result whose call was folded away.
 //
 // This is the shape that made the provider refuse the request outright:

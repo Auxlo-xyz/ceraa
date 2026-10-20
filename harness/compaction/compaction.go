@@ -934,44 +934,26 @@ func (c *Compactor) mergeTier(ctx context.Context, sess *sessionstore.Session, f
 	c.mergeCheckpoints(ctx, sess, indices, fromTier+1)
 }
 
-// MaxCheckpointChain bounds how many checkpoints stand ahead of the live turns
-// before they are collapsed into one.
+// MaxCheckpointChain bounds how many checkpoints stand ahead of the live turns.
+// Past it the next fold consolidates the chain instead of stacking on it: the
+// summarise instruction is sent over a prefix carrying that many checkpoints and
+// so is told they are going away (consolidationClause), and the fold write drops
+// them from the head. The roll is therefore no longer a separate LLM call; it
+// rides the one summarise request and the one prefix rewrite the fold already
+// pays for.
 const MaxCheckpointChain = 6
 
-// collapseChain rolls the standing checkpoint chain into a single checkpoint
-// once it passes MaxCheckpointChain. It reports whether it rewrote anything.
-//
-// The chain is append-only by design: each fold adds a checkpoint and leaves the
-// ones behind it standing, so the bytes ahead of the newest checkpoint never move
-// and the provider keeps reading that whole stretch warm. That is the right
-// trade while the chain is short.
-//
-// Past the cap it stops being free. The chain is a growing share of the request,
-// it is history the model has been told more than once, and every later fold
-// re-summarizes it. So the chain is collapsed in one operation: exactly one full
-// prefix miss, paid here instead of spread across every future turn, and
-// append-only again afterwards. That is the epoch roll.
-//
-// It runs inside Compact, ahead of the fold, so a Compact that both rolls and
-// folds still produces a single request and therefore a single rewrite on the
-// wire: the two rewrites of the in-memory slice cost one cache invalidation
-// between them.
-func (c *Compactor) collapseChain(ctx context.Context, sess *sessionstore.Session) bool {
-	indices := make([]int, 0, len(sess.Messages))
-	for i := range sess.Messages {
-		if sess.Messages[i].Compaction != nil {
-			indices = append(indices, i)
-		}
-	}
-	if len(indices) <= MaxCheckpointChain {
-		return false
-	}
-	c.mergeCheckpoints(ctx, sess, indices, 1)
-	return true
+// consolidationClause is appended to the compaction instruction when the
+// storage prefix it is sent over stands over more checkpoints than
+// MaxCheckpointChain. The standing checkpoints are removed from the session
+// when the summary this reply wins is written, so the summary has to
+// dissolve them instead of referring to them.
+func consolidationClause() string {
+	return "The transcript above carries every prior checkpoint inside it. When this reply is accepted, the session removes the standing checkpoints, so the summary below is the only surviving record of them. Fold their content into your sections fully instead of referring to them; anything a prior checkpoint recorded that this summary omits is permanently lost."
 }
 
 // mergeCheckpoints rewrites the checkpoints at indices into one, placed at the
-// position of the first. It is the body both mergeTier and collapseChain share.
+// position of the first. It is the body mergeTier shares.
 //
 // A merge that fails is a no-op: the summaries it would have carried are still
 // standing, and nothing about the fold that follows depends on it having run.
@@ -1161,9 +1143,19 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		c.mergeTier(ctx, sess, 1, Tier2Trigger)
 		c.mergeTier(ctx, sess, 2, Tier3Trigger)
 	}
-	// The epoch roll, ahead of the fold so that a Compact which does both still
-	// produces one request and therefore one rewrite on the wire.
-	c.collapseChain(ctx, sess)
+	// Standing checkpoints ahead of the live turns. Past MaxCheckpointChain the
+	// fold this compaction writes consolidates the chain itself: its instruction
+	// says so (summariseInBand appends the consolidation clause whenever the
+	// prefix it replays stands over this many checkpoints) and the fold write
+	// below drops the standings from the head, so no separate merge request runs
+	// and the one rewrite the fold pays for covers the roll too.
+	standing := 0
+	for _, message := range sess.Messages {
+		if message.Compaction != nil {
+			standing++
+		}
+	}
+	rollDue := standing > MaxCheckpointChain
 	keepTokens := c.Settings.Keep.Tokens
 	if keepTokens == 0 {
 		keepTokens = DefaultKeepTokens
@@ -1262,7 +1254,18 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		c.Learn(ctx, sess.ID, foldMessages, text)
 	}
 	var newMessages []sessionstore.Message
-	if offset > 0 {
+	if rollDue {
+		// The chain is being consolidated into the new checkpoint below, so the
+		// head keeps only its system messages and every standing checkpoint
+		// leaves exactly when the instruction that just succeeded promised they
+		// would. The delivered ids need nothing here: carry unions the
+		// standings' sets that were read over the unrewritten session above.
+		for _, message := range sess.Messages[:offset] {
+			if message.Role == llm.RoleSystem {
+				newMessages = append(newMessages, message)
+			}
+		}
+	} else if offset > 0 {
 		newMessages = append(newMessages, sess.Messages[:offset]...)
 	} else if systemMessage != nil {
 		newMessages = append(newMessages, *systemMessage)
@@ -1383,11 +1386,26 @@ func (c *Compactor) summariseInBand(ctx context.Context, sess *sessionstore.Sess
 	if c.contextLimit()-c.EstimatedContext(sess)-EstimateTokens(compactionInstruction(1, nil)) < summaryOutput {
 		return "", fmt.Errorf("the context cannot carry a summary")
 	}
+	// Standing checkpoints in the prefix this summarise replays. Past
+	// MaxCheckpointChain the fold that wins this summary also removes them, so
+	// every attempt is instructed to consolidate rather than carry forward. The
+	// merge path's session is one plain user message with no checkpoint markers
+	// and so counts zero here, which leaves it unaffected.
+	standingCheckpoints := 0
+	for _, message := range sess.Messages {
+		if message.Compaction != nil {
+			standingCheckpoints++
+		}
+	}
 	var lastErr error
 	for attempt := 1; attempt <= summaryAttempts; attempt++ {
+		instruction := compactionInstruction(attempt, lastErr)
+		if standingCheckpoints > MaxCheckpointChain {
+			instruction += "\n\n" + consolidationClause()
+		}
 		request := c.LiveRequest(ctx, sess)
 		request.Messages = append(append(make([]llm.Item, 0, len(request.Messages)+1), request.Messages...),
-			llm.Item{Kind: "text", Role: llm.RoleUser, Text: compactionInstruction(attempt, lastErr)})
+			llm.Item{Kind: "text", Role: llm.RoleUser, Text: instruction})
 		request.ToolChoice = "none"
 		request.MaxTokens = summaryOutput
 		// A summary is not deliberation, and a reply produced under thinking
