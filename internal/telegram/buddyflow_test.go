@@ -124,7 +124,7 @@ func TestBuddyLoginFailureNotifies(t *testing.T) {
 // routed back through its own provider.
 func TestBuddyModelMenusAreScopedPerRegion(t *testing.T) {
 	workbuddy := strings.Join(flattenButtons(menus.SubscriptionModelMenu("workbuddy")), "\n")
-	if !strings.Contains(workbuddy, "default-model") || !strings.Contains(workbuddy, "gpt-6-astra") {
+	if !strings.Contains(workbuddy, "default-model") || !strings.Contains(workbuddy, "glm-5.3-flash") {
 		t.Errorf("the workbuddy list misses intl ids:\n%s", workbuddy)
 	}
 	if !strings.Contains(workbuddy, "provider:workbuddy:model:") {

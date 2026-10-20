@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"ceraa/harness/llm"
+	"ceraa/internal/buddyauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/envs"
 	"ceraa/internal/paths"
@@ -248,6 +249,14 @@ func checkSubscriptionCredential(ctx context.Context, provider config.LLMProvide
 			return doctorCheck{"provider", "FAIL", "Qoder is not signed in; sign in again"}
 		}
 		return doctorCheck{"provider", "OK", "Qoder credential present"}
+	case llm.WorkBuddySubscription:
+		// Presence, not proof: the token refreshes on use, and doctor does not
+		// spend a chat turn to test it. Authenticated also catches a stored
+		// token past its expiry, which a bare presence check would not.
+		if !buddyauth.NewWorkBuddyManager().Authenticated() {
+			return doctorCheck{"provider", "FAIL", "WorkBuddy is not signed in; sign in again"}
+		}
+		return doctorCheck{"provider", "OK", "WorkBuddy credential present and unexpired"}
 	}
 	return doctorCheck{"provider", "WARN", "unknown subscription provider: " + provider.Subscription}
 }

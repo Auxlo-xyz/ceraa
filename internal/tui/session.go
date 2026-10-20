@@ -21,6 +21,7 @@ import (
 	"ceraa/harness/skills"
 	"ceraa/harness/tool"
 	"ceraa/internal"
+	"ceraa/internal/buddyauth"
 	"ceraa/internal/claudeauth"
 	"ceraa/internal/clineauth"
 	"ceraa/internal/codexauth"
@@ -584,6 +585,25 @@ func resolveProviderModel(ctx context.Context, provider config.LLMProvider) (llm
 		modelConfig.APIKey = credential.AccessToken
 		modelConfig.XaiNative = true
 		modelConfig.XaiTokens = xaiauth.NewTokenSource()
+		return modelConfig, nil
+	case llm.WorkBuddySubscription:
+		manager := buddyauth.NewWorkBuddyManager()
+		if !manager.Authenticated() {
+			return llm.ProviderConfig{}, fmt.Errorf("WorkBuddy account is not signed in: sign in from the provider menu first")
+		}
+		token, err := manager.AccessToken(ctx)
+		if err != nil {
+			return llm.ProviderConfig{}, err
+		}
+		modelConfig.BaseURL = llm.NormalizeWorkBuddyURL(firstNonEmpty(provider.URL, llm.WorkBuddyBaseURL))
+		modelConfig.APIKey = token
+		modelConfig.ExtraHeaders = llm.WorkBuddyRequestHeaders(provider.Model, manager.UID())
+		// The gateway has required the X-Conversation-* trio on every chat
+		// since 2026-10-16 and answers 400/11128 without it, so it is minted
+		// per request rather than frozen into the static map.
+		modelConfig.ExtraHeadersFunc = func(string) map[string]string {
+			return llm.WorkBuddyConversationHeaders()
+		}
 		return modelConfig, nil
 	default:
 		if llm.UsesAnthropicMessages(modelConfig.Model, modelConfig.BaseURL) {

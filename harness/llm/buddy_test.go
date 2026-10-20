@@ -25,6 +25,11 @@ func TestWorkBuddyModelPool(t *testing.T) {
 	if !IsWorkBuddyModel("deepseek-v4.1-flash") || !IsWorkBuddyModel("default-model") || !IsWorkBuddyModel("DeepSeek-V4.1-Flash") {
 		t.Error("known ids not recognised (matching is case-insensitive)")
 	}
+	// The roster tracks /v3/config, where these replaced the older asia-only
+	// and pre-release ids; a pool that loses them hides models the account has.
+	if !IsWorkBuddyModel("glm-5.3-flash") || !IsWorkBuddyModel("minimax-m3.1-flash") {
+		t.Error("current roster ids missing from the pool")
+	}
 	if IsWorkBuddyModel("gpt-9") || IsWorkBuddyModel("") {
 		t.Error("unknown or empty id accepted")
 	}

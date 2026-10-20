@@ -20,32 +20,30 @@ const WorkBuddySubscription = "workbuddy"
 const WorkBuddyBaseURL = "https://www.workbuddy.ai/v2"
 
 // WorkBuddyModels are the international directory ids, in the IDE's display
-// order. Aliases (Auto, Fast, Balanced, Primary, Deep) are real choices that
-// let the gateway route the turn.
+// order. Four aliases (default, fast, balanced, primary) are real choices that
+// let the gateway route the turn; the rest are concrete models. The pool was
+// read from the account's /v3/config roster rather than the IDE build, so it
+// lists what this login can actually select.
 var WorkBuddyModels = []string{
 	"default-model",
 	"fast-model",
 	"balanced-model",
 	"primary-model",
-	"deep-model",
-	"hy4-preview-f",
 	"hy4-preview",
 	"hy3",
 	"deepseek-v4.1-flash",
-	"deepseek-v4.1-flash-sg",
-	"gpt-6-astra",
-	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"gpt-5.5",
 	"gpt-5.4",
-	"gpt-5.3-codex",
 	"gemini-3.5-flash",
+	"glm-5.3-flash",
 	"glm-5.3",
 	"glm-5.2",
+	"minimax-m3.1-flash",
 	"kimi-k3",
-	"kimi-k2.8-preview",
 	"kimi-k2.6",
+	"kimi-k2.8-preview",
 }
 
 // DefaultWorkBuddyModel is the international default.
