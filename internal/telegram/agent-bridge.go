@@ -743,7 +743,13 @@ func providerModelResolver(provider config.LLMProvider, sessionID string) func(c
 			}
 			model.BaseURL = llm.NormalizeWorkBuddyURL(firstNonEmptyStr(provider.URL, llm.WorkBuddyBaseURL))
 			model.APIKey = token
-			model.ExtraHeaders = llm.WorkBuddyRequestHeaders(provider.Model)
+			model.ExtraHeaders = llm.WorkBuddyRequestHeaders(provider.Model, manager.UID())
+			// The gateway has required the X-Conversation-* trio on every
+			// chat since 2026-10-16 and answers 400/11128 without it, so it
+			// is minted per request rather than frozen into the static map.
+			model.ExtraHeadersFunc = func(string) map[string]string {
+				return llm.WorkBuddyConversationHeaders()
+			}
 			return model, nil
 		case "qoder":
 			// The encrypted endpoint needs per-request signing, so the

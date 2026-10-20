@@ -1,6 +1,10 @@
 package llm
 
-import "strings"
+import (
+	"crypto/rand"
+	"fmt"
+	"strings"
+)
 
 // WorkBuddySubscription identifies a Tencent WorkBuddy (intl) profile.
 //
@@ -86,7 +90,13 @@ func NormalizeWorkBuddyURL(raw string) string {
 // workBuddyCNUserAgent is the domestic client shape, used for the CN model
 // families on the international endpoint. The wrong shape does not fail the
 // request; it misattributes usage in the vendor's backend.
-const workBuddyCNUserAgent = "WorkBuddy/5.5.2 WorkBuddy/5.5.2 CLI/5.5.2"
+const workBuddyCNUserAgent = "WorkBuddy/5.5.2 WorkBuddy/5.5.2"
+
+// workBuddyIntlUserAgent is the international client shape. The trailing
+// CLI/... token is deliberately absent: the official client drops it when the
+// bundled CLI's own version cannot be read, and 5.5.2 is the app version, not
+// a CLI version, so sending it would be a wrong value in a header.
+const workBuddyIntlUserAgent = "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2"
 
 // workBuddyUserAgent picks the client shape by model family. Prefix match,
 // because the directory carries variants (flash, preview, sg-suffixed) that
@@ -98,20 +108,72 @@ func workBuddyUserAgent(model string) string {
 			return workBuddyCNUserAgent
 		}
 	}
-	return "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2"
+	return workBuddyIntlUserAgent
 }
 
-// WorkBuddyRequestHeaders returns the product identity headers for
-// international inference.
-func WorkBuddyRequestHeaders(model string) map[string]string {
-	return map[string]string{
-		"X-Domain":        "www.workbuddy.ai",
-		"X-Product-Code":  "workbuddy",
-		"X-Agent-Purpose": "conversation",
-		"X-IDE-Name":      "WorkBuddy",
-		"X-IDE-Type":      "WorkBuddy",
-		"X-IDE-Version":   "5.5.2",
-		"X-Product":       "WorkBuddy",
-		"User-Agent":      workBuddyUserAgent(model),
+// WorkBuddyRequestHeaders returns the product identity headers every
+// international inference request carries.
+//
+// The shape is the official desktop client's, measured against the live
+// gateway on 2026-10-20. It must not drift back to the older CLI-only set:
+// since 2026-10-16 the gateway answers any /v2/chat/completions request that
+// does not look like the desktop client with HTTP 400 / code 11128
+// ("request illegal", displayMsg zh: the request was blocked), including the
+// variant that carried X-Product-Code and X-Agent-Purpose but no Origin.
+// X-Product is the deployment-type tag ("SaaS"), not the product name, and
+// X-Requested-With / Origin / Referer are part of that same shape.
+//
+// X-User-Id carries the account identity the gateway attributes usage to;
+// without a uid the client says X-No-User-Id: 1 instead. X-No-Enterprise-Id
+// marks a personal account, which is the only kind the login flow here
+// produces (an enterprise account would send X-Enterprise-Id instead).
+func WorkBuddyRequestHeaders(model, uid string) map[string]string {
+	headers := map[string]string{
+		"Origin":             "https://www.workbuddy.ai",
+		"Referer":            "https://www.workbuddy.ai/",
+		"User-Agent":         workBuddyUserAgent(model),
+		"X-Domain":           "www.workbuddy.ai",
+		"X-IDE-Name":         "WorkBuddy",
+		"X-IDE-Type":         "WorkBuddy",
+		"X-IDE-Version":      "5.5.2",
+		"X-No-Enterprise-Id": "1",
+		"X-Product":          "SaaS",
+		"X-Requested-With":   "XMLHttpRequest",
 	}
+	if trimmed := strings.TrimSpace(uid); trimmed != "" {
+		headers["X-User-Id"] = trimmed
+	} else {
+		headers["X-No-User-Id"] = "1"
+	}
+	return headers
+}
+
+// WorkBuddyConversationHeaders mints the conversation-channel trio the
+// international chat endpoint requires.
+//
+// Since 2026-10-16 the gateway answers a chat request that omits all three
+// headers with HTTP 400 / code 11128, the same envelope the identity checks
+// use, which is why this failure read as a body problem for so long. The
+// official desktop client sends the trio on every chat. A fresh UUID per
+// request is enough: the upstream keeps no history keyed by the id, so the
+// trio marks the channel rather than carrying conversation state, and fresh
+// ids keep concurrent runs off one shared conversation.
+func WorkBuddyConversationHeaders() map[string]string {
+	return map[string]string{
+		"X-Conversation-ID":         workBuddyUUID(),
+		"X-Conversation-Request-ID": workBuddyUUID(),
+		"X-Conversation-Message-ID": workBuddyUUID(),
+	}
+}
+
+// workBuddyUUID mints a v4 UUID. Fresh per request, same shape as the
+// transport-local id helpers.
+func workBuddyUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
