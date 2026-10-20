@@ -494,13 +494,15 @@ func parseVersion(value string) ([]int, string, bool) {
 	if value == "" {
 		return nil, "", false
 	}
+	// A build metadata suffix (+anything) is not part of the ordering, and it
+	// follows the prerelease rather than living inside it, so it is cut first:
+	// a hyphen inside the metadata is not a prerelease marker.
+	if i := strings.IndexByte(value, '+'); i >= 0 {
+		value = value[:i]
+	}
 	var pre string
 	if i := strings.IndexByte(value, '-'); i >= 0 {
 		pre = value[i+1:]
-		value = value[:i]
-	}
-	// A build metadata suffix (+anything) is not part of the ordering.
-	if i := strings.IndexByte(value, '+'); i >= 0 {
 		value = value[:i]
 	}
 	parts := strings.Split(value, ".")

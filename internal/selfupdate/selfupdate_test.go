@@ -48,6 +48,12 @@ func TestCompareOrdersVersions(t *testing.T) {
 		{"1.0.0-rc.1", "1.0.0-rc.2", -1},
 		// Missing parts compare as zero rather than as a shorter version.
 		{"1.0", "1.0.0", 0},
+		// Build metadata never affects the order, even when it contains a
+		// hyphen that would otherwise read as a prerelease.
+		{"0.9.2+workbuddy-polish", "v0.9.2", 0},
+		{"0.9.2+build.7", "0.9.2", 0},
+		{"1.0.0-alpha+sha.123", "1.0.0-alpha", 0},
+		{"1.0.0-alpha+sha.123", "1.0.0", -1},
 	}
 	for _, tc := range cases {
 		if got := Compare(tc.a, tc.b); got != tc.want {
@@ -83,6 +89,7 @@ func TestNewerSeesADevBuildAsBehind(t *testing.T) {
 		{"0.5.0-dev", "v0.5.0", true},
 		{"0.5.0", "v0.5.0", false},
 		{"0.5.1", "v0.5.0", false},
+		{"0.9.2+workbuddy-polish", "v0.9.2", false},
 		{"0.0.0-dev", "v0.5.0", true},
 	}
 	for _, tc := range cases {
