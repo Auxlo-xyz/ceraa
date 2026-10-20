@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"ceraa/harness/llm"
+	"ceraa/harness/tool"
 	"ceraa/internal/buddyauth"
 	"ceraa/internal/codexauth"
 	"ceraa/internal/envs"
@@ -81,7 +82,26 @@ func collectDoctorReport(timeout time.Duration) doctorReport {
 	report.Checks = append(report.Checks, checkProvider(cfg, timeout))
 	report.Checks = append(report.Checks, checkTelegram(cfg, timeout))
 	report.Checks = append(report.Checks, checkStorage(cfg)...)
+	report.Checks = append(report.Checks, checkBrowser(timeout))
 	return report
+}
+
+// checkBrowser proves the installed browser can start with the library
+// environment the tool gives it.
+//
+// The tool failed at first use with a loader error naming one .so file, which
+// reads as a broken host rather than as a browser that was never told where the
+// libraries are. Doctor now asks the same question before a run does, so a host
+// missing the libraries is reported with the fix instead of surfacing later as a
+// dead browser_open.
+func checkBrowser(timeout time.Duration) doctorCheck {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	detail, err := tool.ProbeBrowser(ctx)
+	if err != nil {
+		return doctorCheck{"browser", "FAIL", err.Error()}
+	}
+	return doctorCheck{"browser", "OK", detail}
 }
 
 // isSubscriptionProvider reports whether a provider carries a subscription

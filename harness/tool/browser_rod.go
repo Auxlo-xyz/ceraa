@@ -92,19 +92,30 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 	return &rodDriver{browser: browser, page: page}, nil
 }
 
-// browserSharedLibDirs are places a host may keep the shared libraries a
-// headless Chromium needs that a slim container image does not install, such as
-// libatk, which is what a browser without a desktop stack fails to load first.
+// browserSharedLibDirs is a test seam for extra candidates. Production paths
+// come from browserConventionalLibDirs, derived from the process environment,
+// because this list used to name one absolute path from one machine: every
+// other host still failed with the loader error the list existed to prevent.
+var browserSharedLibDirs []string
+
+// browserConventionalLibDirs are the places the browser's shared libraries are
+// documented to live when the host does not install them system-wide: a
+// managed directory beside the downloaded browser, and the home-local unpack
+// the runbook uses (apt-get download + dpkg-deb -x, no root).
 //
-// A child process inherits its parent's environment, so on a host that keeps
-// these off the system paths the browser only starts if the daemon was launched
-// with LD_LIBRARY_PATH already pointing at them. Nothing about that is visible
-// from the failure: every other signal is healthy and the error is a loader
-// complaint naming one .so file, with no hint that the library is present a
-// directory away. That is why this is resolved here rather than left to the
-// ambient environment, which is how it broke more than once.
-var browserSharedLibDirs = []string{
-	"/workspace/.local/chrome-libs/root/usr/lib/x86_64-linux-gnu",
+// Both are derived from CERAA_HOME and HOME rather than written out as one
+// absolute path, so a fresh install anywhere can use the same convention. A
+// directory that is not there is skipped by browserLibraryPath.
+func browserConventionalLibDirs() []string {
+	dirs := []string{filepath.Join(browserDownloadDir(), "libs")}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return dirs
+	}
+	for _, arch := range []string{"x86_64-linux-gnu", "aarch64-linux-gnu"} {
+		dirs = append(dirs, filepath.Join(home, ".local", "chrome-libs", "root", "usr", "lib", arch))
+	}
+	return dirs
 }
 
 // browserLaunchEnv is the environment the browser is launched with: this
@@ -154,6 +165,9 @@ func browserLibraryPath() string {
 	for _, dir := range browserSharedLibDirs {
 		add(dir)
 	}
+	for _, dir := range browserConventionalLibDirs() {
+		add(dir)
+	}
 	for _, dir := range filepath.SplitList(os.Getenv("LD_LIBRARY_PATH")) {
 		add(dir)
 	}
@@ -170,7 +184,8 @@ func browserLibraryHint(err error) string {
 		return ""
 	}
 	return " (the browser needs shared libraries this host does not install system-wide; " +
-		"set CERAA_BROWSER_LD_LIBRARY_PATH to the directory holding them)"
+		"set CERAA_BROWSER_LD_LIBRARY_PATH or unpack them into " +
+		filepath.Join(browserDownloadDir(), "libs") + ")"
 }
 
 // resolveBrowserBinary returns a usable browser, preferring one already on the

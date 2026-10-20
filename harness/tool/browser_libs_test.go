@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,17 @@ import (
 // the tool with a loader error that looked like a missing library rather than a
 // missing instruction. These pin the resolution to code.
 
+// isolateBrowserLibs keeps a library directory this machine really has (the
+// managed one beside the downloaded browser) out of an expectation about some
+// other directory. Without it the tests were reading the host.
+func isolateBrowserLibs(t *testing.T) {
+	t.Helper()
+	t.Setenv("CERAA_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestBrowserLibraryPathFindsAKnownLocalDirectory(t *testing.T) {
+	isolateBrowserLibs(t)
 	dir := t.TempDir()
 	t.Setenv("CERAA_BROWSER_LD_LIBRARY_PATH", "")
 	t.Setenv("LD_LIBRARY_PATH", "")
@@ -34,6 +45,7 @@ func TestBrowserLibraryPathFindsAKnownLocalDirectory(t *testing.T) {
 }
 
 func TestTheConfiguredPathIsSearchedBeforeTheFallback(t *testing.T) {
+	isolateBrowserLibs(t)
 	configured := t.TempDir()
 	fallback := t.TempDir()
 	t.Setenv("CERAA_BROWSER_LD_LIBRARY_PATH", configured)
@@ -56,6 +68,7 @@ func TestTheConfiguredPathIsSearchedBeforeTheFallback(t *testing.T) {
 }
 
 func TestBrowserLibraryPathIgnoresDirectoriesThatAreNotThere(t *testing.T) {
+	isolateBrowserLibs(t)
 	t.Setenv("CERAA_BROWSER_LD_LIBRARY_PATH", filepath.Join(t.TempDir(), "absent"))
 	t.Setenv("LD_LIBRARY_PATH", "")
 
@@ -73,6 +86,7 @@ func TestBrowserLibraryPathIgnoresDirectoriesThatAreNotThere(t *testing.T) {
 // the variable must keep working, and a stale entry is harmless because the
 // loader just skips a directory that lacks the name.
 func TestBrowserLibraryPathKeepsTheAmbientPath(t *testing.T) {
+	isolateBrowserLibs(t)
 	existing := t.TempDir()
 	t.Setenv("CERAA_BROWSER_LD_LIBRARY_PATH", "")
 	t.Setenv("LD_LIBRARY_PATH", existing)
@@ -88,6 +102,7 @@ func TestBrowserLibraryPathKeepsTheAmbientPath(t *testing.T) {
 }
 
 func TestBrowserLibraryPathDoesNotRepeatADirectory(t *testing.T) {
+	isolateBrowserLibs(t)
 	dir := t.TempDir()
 	t.Setenv("CERAA_BROWSER_LD_LIBRARY_PATH", dir)
 	t.Setenv("LD_LIBRARY_PATH", dir)
@@ -111,8 +126,69 @@ func TestBrowserLibraryHintOnlyFiresOnALoaderFailure(t *testing.T) {
 	if !strings.Contains(hint, "CERAA_BROWSER_LD_LIBRARY_PATH") {
 		t.Errorf("hint = %q, want it to name the variable that fixes this", hint)
 	}
+	if !strings.Contains(hint, filepath.Join("browser", "libs")) {
+		t.Errorf("hint = %q, want it to name the managed directory the launch path already reads", hint)
+	}
 	if got := browserLibraryHint(errString("connection refused")); got != "" {
 		t.Errorf("hint = %q, want none for an unrelated failure", got)
+	}
+}
+
+// A host-neutral location, so another machine can unpack the libraries there
+// and be found without an environment variable. The absolute path this list used
+// to name only existed on the machine it was written on.
+func TestBrowserLibraryPathFindsTheHomeLocalLibs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CERAA_HOME", t.TempDir())
+	t.Setenv("CERAA_BROWSER_LD_LIBRARY_PATH", "")
+	t.Setenv("LD_LIBRARY_PATH", "")
+
+	real := browserSharedLibDirs
+	t.Cleanup(func() { browserSharedLibDirs = real })
+	browserSharedLibDirs = nil
+
+	dir := filepath.Join(home, ".local", "chrome-libs", "root", "usr", "lib", "x86_64-linux-gnu")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := browserLibraryPath(); !strings.Contains(got, dir) {
+		t.Errorf("browserLibraryPath() = %q, want it to include %q", got, dir)
+	}
+}
+
+func TestProbeBrowserReportsTheVersion(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "chrome")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho 'Chromium 132.0.6834.83'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := probeBrowserBinary(context.Background(), binary)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !strings.Contains(detail, "Chromium 132.0.6834.83") {
+		t.Errorf("detail = %q, want the version the binary printed", detail)
+	}
+}
+
+// The loader message arrives on stderr and exec only reports the exit status, so
+// the hint has to see the combined output or it stays silent on exactly the
+// failure it exists for.
+func TestProbeBrowserNamesTheLoaderFix(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "chrome")
+	script := "#!/bin/sh\necho 'error while loading shared libraries: libatk-1.0.so.0: cannot open shared object file' >&2\nexit 127\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := probeBrowserBinary(context.Background(), binary)
+	if err == nil {
+		t.Fatalf("probe = %q, want an error", detail)
+	}
+	if !strings.Contains(err.Error(), "libatk-1.0.so.0") {
+		t.Errorf("error = %q, want the missing library named", err)
+	}
+	if !strings.Contains(err.Error(), "CERAA_BROWSER_LD_LIBRARY_PATH") {
+		t.Errorf("error = %q, want the variable that fixes it", err)
 	}
 }
 
