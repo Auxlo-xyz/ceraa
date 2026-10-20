@@ -59,18 +59,17 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 		return nil, err
 	}
 
-	control := launcher.New().
-		Headless(true).
-		// Containers usually run as root without user namespaces, where Chrome's
-		// own sandbox cannot start. Shared memory is small in a container, which
-		// is why the usual /dev/shm crash needs disabling too.
-		NoSandbox(true).
-		Set("disable-dev-shm-usage").
-		Leakless(false).
-		Env(browserLaunchEnv()...).
-		Bin(binary)
-
-	controlURL, err := control.Launch()
+	controlURL, err := launchRodBrowser(binary)
+	if err != nil && browserLibraryHint(err) != "" {
+		// A loader failure is a host this build predates: it used to point at
+		// one absolute directory. Provision the libraries once and try again;
+		// a launch that still fails reports both failures.
+		if provisionErr := provisionBrowserLibraries(binary); provisionErr != nil {
+			return nil, fmt.Errorf("launch %s: %w%s (installing the missing libraries failed: %v)",
+				binary, err, browserLibraryHint(err), provisionErr)
+		}
+		controlURL, err = launchRodBrowser(binary)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("launch %s: %w%s", binary, err, browserLibraryHint(err))
 	}
@@ -90,6 +89,24 @@ func newRodDriver(ctx context.Context) (browserDriver, error) {
 	// cannot stall a whole run.
 	page = page.Timeout(pageActionTimeout)
 	return &rodDriver{browser: browser, page: page}, nil
+}
+
+// launchRodBrowser starts the browser with the environment the tool computes.
+// It is a function rather than inline code because a failed launch may be
+// repaired and retried, and the retry has to rebuild the environment to see the
+// directory the repair populated.
+func launchRodBrowser(binary string) (string, error) {
+	control := launcher.New().
+		Headless(true).
+		// Containers usually run as root without user namespaces, where Chrome's
+		// own sandbox cannot start. Shared memory is small in a container, which
+		// is why the usual /dev/shm crash needs disabling too.
+		NoSandbox(true).
+		Set("disable-dev-shm-usage").
+		Leakless(false).
+		Env(browserLaunchEnv()...).
+		Bin(binary)
+	return control.Launch()
 }
 
 // browserSharedLibDirs is a test seam for extra candidates. Production paths
