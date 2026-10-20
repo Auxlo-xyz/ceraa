@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 // GeminiSubscription identifies a Gemini Code Assist profile: Google OAuth
@@ -84,6 +86,120 @@ func CodeAssistTier(reason ReasonLevel) string {
 	default:
 		return "medium"
 	}
+}
+
+// CodeAssistValidationError is Google's second sign-in step. The OAuth grant
+// is valid, but the account must be verified before Code Assist will serve a
+// request. It is a typed error so every surface can show the verification
+// link, rather than dumping the raw 403 JSON that left the user with a
+// dead-end "Verify your account to continue" body.
+type CodeAssistValidationError struct {
+	Message       string // Google's validation_error_message
+	URL           string // validation_url, https only
+	LinkText      string // validation_url_link_text
+	LearnMoreURL  string // validation_learn_more_url, https only
+	LearnMoreText string // validation_learn_more_link_text
+}
+
+func (e *CodeAssistValidationError) Error() string {
+	var b strings.Builder
+	b.WriteString("Gemini Code Assist needs account verification")
+	if message := strings.TrimSpace(e.Message); message != "" {
+		b.WriteString(": ")
+		b.WriteString(strings.TrimSuffix(message, "."))
+		b.WriteString(".")
+	} else {
+		b.WriteString(".")
+	}
+	if e.URL != "" {
+		label := strings.TrimSpace(e.LinkText)
+		if label == "" {
+			label = "Verify your account"
+		}
+		b.WriteString("\n\n")
+		b.WriteString(label)
+		b.WriteString(": ")
+		b.WriteString(e.URL)
+		b.WriteString("\n\nFinish the check in the browser, then send your message again.")
+	}
+	if e.LearnMoreURL != "" {
+		label := strings.TrimSpace(e.LearnMoreText)
+		if label == "" {
+			label = "Learn more"
+		}
+		b.WriteString("\n")
+		b.WriteString(label)
+		b.WriteString(": ")
+		b.WriteString(e.LearnMoreURL)
+	}
+	return b.String()
+}
+
+// codeAssistValidationFromBody extracts the verification link from a 403.
+// The URL is surfaced only when it is https: the body comes from the
+// provider, and an http link in a chat is not something to make clickable.
+func codeAssistValidationFromBody(raw []byte) *CodeAssistValidationError {
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Details []struct {
+				Metadata map[string]string `json:"metadata"`
+				Links    []struct {
+					Description string `json:"description"`
+					URL         string `json:"url"`
+				} `json:"links"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil
+	}
+	for _, detail := range envelope.Error.Details {
+		link := httpsURL(detail.Metadata["validation_url"])
+		if link == "" {
+			continue
+		}
+		message := detail.Metadata["validation_error_message"]
+		if message == "" {
+			message = envelope.Error.Message
+		}
+		return &CodeAssistValidationError{
+			Message:       message,
+			URL:           link,
+			LinkText:      detail.Metadata["validation_url_link_text"],
+			LearnMoreURL:  httpsURL(detail.Metadata["validation_learn_more_url"]),
+			LearnMoreText: detail.Metadata["validation_learn_more_link_text"],
+		}
+	}
+	for _, detail := range envelope.Error.Details {
+		for _, link := range detail.Links {
+			if !strings.Contains(strings.ToLower(link.Description), "verify") {
+				continue
+			}
+			if target := httpsURL(link.URL); target != "" {
+				return &CodeAssistValidationError{
+					Message:  envelope.Error.Message,
+					URL:      target,
+					LinkText: link.Description,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// httpsURL returns the candidate only when it is a usable https URL, so a
+// malformed or non-TLS link never becomes a button in the chat.
+func httpsURL(raw string) string {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return ""
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return ""
+	}
+	return candidate
 }
 
 // codeAssistEnvelope is the v1internal body: the standard generateContent
@@ -248,6 +364,14 @@ func (c *StreamingClient) streamCodeAssist(ctx context.Context, req StreamReques
 		if readErr != nil {
 			raw = []byte(readErr.Error())
 		}
+		// Account verification is terminal and account-level: the sandbox
+		// endpoint would return the same 403, so surface the link instead of
+		// failing over and then dumping the JSON.
+		if resp.StatusCode == http.StatusForbidden {
+			if validation := codeAssistValidationFromBody(raw); validation != nil {
+				return validation
+			}
+		}
 		// 401 renews the grant once, then retries. Anything else retries only
 		// across endpoints, never twice on the same one.
 		if resp.StatusCode == http.StatusUnauthorized && !refreshed {
@@ -284,4 +408,103 @@ func codeAssistFailover(status int, raw []byte) bool {
 		}
 	}
 	return false
+}
+
+// ProbeCodeAssistAccount reports whether the signed-in account still needs
+// Google's verification step. It is the post-exchange half of the login: the
+// OAuth grant can be valid while Code Assist refuses to serve until the
+// account is verified, and claiming success at that point is what confused
+// the operator. A nil error with a nil result means the account is usable.
+// A probe failure is not fatal to the login; callers log it and keep the
+// grant, because the first request will surface the same requirement.
+func ProbeCodeAssistAccount(ctx context.Context, tokens CodexTokenSource) (*CodeAssistValidationError, error) {
+	return probeCodeAssistAccount(ctx, CodeAssistBaseURL, tokens)
+}
+
+func probeCodeAssistAccount(ctx context.Context, baseURL string, tokens CodexTokenSource) (*CodeAssistValidationError, error) {
+	if tokens == nil {
+		return nil, fmt.Errorf("codeassist: no credential source configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	token, err := tokens.AccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"metadata": map[string]string{
+			"ideType":    "IDE_UNSPECIFIED",
+			"platform":   "PLATFORM_UNSPECIFIED",
+			"pluginType": "GEMINI",
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("codeassist: encode account check: %w", err)
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/v1internal:loadCodeAssist"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("codeassist: account check request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	for key, value := range codeAssistIdentityHeaders {
+		req.Header.Set(key, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("codeassist: account check: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("codeassist: account check response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if validation := codeAssistValidationFromBody(raw); validation != nil {
+			return validation, nil
+		}
+		return nil, fmt.Errorf("codeassist: account check answered HTTP %d", resp.StatusCode)
+	}
+	var account struct {
+		CurrentTier *struct {
+			ID string `json:"id"`
+		} `json:"currentTier"`
+		IneligibleTiers []struct {
+			ReasonCode                  string `json:"reasonCode"`
+			ReasonMessage               string `json:"reasonMessage"`
+			ValidationURL               string `json:"validationUrl"`
+			ValidationErrorMessage      string `json:"validationErrorMessage"`
+			ValidationURLLinkText       string `json:"validationUrlLinkText"`
+			ValidationLearnMoreURL      string `json:"validationLearnMoreUrl"`
+			ValidationLearnMoreLinkText string `json:"validationLearnMoreLinkText"`
+		} `json:"ineligibleTiers"`
+	}
+	if err := json.Unmarshal(raw, &account); err != nil {
+		return nil, fmt.Errorf("codeassist: account check response: %w", err)
+	}
+	if account.CurrentTier != nil {
+		return nil, nil
+	}
+	for _, tier := range account.IneligibleTiers {
+		if tier.ReasonCode != "VALIDATION_REQUIRED" {
+			continue
+		}
+		link := httpsURL(tier.ValidationURL)
+		if link == "" {
+			continue
+		}
+		message := tier.ValidationErrorMessage
+		if message == "" {
+			message = tier.ReasonMessage
+		}
+		return &CodeAssistValidationError{
+			Message:       message,
+			URL:           link,
+			LinkText:      tier.ValidationURLLinkText,
+			LearnMoreURL:  httpsURL(tier.ValidationLearnMoreURL),
+			LearnMoreText: tier.ValidationLearnMoreLinkText,
+		}, nil
+	}
+	return nil, nil
 }

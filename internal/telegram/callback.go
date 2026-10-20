@@ -491,6 +491,13 @@ func handleCallback(token string, q *callbackQuery) {
 			menus.Inline("provider", 0))
 		return
 	}
+	// The Gemini verification check is not a provider route: it names no
+	// provider and must not fall through routeProviderCallback, so it is
+	// handled here before the family below.
+	if data == "gemini:verified" {
+		checkGeminiAccount(token, chatID)
+		return
+	}
 	if data == "provider:codex" {
 		// Same entry point as the onboarding button, so a configured user reaches
 		// Codex from the Provider / Model menu.

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -402,5 +403,149 @@ func TestCodeAssistFailoverPredicate(t *testing.T) {
 	}
 	if codeAssistFailover(http.StatusInternalServerError, []byte(`{}`)) {
 		t.Error("a 500 fails over; endpoint rotation is not a quota strategy")
+	}
+}
+
+// The account-verification 403 carries Google's second-step link in
+// details[].metadata. Parsing it is what turns a dead-end JSON body into an
+// actionable message.
+func TestCodeAssistValidationErrorFrom403(t *testing.T) {
+	const payload = `{
+  "error": {
+    "code": 403,
+    "message": "Verify your account to continue.",
+    "status": "PERMISSION_DENIED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "VALIDATION_REQUIRED",
+        "domain": "cloudcode-pa.googleapis.com",
+        "metadata": {
+          "validation_learn_more_url": "https://support.google.com/accounts?p=al_alert",
+          "validation_error_message": "Verify your account to continue.",
+          "validation_url_link_text": "Verify your account",
+          "validation_url": "https://accounts.google.com/signin/continue?sarp=1&scc=1&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini"
+        }
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.Help",
+        "links": [
+          {"description": "Verify your account", "url": "https://accounts.google.com/signin/continue?sarp=1"},
+          {"description": "Learn more", "url": "https://support.google.com/accounts?p=al_alert"}
+        ]
+      }
+    ]
+  }
+}`
+	got := codeAssistValidationFromBody([]byte(payload))
+	if got == nil {
+		t.Fatal("no validation error parsed from the 403 payload")
+	}
+	if !strings.Contains(got.URL, "accounts.google.com/signin/continue") {
+		t.Errorf("url = %q, want the signin/continue link", got.URL)
+	}
+	if got.LinkText != "Verify your account" {
+		t.Errorf("link text = %q", got.LinkText)
+	}
+	if !strings.Contains(got.LearnMoreURL, "support.google.com") {
+		t.Errorf("learn-more url = %q", got.LearnMoreURL)
+	}
+	text := got.Error()
+	if !strings.Contains(text, got.URL) || !strings.Contains(text, "verification") {
+		t.Errorf("error text is not actionable:\n%s", text)
+	}
+	if strings.Contains(text, `"details"`) {
+		t.Errorf("error text still carries the raw provider body:\n%s", text)
+	}
+}
+
+// A non-TLS link never becomes a clickable instruction, even if the provider
+// body carries one.
+func TestCodeAssistValidationErrorRejectsPlainHTTP(t *testing.T) {
+	payload := []byte(`{"error":{"message":"Verify your account to continue.","details":[{"metadata":{"validation_url":"http://accounts.google.com/signin/continue"}}]}}`)
+	if got := codeAssistValidationFromBody(payload); got != nil {
+		t.Fatalf("parsed a plain-http validation link: %+v", got)
+	}
+}
+
+// The transport must stop at the account-verification 403: the sandbox host
+// returns the same account-level refusal, so a failover only doubles the wait
+// and still ends in the same dead end.
+func TestCodeAssistStreamSurfacesValidationLink(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":403,"message":"Verify your account to continue.","details":[{"metadata":{"validation_url":"https://accounts.google.com/signin/continue?sarp=1","validation_url_link_text":"Verify your account","validation_error_message":"Verify your account to continue."}}]}}`))
+	}))
+	defer srv.Close()
+
+	client := &StreamingClient{
+		cfg: ProviderConfig{
+			Model:            "Gemini 3.8 Flash",
+			BaseURL:          srv.URL,
+			CodeAssistNative: true,
+			CodeAssistTokens: stubCodeAssistCreds{token: "tok-test", refreshed: new(int32)},
+		},
+		http: srv.Client(),
+	}
+	err := client.streamCodeAssist(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	}, func(ProviderResponse) {})
+	var validation *CodeAssistValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %v, want a CodeAssistValidationError", err)
+	}
+	if !strings.Contains(validation.URL, "accounts.google.com/signin/continue") {
+		t.Errorf("url = %q", validation.URL)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("requests = %d, want one (no sandbox failover for account verification)", got)
+	}
+}
+
+// The post-login probe reads the same requirement from loadCodeAssist, so the
+// flow can present step 2 before a task is attempted.
+func TestProbeCodeAssistAccountReportsValidation(t *testing.T) {
+	var path, auth string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth = r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"ineligibleTiers":[{"reasonCode":"VALIDATION_REQUIRED","reasonMessage":"Verify your account to continue.","validationUrl":"https://accounts.google.com/signin/continue?sarp=1","validationUrlLinkText":"Verify your account","validationErrorMessage":"Verify your account to continue.","validationLearnMoreUrl":"https://support.google.com/accounts?p=al_alert"}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := probeCodeAssistAccount(context.Background(), srv.URL, stubCodeAssistCreds{token: "tok-test", refreshed: new(int32)})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got == nil || !strings.Contains(got.URL, "accounts.google.com/signin/continue") {
+		t.Fatalf("probe = %+v, want the verification link", got)
+	}
+	if path != "/v1internal:loadCodeAssist" {
+		t.Errorf("path = %q, want the loadCodeAssist method", path)
+	}
+	if auth != "Bearer tok-test" {
+		t.Errorf("authorization = %q", auth)
+	}
+	metadata, _ := body["metadata"].(map[string]any)
+	if metadata["pluginType"] != "GEMINI" {
+		t.Errorf("metadata = %v, want the reference client metadata", metadata)
+	}
+}
+
+// A usable account (currentTier present) must not produce a phantom step 2.
+func TestProbeCodeAssistAccountAcceptsCurrentTier(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"aicode-consumers"}`))
+	}))
+	defer srv.Close()
+	got, err := probeCodeAssistAccount(context.Background(), srv.URL, stubCodeAssistCreds{token: "tok-test", refreshed: new(int32)})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("probe = %+v, want nil for a usable account", got)
 	}
 }

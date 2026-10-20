@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"ceraa/harness/llm"
 	"ceraa/internal/geminiauth"
 	"ceraa/internal/telegram/menus"
 )
@@ -88,6 +89,7 @@ func TestGeminiCodeStageActivates(t *testing.T) {
 	original := geminiExchange
 	geminiExchange = func(ctx context.Context, flow *geminiauth.Flow, code string) error { return nil }
 	t.Cleanup(func() { geminiExchange = original })
+	stubGeminiAccountCheck(t, nil, nil)
 
 	trackGeminiFlow(5151, geminiFlowOwner{chatID: 5151, activate: true, activeAtStart: "opencode", flow: &geminiauth.Flow{}})
 	pendingProvider.Store(5151, providerDraft{ID: "gemini", Stage: "code"})
@@ -148,4 +150,86 @@ func TestGeminiCallbackShapes(t *testing.T) {
 			t.Errorf("%q routed to (%q, %v); the button is dead", data, provider, got)
 		}
 	}
+}
+
+// A login that succeeds but leaves Google asking for account verification is
+// two steps, not one: the flow must name the second step, show the link, and
+// not announce that Gemini is ready to answer.
+func TestGeminiCodeStageCapturesVerificationStep(t *testing.T) {
+	restore := stubBothState(t)
+	defer restore()
+	seen := captureGeminiNotify(t)
+	if err := providers.setActive("opencode"); err != nil {
+		t.Fatal(err)
+	}
+	original := geminiExchange
+	geminiExchange = func(ctx context.Context, flow *geminiauth.Flow, code string) error { return nil }
+	t.Cleanup(func() { geminiExchange = original })
+	stubGeminiAccountCheck(t, &llm.CodeAssistValidationError{
+		Message:  "Verify your account to continue.",
+		URL:      "https://accounts.google.com/signin/continue?sarp=1",
+		LinkText: "Verify your account",
+	}, nil)
+
+	trackGeminiFlow(5151, geminiFlowOwner{chatID: 5151, activate: true, activeAtStart: "opencode", flow: &geminiauth.Flow{}})
+	pendingProvider.Store(5151, providerDraft{ID: "gemini", Stage: "code"})
+	if !handleGeminiCodeStage("test-token", 5151, "code-abc") {
+		t.Fatal("code stage declined the paste")
+	}
+	if got := providers.active(); got != "gemini" {
+		t.Errorf("active = %q; the verified provider must still become active", got)
+	}
+	joined := strings.Join(seen.snapshot(), "\n")
+	if !strings.Contains(joined, "Step 2 of 2") || !strings.Contains(joined, "accounts.google.com/signin/continue") {
+		t.Errorf("the second step was not captured:\n%v", seen.snapshot())
+	}
+	if strings.Contains(joined, "Gemini provider activated") {
+		t.Errorf("the flow claimed Gemini was ready before verification:\n%v", seen.snapshot())
+	}
+}
+
+// The verification button re-runs the probe. A verified account is reported
+// ready; a still-unverified one keeps the link.
+func TestGeminiVerifiedCallbackChecksAgain(t *testing.T) {
+	seen := captureGeminiNotify(t)
+	stubGeminiAccountCheck(t, nil, nil)
+
+	var query callbackQuery
+	if err := json.Unmarshal([]byte(`{"id":"1","data":"gemini:verified","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	handleCallback("test-token", &query)
+	if joined := strings.Join(seen.snapshot(), "\n"); !strings.Contains(joined, "verified and ready") {
+		t.Errorf("gemini:verified did not confirm the account; notified:\n%v", seen.snapshot())
+	}
+}
+
+// Pressing the check before Google clears the validation must not claim
+// success; it repeats the link.
+func TestGeminiVerifiedCallbackRepeatsPendingLink(t *testing.T) {
+	seen := captureGeminiNotify(t)
+	stubGeminiAccountCheck(t, &llm.CodeAssistValidationError{
+		Message:  "Verify your account to continue.",
+		URL:      "https://accounts.google.com/signin/continue?sarp=1",
+		LinkText: "Verify your account",
+	}, nil)
+
+	var query callbackQuery
+	if err := json.Unmarshal([]byte(`{"id":"1","data":"gemini:verified","message":{"chat":{"id":5151},"message_id":5}}`), &query); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	handleCallback("test-token", &query)
+	joined := strings.Join(seen.snapshot(), "\n")
+	if !strings.Contains(joined, "still reports") || !strings.Contains(joined, "accounts.google.com/signin/continue") {
+		t.Errorf("a pending account was reported as verified:\n%v", seen.snapshot())
+	}
+}
+
+func stubGeminiAccountCheck(t *testing.T, validation *llm.CodeAssistValidationError, err error) {
+	t.Helper()
+	original := geminiAccountCheck
+	geminiAccountCheck = func(context.Context) (*llm.CodeAssistValidationError, error) {
+		return validation, err
+	}
+	t.Cleanup(func() { geminiAccountCheck = original })
 }

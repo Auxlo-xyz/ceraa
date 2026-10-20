@@ -2697,11 +2697,23 @@ func geminiModelForAccount() string {
 
 // activateGeminiProvider saves the Gemini profile and makes it active.
 func activateGeminiProvider(token string, chatID int64) {
+	model, err := activateGeminiProviderQuiet()
+	if err != nil {
+		geminiNotify(token, chatID, "Gemini "+err.Error(), nil)
+		return
+	}
+	geminiNotify(token, chatID, "✅ Gemini provider activated with model "+model+". Send a task to use it.", nil)
+}
+
+// activateGeminiProviderQuiet switches to Gemini without announcing that it
+// is ready. Used by the login when Google still wants the account verified:
+// the provider must be active for the next task, but "activated, send a task"
+// would be a promise the account cannot keep yet.
+func activateGeminiProviderQuiet() (string, error) {
 	model, err := guardModel("gemini", geminiModelForAccount())
 	if err != nil {
 		logger.Warn("Gemini activate: " + err.Error())
-		geminiNotify(token, chatID, "Gemini activation failed: "+err.Error(), nil)
-		return
+		return "", fmt.Errorf("activation failed: %w", err)
 	}
 	profile := config.ProviderProfile{
 		URL:             llm.CodeAssistBaseURL,
@@ -2712,16 +2724,14 @@ func activateGeminiProvider(token string, chatID int64) {
 	}
 	if err := defaultState.setProviderProfile("gemini", profile); err != nil {
 		logger.Warn("gemini activate: profile save failed: " + err.Error())
-		geminiNotify(token, chatID, "Gemini profile save failed: "+err.Error(), nil)
-		return
+		return "", fmt.Errorf("profile save failed: %w", err)
 	}
 	if err := defaultState.setProvider("gemini"); err != nil {
 		logger.Warn("gemini activate: provider set failed: " + err.Error())
-		geminiNotify(token, chatID, "Gemini provider activation failed: "+err.Error(), nil)
-		return
+		return "", fmt.Errorf("provider activation failed: %w", err)
 	}
 	logger.Info("gemini activate: provider=" + defaultState.provider() + " model=" + model)
-	geminiNotify(token, chatID, "✅ Gemini provider activated with model "+model+". Send a task to use it.", nil)
+	return model, nil
 }
 
 // geminiFlowOwner records which chat started a login and what it wanted.
@@ -2755,10 +2765,59 @@ var geminiExchange = func(ctx context.Context, flow *geminiauth.Flow, code strin
 	return geminiauth.NewManager().Exchange(ctx, flow, code)
 }
 
+// geminiAccountCheck runs the post-exchange account probe. Indirected so a
+// test can assert the second step without reaching Google.
+var geminiAccountCheck = func(ctx context.Context) (*llm.CodeAssistValidationError, error) {
+	return llm.ProbeCodeAssistAccount(ctx, geminiauth.NewTokenSource())
+}
+
 // geminiNotify posts a Gemini outcome to a chat. Indirected so a test can
 // assert the user was actually told.
 var geminiNotify = func(token string, chatID int64, text string, kb map[string]any) {
 	sendHTML(token, chatID, text, kb)
+}
+
+// geminiVerificationText is Google's second step. The sign-in grant is
+// already valid; the account itself must be verified before Code Assist will
+// serve a request, so the flow says so instead of claiming it is ready.
+func geminiVerificationText(validation *llm.CodeAssistValidationError) string {
+	label := strings.TrimSpace(validation.LinkText)
+	if label == "" {
+		label = "Verify your account"
+	}
+	return "<b>Step 2 of 2: " + html.EscapeString(label) + "</b>\n" +
+		html.EscapeString(validation.URL) + "\n\n" +
+		"Finish the check in the browser, then press \"✅ I've verified\"."
+}
+
+// geminiVerificationKeyboard offers the link and the check. The link is
+// already https-only from the parser, so it is safe as a URL button.
+func geminiVerificationKeyboard(link string) map[string]any {
+	rows := [][]map[string]string{}
+	if strings.TrimSpace(link) != "" {
+		rows = append(rows, []map[string]string{{"text": "🔗 Verify account", "url": link}})
+	}
+	rows = append(rows, []map[string]string{{"text": "✅ I've verified", "callback_data": "gemini:verified"}})
+	return map[string]any{"inline_keyboard": rows}
+}
+
+// checkGeminiAccount re-runs the account probe after the operator completes
+// Google's verification. The grant is already stored; verification attaches
+// to the account, so nothing is re-exchanged.
+func checkGeminiAccount(token string, chatID int64) {
+	validation, err := geminiAccountCheck(context.Background())
+	if err != nil {
+		logger.Warn("gemini account check failed: " + err.Error())
+		geminiNotify(token, chatID, "Could not check the Gemini account: "+err.Error(), nil)
+		return
+	}
+	if validation != nil {
+		geminiNotify(token, chatID,
+			"Google still reports this account as unverified.\n\n"+geminiVerificationText(validation),
+			geminiVerificationKeyboard(validation.URL))
+		return
+	}
+	geminiNotify(token, chatID, "✅ Gemini account verified and ready.", nil)
 }
 
 // handleGeminiCodeStage exchanges a pasted callback URL or bare code for the
@@ -2786,7 +2845,31 @@ func handleGeminiCodeStage(token string, chatID int64, text string) bool {
 	}
 	pendingProvider.Delete(chatID)
 	clearGeminiFlow(chatID)
-	if flowActivationStillWanted("Gemini", owner.activate, owner.activeAtStart) {
+	activationWanted := flowActivationStillWanted("Gemini", owner.activate, owner.activeAtStart)
+	// Google sometimes asks for account verification after the OAuth grant is
+	// issued. Probe before claiming success: the grant is real, but Code
+	// Assist refuses to serve until that second step is done. A probe failure
+	// is not fatal to the login; the first request will surface the same
+	// requirement through the typed 403.
+	if validation, checkErr := geminiAccountCheck(context.Background()); checkErr != nil {
+		logger.Warn("gemini account check skipped: " + checkErr.Error())
+	} else if validation != nil {
+		note := ""
+		if activationWanted {
+			if _, err := activateGeminiProviderQuiet(); err != nil {
+				geminiNotify(token, chatID, "Gemini "+err.Error(), nil)
+				return true
+			}
+		} else {
+			note = "\n\n" + flowNotActiveReason("Gemini", owner.activate)
+		}
+		geminiNotify(token, chatID,
+			"✅ Google sign-in complete. One more step before Gemini can answer.\n\n"+
+				geminiVerificationText(validation)+note,
+			geminiVerificationKeyboard(validation.URL))
+		return true
+	}
+	if activationWanted {
 		activateGeminiProvider(token, chatID)
 		return true
 	}
