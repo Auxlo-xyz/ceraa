@@ -210,15 +210,23 @@ func Gate(rawurl string) error {
 		e = &o
 	}
 	scopeMu.RUnlock()
-	if e == nil {
-		return ErrNoMission
-	}
+
 	parsed, err := url.Parse(strings.TrimSpace(rawurl))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("%w: %s", ErrBadURL, rawurl)
 	}
 	host := canonicalHost(parsed)
 	port := urlPort(parsed)
+
+	if e == nil {
+		// No engagement: observation-grade access to the public web, the
+		// same floor web_fetch already has. The host's own machine stays
+		// refused, because nothing about an absent record authorizes it.
+		if isSelfTargetHost(host) {
+			return fmt.Errorf("%w: %s", ErrSelfTarget, host)
+		}
+		return nil
+	}
 
 	// An explicit literal token is the operator authorizing this exact
 	// endpoint, including an internal one. It outranks the self-target rule,
@@ -428,7 +436,9 @@ func Take(n int) error {
 	scopeMu.Lock()
 	defer scopeMu.Unlock()
 	if active == nil {
-		return ErrNoMission
+		// No engagement means no metered mission: a plain probe is
+		// observation, and there is no budget to charge it to.
+		return nil
 	}
 	if n <= 0 {
 		return nil

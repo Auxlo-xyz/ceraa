@@ -16,10 +16,16 @@ import (
 // deliberate: the scope gate is tested one layer down from the wall, and its
 // refusals are the ones that keep a request from ever being fired.
 
-func TestGateNeedsAMissionBeforeAnything(t *testing.T) {
+func TestGateWithoutAnEngagementIsObservationGrade(t *testing.T) {
 	Stop()
-	if err := Gate("https://example.com/targets"); !errors.Is(err, ErrNoMission) {
-		t.Fatalf("Gate without an engagement: %v, want ErrNoMission", err)
+	if err := Gate("https://example.com/targets"); err != nil {
+		t.Fatalf("public observation refused without an engagement: %v", err)
+	}
+	if err := Gate("http://127.0.0.1:8787/bridge"); !errors.Is(err, ErrSelfTarget) {
+		t.Fatalf("self-target allowed without an engagement: %v", err)
+	}
+	if err := Gate("http://169.254.169.254/latest/meta-data"); !errors.Is(err, ErrSelfTarget) {
+		t.Fatalf("metadata address allowed without an engagement: %v", err)
 	}
 }
 
@@ -237,10 +243,12 @@ func TestRequestCapIsLifetime(t *testing.T) {
 	}
 }
 
-func TestTakeWithoutAnEngagementRefuses(t *testing.T) {
+func TestTakeWithoutAnEngagementIsUncapped(t *testing.T) {
 	Stop()
-	if err := Take(1); !errors.Is(err, ErrNoMission) {
-		t.Fatalf("Take without a mission: %v, want ErrNoMission", err)
+	for i := 0; i < 50; i++ {
+		if err := Take(1); err != nil {
+			t.Fatalf("uncapped Take: %v", err)
+		}
 	}
 }
 

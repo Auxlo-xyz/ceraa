@@ -179,7 +179,38 @@ func filterHeaders(h http.Header) map[string]string {
 }
 
 // Probe performs one bounded HTTP observation and writes its receipt.
+//
+// The body is hashed and head-cited, never returned: a probe answers "what did
+// it say", not "give me the file".
 func Probe(ctx context.Context, r Request) (Result, error) {
+	res, _, err := execute(ctx, r, maxBodyBytes, false)
+	return res, err
+}
+
+// FetchForScan runs the same pipeline as Probe and hands the body back for
+// scanning. One engine means one gate, one budget, one receipt and one
+// identity: a scan is a sequence of observations, not a second network path.
+func FetchForScan(ctx context.Context, rawurl string, bodyCap int) ([]byte, string, Result, error) {
+	if bodyCap <= 0 || bodyCap > maxPageBytes {
+		bodyCap = maxPageBytes
+	}
+	if err := Gate(rawurl); err != nil {
+		return nil, "", Result{}, err
+	}
+	if err := Take(1); err != nil {
+		return nil, "", Result{}, err
+	}
+	req := Request{URL: rawurl, Method: http.MethodGet}
+	res, body, err := execute(ctx, req, bodyCap, true)
+	if err != nil {
+		return nil, "", Result{}, err
+	}
+	return body, res.Headers["content-type"], res, nil
+}
+
+// execute is the single request pipeline behind the probe and the scanner:
+// validation, transport, identity, bounded read, receipt.
+func execute(ctx context.Context, r Request, bodyCap int, keepBody bool) (Result, []byte, error) {
 	method := strings.ToUpper(strings.TrimSpace(r.Method))
 	if method == "" {
 		method = http.MethodGet
@@ -187,31 +218,31 @@ func Probe(ctx context.Context, r Request) (Result, error) {
 	if !allowedMethods[method] {
 		// The whitelist exists because arbitrary verbs turn the probe into a
 		// mutation engine the scope layer never asked for.
-		return Result{}, fmt.Errorf("method %q is not allowed; one of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE", method)
+		return Result{}, nil, fmt.Errorf("method %q is not allowed; one of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE", method)
 	}
 
 	parsed, err := url.Parse(strings.TrimSpace(r.URL))
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrBadURL, err)
+		return Result{}, nil, fmt.Errorf("%w: %v", ErrBadURL, err)
 	}
 	// Scheme checked here as well as at Gate: the probe is independently
 	// callable and must stand on the same floor.
 	scheme := strings.ToLower(parsed.Scheme)
 	if (scheme != "http" && scheme != "https") || parsed.Host == "" {
-		return Result{}, fmt.Errorf("%w: probe url must be absolute http:// or https://", ErrBadURL)
+		return Result{}, nil, fmt.Errorf("%w: probe url must be absolute http:// or https://", ErrBadURL)
 	}
 
 	for name, value := range r.Headers {
 		if !isHeaderToken(name) {
-			return Result{}, fmt.Errorf("header %q is not a valid header name", name)
+			return Result{}, nil, fmt.Errorf("header %q is not a valid header name", name)
 		}
 		// A value carrying CRLF is header smuggling, not a header.
 		if strings.ContainsAny(value, "\r\n") {
-			return Result{}, fmt.Errorf("header %q value contains a line break", name)
+			return Result{}, nil, fmt.Errorf("header %q value contains a line break", name)
 		}
 	}
 	if len(r.Body) > maxRequestBodyBytes {
-		return Result{}, fmt.Errorf("body is %dB, over the %dB probe cap", len(r.Body), maxRequestBodyBytes)
+		return Result{}, nil, fmt.Errorf("body is %dB, over the %dB probe cap", len(r.Body), maxRequestBodyBytes)
 	}
 
 	timeout := r.Timeout
@@ -224,10 +255,6 @@ func Probe(ctx context.Context, r Request) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	// Redirects are never followed. Gate applied to the URL that was asked
-	// for; a 3xx targets a host that may be out of scope, and following it
-	// silently would move the request past the gate. ErrUseLastResponse
-	// makes the transport hand back the 3xx itself.
 	client := &http.Client{}
 	if probeClient != nil {
 		client.Transport = probeClient.Transport
@@ -251,7 +278,7 @@ func Probe(ctx context.Context, r Request) (Result, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, method, parsed.String(), bodyReader)
 	if err != nil {
-		return Result{}, fmt.Errorf("build request: %w", err)
+		return Result{}, nil, fmt.Errorf("build request: %w", err)
 	}
 	for name, value := range r.Headers {
 		req.Header.Set(name, value)
@@ -268,19 +295,18 @@ func Probe(ctx context.Context, r Request) (Result, error) {
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
 	if err != nil {
-		return Result{}, fmt.Errorf("probe %s failed: %w", parsed.String(), err)
+		return Result{}, nil, fmt.Errorf("probe %s failed: %w", parsed.String(), err)
 	}
 	defer resp.Body.Close()
 
-	// Bounded read: the receipt cites at most 512KB and never warehouses the
-	// warehouse.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	// Bounded read: the receipt cites at most the cap and never warehouses
+	// the warehouse.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(bodyCap)+1))
 	if err != nil {
-		return Result{}, fmt.Errorf("read body: %w", err)
+		return Result{}, nil, fmt.Errorf("read body: %w", err)
 	}
-	readAll := len(body) <= maxBodyBytes
-	if !readAll {
-		body = body[:maxBodyBytes]
+	if len(body) > bodyCap {
+		body = body[:bodyCap]
 	}
 
 	sum := sha256.Sum256(body)
@@ -306,7 +332,10 @@ func Probe(ctx context.Context, r Request) (Result, error) {
 		res.RedirectedTo = resp.Header.Get("Location")
 	}
 	res.ReceiptID = writeReceipt(time.Now().UTC(), res)
-	return res, nil
+	if keepBody {
+		return res, body, nil
+	}
+	return res, nil, nil
 }
 
 // writeReceipt records the observation under DataDir()/recon/receipts with

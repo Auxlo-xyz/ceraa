@@ -17,8 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -271,37 +269,16 @@ func ScanAssets(ctx context.Context, pageurl string, maxAssets int) ([]PageFindi
 	return out, nil
 }
 
-// guardedHTTPFetch is the production fetcher. The pre-flight CheckURL gives a
-// refusal that can name the address; Transport holds the line at dial time,
-// which is the check a DNS rebinding swap would try to get past.
+// guardedHTTPFetch is the production fetcher. It runs the probe's own
+// pipeline, so a scan is gated by the engagement, charged to its budget and
+// receipted like any other observation: the scanner is a probe mode, not a
+// second network path with its own rules.
 func guardedHTTPFetch(ctx context.Context, target string) ([]byte, string, error) {
-	if err := netguard.CheckURL(ctx, target); err != nil {
+	body, contentType, _, err := FetchForScan(ctx, target, maxPageBytes)
+	if err != nil {
 		return nil, "", err
 	}
-	client := &http.Client{
-		Timeout:   perRequestBound,
-		Transport: netguard.Transport(),
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("User-Agent", "ceraa/0.1.0 (+go; scan-secrets)")
-	req.Header.Set("Accept", "text/*, application/*")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, resp.Header.Get("Content-Type"), fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPageBytes))
-	if err != nil {
-		return nil, resp.Header.Get("Content-Type"), fmt.Errorf("read body: %w", err)
-	}
-	return body, resp.Header.Get("Content-Type"), nil
+	return body, contentType, nil
 }
 
 // pickAssets resolves the page's script and .js link references against the
