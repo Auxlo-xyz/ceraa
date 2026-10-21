@@ -492,3 +492,53 @@ func containsString(list []string, want string) bool {
 	}
 	return false
 }
+
+// TestCollapseCatchAllFoldsTheDominantResponse covers the single page
+// application case: every path answers with the same document, so a sweep
+// would otherwise report a hundred hits that are one page.
+func TestCollapseCatchAllFoldsTheDominantResponse(t *testing.T) {
+	hits := make([]Hit, 0, 60)
+	for i := 0; i < 60; i++ {
+		hits = append(hits, Hit{Path: fmt.Sprintf("/path-%d", i), Status: 200, Size: 11910})
+	}
+	hits = append(hits, Hit{Path: "/admin", Status: 403, Size: 42})
+
+	kept, collapsed := collapseCatchAll(hits, 61)
+	if collapsed == nil {
+		t.Fatal("the dominant response was not collapsed")
+	}
+	if collapsed.Paths != 60 || collapsed.Status != 200 || collapsed.Size != 11910 {
+		t.Errorf("collapsed = %+v", collapsed)
+	}
+	if len(kept) != 2 {
+		t.Fatalf("kept %d hits, want 2", len(kept))
+	}
+	found := false
+	for _, hit := range kept {
+		if hit.Path == "/admin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the odd path out was lost: %v", kept)
+	}
+}
+
+// TestCollapseCatchAllKeepsAMinorityResponse is the other side: a handful of
+// same-sized pages is not a catch-all, and folding them would hide pages.
+func TestCollapseCatchAllKeepsAMinorityResponse(t *testing.T) {
+	hits := make([]Hit, 0, 40)
+	for i := 0; i < 40; i++ {
+		hits = append(hits, Hit{Path: fmt.Sprintf("/page-%d", i), Status: 200, Size: 500 + i})
+	}
+	for i := 0; i < 3; i++ {
+		hits = append(hits, Hit{Path: fmt.Sprintf("/same-%d", i), Status: 200, Size: 100})
+	}
+	kept, collapsed := collapseCatchAll(hits, 43)
+	if collapsed != nil {
+		t.Fatalf("a minority group was collapsed: %+v", collapsed)
+	}
+	if len(kept) != len(hits) {
+		t.Errorf("kept %d hits, want %d", len(kept), len(hits))
+	}
+}

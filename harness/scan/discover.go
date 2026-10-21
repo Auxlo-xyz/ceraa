@@ -155,6 +155,10 @@ type DiscoverResult struct {
 	ExcludedSoft404 int
 	// Soft404Sizes lists the sizes treated as not-found, empty when none.
 	Soft404Sizes []int
+	// Collapsed describes the catch-all response that answered most of the
+	// sweep, if there was one. It is the difference between a hundred hits
+	// that are one page and a hundred pages.
+	Collapsed *CatchAll
 	// ExcludedCap counts hits dropped because the result ceiling was
 	// reached.
 	ExcludedCap int
@@ -233,6 +237,7 @@ func DiscoverDetailed(ctx context.Context, opts DiscoverOptions) (DiscoverResult
 	}
 
 	kept, excluded := applyFilters(state.hitsSnapshot(), opts)
+	kept, collapsed := collapseCatchAll(kept, state.requestCount())
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Path < kept[j].Path })
 
 	result := DiscoverResult{
@@ -244,6 +249,7 @@ func DiscoverDetailed(ctx context.Context, opts DiscoverOptions) (DiscoverResult
 		ExcludedSize:    excluded.bySize,
 		ExcludedSoft404: excluded.bySoft404,
 		Soft404Sizes:    excluded.softSizes,
+		Collapsed:       collapsed,
 		Stopped:         state.stoppedReason(),
 	}
 	result.Truncated = result.Stopped != ""
@@ -783,4 +789,82 @@ func statusSet(codes []int) map[int]bool {
 		out[code] = true
 	}
 	return out
+}
+
+// CatchAll is the response that answered most of a sweep.
+//
+// A single page application answers every path with the same document, so a
+// wordlist sweep of one returns a hundred "hits" that are all the same page.
+// Reporting them one by one buries the two paths that answered differently,
+// which are the only two worth reading. The rule is deliberately narrow: the
+// group has to cover more than half the sweep and at least
+// catchAllMinPaths paths, so a site with a handful of same-sized pages keeps
+// them as separate hits.
+type CatchAll struct {
+	Status int
+	Size   int
+	Paths  int
+	Sample []string
+}
+
+// catchAllShare is the fraction of the sweep the catch-all has to cover.
+const catchAllShare = 0.5
+
+// catchAllMinPaths is the smallest group that can be a catch-all.
+const catchAllMinPaths = 5
+
+// catchAllSample is how many example paths the report keeps.
+const catchAllSample = 8
+
+// collapseCatchAll folds the dominant repeated response into one entry.
+//
+// The paths are kept in the sample, because "the same page answered 180 of
+// 200 paths" is a fact about the target and the reader needs to see which
+// paths were folded, not only how many.
+func collapseCatchAll(hits []Hit, requests int) ([]Hit, *CatchAll) {
+	if len(hits) < catchAllMinPaths {
+		return hits, nil
+	}
+	groups := make(map[string][]Hit)
+	for _, hit := range hits {
+		key := fmt.Sprintf("%d:%d", hit.Status, hit.Size)
+		groups[key] = append(groups[key], hit)
+	}
+	probed := requests
+	if probed <= 0 {
+		probed = len(hits)
+	}
+	var dominant []Hit
+	var dominantStatus, dominantSize int
+	for _, group := range groups {
+		if len(group) > len(dominant) {
+			dominant = group
+			dominantStatus = group[0].Status
+			dominantSize = group[0].Size
+		}
+	}
+	if len(dominant) < catchAllMinPaths {
+		return hits, nil
+	}
+	if float64(len(dominant))/float64(probed) <= catchAllShare {
+		return hits, nil
+	}
+	sample := make([]string, 0, catchAllSample)
+	for i, hit := range dominant {
+		if i >= catchAllSample {
+			break
+		}
+		sample = append(sample, hit.Path)
+	}
+	representative := dominant[0]
+	representative.Path = fmt.Sprintf("%s (and %d more paths answered the same %d response of %d bytes)", dominant[0].Path, len(dominant)-1, dominantStatus, dominantSize)
+	out := make([]Hit, 0, len(hits)-len(dominant)+1)
+	for _, hit := range hits {
+		if hit.Status == dominantStatus && hit.Size == dominantSize {
+			continue
+		}
+		out = append(out, hit)
+	}
+	out = append(out, representative)
+	return out, &CatchAll{Status: dominantStatus, Size: dominantSize, Paths: len(dominant), Sample: sample}
 }

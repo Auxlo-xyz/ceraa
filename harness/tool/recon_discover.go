@@ -124,6 +124,10 @@ func formatDiscoverResult(result scan.DiscoverResult, base string) string {
 		}
 		fmt.Fprintf(&b, " %dms\n", hit.ElapsedMS)
 	}
+	if result.Collapsed != nil {
+		fmt.Fprintf(&b, "catch-all: %d paths answered the same %d response of %d bytes (folded into one line); sample: %s\n",
+			result.Collapsed.Paths, result.Collapsed.Status, result.Collapsed.Size, strings.Join(result.Collapsed.Sample, ", "))
+	}
 	fmt.Fprintf(&b, "excluded: %d soft-404 (%s); %d by status; %d by explicit size; %d over the result cap\n",
 		result.ExcludedSoft404, discoverSizes(result.Soft404Sizes), result.ExcludedStatus, result.ExcludedSize, result.ExcludedCap)
 	fmt.Fprintf(&b, "refused: %d by scope; errors: %d\n", result.Refused, len(result.Errors))
