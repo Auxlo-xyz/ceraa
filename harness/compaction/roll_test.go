@@ -88,6 +88,37 @@ func TestARollFailureLeavesTheChainStanding(t *testing.T) {
 	}
 }
 
+// TestARollRequestsARollSizedOutput pins the summary budget: a request whose
+// reply dissolves the standing chain asks for SummaryRollOutputTokens, while a
+// plain fold keeps the ordinary 4,096 ceiling. The first live roll truncated
+// at 4,096 and dropped the template's final section, so this agreed budget is
+// load-bearing.
+func TestARollRequestsARollSizedOutput(t *testing.T) {
+	live := []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fix the index"}}
+	maxTokens := func(standing int) float64 {
+		t.Helper()
+		srv := newSummaryServer(t, validTestSummary())
+		defer srv.close()
+		sess := rollSession(standing)
+		c := inBandCompactor(srv.server, live)
+		if _, err := c.Compact(context.Background(), sess); err != nil {
+			t.Fatalf("compact over %d checkpoints: %v", standing, err)
+		}
+		body := srv.lastBody(t)
+		requested, ok := body["max_tokens"].(float64)
+		if !ok {
+			t.Fatalf("the request carries no max_tokens: %v", body)
+		}
+		return requested
+	}
+	if got := maxTokens(MaxCheckpointChain + 1); got != float64(SummaryRollOutputTokens) {
+		t.Errorf("a roll requested %.0f tokens, want %d", got, SummaryRollOutputTokens)
+	}
+	if got := maxTokens(MaxCheckpointChain); got != float64(SummaryOutputTokens) {
+		t.Errorf("a plain fold requested %.0f tokens, want %d", got, SummaryOutputTokens)
+	}
+}
+
 // TestARollPreemptsTierMerges pins the precedence: a chain standing over the
 // cap is consolidated by the fold's own request even when merge-eligible old
 // blocks are inside it, and no separate distillation request runs on top.

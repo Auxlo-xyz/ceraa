@@ -17,6 +17,12 @@ const (
 	DefaultBuffer       = 20000
 	DefaultKeepTokens   = 8000
 	SummaryOutputTokens = 4096
+	// SummaryRollOutputTokens lifts the summary budget when the fold's own
+	// request dissolves a standing checkpoint chain: the reply must cover the
+	// fold range AND the content of every checkpoint it is about to remove,
+	// and the first live roll failed validation after truncation at 4,096
+	// tokens cut the template's final section out of the reply.
+	SummaryRollOutputTokens = 8192
 	// MaxTotalTokens is the fallback budget when no model-specific limit has been
 	// supplied. It is the shared conservative default, not a per-model figure: a
 	// real limit arrives from the catalog via the runner, and DefaultContextLimit
@@ -1231,6 +1237,19 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		copied := message
 		copied.Usage = llm.UsageInfo{}
 		foldSession.Messages = append(foldSession.Messages, copied)
+	}
+	// A roll must dissolve the standing chain into this one summary, so it
+	// writes for more than a plain fold. summariseInBand decides the clause
+	// from the same session below, so the budget and the instruction stay in
+	// agreement: both fire when the prefix stands over MaxCheckpointChain.
+	rollStandings := 0
+	for _, message := range foldSession.Messages {
+		if message.Compaction != nil {
+			rollStandings++
+		}
+	}
+	if rollStandings > MaxCheckpointChain {
+		summaryOutput = SummaryRollOutputTokens
 	}
 	text, err := c.summarise(ctx, foldSession, summaryOutput)
 	if err != nil {
