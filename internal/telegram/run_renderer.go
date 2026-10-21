@@ -1182,6 +1182,7 @@ func editTelegramMessage(token string, chatID int64, messageID int, text string)
 // editTelegramRichMessage keeps the original payload: no reply_markup. See
 // sendRichMessage for why the rich payload is treated as fixed.
 func editTelegramRichMessage(token string, chatID int64, messageID int, markdown string) error {
+	markdown = fixTables(markdown)
 	return postTelegramEditMessage(token, map[string]any{
 		"chat_id":    chatID,
 		"message_id": messageID,
@@ -1342,6 +1343,10 @@ func postTelegramEditMessage(token string, payload map[string]any) error {
 // a separate markup-only call instead. The endpoint is private and undocumented;
 // treat its payload as fixed.
 func sendRichMessage(token string, chatID int64, markdown string) (int, error) {
+	// Tables are healed at the send choke: the model's delimiter-order and
+	// missing-delimiter habits break Telegram's server-side parser, and the
+	// message the chat finally holds is the one written here.
+	markdown = fixTables(markdown)
 	payload := map[string]any{
 		"chat_id": chatID,
 		"rich_message": map[string]any{
