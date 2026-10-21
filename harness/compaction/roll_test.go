@@ -88,6 +88,38 @@ func TestARollFailureLeavesTheChainStanding(t *testing.T) {
 	}
 }
 
+// TestARollPreemptsTierMerges pins the precedence: a chain standing over the
+// cap is consolidated by the fold's own request even when merge-eligible old
+// blocks are inside it, and no separate distillation request runs on top.
+func TestARollPreemptsTierMerges(t *testing.T) {
+	srv := newSummaryServer(t, validTestSummary())
+	defer srv.close()
+	sess := rollSession(MaxCheckpointChain + 1)
+	for i := 0; i < 3; i++ {
+		sess.Messages[1+i].Compaction.Tier = 1
+		sess.Messages[1+i].Compaction.Generation = "old"
+	}
+	c := inBandCompactor(srv.server, []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fix the index"}})
+	ok, err := c.Compact(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !ok {
+		t.Fatal("nothing was compacted")
+	}
+	if len(srv.bodies) != 1 {
+		t.Fatalf("the roll ran %d requests over merge-eligible blocks, want only the fold's single request", len(srv.bodies))
+	}
+	if standing := standingCheckpointsIn(sess); standing != 1 {
+		t.Fatalf("%d checkpoints remain, want only the one the fold wrote", standing)
+	}
+	for _, message := range sess.Messages {
+		if message.Compaction != nil && message.Compaction.Tier != 1 {
+			t.Errorf("the surviving checkpoint is tier %d, want the fold's tier 1", message.Compaction.Tier)
+		}
+	}
+}
+
 func TestConsolidationClauseIsRequestScoped(t *testing.T) {
 	clause := consolidationClause()
 	live := []llm.Item{{Kind: "text", Role: llm.RoleUser, Text: "fix the index"}}

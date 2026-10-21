@@ -1136,19 +1136,15 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 	// Survival ticks first: every checkpoint still standing gains one, and
 	// five survivals promote it to old age and merge eligibility.
 	tickSurvivors(sess.Messages)
-	// Tier distillation before the new fold: old blocks of one tier merge
-	// into a single block of the next, so ancient history shrinks instead of
-	// stacking one checkpoint per fold forever.
-	if TiersEnabled {
-		c.mergeTier(ctx, sess, 1, Tier2Trigger)
-		c.mergeTier(ctx, sess, 2, Tier3Trigger)
-	}
 	// Standing checkpoints ahead of the live turns. Past MaxCheckpointChain the
 	// fold this compaction writes consolidates the chain itself: its instruction
 	// says so (summariseInBand appends the consolidation clause whenever the
 	// prefix it replays stands over this many checkpoints) and the fold write
 	// below drops the standings from the head, so no separate merge request runs
-	// and the one rewrite the fold pays for covers the roll too.
+	// and the one rewrite the fold pays for covers the roll too. The roll takes
+	// precedence over distillation: while the chain stands over the cap the
+	// fold's own rewrite is the consolidation, and paying merge requests on top
+	// of it would buy nothing.
 	standing := 0
 	for _, message := range sess.Messages {
 		if message.Compaction != nil {
@@ -1156,6 +1152,15 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		}
 	}
 	rollDue := standing > MaxCheckpointChain
+	// Tier distillation before the new fold: old blocks of one tier merge
+	// into a single block of the next, so ancient history shrinks instead of
+	// stacking one checkpoint per fold forever. It yields to the roll: with the
+	// chain over the cap nothing merges, and distillation resumes once a roll
+	// has brought the chain back under.
+	if TiersEnabled && !rollDue {
+		c.mergeTier(ctx, sess, 1, Tier2Trigger)
+		c.mergeTier(ctx, sess, 2, Tier3Trigger)
+	}
 	keepTokens := c.Settings.Keep.Tokens
 	if keepTokens == 0 {
 		keepTokens = DefaultKeepTokens
