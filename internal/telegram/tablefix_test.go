@@ -6,6 +6,42 @@ import "testing"
 // delimiter row above the header is exactly what the model wrote for the two
 // tables visible in chat on the day the healing was built.
 
+// Transcribed from the live transcript of Oct 21 12:11: the model wrote a
+// three-cell delimiter under a two-column header. The swap alone was not
+// enough: any width disagreement between delimiter and header breaks the
+// parse.
+func TestFixTablesResizesTheDelimiterToTheHeaderCount(t *testing.T) {
+	dirty := "|---|---|---|\n| Where | Change |\n| Prompt | An evidence rules block |"
+	want := "| Where | Change |\n|---|---|\n| Prompt | An evidence rules block |"
+	if got := fixTables(dirty); got != want {
+		t.Fatalf("fixTables:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestFixTablesTrimsAWideDelimiter(t *testing.T) {
+	dirty := "| A | B |\n|---|---|---|\n| one | two |"
+	want := "| A | B |\n|---|---|\n| one | two |"
+	if got := fixTables(dirty); got != want {
+		t.Fatalf("fixTables:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestFixTablesGrowsANarrowDelimiter(t *testing.T) {
+	dirty := "| A | B | C |\n|---|---|\n| one | two | three |"
+	want := "| A | B | C |\n|---|---|---|\n| one | two | three |"
+	if got := fixTables(dirty); got != want {
+		t.Fatalf("fixTables:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestFixTablesKeepsDelimiterSpacingThroughAResize(t *testing.T) {
+	dirty := "| A | B |\n| :--- | :---: | --- |\n| one | two |"
+	want := "| A | B |\n| :--- | :---: |\n| one | two |"
+	if got := fixTables(dirty); got != want {
+		t.Fatalf("fixTables:\n%q\nwant:\n%q", got, want)
+	}
+}
+
 func TestFixTablesMovesTheDelimiterUnderTheHeader(t *testing.T) {
 	dirty := "|---|---|---|\n| Surface | File | The label |\n| Channel audit header | `features/` | A note strip |"
 	want := "| Surface | File | The label |\n|---|---|---|\n| Channel audit header | `features/` | A note strip |"

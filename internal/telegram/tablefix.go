@@ -113,12 +113,29 @@ func rowCells(line string) []string {
 
 // delimiterRow returns a delimiter row with n cells.
 func delimiterRow(n int) string {
-	var b strings.Builder
-	for range n {
-		b.WriteString("|---")
+	cells := make([]string, n)
+	for i := range cells {
+		cells[i] = "---"
 	}
-	b.WriteString("|")
-	return b.String()
+	return rebuildRow(cells)
+}
+
+// delimiterOfCells resizes an existing delimiter row to the header's column
+// count. Cells beyond the header's width are dropped; missing ones are filled
+// with plain dashes. Every kept cell keeps its own alignment markers, so a
+// live `|:---|:---:|` survives a resize byte for byte.
+func delimiterOfCells(cells []string, want int) string {
+	for len(cells) < want {
+		cells = append(cells, "---")
+	}
+	return rebuildRow(cells[:want])
+}
+
+// rebuildRow assembles a table row from raw cell fragments. The fragments are
+// kept exactly as they were split off the row, so nothing inside a cell is
+// reformatted and only the pipes that join them are re-laid.
+func rebuildRow(cells []string) string {
+	return "|" + strings.Join(cells, "|") + "|"
 }
 
 // healTable returns a healed copy of one table block: the header-delimiter
@@ -144,6 +161,17 @@ func healTable(rows []string) []string {
 		fixed = append(fixed, out[0], delimiterRow(len(cells)))
 		fixed = append(fixed, out[1:]...)
 		out = fixed
+	}
+	// Fault three: a delimiter whose column count disagrees with the header.
+	// A wider delimiter opens phantom columns and shifts every row off its
+	// header; a narrower one loses the last columns. The delimiter is trimmed
+	// or grown in place to the header's width, keeping each remaining cell's
+	// own alignment markers. This is the live transcript fault of Oct 21: a
+	// three-cell delimiter under a two-column header.
+	if len(out) >= 2 && isDelimiterRow(out[1]) {
+		if cells := rowCells(out[1]); len(cells) != len(rowCells(out[0])) {
+			out[1] = delimiterOfCells(cells, len(rowCells(out[0])))
+		}
 	}
 	// Fault three: ragged body rows. A row shorter than the header decouples
 	// the parser's column model, so short rows are padded with empty cells in
