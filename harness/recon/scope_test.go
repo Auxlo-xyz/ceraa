@@ -353,3 +353,47 @@ func advanceWindow(d time.Duration) {
 func TargetEdgeGuard(rawurl, _ string) error {
 	return Gate(rawurl)
 }
+
+// TestFileEngagementIsHonouredAcrossProcesses is the cross-process path: the
+// operator sets an engagement from the CLI, the daemon reads the record, and
+// the budget and the destructive rule have to hold for it. A gate that only
+// sees the in-memory record would authorize the scope and then send the
+// requests unmetered, which is the failure this pins.
+func TestFileEngagementIsHonouredAcrossProcesses(t *testing.T) {
+	Stop()
+	engagement := Engagement{
+		Target:     "https://example.com",
+		InScope:    []string{"example.com"},
+		RPM:        1,
+		RequestCap: 2,
+		Active:     true,
+		CreatedAt:  time.Now().Unix(),
+	}
+	write := func(e Engagement) {
+		data, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(scopeFile(), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(engagement)
+	defer Stop()
+
+	if err := Take(1); err != nil {
+		t.Fatalf("the file engagement did not authorize the first request: %v", err)
+	}
+	if err := Take(1); err == nil {
+		t.Error("the file engagement did not meter the second request")
+	}
+	if err := authorizeMethod("DELETE"); err == nil {
+		t.Error("DELETE allowed although the record does not authorize it")
+	}
+
+	engagement.AllowDestructive = true
+	write(engagement)
+	if err := authorizeMethod("DELETE"); err != nil {
+		t.Errorf("DELETE refused although the record authorizes it: %v", err)
+	}
+}

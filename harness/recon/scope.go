@@ -188,7 +188,10 @@ func readScopeFile() (Engagement, bool) {
 	if err := json.Unmarshal(data, &e); err != nil {
 		return Engagement{}, false
 	}
-	if !e.Active || e.Target == "" {
+	// A record is a record when it is active and names something: a target,
+	// or explicit scope tokens for an internal box. SetActive accepts a
+	// token-only engagement, so the file read has to accept one too.
+	if !e.Active || (e.Target == "" && len(e.InScope) == 0) {
 		return Engagement{}, false
 	}
 	return e, true
@@ -435,7 +438,18 @@ func isPortDigits(s string) bool {
 func Take(n int) error {
 	scopeMu.Lock()
 	defer scopeMu.Unlock()
-	if active == nil {
+	// The on-disk record counts: an engagement set by the operator from
+	// another process (the recon CLI) is the same engagement, and a budget
+	// that ignores it is theatre. The file is read, never cached into the
+	// global, so clearing the record from the CLI really clears it here.
+	var eng *Engagement
+	if active != nil {
+		copied := *active
+		eng = &copied
+	} else if e, ok := readScopeFile(); ok {
+		eng = &e
+	}
+	if eng == nil {
 		// No engagement means no metered mission: a plain probe is
 		// observation, and there is no budget to charge it to.
 		return nil
@@ -448,11 +462,11 @@ func Take(n int) error {
 		window = now
 		takenInWindow = 0
 	}
-	if active.RPM > 0 && takenInWindow+n > active.RPM {
-		return fmt.Errorf("%w: %d/%d sent this window", ErrRateLimited, takenInWindow, active.RPM)
+	if eng.RPM > 0 && takenInWindow+n > eng.RPM {
+		return fmt.Errorf("%w: %d/%d sent this window", ErrRateLimited, takenInWindow, eng.RPM)
 	}
-	if active.RequestCap > 0 && takenTotal+n > active.RequestCap {
-		return fmt.Errorf("%w: %d/%d sent on this engagement", ErrExhausted, takenTotal, active.RequestCap)
+	if eng.RequestCap > 0 && takenTotal+n > eng.RequestCap {
+		return fmt.Errorf("%w: %d/%d sent on this engagement", ErrExhausted, takenTotal, eng.RequestCap)
 	}
 	takenInWindow += n
 	takenTotal += n
