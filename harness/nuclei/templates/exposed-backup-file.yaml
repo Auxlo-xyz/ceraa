@@ -1,0 +1,28 @@
+id: exposed-backup-file
+
+info:
+  name: Exposed Backup File
+  author: ceraa
+  severity: high
+  description: A backup of the configuration or of the data is served from the web root. A backup on the web is the live system with the passwords on it.
+  tags: exposure,backup,misconfig
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env.backup"
+      - "{{BaseURL}}/config.php.bak"
+      - "{{BaseURL}}/config.json.bak"
+      - "{{BaseURL}}/dump.sql"
+      - "{{BaseURL}}/backup.zip"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - "APP_KEY="
+          - "<?php"
+          - "CREATE TABLE"
+      - type: status
+        status:
+          - 200

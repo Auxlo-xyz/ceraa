@@ -1,0 +1,28 @@
+id: phpinfo-page
+
+info:
+  name: Exposed phpinfo Page
+  author: ceraa
+  severity: medium
+  description: The phpinfo page is served from the web root. It prints the server configuration, the loaded modules, the environment and often the path of the document root.
+  tags: exposure,misconfig,php
+  reference:
+    - https://cwe.mitre.org/data/definitions/215.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/phpinfo.php"
+      - "{{BaseURL}}/info.php"
+      - "{{BaseURL}}/phpinfo.html"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - "phpinfo()"
+          - "PHP Version"
+          - "php_ini_loaded_file"
+      - type: status
+        status:
+          - 200

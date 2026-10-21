@@ -146,13 +146,24 @@ func TestRunnerAcceptsNativeAndRejectsUnknownDispatcherCalls(t *testing.T) {
 	}
 }
 
+// The catalogue is the cached prefix of every request, so its size is a cache
+// write rather than a per-request bill: the provider holds the prefix and
+// every later request reads it back. The old 16KB ceiling was calibrated
+// against the pre-recon catalogue. The ten recon tools put it at 28KB, which
+// is about 3,100 extra tokens of cached prefix, and the measured runs read
+// 97 percent of their input from cache.
+//
+// The ceiling still exists, because an unbounded catalogue is how a tool
+// registry rots into a wall of prose the model has to read on every turn. It
+// was moved rather than removed, and the number to watch is the cache write
+// at the start of a window, not the per-request input cost.
 func TestDispatcherDefinitionsStayCompact(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
 	definition, err := json.Marshal(runner.toolDefs())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definition) > 16384 {
+	if len(definition) > 32768 {
 		t.Fatalf("native definitions bytes = %d", len(definition))
 	}
 }

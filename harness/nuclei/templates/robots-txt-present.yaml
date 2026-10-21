@@ -1,0 +1,23 @@
+id: robots-txt-present
+
+info:
+  name: robots.txt Present
+  author: ceraa
+  severity: info
+  description: The robots file is served from the web root. It is not a secret, but it names the paths the site would rather not be crawled on, and those are the paths worth looking at by hand.
+  tags: exposure,config
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/robots.txt"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - "User-agent"
+          - "Disallow"
+      - type: status
+        status:
+          - 200

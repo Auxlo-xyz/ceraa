@@ -368,6 +368,7 @@ func registerSubcommands() {
 	attach(updateCmd)
 	attach(sessionsCmd)
 	attach(reconCmd)
+	attach(ReportCommand())
 }
 
 func Execute() {

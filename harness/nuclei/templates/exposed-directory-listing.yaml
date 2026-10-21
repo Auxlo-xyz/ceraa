@@ -1,0 +1,29 @@
+id: exposed-directory-listing
+
+info:
+  name: Exposed Directory Listing
+  author: ceraa
+  severity: medium
+  description: The server answers with a generated index of a directory. Everything in it is meant to be found, and the names are a map of the application.
+  tags: exposure,misconfig
+  reference:
+    - https://cwe.mitre.org/data/definitions/548.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/uploads/"
+      - "{{BaseURL}}/backup/"
+      - "{{BaseURL}}/files/"
+      - "{{BaseURL}}/static/"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - "Index of /"
+          - "Directory listing for"
+          - "<title>Index of"
+      - type: status
+        status:
+          - 200

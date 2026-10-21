@@ -1,0 +1,27 @@
+id: exposed-openapi-document
+
+info:
+  name: Exposed Swagger or OpenAPI Document
+  author: ceraa
+  severity: info
+  description: The API description is served from the web root. It names every endpoint the application exposes, which is the shortest route from nothing to a map of the application.
+  tags: exposure,api,misconfig
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/swagger.json"
+      - "{{BaseURL}}/openapi.json"
+      - "{{BaseURL}}/api-docs"
+      - "{{BaseURL}}/.well-known/openapi.json"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - '"openapi"'
+          - '"swagger"'
+          - '"paths"'
+      - type: status
+        status:
+          - 200

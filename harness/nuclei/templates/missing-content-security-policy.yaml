@@ -1,0 +1,21 @@
+id: missing-content-security-policy
+
+info:
+  name: Missing Content-Security-Policy Header
+  author: ceraa
+  severity: low
+  description: The response does not carry the Content-Security-Policy header, so nothing tells the browser which scripts may run.
+  tags: header,security,misconfig
+  reference:
+    - https://cwe.mitre.org/data/definitions/1021.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "content-security-policy"
+        negative: true

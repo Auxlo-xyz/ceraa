@@ -5,11 +5,13 @@ go 1.27.0
 require (
 	github.com/go-rod/rod v0.116.2
 	github.com/mattn/go-isatty v0.0.24
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.8.1
 	github.com/tetratelabs/wazero v1.9.0
 	go.mau.fi/whatsmeow v0.0.0-20261016130820-0b0a1cdac3e2
 	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.12
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
 
@@ -26,7 +28,6 @@ require (
 	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
-	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	github.com/ysmood/fetchup v0.2.3 // indirect

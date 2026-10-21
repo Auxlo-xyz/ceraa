@@ -437,6 +437,19 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	// ErrNoMission and the scanner returns "no engagement active".
 	r.Register(&ProbeTool{})
 	r.Register(&ScanSecretsTool{})
+	// The recon toolchain. Every one of these is a request engine that sits
+	// under the same scope gate, the same rate budget and the same receipt
+	// trail as the probe, so registering them here is all it takes for the
+	// model to reach them.
+	r.Register(&AuthLoginTool{})
+	r.Register(&AuthReplayTool{})
+	r.Register(&AuthSessionsTool{})
+	r.Register(&DiscoverTool{})
+	r.Register(&FuzzTool{})
+	r.Register(&PortsTool{})
+	r.Register(&EnumTool{})
+	r.Register(&NucleiTool{})
+	r.Register(&FindingTool{})
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	//

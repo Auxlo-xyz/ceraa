@@ -192,6 +192,21 @@ func filterHeaders(h http.Header) map[string]string {
 //
 // The body is hashed and head-cited, never returned: a probe answers "what did
 // it say", not "give me the file".
+// ProbeCapture performs a probe and hands back the body it read, bounded by
+// bodyCap bytes.
+//
+// The scan tools need the body to match against: a wordlist sweep that only
+// sees a status code cannot tell a real hit from a soft 404, and a fuzzer
+// cannot look for a marker. The receipt trail is unchanged either way, because
+// the request is still a probe and its receipt still cites the hash of what
+// came back.
+func ProbeCapture(ctx context.Context, r Request, bodyCap int) (Result, []byte, error) {
+	if bodyCap <= 0 || bodyCap > maxBodyBytes {
+		bodyCap = maxBodyBytes
+	}
+	return execute(ctx, r, bodyCap, true)
+}
+
 func Probe(ctx context.Context, r Request) (Result, error) {
 	res, _, err := execute(ctx, r, maxBodyBytes, false)
 	return res, err

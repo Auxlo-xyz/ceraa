@@ -1,0 +1,24 @@
+id: exposed-package-json
+
+info:
+  name: Exposed package.json
+  author: ceraa
+  severity: medium
+  description: The frontend manifest is served from the web root. It names every dependency, which is the list of things to look for in the dependency advisories.
+  tags: exposure,config,misconfig
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/package.json"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - '"name"'
+          - '"dependencies"'
+          - '"devDependencies"'
+      - type: status
+        status:
+          - 200

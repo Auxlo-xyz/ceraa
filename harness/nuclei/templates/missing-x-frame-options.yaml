@@ -1,0 +1,21 @@
+id: missing-x-frame-options
+
+info:
+  name: Missing X-Frame-Options Header
+  author: ceraa
+  severity: low
+  description: The response does not carry the X-Frame-Options header, so the page can be framed by another origin.
+  tags: header,security,misconfig
+  reference:
+    - https://cwe.mitre.org/data/definitions/1021.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "x-frame-options"
+        negative: true

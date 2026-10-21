@@ -1,0 +1,26 @@
+id: exposed-wrangler-toml
+
+info:
+  name: Exposed wrangler.toml
+  author: ceraa
+  severity: medium
+  description: The worker configuration is served from the web root. It names the worker, the routes it answers on and the bindings it holds.
+  tags: exposure,config,cloudflare,misconfig
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/wrangler.toml"
+      - "{{BaseURL}}/wrangler.json"
+      - "{{BaseURL}}/wrangler.jsonc"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - 'name = "'
+          - '"name":'
+          - 'main = "'
+      - type: status
+        status:
+          - 200

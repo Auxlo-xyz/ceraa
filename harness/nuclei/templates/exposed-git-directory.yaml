@@ -1,0 +1,23 @@
+id: exposed-git-directory
+
+info:
+  name: Exposed .git Directory
+  author: ceraa
+  severity: high
+  description: The .git directory is served from the web root, which exposes the whole source history, including the credentials that were committed and later removed.
+  tags: exposure,git,misconfig
+  reference:
+    - https://cwe.mitre.org/data/definitions/527.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.git/HEAD"
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "ref: refs/"
+      - type: status
+        status:
+          - 200

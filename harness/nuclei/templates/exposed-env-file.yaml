@@ -1,0 +1,27 @@
+id: exposed-env-file
+
+info:
+  name: Exposed .env File
+  author: ceraa
+  severity: critical
+  description: The environment file is served from the web root. It holds the application's secrets, and a secret that is on the web is a secret that has to be rotated.
+  tags: exposure,config,misconfig
+  reference:
+    - https://cwe.mitre.org/data/definitions/538.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env"
+    matchers:
+      - type: word
+        part: body
+        condition: or
+        words:
+          - "APP_KEY="
+          - "DB_PASSWORD="
+          - "SECRET_KEY="
+          - "AWS_SECRET_ACCESS_KEY="
+      - type: status
+        status:
+          - 200

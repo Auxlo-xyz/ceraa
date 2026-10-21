@@ -1,0 +1,23 @@
+id: cors-origin-reflection
+
+info:
+  name: Permissive CORS Origin Reflection
+  author: ceraa
+  severity: medium
+  description: The response reflects an arbitrary Origin back in Access-Control-Allow-Origin. A browser will then let any site read the response, which turns a public endpoint into a private one for whoever is logged in.
+  tags: cors,misconfig,security
+  reference:
+    - https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    headers:
+      Origin: https://ceraa-origin-probe.example
+    matchers:
+      - type: word
+        part: header
+        case-insensitive: true
+        words:
+          - "access-control-allow-origin: https://ceraa-origin-probe.example"

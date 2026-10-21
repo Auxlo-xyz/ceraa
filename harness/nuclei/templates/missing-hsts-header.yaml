@@ -1,0 +1,21 @@
+id: missing-hsts-header
+
+info:
+  name: Missing Strict-Transport-Security Header
+  author: ceraa
+  severity: medium
+  description: The response does not carry the Strict-Transport-Security header. The harness probe keeps a bounded subset of the response headers, so this template is skipped unless the header is observable.
+  tags: header,security,misconfig
+  reference:
+    - https://cwe.mitre.org/data/definitions/319.html
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "strict-transport-security"
+        negative: true
