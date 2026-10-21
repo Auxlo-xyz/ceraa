@@ -430,6 +430,13 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	r.Register(&ListSecretsTool{})
 
 	r.Register(&WebFetchTool{})
+	// Recon pair: one probe engine (observations + receipts) and one secret
+	// scanner over what the probe saw. Registered together because a scan
+	// without a probe behind it has nothing to scan, and both are inert
+	// until an engagement is active: without one the probe returns
+	// ErrNoMission and the scanner returns "no engagement active".
+	r.Register(&ProbeTool{})
+	r.Register(&ScanSecretsTool{})
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	//
