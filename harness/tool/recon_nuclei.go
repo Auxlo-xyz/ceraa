@@ -190,6 +190,9 @@ func formatNucleiReport(report nuclei.Report, loadErrors []error) string {
 		if len(finding.EmptyVars) > 0 {
 			fmt.Fprintf(&b, " | empty vars: %s", nucleiClip(strings.Join(finding.EmptyVars, ", "), 120))
 		}
+		if finding.CatchAll != "" {
+			fmt.Fprintf(&b, " | catch-all: %s", finding.CatchAll)
+		}
 		if finding.ReceiptID != "" {
 			fmt.Fprintf(&b, " receipt %s", finding.ReceiptID)
 		}

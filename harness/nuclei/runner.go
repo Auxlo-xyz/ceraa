@@ -99,6 +99,12 @@ type Finding struct {
 	ReceiptID string
 	// Source is the template file the finding came from.
 	Source string
+	// CatchAll marks a finding whose response body is byte for byte the
+	// target root's own body. A single page application answers every
+	// path with the same document, so a word matcher fires on the shell
+	// and the finding is noise. The note says so, because a reader who has
+	// to work that out from a hash is a reader who will not report it.
+	CatchAll string
 	// EmptyVars names the variables that rendered to nothing. A template
 	// with a hole in it still runs, and the finding says where the hole
 	// was.
@@ -193,6 +199,12 @@ func RunDetailed(ctx context.Context, opts Options) (Report, error) {
 	}
 	limiter := newLimiter(opts.RateLimit)
 	defer limiter.close()
+
+	// The root is read once before the sweep, so a catch-all response can
+	// be named rather than left for the reader to infer from a hash.
+	if len(targets) > 0 {
+		fetchRootHash(ctx, targets[0].String(), probe, limiter, timeout, state)
+	}
 
 	items := buildWork(kept, targets)
 	queue := make(chan workItem)
@@ -401,7 +413,12 @@ type templateOutcome struct {
 
 // runState is the accumulator of a run.
 type runState struct {
-	mu          sync.Mutex
+	mu sync.Mutex
+	// rootSHA is the hash of the target root's own body, fetched once
+	// before the sweep. Empty when the root could not be read, and then
+	// no finding is ever marked as a catch-all.
+	rootSHA     string
+	rootURL     string
 	findings    []Finding
 	errors      []string
 	requests    int
@@ -470,6 +487,10 @@ func (s *runState) process(ctx context.Context, item workItem, probe ProbeFunc, 
 	if !match.Matched {
 		return
 	}
+	catchAll := ""
+	if s.isCatchAll(result.SHA256, response.URL) {
+		catchAll = "the response body is identical to the target root, so a catch-all route answered this path"
+	}
 	s.addFinding(Finding{
 		TemplateID: item.template.ID,
 		Name:       item.template.Info.Name,
@@ -485,7 +506,60 @@ func (s *runState) process(ctx context.Context, item workItem, probe ProbeFunc, 
 		ReceiptID:  result.ReceiptID,
 		Source:     item.template.Path,
 		EmptyVars:  missing,
+		CatchAll:   catchAll,
 	})
+}
+
+// isCatchAll reports whether a response is the target root's own body
+// served at some other path.
+func (s *runState) isCatchAll(sha string, matchedAt string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootSHA == "" || sha == "" || sha != s.rootSHA {
+		return false
+	}
+	// The root matching itself is not a catch-all: that is the root.
+	return matchedAt != s.rootURL
+}
+
+// setRoot records the hash of the target root's body.
+func (s *runState) setRoot(url string, sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rootURL = url
+	s.rootSHA = sha
+}
+
+// fetchRootHash reads the target root once, so a catch-all can be told
+// apart from a page.
+//
+// It costs one request and it is counted against the ceiling, because a
+// request is a request. When it cannot be read the hash stays empty and no
+// finding is marked: an honest silence beats a wrong note.
+func fetchRootHash(ctx context.Context, target string, probe ProbeFunc, limiter *limiter, timeout int, state *runState) {
+	request := recon.Request{URL: target, Method: http.MethodGet, Timeout: timeout}
+	if err := recon.Gate(request.URL); err != nil {
+		state.addError(fmt.Sprintf("root fetch refused by scope: %v", err))
+		return
+	}
+	if err := recon.Take(1); err != nil {
+		state.addError(fmt.Sprintf("root fetch not sent: %v", err))
+		return
+	}
+	if err := limiter.wait(ctx); err != nil {
+		return
+	}
+	if !state.reserveRequest() {
+		state.releaseRequest()
+		return
+	}
+	result, _, err := probe(ctx, request)
+	if err != nil {
+		state.releaseRequest()
+		state.addError(fmt.Sprintf("root fetch failed: %v", err))
+		return
+	}
+	state.setRoot(request.URL, result.SHA256)
 }
 
 // reserveRequest takes a slot from the request ceiling.

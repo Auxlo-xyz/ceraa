@@ -357,8 +357,10 @@ func TestRunReadsATargetListFromAFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDetailed: %v", err)
 	}
-	if calls() != 2 {
-		t.Errorf("the probe answered %d requests, want one per target", calls())
+	// One request per target, plus the one root read that lets a catch-all
+	// response be named.
+	if calls() != 3 {
+		t.Errorf("the probe answered %d requests, want one per target plus the root read", calls())
 	}
 	if len(report.Findings) != 2 {
 		t.Errorf("the run collected %d findings, want 2", len(report.Findings))
@@ -426,5 +428,31 @@ func TestTheEmbeddedCorpusRunsAgainstACannedResponse(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.SkipReasons, "\n"), "strict-transport-security") {
 		t.Errorf("the skip reasons do not name the HSTS template: %v", report.SkipReasons)
+	}
+}
+
+// TestAFindingOnTheCatchAllBodyIsMarked covers the single page application
+// case: the same document answers every path, so a word matcher fires on the
+// shell. The finding has to say so, because a reader who cannot see it will
+// report a false positive.
+func TestAFindingOnTheCatchAllBodyIsMarked(t *testing.T) {
+	hermeticScope(t)
+	probe := func(ctx context.Context, req recon.Request) (recon.Result, []byte, error) {
+		// The root and the deep path answer with the same bytes.
+		return recon.Result{URL: req.URL, Status: 200, SHA256: "samehash", BodyBytes: 10}, []byte("admin panel"), nil
+	}
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{wordTemplate("one")},
+		Probe:     probe,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].CatchAll == "" {
+		t.Error("a finding on the catch-all body was not marked")
 	}
 }
