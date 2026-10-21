@@ -387,13 +387,13 @@ func TestFileEngagementIsHonouredAcrossProcesses(t *testing.T) {
 	if err := Take(1); err == nil {
 		t.Error("the file engagement did not meter the second request")
 	}
-	if err := authorizeMethod("DELETE"); err == nil {
+	if err := authorizeMethod("DELETE", "example.com", nil); err == nil {
 		t.Error("DELETE allowed although the record does not authorize it")
 	}
 
 	engagement.AllowDestructive = true
 	write(engagement)
-	if err := authorizeMethod("DELETE"); err != nil {
+	if err := authorizeMethod("DELETE", "example.com", nil); err != nil {
 		t.Errorf("DELETE refused although the record authorizes it: %v", err)
 	}
 }

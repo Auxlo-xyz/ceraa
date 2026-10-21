@@ -23,6 +23,7 @@ import (
 	"ceraa/harness/instruction"
 	"ceraa/harness/llm"
 	"ceraa/harness/operation"
+	"ceraa/harness/operator"
 	"ceraa/harness/question"
 	"ceraa/harness/sessionstore"
 	"ceraa/harness/skills"
@@ -408,6 +409,27 @@ func New(cfg RunnerConfig, store *sessionstore.Store, reg *tool.Registry) *Runne
 		cfg.Compactor.ContextLimit = seed
 	}
 	return r
+}
+
+// operatorHosts returns the hosts the operator named in this session.
+//
+// It reads the transcript rather than the model's last message, because the
+// operator's intent is stated in their own turns: a target named three
+// messages ago is still a target they asked about, and a target the model
+// produced on its own is not.
+func operatorHosts(sess *sessionstore.Session) string {
+	if sess == nil {
+		return ""
+	}
+	var text strings.Builder
+	for _, message := range sess.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		text.WriteString(message.Content)
+		text.WriteString("\n")
+	}
+	return operator.Join(operator.Hosts(text.String()))
 }
 
 // Operations returns the manager owned by the coordinator.
@@ -1882,6 +1904,13 @@ func (r *Runner) prepareTools(ctx context.Context, sess *sessionstore.Session, r
 		}
 		spec.Args["session_id"] = r.cfg.SessionID
 		spec.Args["request_id"] = call.ID
+		// The hosts the operator named, derived from the transcript. The recon
+		// layer reads this to tell a target the human asked about from a target
+		// the model invented, so it comes from the human's words rather than
+		// from a form the human has to fill in first.
+		if hosts := operatorHosts(sess); hosts != "" {
+			spec.Args["operator_hosts"] = hosts
+		}
 		// The archive sidecar lives beside the session file, so the recall
 		// tool resolves it from the store's own directory: the same rule the
 		// compactor writes by, stated once here instead of once per tool.

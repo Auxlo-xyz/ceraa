@@ -437,3 +437,40 @@ func TestHeaderArgsCoercesScalars(t *testing.T) {
 		t.Error("nested header value accepted")
 	}
 }
+
+// TestDestructiveRequestGoesThroughWithoutAnEngagement is the freedom rule:
+// with no engagement on record there is nothing to narrow, so the verbs a
+// pentest needs are available without a form, a record or a ceremony.
+func TestDestructiveRequestIsAllowedWithoutAnEngagement(t *testing.T) {
+	usePlainProbe(t)
+	Stop()
+	if _, ok := Active(); ok {
+		t.Fatal("an engagement is on record, so this test proves nothing")
+	}
+	if err := authorizeMethod(http.MethodDelete, "example.com", nil); err != nil {
+		t.Fatalf("a destructive request was refused with no engagement on record: %v", err)
+	}
+}
+
+// TestEngagementCanNarrowDestructiveRequests is the other half: an operator
+// who sets a scoped engagement can still refuse the state-changing verbs.
+func TestEngagementCanNarrowDestructiveRequests(t *testing.T) {
+	usePlainProbe(t)
+	srv, hits := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a destructive request went out although the engagement refused it")
+	})
+	SetActive(Engagement{RPM: 10, InScope: []string{probeHost(t, srv)}})
+	defer Stop()
+
+	_, err := RunSpec(context.Background(), map[string]any{
+		"url":            srv.URL,
+		"method":         "DELETE",
+		"operator_hosts": "example.com," + probeHost(t, srv),
+	})
+	if err == nil || !strings.Contains(err.Error(), "AllowDestructive") {
+		t.Fatalf("destructive request under a narrowing engagement: error = %v", err)
+	}
+	if n := hits(); n != 0 {
+		t.Errorf("server saw %d requests, want 0", n)
+	}
+}

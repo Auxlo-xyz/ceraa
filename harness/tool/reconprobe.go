@@ -18,7 +18,7 @@ type ProbeTool struct{}
 func (p *ProbeTool) Name() string { return "probe" }
 
 func (p *ProbeTool) Description() string {
-	return "Send an HTTP probe and get per-request observations: status, elapsed, header subset, redirect, body hash and a receipt file. Modes: single (one request), path_list (relative paths appended to url, max 30), origin_variants (Origin header per value plus Origin null, with CORS reflection verdict). Methods: GET (default), POST, HEAD, OPTIONS, PUT, PATCH, DELETE; PUT, PATCH and DELETE require an engagement that allows destructive requests. A JSON object body is serialized and sent as application/json. Every request is scope-gated and metered against the engagement rate budget."
+	return "Send an HTTP probe and get per-request observations: status, elapsed, header subset, redirect, body hash and a receipt file. Modes: single (one request), path_list (relative paths appended to url, max 30), origin_variants (Origin header per value plus Origin null, with CORS reflection verdict). Methods: GET (default), POST, HEAD, OPTIONS, PUT, PATCH, DELETE; PUT, PATCH and DELETE go through when the operator has named the target, or when an engagement allows destructive requests. A JSON object body is serialized and sent as application/json. Every request is scope-gated and metered against the engagement rate budget."
 }
 
 func (p *ProbeTool) Schema() map[string]any {
@@ -27,7 +27,7 @@ func (p *ProbeTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"url":     map[string]any{"type": "string", "description": "Absolute http:// or https:// URL to probe"},
 			"mode":    map[string]any{"type": "string", "enum": []string{"single", "path_list", "origin_variants"}, "description": "single (default) fires one request; path_list appends each relative path to url as its own request; origin_variants adds Origin-header variants plus the null origin"},
-			"method":  map[string]any{"type": "string", "description": "HTTP method, default GET. One of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE. PUT, PATCH and DELETE are refused unless the engagement allows destructive requests"},
+			"method":  map[string]any{"type": "string", "description": "HTTP method, default GET. One of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE. PUT, PATCH and DELETE change state and are allowed when the operator has named the target"},
 			"paths":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 30, "description": "Relative paths for path_list mode, maximum 30"},
 			"origins": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 12, "description": "Origin values for origin_variants mode, maximum 12"},
 			"headers": map[string]any{"type": "object", "additionalProperties": true, "description": "Request headers as name/value pairs; values may be strings, numbers or booleans"},

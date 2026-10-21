@@ -37,6 +37,8 @@ import (
 	"time"
 
 	"ceraa/harness/netguard"
+	"ceraa/harness/operator"
+	"ceraa/internal/build"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
 )
@@ -54,6 +56,14 @@ const (
 	// heavier than a small payload form; 64KB covers every honest use.
 	maxRequestBodyBytes = 64 * 1024
 )
+
+// defaultProbeUserAgent identifies the probe to the target. It is a tool
+// name and a contact, not a disguise: an operator whose traffic reaches
+// someone else's logs should be findable in them.
+//
+// It is a var because the version is injected at link time, and a const
+// would have frozen the development version into every release.
+var defaultProbeUserAgent = "ceraa-recon/" + build.Version + " (+https://github.com/emperormk01/ceraa)"
 
 // probeClient is the client every probe dial goes through. nil means the
 // guarded fleet client, whose transport enforces the netguard address rules
@@ -289,6 +299,13 @@ func execute(ctx context.Context, r Request, bodyCap int, keepBody bool) (Result
 	// trail must name the same thing the operator declared.
 	if eng, ok := Active(); ok && eng.UserAgent != "" {
 		req.Header.Set("User-Agent", eng.UserAgent)
+	} else if req.Header.Get("User-Agent") == "" {
+		// A probe that says nothing about itself is Go's default
+		// User-Agent, which is a lie of omission: the target's logs record
+		// a generic client instead of the tool that made the request, and
+		// an operator who wants their traffic identified has no way to do
+		// it. Identify by default, and let an engagement override.
+		req.Header.Set("User-Agent", defaultProbeUserAgent)
 	}
 
 	start := time.Now()
@@ -512,7 +529,7 @@ func RunSpec(ctx context.Context, args map[string]any) (string, error) {
 	if body != "" && method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
 		return "", fmt.Errorf("a body requires POST, PUT or PATCH, not %s", method)
 	}
-	if err := authorizeMethod(method); err != nil {
+	if err := authorizeMethod(method, probeTargetHost(rawURL), operatorHostArg(args)); err != nil {
 		return "", err
 	}
 	if bodyIsJSON && body != "" && !hasHeader(headers, "Content-Type") {
@@ -612,6 +629,15 @@ func headerArgs(args map[string]any) (map[string]string, error) {
 	}
 }
 
+// probeTargetHost reads the host out of a URL, for the authorization check.
+func probeTargetHost(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	return canonicalHost(parsed)
+}
+
 // hasHeader reports whether a header name is already present, ignoring case
 // so the automatic Content-Type never duplicates an explicit one.
 func hasHeader(h map[string]string, name string) bool {
@@ -646,17 +672,39 @@ var destructiveMethods = map[string]bool{
 }
 
 // authorizeMethod is the method half of the authorization line: scope says
-// WHERE a request may go, this says whether the engagement allowed that
-// KIND of request.
-func authorizeMethod(method string) error {
+// WHERE a request may go, this says whether a state-changing request is
+// allowed at all.
+//
+// The default is freedom. An operator who asks for pentest work is asking
+// for the verbs a pentest needs, and a probe that has to be told twice
+// before it acts is a chain the operator did not ask for. So with no
+// engagement on record, PUT, PATCH and DELETE go through.
+//
+// The engagement record is where an operator narrows that deliberately: a
+// scoped run that does not carry AllowDestructive refuses the state-changing
+// verbs, and one that carries it allows them explicitly. The rule is
+// therefore opt-in restriction, never opt-in permission.
+func authorizeMethod(method string, host string, operatorHosts []string) error {
 	if !destructiveMethods[method] {
 		return nil
 	}
 	eng, ok := Active()
-	if !ok || !eng.AllowDestructive {
-		return fmt.Errorf("%s changes state and the engagement does not authorize destructive requests (AllowDestructive)", method)
+	if !ok {
+		return nil
 	}
-	return nil
+	if eng.AllowDestructive {
+		return nil
+	}
+	if operator.Covers(operatorHosts, host) {
+		return fmt.Errorf("%s changes state and the engagement does not authorize destructive requests (AllowDestructive), although the operator named %s; run the engagement with --allow-destructive to permit it", method, host)
+	}
+	return fmt.Errorf("%s changes state and the engagement does not authorize destructive requests (AllowDestructive)", method)
+}
+
+// operatorHostArg reads the hosts the operator named, as the coordinator
+// derived them from the transcript.
+func operatorHostArg(args map[string]any) []string {
+	return operator.Split(asString(args["operator_hosts"]))
 }
 
 // NormalizeBody accepts a string as-is, or serializes an object/array to
