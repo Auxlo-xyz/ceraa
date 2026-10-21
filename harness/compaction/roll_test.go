@@ -13,11 +13,14 @@ import (
 // rollSession puts n standing checkpoints ahead of a history long enough to
 // fold, modeled on the stored-prefix fixture: a system prompt, then the chain,
 // then two exchanges plus a repeat-heavy tool result for the budget to bite on.
+// Checkpoint markers are role-system, matching the live fold write: a
+// role-user fixture once hid exactly the marker filter bug this suite exists
+// to pin.
 func rollSession(n int) *sessionstore.Session {
 	messages := []sessionstore.Message{{Role: llm.RoleSystem, Content: "you are the agent"}}
 	for i := 0; i < n; i++ {
 		messages = append(messages, sessionstore.Message{
-			Role:       llm.RoleUser,
+			Role:       llm.RoleSystem,
 			Content:    "<conversation-checkpoint>",
 			Compaction: &sessionstore.CompactionInfo{Summary: fmt.Sprintf("checkpoint %d: facts from fold %d", i, i), Seq: i},
 		})

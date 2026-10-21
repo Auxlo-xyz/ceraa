@@ -1284,7 +1284,13 @@ func (c *Compactor) compact(ctx context.Context, sess *sessionstore.Session) (bo
 		// leaves exactly when the instruction that just succeeded promised they
 		// would. The delivered ids need nothing here: carry unions the
 		// standings' sets that were read over the unrewritten session above.
+		// System here means the platform prompt, not the checkpoint markers:
+		// a marker is a system-role message too, and read without this skip
+		// the collapse re-writes the chain it was told to dissolve.
 		for _, message := range sess.Messages[:offset] {
+			if message.Compaction != nil {
+				continue
+			}
 			if message.Role == llm.RoleSystem {
 				newMessages = append(newMessages, message)
 			}
