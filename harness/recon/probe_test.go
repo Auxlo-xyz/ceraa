@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -300,5 +301,139 @@ func TestProbeRefusesBadSchemesMethodsHeaderCRLFAndOversizedBody(t *testing.T) {
 	}
 	if _, err := Probe(context.Background(), Request{URL: "http://example.com", Body: strings.Repeat("x", 64*1024+1)}); err == nil {
 		t.Error("oversized body accepted")
+	}
+}
+
+func TestRunSpecPostSendsJSONObjectBody(t *testing.T) {
+	usePlainProbe(t)
+	var gotMethod, gotType, gotBody string
+	srv, hits := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotType = r.Header.Get("Content-Type")
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		fmt.Fprint(w, "accepted")
+	})
+	SetActive(Engagement{RPM: 10, InScope: []string{probeHost(t, srv)}})
+	defer Stop()
+
+	out, err := RunSpec(context.Background(), map[string]any{
+		"url":    srv.URL,
+		"method": "post",
+		"body":   map[string]any{"event": "charge.success", "amount": 100},
+	})
+	if err != nil {
+		t.Fatalf("RunSpec failed: %v", err)
+	}
+	if n := hits(); n != 1 {
+		t.Fatalf("server saw %d requests, want 1", n)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("server saw method %q, want POST", gotMethod)
+	}
+	if gotType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotType)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &payload); err != nil {
+		t.Fatalf("body is not JSON: %v (%q)", err, gotBody)
+	}
+	if payload["event"] != "charge.success" {
+		t.Errorf("payload = %v", payload)
+	}
+	if !strings.Contains(out, "POST "+srv.URL) {
+		t.Errorf("summary does not name the POST:\n%s", out)
+	}
+}
+
+func TestRunSpecExplicitContentTypeWins(t *testing.T) {
+	usePlainProbe(t)
+	var gotType string
+	srv, _ := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		fmt.Fprint(w, "ok")
+	})
+	SetActive(Engagement{RPM: 10, InScope: []string{probeHost(t, srv)}})
+	defer Stop()
+
+	if _, err := RunSpec(context.Background(), map[string]any{
+		"url":     srv.URL,
+		"method":  "POST",
+		"headers": map[string]any{"content-type": "application/x-custom"},
+		"body":    map[string]any{"a": 1},
+	}); err != nil {
+		t.Fatalf("RunSpec failed: %v", err)
+	}
+	if gotType != "application/x-custom" {
+		t.Errorf("Content-Type = %q, want the explicit value", gotType)
+	}
+}
+
+func TestRunSpecRefusesDestructiveMethodWithoutAuthorization(t *testing.T) {
+	usePlainProbe(t)
+	srv, hits := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a destructive request was dialed without authorization")
+	})
+	SetActive(Engagement{RPM: 10, InScope: []string{probeHost(t, srv)}})
+	defer Stop()
+
+	_, err := RunSpec(context.Background(), map[string]any{"url": srv.URL, "method": "DELETE"})
+	if err == nil || !strings.Contains(err.Error(), "AllowDestructive") {
+		t.Fatalf("DELETE without authorization: error = %v", err)
+	}
+	if n := hits(); n != 0 {
+		t.Errorf("server saw %d requests, want 0", n)
+	}
+}
+
+func TestRunSpecAllowsDestructiveMethodWhenAuthorized(t *testing.T) {
+	usePlainProbe(t)
+	var gotMethod string
+	srv, hits := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		fmt.Fprint(w, "deleted")
+	})
+	SetActive(Engagement{RPM: 10, InScope: []string{probeHost(t, srv)}, AllowDestructive: true})
+	defer Stop()
+
+	if _, err := RunSpec(context.Background(), map[string]any{"url": srv.URL, "method": "DELETE"}); err != nil {
+		t.Fatalf("RunSpec failed: %v", err)
+	}
+	if n := hits(); n != 1 {
+		t.Fatalf("server saw %d requests, want 1", n)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("server saw method %q, want DELETE", gotMethod)
+	}
+}
+
+func TestRunSpecRefusesBodyOnGet(t *testing.T) {
+	_, err := RunSpec(context.Background(), map[string]any{"url": "https://example.com", "body": "x"})
+	if err == nil || !strings.Contains(err.Error(), "requires POST") {
+		t.Fatalf("GET with a body: error = %v", err)
+	}
+}
+
+func TestRunSpecRefusesPostOriginVariants(t *testing.T) {
+	_, err := RunSpec(context.Background(), map[string]any{
+		"url": "https://example.com", "mode": "origin_variants", "method": "POST",
+	})
+	if err == nil || !strings.Contains(err.Error(), "GET-only") {
+		t.Fatalf("POST origin_variants: error = %v", err)
+	}
+}
+
+func TestHeaderArgsCoercesScalars(t *testing.T) {
+	headers, err := headerArgs(map[string]any{"headers": map[string]any{
+		"X-Count": float64(1), "X-Flag": true, "X-Name": "v",
+	}})
+	if err != nil {
+		t.Fatalf("headerArgs failed: %v", err)
+	}
+	if headers["X-Count"] != "1" || headers["X-Flag"] != "true" || headers["X-Name"] != "v" {
+		t.Errorf("headers = %v", headers)
+	}
+	if _, err := headerArgs(map[string]any{"headers": map[string]any{"X-Bad": map[string]any{"a": 1}}}); err == nil {
+		t.Error("nested header value accepted")
 	}
 }

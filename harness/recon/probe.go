@@ -498,7 +498,29 @@ func RunSpec(ctx context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	body, _ := args["body"].(string)
+	method, err := methodArg(args)
+	if err != nil {
+		return "", err
+	}
+	if mode == "origin_variants" && method != http.MethodGet {
+		return "", fmt.Errorf("mode origin_variants is GET-only")
+	}
+	body, bodyIsJSON, err := NormalizeBody(args["body"])
+	if err != nil {
+		return "", err
+	}
+	if body != "" && method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
+		return "", fmt.Errorf("a body requires POST, PUT or PATCH, not %s", method)
+	}
+	if err := authorizeMethod(method); err != nil {
+		return "", err
+	}
+	if bodyIsJSON && body != "" && !hasHeader(headers, "Content-Type") {
+		if headers == nil {
+			headers = make(map[string]string, 1)
+		}
+		headers["Content-Type"] = "application/json"
+	}
 
 	targets, err := buildTargets(mode, rawURL, args, headers)
 	if err != nil {
@@ -533,7 +555,7 @@ func RunSpec(ctx context.Context, args map[string]any) (string, error) {
 
 		req := Request{
 			URL:     t.url,
-			Method:  http.MethodGet,
+			Method:  method,
 			Headers: t.headers,
 			Body:    body,
 			Timeout: timeout,
@@ -563,7 +585,9 @@ func asString(v any) string {
 	return s
 }
 
-// headerArgs reads args["headers"] in the shapes it can arrive in.
+// headerArgs reads args["headers"] in the shapes it can arrive in. Numbers
+// and booleans are coerced: models routinely emit {"X-Count": 1}, and a
+// scalar is unambiguous in a header.
 func headerArgs(args map[string]any) (map[string]string, error) {
 	switch v := args["headers"].(type) {
 	case nil:
@@ -573,15 +597,85 @@ func headerArgs(args map[string]any) (map[string]string, error) {
 	case map[string]any:
 		out := make(map[string]string, len(v))
 		for k, e := range v {
-			s, ok := e.(string)
-			if !ok {
-				return nil, fmt.Errorf("header %q value is not a string", k)
+			switch value := e.(type) {
+			case string:
+				out[k] = value
+			case bool, int, int64, float64:
+				out[k] = fmt.Sprint(value)
+			default:
+				return nil, fmt.Errorf("header %q value must be a string, number or boolean", k)
 			}
-			out[k] = s
 		}
 		return out, nil
 	default:
 		return nil, fmt.Errorf("headers must be an object of string values")
+	}
+}
+
+// hasHeader reports whether a header name is already present, ignoring case
+// so the automatic Content-Type never duplicates an explicit one.
+func hasHeader(h map[string]string, name string) bool {
+	for k := range h {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// methodArg reads args["method"] case-insensitively and defaults to GET.
+func methodArg(args map[string]any) (string, error) {
+	raw := strings.ToUpper(strings.TrimSpace(asString(args["method"])))
+	if raw == "" {
+		return http.MethodGet, nil
+	}
+	if !allowedMethods[raw] {
+		return "", fmt.Errorf("method %q is not allowed; one of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE", raw)
+	}
+	return raw, nil
+}
+
+// destructiveMethods mutate state on the far end. They are refused unless
+// the engagement record says the operator authorized that class of request;
+// POST deliberately stays outside the set because login forms, webhooks and
+// search endpoints cannot be tested without it.
+var destructiveMethods = map[string]bool{
+	http.MethodPut:    true,
+	http.MethodPatch:  true,
+	http.MethodDelete: true,
+}
+
+// authorizeMethod is the method half of the authorization line: scope says
+// WHERE a request may go, this says whether the engagement allowed that
+// KIND of request.
+func authorizeMethod(method string) error {
+	if !destructiveMethods[method] {
+		return nil
+	}
+	eng, ok := Active()
+	if !ok || !eng.AllowDestructive {
+		return fmt.Errorf("%s changes state and the engagement does not authorize destructive requests (AllowDestructive)", method)
+	}
+	return nil
+}
+
+// NormalizeBody accepts a string as-is, or serializes an object/array to
+// JSON. The bool result says whether the caller sent structured JSON, which
+// is what decides the default Content-Type.
+func NormalizeBody(v any) (string, bool, error) {
+	switch b := v.(type) {
+	case nil:
+		return "", false, nil
+	case string:
+		return b, false, nil
+	case map[string]any, []any:
+		encoded, err := json.Marshal(b)
+		if err != nil {
+			return "", false, fmt.Errorf("body is not valid JSON: %w", err)
+		}
+		return string(encoded), true, nil
+	default:
+		return "", false, fmt.Errorf("body must be a string, or a JSON object or array")
 	}
 }
 
