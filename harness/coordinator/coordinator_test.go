@@ -152,11 +152,18 @@ func TestRunnerAcceptsNativeAndRejectsUnknownDispatcherCalls(t *testing.T) {
 //
 // The numbers, measured against the provider rather than estimated: the
 // pre-recon catalogue was 13KB and 3,337 tokens, with the system prompt at
-// 1,502. The fifteen recon tools took it to 42KB, which was 10,600 tokens
-// of prefix on every turn, and the prose in fifteen schemas was most of
-// that. Trimming the descriptions to one sentence and the property
-// descriptions to short phrases brought the catalogue to 29KB and the
-// measured prefix to 9,317 tokens (1,742 system, 7,575 tools).
+// 1,502. The fifteen recon tools took the catalogue to 42KB, which is about
+// 10,500 tokens of tools on every turn at the 4 bytes per token the
+// provider's own accounting shows, and the prose in fifteen schemas was
+// most of that. Trimming the descriptions to one sentence and the property
+// descriptions to short phrases took the catalogue from 42KB to 30KB, which
+// is about 3,000 tokens of tools removed, and the measured tool count is
+// 7,575 tokens with the system prompt at 1,742.
+//
+// The two measured points are 29 tools at 28.8KB and 7,191 tokens, and 40
+// tools at 30.1KB and 7,575 tokens. The prefix went up between them by
+// 496 tokens, and all 496 of it is the six extra tools and the extra prompt
+// lines that arrived in the same round, not a trim that failed.
 //
 // The ceiling is 32KB. It exists because an unbounded catalogue is how a
 // tool registry rots into a wall of prose the model has to read on every
