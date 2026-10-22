@@ -165,6 +165,13 @@ func TestRunnerAcceptsNativeAndRejectsUnknownDispatcherCalls(t *testing.T) {
 // 496 tokens, and all 496 of it is the six extra tools and the extra prompt
 // lines that arrived in the same round, not a trim that failed.
 //
+// The merge of the recon tools took the catalogue from 30.1KB and 40 tools
+// to 28.4KB and 35 tools: five entries fewer, because a union schema
+// carries every mode's arguments in one entry, so the byte saving is smaller
+// than the entry saving. The provider has not measured the merged catalogue
+// because the account is refusing requests; the derived figure at the
+// measured 3.97 bytes per token is about 7,165 tokens.
+//
 // The ceiling is 32KB. It exists because an unbounded catalogue is how a
 // tool registry rots into a wall of prose the model has to read on every
 // turn, and 32KB is roughly the size at which the descriptions stop being
