@@ -14,10 +14,10 @@ package nuclei
 // The request-level `matchers-condition` overrides that grouping when the
 // template sets it.
 //
-// The dsl matcher is not implemented, and a template that uses one is
-// skipped with a reason. A dsl matcher that silently did not match would be
-// a false negative dressed as a run: the report would say the check found
-// nothing, and nobody would know the check never ran.
+// The dsl matcher is implemented: the expression is parsed and evaluated
+// against the response. A dsl matcher that could not be evaluated is an
+// error rather than a miss, because a check that never ran and a check
+// that found nothing have to look different in the report.
 
 import (
 	"bytes"
@@ -67,6 +67,22 @@ type Response struct {
 	Headers map[string]string
 	Body    []byte
 	URL     string
+	// Method is the method of the request that produced this response.
+	// The dsl matcher reads it, and so does the evidence of a request
+	// that has to name what it sent.
+	Method string
+	// RequestHeaders is the header block of the request that produced
+	// this response.
+	RequestHeaders map[string]string
+	// RequestBody is the body that was sent.
+	RequestBody string
+}
+
+// evalContext is what a matcher is evaluated against: the response and the
+// names the template supplied.
+type evalContext struct {
+	response Response
+	vars     map[string]string
 }
 
 // MatchResult says whether the matchers matched, which matcher fired and
@@ -96,12 +112,28 @@ const (
 
 // Evaluate runs a matcher list against a response.
 func Evaluate(matchers []Matcher, resp Response) (MatchResult, error) {
-	return evaluateList(matchers, resp, "")
+	return EvaluateWithVars(matchers, resp, nil)
+}
+
+// EvaluateWithVars runs a matcher list against a response with the names
+// the template supplied.
+//
+// The names are the template's own variables and the values an extractor
+// pulled out of an earlier response. A dsl matcher may name them, and a
+// dsl matcher that names one nobody set is an error rather than a miss.
+func EvaluateWithVars(matchers []Matcher, resp Response, vars map[string]string) (MatchResult, error) {
+	return evaluateList(matchers, evalContext{response: resp, vars: vars}, "")
 }
 
 // EvaluateRequest runs the matchers of one request, honouring the request
 // level condition and the request level case-insensitive default.
 func EvaluateRequest(req HTTPRequest, resp Response) (MatchResult, error) {
+	return EvaluateRequestWithVars(req, resp, nil)
+}
+
+// EvaluateRequestWithVars runs the matchers of one request with the names
+// the template supplied.
+func EvaluateRequestWithVars(req HTTPRequest, resp Response, vars map[string]string) (MatchResult, error) {
 	matchers := req.Matchers
 	if req.CaseInsensitive {
 		// A copy: the request belongs to the template, and the template is
@@ -114,17 +146,17 @@ func EvaluateRequest(req HTTPRequest, resp Response) (MatchResult, error) {
 			}
 		}
 	}
-	return evaluateList(matchers, resp, req.MatchersCondition)
+	return evaluateList(matchers, evalContext{response: resp, vars: vars}, req.MatchersCondition)
 }
 
 // evaluateList evaluates the matcher list and combines the entries.
-func evaluateList(matchers []Matcher, resp Response, condition string) (MatchResult, error) {
+func evaluateList(matchers []Matcher, ctx evalContext, condition string) (MatchResult, error) {
 	if len(matchers) == 0 {
 		return MatchResult{}, fmt.Errorf("the request has no matchers")
 	}
 	entries := make([]entryResult, 0, len(matchers))
 	for _, m := range matchers {
-		result, err := evaluateOne(m, resp)
+		result, err := evaluateOne(m, ctx)
 		if err != nil {
 			return MatchResult{}, err
 		}
@@ -184,8 +216,8 @@ type entryResult struct {
 }
 
 // evaluateOne evaluates a single matcher entry.
-func evaluateOne(m Matcher, resp Response) (MatchResult, error) {
-	result, err := evaluateRaw(m, resp)
+func evaluateOne(m Matcher, ctx evalContext) (MatchResult, error) {
+	result, err := evaluateRaw(m, ctx)
 	if err != nil {
 		return MatchResult{}, err
 	}
@@ -200,7 +232,8 @@ func evaluateOne(m Matcher, resp Response) (MatchResult, error) {
 }
 
 // evaluateRaw evaluates a matcher entry without the negative flag.
-func evaluateRaw(m Matcher, resp Response) (MatchResult, error) {
+func evaluateRaw(m Matcher, ctx evalContext) (MatchResult, error) {
+	resp := ctx.response
 	switch m.Type {
 	case "word":
 		return matchWords(m, resp)
@@ -213,14 +246,78 @@ func evaluateRaw(m Matcher, resp Response) (MatchResult, error) {
 	case "binary":
 		return matchBinary(m, resp)
 	case "and", "or":
-		return matchGroup(m, resp)
+		return matchGroup(m, ctx)
 	case "dsl":
-		return MatchResult{}, fmt.Errorf("dsl matchers are not implemented")
+		return matchDSL(m, ctx)
 	case "":
 		return MatchResult{}, fmt.Errorf("a matcher has no type")
 	default:
 		return MatchResult{}, fmt.Errorf("the %q matcher type is not implemented", m.Type)
 	}
+}
+
+// matchDSL evaluates the expressions of a dsl matcher.
+//
+// The expressions are grouped the way the other matchers group their
+// words: an "or" condition is satisfied by one of them and anything else
+// needs all of them. An expression that cannot be evaluated is an error:
+// a dsl matcher that quietly did not match would be a false negative
+// dressed as a clean run.
+func matchDSL(m Matcher, ctx evalContext) (MatchResult, error) {
+	if len(m.DSL) == 0 {
+		return MatchResult{}, fmt.Errorf("the dsl matcher has no expressions")
+	}
+	var (
+		hits  int
+		first MatchResult
+	)
+	for _, expression := range m.DSL {
+		result, err := EvaluateDSL(expression, DSLContext{Response: ctx.response, Vars: ctx.vars})
+		if err != nil {
+			return MatchResult{}, err
+		}
+		if !result.Bool {
+			if isOr(m.Condition) {
+				continue
+			}
+			return MatchResult{Matcher: describeDSL(expression), Evidence: dslEvidence(expression, result)}, nil
+		}
+		hits++
+		if hits == 1 {
+			first = MatchResult{
+				Matched:  true,
+				Matcher:  describeDSL(expression),
+				Evidence: dslEvidence(expression, result),
+			}
+		}
+	}
+	if hits == 0 {
+		return MatchResult{Matcher: describeDSL(strings.Join(m.DSL, " ")), Evidence: dslEvidence(m.DSL[0], DSLResult{})}, nil
+	}
+	first.Matched = true
+	if hits < len(m.DSL) {
+		first.Matcher = describeDSL(m.DSL[0]) + " (some expressions matched)"
+	}
+	return first, nil
+}
+
+// describeDSL names the expression a dsl matcher looked at.
+func describeDSL(expression string) string {
+	return "dsl " + strconv.Quote(expression)
+}
+
+// dslEvidence names the expression and the value that decided it.
+func dslEvidence(expression string, result DSLResult) string {
+	evidence := describeDSL(expression)
+	if result.Bool {
+		evidence += " is true"
+	} else {
+		evidence += " is false"
+	}
+	if result.Witness != "" {
+		evidence += ": " + result.Witness
+	}
+	return evidence
 }
 
 // matchWords looks for the substrings in the chosen part.
@@ -377,7 +474,7 @@ func matchBinary(m Matcher, resp Response) (MatchResult, error) {
 }
 
 // matchGroup combines the child matchers of an "and" or "or" matcher.
-func matchGroup(m Matcher, resp Response) (MatchResult, error) {
+func matchGroup(m Matcher, ctx evalContext) (MatchResult, error) {
 	if len(m.Matchers) == 0 {
 		return MatchResult{}, fmt.Errorf("the %s matcher has no child matchers", m.Type)
 	}
@@ -386,7 +483,7 @@ func matchGroup(m Matcher, resp Response) (MatchResult, error) {
 		found  bool
 	)
 	for _, child := range m.Matchers {
-		result, err := evaluateOne(child, resp)
+		result, err := evaluateOne(child, ctx)
 		if err != nil {
 			return MatchResult{}, err
 		}
@@ -428,7 +525,9 @@ func UnsupportedReason(matchers []Matcher) string {
 		switch m.Type {
 		case "word", "regex", "status", "size", "binary", "and", "or":
 		case "dsl":
-			return "the template uses a dsl matcher, which this runner does not implement"
+			if reason := dslReason(m); reason != "" {
+				return reason
+			}
 		case "":
 			return "the template has a matcher with no type"
 		default:
@@ -439,6 +538,24 @@ func UnsupportedReason(matchers []Matcher) string {
 		}
 		if reason := UnsupportedReason(m.Matchers); reason != "" {
 			return reason
+		}
+	}
+	return ""
+}
+
+// dslReason names why a dsl matcher cannot be evaluated here.
+//
+// The expressions are parsed here, where there is no response to evaluate
+// them against: a template whose dsl expression does not compile is a
+// template that would fail on every response, and saying so once is
+// better than saying it once per response.
+func dslReason(m Matcher) string {
+	if len(m.DSL) == 0 {
+		return "the template has a dsl matcher with no expressions"
+	}
+	for _, expression := range m.DSL {
+		if _, err := parseDSLCached(expression); err != nil {
+			return "the template's dsl expression does not compile: " + err.Error()
 		}
 	}
 	return ""

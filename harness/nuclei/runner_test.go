@@ -247,24 +247,26 @@ func TestRunReportsATemplateWhoseRequestsAllFailed(t *testing.T) {
 // quietly dropped.
 func TestRunSkipsATemplateItCannotRun(t *testing.T) {
 	hermeticScope(t)
-	dsl := wordTemplate("dsl-one")
-	dsl.HTTP[0].Matchers = []Matcher{{Type: "dsl", DSL: []string{"status_code == 200"}}}
+	unsupported := wordTemplate("unsupported-one")
+	unsupported.HTTP[0].Matchers = []Matcher{{Type: "fuzzy", Words: []string{"admin panel"}}}
 	probe, calls := countingProbe(fakeProbe(200, nil, "admin panel"))
 	report, err := RunDetailed(context.Background(), Options{
 		Target:    "https://example.com",
-		Templates: []Template{dsl},
+		Templates: []Template{unsupported},
 		Probe:     probe,
 	})
 	if err != nil {
 		t.Fatalf("RunDetailed: %v", err)
 	}
+	// Nothing is dialled at all: the template was skipped before the run
+	// started, so not even the root read happens.
 	if calls() != 0 {
 		t.Errorf("the probe answered %d requests for a template that cannot run", calls())
 	}
 	if report.Skipped != 1 {
 		t.Errorf("the run skipped %d templates, want 1", report.Skipped)
 	}
-	if !strings.Contains(strings.Join(report.SkipReasons, "\n"), "dsl") {
+	if !strings.Contains(strings.Join(report.SkipReasons, "\n"), "fuzzy") {
 		t.Errorf("the skip reason does not name the cause: %v", report.SkipReasons)
 	}
 }
@@ -428,6 +430,396 @@ func TestTheEmbeddedCorpusRunsAgainstACannedResponse(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.SkipReasons, "\n"), "strict-transport-security") {
 		t.Errorf("the skip reasons do not name the HSTS template: %v", report.SkipReasons)
+	}
+}
+
+// recordingProbe keeps the requests it answered.
+func recordingProbe(inner ProbeFunc) (ProbeFunc, func() []recon.Request) {
+	var (
+		mu       sync.Mutex
+		requests []recon.Request
+	)
+	wrapped := func(ctx context.Context, req recon.Request) (recon.Result, []byte, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return inner(ctx, req)
+	}
+	return wrapped, func() []recon.Request {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]recon.Request, len(requests))
+		copy(out, requests)
+		return out
+	}
+}
+
+// TestATemplateWithADSLMatcherProducesAFinding: the dsl matcher is
+// evaluated, not skipped.
+func TestATemplateWithADSLMatcherProducesAFinding(t *testing.T) {
+	hermeticScope(t)
+	tpl := wordTemplate("dsl-one")
+	tpl.HTTP[0].Matchers = []Matcher{{
+		Type: "dsl",
+		DSL:  []string{`status_code == 200 && contains(body, "admin panel")`},
+	}}
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     fakeProbe(200, nil, "<b>admin panel</b>"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if !strings.Contains(findings[0].Matcher, "status_code == 200") {
+		t.Errorf("the matcher does not name the expression: %q", findings[0].Matcher)
+	}
+	if !strings.Contains(findings[0].Evidence, "admin panel") {
+		t.Errorf("the evidence does not carry the body: %q", findings[0].Evidence)
+	}
+}
+
+// TestADSLMatcherThatCannotBeEvaluatedIsAnError: a template that cannot be
+// evaluated must not look like a clean miss.
+func TestADSLMatcherThatCannotBeEvaluatedIsAnError(t *testing.T) {
+	hermeticScope(t)
+	tpl := wordTemplate("dsl-two")
+	tpl.HTTP[0].Matchers = []Matcher{{Type: "dsl", DSL: []string{"nosuchvariable == 1"}}}
+	report, err := RunDetailed(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     fakeProbe(200, nil, "<b>admin panel</b>"),
+	})
+	if err != nil {
+		t.Fatalf("RunDetailed: %v", err)
+	}
+	if len(report.Findings) != 0 {
+		t.Errorf("the run reported %d findings for a matcher that could not be evaluated", len(report.Findings))
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "nosuchvariable") {
+		t.Errorf("the errors do not name the cause: %v", report.Errors)
+	}
+}
+
+// TestAnExtractorFeedsTheNextRequest: the point of an extractor is that
+// the next request carries what it found.
+func TestAnExtractorFeedsTheNextRequest(t *testing.T) {
+	hermeticScope(t)
+	tpl := Template{
+		ID:   "extract-one",
+		Info: Info{Name: "Extractor", Severity: "medium"},
+		Type: "http",
+		Path: "templates/extract-one.yaml",
+		HTTP: []HTTPRequest{
+			{
+				Method:   "GET",
+				Path:     []string{"{{BaseURL}}/login"},
+				Matchers: []Matcher{{Type: "word", Words: []string{"token="}}},
+				Extractors: []Extractor{{
+					Type:  "regex",
+					Regex: []string{`token=([a-z0-9]+)`},
+					Name:  "token",
+					Group: 1,
+				}},
+			},
+			{
+				Method:   "GET",
+				Path:     []string{"{{BaseURL}}/session?token={{token}}"},
+				Matchers: []Matcher{{Type: "word", Words: []string{"welcome"}}},
+			},
+		},
+	}
+	probe := func(_ context.Context, req recon.Request) (recon.Result, []byte, error) {
+		body := "welcome back"
+		if strings.Contains(req.URL, "/login") {
+			body = "token=abc123"
+		}
+		return recon.Result{
+			URL:       req.URL,
+			Status:    200,
+			Headers:   map[string]string{"content-type": "text/html"},
+			BodyBytes: len(body),
+			SHA256:    "extracthash",
+			ReceiptID: "receipt-extract.json",
+		}, []byte(body), nil
+	}
+	recording, requests := recordingProbe(probe)
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     recording,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	sent := requests()
+	found := false
+	for _, request := range sent {
+		if strings.Contains(request.URL, "/session?token=abc123") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the second request did not carry the extracted value: %v", sent)
+	}
+	var extracted bool
+	for _, finding := range findings {
+		if strings.HasPrefix(finding.Matcher, "extractor token") {
+			extracted = true
+			if !strings.Contains(finding.Evidence, "abc123") {
+				t.Errorf("the extractor finding does not carry the value: %q", finding.Evidence)
+			}
+		}
+	}
+	if !extracted {
+		t.Errorf("the extracted value was not reported: %+v", findings)
+	}
+}
+
+// TestAnInternalExtractorIsNotReported: an internal value is for the
+// template's own later requests.
+func TestAnInternalExtractorIsNotReported(t *testing.T) {
+	hermeticScope(t)
+	tpl := wordTemplate("internal-one")
+	tpl.HTTP[0].Matchers = nil
+	tpl.HTTP[0].Extractors = []Extractor{{
+		Type:     "regex",
+		Regex:    []string{`token=([a-z0-9]+)`},
+		Name:     "token",
+		Group:    1,
+		Internal: true,
+	}}
+	probe, calls := countingProbe(fakeProbe(200, nil, "token=abc123"))
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     probe,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// A request that only pulls a value out has nothing to match, and it
+	// still has to run.
+	if calls() != 2 {
+		t.Errorf("the probe answered %d requests, want the root read and the request", calls())
+	}
+	for _, finding := range findings {
+		if strings.HasPrefix(finding.Matcher, "extractor") {
+			t.Errorf("an internal extractor was reported: %+v", finding)
+		}
+	}
+}
+
+// TestAClusterTemplateProducesAFinding: the payload whose answer differs
+// from the baseline is the finding.
+func TestAClusterTemplateProducesAFinding(t *testing.T) {
+	hermeticScope(t)
+	tpl, err := Parse([]byte(`id: cluster-one
+info:
+  name: Cluster
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/admin"
+    attack: cluster
+    payloads:
+      - admin
+      - root
+    matchers:
+      - type: word
+        words:
+          - blocked
+`), "templates/cluster.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if tpl.HTTP[0].Cluster == nil {
+		t.Fatal("the cluster attack was not read")
+	}
+	if tpl.HTTP[0].Cluster.Attribute != "word" {
+		t.Errorf("the cluster attribute is %q, want word", tpl.HTTP[0].Cluster.Attribute)
+	}
+	if len(tpl.HTTP[0].Cluster.Payloads) != 2 {
+		t.Errorf("the cluster payloads are %v, want the two the template lists", tpl.HTTP[0].Cluster.Payloads)
+	}
+	probe := func(_ context.Context, req recon.Request) (recon.Result, []byte, error) {
+		body := "welcome admin"
+		if !strings.Contains(req.URL, "?") {
+			body = "blocked by the filter"
+		}
+		return recon.Result{
+			URL:       req.URL,
+			Status:    200,
+			Headers:   map[string]string{"content-type": "text/html"},
+			BodyBytes: len(body),
+			SHA256:    "clusterhash",
+			ReceiptID: "receipt-cluster.json",
+		}, []byte(body), nil
+	}
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     probe,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want one per payload that differed", len(findings))
+	}
+	if !strings.HasPrefix(findings[0].Matcher, "cluster word") {
+		t.Errorf("the matcher does not name the attribute: %q", findings[0].Matcher)
+	}
+	if !strings.Contains(findings[0].Evidence, "blocked") {
+		t.Errorf("the evidence does not carry the difference: %q", findings[0].Evidence)
+	}
+}
+
+// TestAClusterPayloadReachesTheRequest: the payload goes where the
+// template asked for it, and the variables are rendered around it.
+func TestAClusterPayloadReachesTheRequest(t *testing.T) {
+	hermeticScope(t)
+	tpl, err := Parse([]byte(`id: cluster-payload
+info:
+  name: Cluster payload
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/admin/{{payload}}"
+    attack: cluster
+    payloads:
+      - secret
+    matchers:
+      - type: word
+        words:
+          - blocked
+`), "templates/cluster-payload.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	probe := func(_ context.Context, req recon.Request) (recon.Result, []byte, error) {
+		body := "blocked by the filter"
+		if strings.Contains(req.URL, "/admin/secret") {
+			body = "welcome"
+		}
+		return recon.Result{URL: req.URL, Status: 200, SHA256: "hash"}, []byte(body), nil
+	}
+	recording, requests := recordingProbe(probe)
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     recording,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want the payload that differed", len(findings))
+	}
+	var found bool
+	for _, request := range requests() {
+		if strings.Contains(request.URL, "/admin/secret") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the payload did not reach the request: %v", requests())
+	}
+}
+
+// TestTheRawRequestIsParsed: the method, the path, the headers and the
+// body come out of the block, and the escapes the format uses are
+// honoured.
+func TestTheRawRequestIsParsed(t *testing.T) {
+	parsed, err := parseRawRequest(`POST /admin/login HTTP/1.1\nHost: example.com\nX-Token: abc\n\nuser=admin&pass=secret`)
+	if err != nil {
+		t.Fatalf("parseRawRequest: %v", err)
+	}
+	if parsed.method != "POST" {
+		t.Errorf("the method is %q, want POST", parsed.method)
+	}
+	if parsed.path != "/admin/login" {
+		t.Errorf("the path is %q, want /admin/login", parsed.path)
+	}
+	if parsed.headers["Host"] != "example.com" {
+		t.Errorf("the headers are %v", parsed.headers)
+	}
+	if parsed.headers["X-Token"] != "abc" {
+		t.Errorf("the headers are %v", parsed.headers)
+	}
+	if parsed.body != "user=admin&pass=secret" {
+		t.Errorf("the body is %q", parsed.body)
+	}
+	// A block that already has real newlines keeps its escapes: they are
+	// content, not layout.
+	parsed, err = parseRawRequest("POST /login HTTP/1.1\nHost: example.com\n\n{\"a\":\"b\\nc\"}")
+	if err != nil {
+		t.Fatalf("parseRawRequest: %v", err)
+	}
+	if parsed.body != `{"a":"b\nc"}` {
+		t.Errorf("the body is %q, want the escape kept", parsed.body)
+	}
+}
+
+// TestTheRawRequestIsSent: it goes through the same path as any other
+// request, with the variables rendered into it.
+func TestTheRawRequestIsSent(t *testing.T) {
+	hermeticScope(t)
+	tpl, err := Parse([]byte(`id: raw-one
+info:
+  name: Raw
+  severity: info
+variables:
+  token: abc123
+http:
+  - raw:
+      - 'GET {{BaseURL}}/admin/login HTTP/1.1\nHost: {{Host}}\nX-Token: {{token}}\n'
+    matchers:
+      - type: status
+        status:
+          - 200
+`), "templates/raw.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	recording, requests := recordingProbe(fakeProbe(200, nil, "welcome"))
+	findings, err := Run(context.Background(), Options{
+		Target:    "https://example.com",
+		Templates: []Template{tpl},
+		Probe:     recording,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	sent := requests()
+	var raw *recon.Request
+	for i := range sent {
+		if strings.Contains(sent[i].URL, "/admin/login") {
+			raw = &sent[i]
+		}
+	}
+	if raw == nil {
+		t.Fatalf("the raw request was not sent: %v", sent)
+	}
+	if raw.Method != "GET" {
+		t.Errorf("the method is %q, want GET", raw.Method)
+	}
+	if raw.URL != "https://example.com/admin/login" {
+		t.Errorf("the url is %q", raw.URL)
+	}
+	if raw.Headers["X-Token"] != "abc123" {
+		t.Errorf("the variable was not rendered into the header: %v", raw.Headers)
+	}
+	if raw.Headers["Host"] != "example.com" {
+		t.Errorf("the host header is %v", raw.Headers)
 	}
 }
 

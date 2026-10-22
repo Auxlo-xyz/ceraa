@@ -89,13 +89,20 @@ type Finding struct {
 	Evidence string `json:"evidence,omitempty"`
 	// Counterevidence is what argues against the finding. A confirmed
 	// finding without it reads as a finding nobody argued with.
-	Counterevidence string    `json:"counterevidence,omitempty"`
-	CVSSVector      string    `json:"cvss_vector,omitempty"`
-	CVSSScore       float64   `json:"cvss_score,omitempty"`
-	Remediation     string    `json:"remediation,omitempty"`
-	Tags            []string  `json:"tags,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Counterevidence string  `json:"counterevidence,omitempty"`
+	CVSSVector      string  `json:"cvss_vector,omitempty"`
+	CVSSScore       float64 `json:"cvss_score,omitempty"`
+	Remediation     string  `json:"remediation,omitempty"`
+	// Verdict is the verification outcome: PROVEN, REFUTED, UNPROVEN or
+	// INCONCLUSIVE. It is empty when the finding was never checked, and a
+	// reader can tell the difference between "not checked" and "checked and
+	// proved nothing".
+	Verdict string `json:"verdict,omitempty"`
+	// Reasons are the sentences the verification gave for its verdict.
+	Reasons   []string  `json:"reasons,omitempty"`
+	Tags      []string  `json:"tags,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ParseStatus reads a closure state and refuses anything outside the
@@ -258,9 +265,14 @@ func (s *Store) prepare(f Finding) (Finding, error) {
 		CVSSVector:      strings.TrimSpace(f.CVSSVector),
 		CVSSScore:       f.CVSSScore,
 		Remediation:     f.Remediation,
-		Tags:            f.Tags,
-		CreatedAt:       created.UTC(),
-		UpdatedAt:       now,
+		// The verdict travels with the record: a finding that was checked
+		// and proved nothing is not the same as one that was never
+		// checked.
+		Verdict:   strings.TrimSpace(f.Verdict),
+		Reasons:   f.Reasons,
+		Tags:      f.Tags,
+		CreatedAt: created.UTC(),
+		UpdatedAt: now,
 	}, nil
 }
 

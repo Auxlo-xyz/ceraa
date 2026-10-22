@@ -16,19 +16,19 @@ type PortsTool struct{}
 func (p *PortsTool) Name() string { return "ports" }
 
 func (p *PortsTool) Description() string {
-	return "Map the TCP ports of one host. Every connect goes through the same egress wall a web request does, so the host's own machine and the private, loopback and cloud metadata ranges are refused with the address named, and each attempt is charged to the engagement budget. Returns one line per port with its state (open, closed or filtered) and the usual service name for the port, then a summary of the counts. A filtered port timed out and may be open behind a firewall, so it is not the same as a closed one. "
+	return "Map the TCP ports of one host. Every connect goes through the same egress wall a web request does, so the private, loopback and metadata ranges are refused with the address named, and each attempt is charged to the engagement budget. One line per port with its state (open, closed or filtered) and the usual service name, then the counts."
 }
 
 func (p *PortsTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"host":        map[string]any{"type": "string", "description": "Hostname or IP address to scan"},
-			"ports":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": 500, "description": "Explicit ports to try. Empty uses the common port list"},
-			"top":         map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many of the common ports to try when ports is empty, default 100"},
-			"timeout":     map[string]any{"type": "integer", "minimum": 1, "maximum": 60, "description": "Per-connect timeout in seconds, default 2"},
+			"host":        map[string]any{"type": "string", "description": "The host to scan"},
+			"ports":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": 500, "description": "The ports to try"},
+			"top":         map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many common ports, default 100"},
+			"timeout":     map[string]any{"type": "integer", "minimum": 1, "maximum": 60, "description": "Connect timeout in seconds, default 2"},
 			"concurrency": map[string]any{"type": "integer", "minimum": 1, "maximum": 64, "description": "Parallel connects, default 16"},
-			"max_ports":   map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "description": "Ceiling on ports attempted"},
+			"max_ports":   map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "description": "Ports attempted ceiling"},
 		},
 		"required": []string{"host"},
 	}

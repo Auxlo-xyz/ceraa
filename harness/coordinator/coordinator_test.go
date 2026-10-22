@@ -148,15 +148,22 @@ func TestRunnerAcceptsNativeAndRejectsUnknownDispatcherCalls(t *testing.T) {
 
 // The catalogue is the cached prefix of every request, so its size is a cache
 // write rather than a per-request bill: the provider holds the prefix and
-// every later request reads it back. The old 16KB ceiling was calibrated
-// against the pre-recon catalogue. The ten recon tools put it at 28KB, which
-// is about 3,100 extra tokens of cached prefix, and the measured runs read
-// 97 percent of their input from cache.
+// every later request reads it back.
 //
-// The ceiling still exists, because an unbounded catalogue is how a tool
-// registry rots into a wall of prose the model has to read on every turn. It
-// was moved rather than removed, and the number to watch is the cache write
-// at the start of a window, not the per-request input cost.
+// The numbers, measured against the provider rather than estimated: the
+// pre-recon catalogue was 13KB and 3,337 tokens, with the system prompt at
+// 1,502. The fifteen recon tools took it to 42KB, which was 10,600 tokens
+// of prefix on every turn, and the prose in fifteen schemas was most of
+// that. Trimming the descriptions to one sentence and the property
+// descriptions to short phrases brought the catalogue to 29KB and the
+// measured prefix to 9,317 tokens (1,742 system, 7,575 tools).
+//
+// The ceiling is 32KB. It exists because an unbounded catalogue is how a
+// tool registry rots into a wall of prose the model has to read on every
+// turn, and 32KB is roughly the size at which the descriptions stop being
+// the tool's contract and start being the tool's essay. The operator can
+// cut the catalogue further with CERAA_TOOLSET=core, which offers the web
+// review set and hides the internal specialists.
 func TestDispatcherDefinitionsStayCompact(t *testing.T) {
 	runner := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
 	definition, err := json.Marshal(runner.toolDefs())
@@ -165,6 +172,29 @@ func TestDispatcherDefinitionsStayCompact(t *testing.T) {
 	}
 	if len(definition) > 32768 {
 		t.Fatalf("native definitions bytes = %d", len(definition))
+	}
+}
+
+// TestTheCoreToolsetIsSmaller pins the lever the operator has: the core
+// set is the web review, and the specialists are the internal engagement.
+func TestTheCoreToolsetIsSmaller(t *testing.T) {
+	full := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
+	fullBytes, err := json.Marshal(full.toolDefs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(tool.ToolsetEnv, "core")
+	core := &Runner{reg: tool.DefaultRegistry(), cfg: RunnerConfig{SystemPrompt: "system"}}
+	coreBytes, err := json.Marshal(core.toolDefs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coreBytes) >= len(fullBytes) {
+		t.Errorf("the core toolset is not smaller: %d bytes against %d", len(coreBytes), len(fullBytes))
+	}
+	// A hidden tool stays executable: the registry resolves it by name.
+	if _, ok := core.reg.Get("ldap"); !ok {
+		t.Error("a hidden specialist is not executable")
 	}
 }
 

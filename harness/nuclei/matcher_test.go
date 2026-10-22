@@ -267,14 +267,46 @@ func TestEvaluateTheAndAndOrGroupTypes(t *testing.T) {
 	}
 }
 
-// TestEvaluateRefusesADSLMatcher: a dsl matcher that silently did not match
-// would be a false negative dressed as a run.
-func TestEvaluateRefusesADSLMatcher(t *testing.T) {
-	_, err := Evaluate([]Matcher{{Type: "dsl", DSL: []string{"status_code == 200"}}}, sampleResponse())
-	if err == nil {
-		t.Fatal("a dsl matcher was evaluated")
+// TestEvaluateADSLMatcher: the expression is parsed and evaluated, and the
+// evidence names the expression and the value that decided it.
+func TestEvaluateADSLMatcher(t *testing.T) {
+	result, err := Evaluate([]Matcher{{Type: "dsl", DSL: []string{"status_code == 200"}}}, sampleResponse())
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
 	}
-	if !strings.Contains(err.Error(), "dsl") {
+	if !result.Matched {
+		t.Fatalf("the dsl matcher did not match: %+v", result)
+	}
+	if !strings.Contains(result.Matcher, "status_code == 200") {
+		t.Errorf("the matcher does not name the expression: %q", result.Matcher)
+	}
+	if !strings.Contains(result.Evidence, "status_code") {
+		t.Errorf("the evidence does not carry the deciding value: %q", result.Evidence)
+	}
+	result, err = Evaluate([]Matcher{{Type: "dsl", DSL: []string{"status_code == 404"}}}, sampleResponse())
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Matched {
+		t.Errorf("the dsl matcher matched a status that is not there: %+v", result)
+	}
+}
+
+// TestEvaluateRefusesADSLMatcherItCannotEvaluate: a template that cannot be
+// evaluated must not look like a clean miss.
+func TestEvaluateRefusesADSLMatcherItCannotEvaluate(t *testing.T) {
+	_, err := Evaluate([]Matcher{{Type: "dsl", DSL: []string{"nosuchfunction(body)"}}}, sampleResponse())
+	if err == nil {
+		t.Fatal("a dsl matcher with an unknown function was evaluated")
+	}
+	if !strings.Contains(err.Error(), "nosuchfunction") {
+		t.Errorf("the error does not name the cause: %v", err)
+	}
+	_, err = Evaluate([]Matcher{{Type: "dsl", DSL: []string{"nosuchvariable == 1"}}}, sampleResponse())
+	if err == nil {
+		t.Fatal("a dsl matcher with an unknown variable was evaluated")
+	}
+	if !strings.Contains(err.Error(), "nosuchvariable") {
 		t.Errorf("the error does not name the cause: %v", err)
 	}
 }
@@ -282,8 +314,11 @@ func TestEvaluateRefusesADSLMatcher(t *testing.T) {
 // TestUnsupportedReasonNamesTheUnrunnableTemplates: the caller skips the
 // template and says why.
 func TestUnsupportedReasonNamesTheUnrunnableTemplates(t *testing.T) {
-	if reason := UnsupportedReason([]Matcher{{Type: "dsl", DSL: []string{"true"}}}); reason == "" {
-		t.Error("a dsl template was not named as unrunnable")
+	if reason := UnsupportedReason([]Matcher{{Type: "dsl", DSL: []string{"status_code == 200"}}}); reason != "" {
+		t.Errorf("a dsl template was named as unrunnable: %s", reason)
+	}
+	if reason := UnsupportedReason([]Matcher{{Type: "fuzzy", Words: []string{"x"}}}); reason == "" {
+		t.Error("a matcher type this runner does not implement was not named")
 	}
 	if reason := UnsupportedReason([]Matcher{{Type: "word", Words: []string{"x"}}}); reason != "" {
 		t.Errorf("a word template was named as unrunnable: %s", reason)
@@ -294,5 +329,17 @@ func TestUnsupportedReasonNamesTheUnrunnableTemplates(t *testing.T) {
 	}
 	if !strings.Contains(reason, "strict-transport-security") {
 		t.Errorf("the reason does not name the header: %s", reason)
+	}
+}
+
+// TestUnsupportedReasonNamesADSLExpressionThatDoesNotCompile: a template
+// whose expression cannot be parsed is named once, before any request.
+func TestUnsupportedReasonNamesADSLExpressionThatDoesNotCompile(t *testing.T) {
+	reason := UnsupportedReason([]Matcher{{Type: "dsl", DSL: []string{"status_code =="}}})
+	if reason == "" {
+		t.Fatal("a dsl expression that does not compile was not named")
+	}
+	if !strings.Contains(reason, "status_code ==") {
+		t.Errorf("the reason does not name the expression: %s", reason)
 	}
 }

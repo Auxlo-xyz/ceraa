@@ -17,23 +17,24 @@ type FuzzTool struct{}
 func (f *FuzzTool) Name() string { return "fuzz" }
 
 func (f *FuzzTool) Description() string {
-	return "Fuzz one parameter of one URL with a wordlist and report the values that answered differently. Every request is scope-gated, charged to the engagement budget and written a receipt. GET fuzzes the query string, POST fuzzes the body: the body template's {PARAM} is replaced, and a template without the placeholder gets the parameter added as a form field. Give a marker to confirm hits: a value whose response contains the marker is evidence. Without a marker the tool takes a baseline request with an implausible value and reports the values whose status or size differ from it, marked as a delta, which is a difference to chase and not a finding. Returns one line per hit with the status, size, sha256 and receipt id."
+	return "Fuzz one parameter with a wordlist and report the values that answered differently. Every request is scope-gated and receipted. With a marker a hit is the marker; without one it is a status or size delta against a baseline, and the output says so."
 }
 
 func (f *FuzzTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"url":          map[string]any{"type": "string", "description": "Absolute http:// or https:// URL to fuzz. It may already carry a query string"},
-			"param":        map[string]any{"type": "string", "description": "Name of the parameter to fuzz"},
-			"method":       map[string]any{"type": "string", "enum": []string{"GET", "POST"}, "description": "HTTP method, default GET. GET fuzzes the query, POST fuzzes the body"},
-			"location":     map[string]any{"type": "string", "enum": []string{"query", "body"}, "description": "Where the value goes. Empty derives it from the method: query for GET, body for POST"},
-			"wordlist":     map[string]any{"type": "string", "description": "Path to a wordlist file of values, one per line, # for comments. Empty uses the embedded list"},
-			"marker":       map[string]any{"type": "string", "description": "A substring that marks a hit, matched case insensitively in the response body. Empty means the run reports status and size deltas against a baseline instead"},
-			"body":         map[string]any{"type": "string", "description": "Body template for a POST run. {PARAM} is replaced by the fuzz value; without the placeholder the parameter is added as a form field"},
+			"url":          map[string]any{"type": "string", "description": "The URL to fuzz"},
+			"param":        map[string]any{"type": "string", "description": "The parameter to fuzz"},
+			"method":       map[string]any{"type": "string", "enum": []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}, "description": "GET, POST, PUT, PATCH, DELETE, HEAD or OPTIONS"},
+			"location":     map[string]any{"type": "string", "enum": []string{"query", "body", "header"}, "description": "query, body or header"},
+			"header":       map[string]any{"type": "string", "description": "The header to fuzz"},
+			"wordlist":     map[string]any{"type": "string", "description": "Path to a wordlist of values"},
+			"marker":       map[string]any{"type": "string", "description": "Text that marks a hit"},
+			"body":         map[string]any{"type": "string", "description": "Body template with {PARAM}"},
 			"concurrency":  map[string]any{"type": "integer", "minimum": 1, "maximum": 32, "description": "Parallel requests, default 8"},
-			"max_requests": map[string]any{"type": "integer", "minimum": 1, "maximum": 5000, "description": "Hard ceiling on requests fired, default 200"},
-			"timeout":      map[string]any{"type": "integer", "minimum": 1, "maximum": 120, "description": "Per-request timeout in seconds, default 15"},
+			"max_requests": map[string]any{"type": "integer", "minimum": 1, "maximum": 5000, "description": "Request ceiling, default 200"},
+			"timeout":      map[string]any{"type": "integer", "minimum": 1, "maximum": 120, "description": "Timeout in seconds, default 15"},
 		},
 		"required": []string{"url", "param"},
 	}
@@ -57,10 +58,17 @@ func (f *FuzzTool) Translate(args map[string]any) (operation.Spec, error) {
 		return operation.Spec{}, fmt.Errorf("method %q is not one of GET, POST", method)
 	}
 	location := strings.ToLower(strings.TrimSpace(fuzzStringArg(args["location"])))
-	if location != "" && location != "query" && location != "body" {
-		return operation.Spec{}, fmt.Errorf("location %q is not one of query, body", args["location"])
+	if location != "" && location != "query" && location != "body" && location != "header" {
+		return operation.Spec{}, fmt.Errorf("location %q is not one of query, body, header", args["location"])
+	}
+	header := strings.TrimSpace(fuzzStringArg(args["header"]))
+	if location == "header" && header == "" {
+		return operation.Spec{}, fmt.Errorf("location header needs a header name")
 	}
 	out := map[string]any{"url": rawURL, "param": param, "method": method}
+	if header != "" {
+		out["header"] = header
+	}
 	if location != "" {
 		out["location"] = location
 	}
@@ -91,6 +99,7 @@ func (f *FuzzTool) RunContext(ctx context.Context, spec operation.Spec) (string,
 		Method:      fuzzStringArg(spec.Args["method"]),
 		Param:       fuzzStringArg(spec.Args["param"]),
 		Location:    fuzzStringArg(spec.Args["location"]),
+		Header:      fuzzStringArg(spec.Args["header"]),
 		Marker:      fuzzStringArg(spec.Args["marker"]),
 		Body:        fuzzStringArg(spec.Args["body"]),
 		Concurrency: fuzzIntArg(spec.Args["concurrency"], 0),

@@ -35,12 +35,7 @@ var _ operation.ContextRunner = (*FindingTool)(nil)
 func (f *FindingTool) Name() string { return "finding" }
 
 func (f *FindingTool) Description() string {
-	return "Record what a recon run found, what it ruled out and what it left open, and render the record as a disclosure report. " +
-		"Modes: add (record a finding), update (change the fields it names), list, delete, coverage. " +
-		"Every finding carries a closure state: confirmed (proved), ruled_out (proved not to be a problem, with the reason and the control that stops it) or open_proof_gap (suspected, with the step that would close it). " +
-		"A disclosure that leaves out the gaps and the ruled out items cannot tell the reader what was checked. " +
-		"Fields: a title, a severity, the reproduction as a curl line or a script, the evidence that was observed, and the counterevidence that argues against it. " +
-		"The record is one file per finding under the data directory."
+	return "Keep the finding record: confirmed, ruled_out and open_proof_gap, each with its PoC, evidence, counterargument and CVSS. The report renders all three."
 }
 
 func (f *FindingTool) Schema() map[string]any {
@@ -50,45 +45,45 @@ func (f *FindingTool) Schema() map[string]any {
 			"mode": map[string]any{
 				"type":        "string",
 				"enum":        []string{"add", "update", "list", "delete", "coverage"},
-				"description": "add (default) records a finding, update changes the fields it names, list shows the record, delete removes one, coverage counts it",
+				"description": "add, update, list, delete or coverage",
 			},
 			"id": map[string]any{
 				"type":        "string",
-				"description": "The finding's id. Generated from the title when absent, so a second call about the same finding lands on the same record",
+				"description": "The finding id, generated from the title when absent",
 			},
 			"title": map[string]any{
 				"type":        "string",
-				"description": "What the finding is, in one line. Required for add and for update",
+				"description": "What the finding is, in one line",
 			},
 			"severity": map[string]any{
 				"type":        "string",
 				"enum":        []string{"info", "low", "medium", "high", "critical"},
-				"description": "How bad it is. Default medium for a new finding; an update that does not name one keeps the severity the record carries",
+				"description": "info, low, medium, high or critical",
 			},
 			"status": map[string]any{
 				"type":        "string",
 				"enum":        []string{"confirmed", "ruled_out", "open_proof_gap"},
-				"description": "The closure state. confirmed means proved, ruled_out means proved not to be a problem, open_proof_gap means suspected with one step left to close it. Default confirmed for a new finding",
+				"description": "confirmed, ruled_out or open_proof_gap",
 			},
-			"url":         map[string]any{"type": "string", "description": "The URL the finding is about"},
-			"endpoint":    map[string]any{"type": "string", "description": "The endpoint, as a method and a path"},
-			"description": map[string]any{"type": "string", "description": "What the finding is and why it matters"},
-			"poc":         map[string]any{"type": "string", "description": "The reproduction: a curl line or a script, carried verbatim into the report"},
-			"evidence":    map[string]any{"type": "string", "description": "What was observed, as it was seen"},
+			"url":         map[string]any{"type": "string", "description": "The URL"},
+			"endpoint":    map[string]any{"type": "string", "description": "The endpoint"},
+			"description": map[string]any{"type": "string", "description": "What it is and why it matters"},
+			"poc":         map[string]any{"type": "string", "description": "The reproduction, verbatim"},
+			"evidence":    map[string]any{"type": "string", "description": "What was observed"},
 			"counterevidence": map[string]any{
 				"type":        "string",
-				"description": "What argues against the finding. A confirmed finding without it reads as a finding nobody argued with",
+				"description": "What argues against it",
 			},
 			"remediation": map[string]any{"type": "string", "description": "What would fix it"},
 			"cvss": map[string]any{
 				"type":        "string",
-				"description": "A CVSS v3.1 vector, or the eight metrics on their own, as AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H. The score is computed from it and reported back",
+				"description": "A CVSS v3.1 vector or the eight metrics",
 			},
 			"tags": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"maxItems":    12,
-				"description": "Short labels for grouping the finding in the report",
+				"description": "Labels for the report",
 			},
 		},
 		// Nothing is required by the schema: the mode decides. A title is

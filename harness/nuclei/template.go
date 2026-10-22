@@ -10,10 +10,14 @@ package nuclei
 // hole in it is a template with a hole in it, and the run says which hole
 // rather than dying on it.
 //
-// Extractors are NOT implemented. The `extractors:` block, the -extract
-// styles and the values a previous request would have produced do not exist
-// here, so a template whose matchers depend on an extracted value is skipped
-// with a reason rather than matched against a variable nobody set.
+// Extractors are implemented: the `extractors:` block, the regex, dsl, kval
+// and json extractors, and the values a previous request produced feeding
+// the next one. A template whose matchers depend on an extracted value runs
+// against the value the extractor actually found.
+//
+// Cluster attacks are implemented too: the request is fired once per
+// payload plus once with no payload, and the payload whose response differs
+// from the baseline is the finding.
 //
 // Only the HTTP template types are supported. The network, dns, headless,
 // ssl, whois, javascript and code types are read, refused and named: a
@@ -24,6 +28,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -41,6 +46,9 @@ type Template struct {
 	// Variables is the template's own `variables:` block. Other requests in
 	// the same template may reference them.
 	Variables map[string]string
+	// Extractors are the template level `extractors:` block. They run
+	// against every response the template produces.
+	Extractors []Extractor
 	// Path is the file the template was read from, so a finding can name
 	// the file it came from.
 	Path string
@@ -71,12 +79,21 @@ type HTTPRequest struct {
 	Raw []string
 	// Matchers are the matchers of this request.
 	Matchers []Matcher
-	// AttackType is "single" or "cluster". Only "single" is executed: a
-	// cluster attack is a payload sweep this runner does not do.
+	// Extractors are the request's `extractors:` block. The values they
+	// pull out of a response feed the later requests of the template.
+	Extractors []Extractor
+	// AttackType is "single" or "cluster". A cluster attack fires the
+	// request once per payload and compares the responses.
 	AttackType string
+	// Cluster is the cluster attack this request declares. It is nil for
+	// every request that does not declare one.
+	Cluster *Cluster
 	// Payload is the request's payload block. It is parsed so a template
-	// with one loads, and it is not executed.
+	// with one loads, and it feeds a cluster attack.
 	Payload map[string]any
+	// Payloads is the request's `payloads:` list, the values a cluster
+	// attack sweeps.
+	Payloads []string
 	// MatchersCondition is the request-level `matchers-condition`, which
 	// decides how the matcher list is grouped.
 	MatchersCondition string
@@ -140,6 +157,11 @@ func Parse(data []byte, path string) (Template, error) {
 		Path:      path,
 		Raw:       root,
 	}
+	extractors, err := parseExtractors(root["extractors"])
+	if err != nil {
+		return Template{}, fmt.Errorf("template %s: %w", displayPath(path), err)
+	}
+	tpl.Extractors = extractors
 	for i, entry := range items {
 		item, ok := entry.(map[string]any)
 		if !ok {
@@ -195,6 +217,7 @@ func parseHTTPRequest(item map[string]any) (HTTPRequest, error) {
 		Raw:               stringList(item["raw"]),
 		AttackType:        strings.ToLower(strings.TrimSpace(stringOf(item["attack"]))),
 		Payload:           mapOf(item["payload"]),
+		Payloads:          stringList(item["payloads"]),
 		MatchersCondition: strings.ToLower(strings.TrimSpace(stringOf(item["matchers-condition"]))),
 		CaseInsensitive:   boolOf(item["matchers-case-insensitive"]),
 	}
@@ -206,7 +229,143 @@ func parseHTTPRequest(item map[string]any) (HTTPRequest, error) {
 		return HTTPRequest{}, err
 	}
 	req.Matchers = matchers
+	extractors, err := parseExtractors(item["extractors"])
+	if err != nil {
+		return HTTPRequest{}, err
+	}
+	req.Extractors = extractors
+	if strings.EqualFold(req.AttackType, "cluster") {
+		cluster, err := parseCluster(req)
+		if err != nil {
+			return HTTPRequest{}, err
+		}
+		req.Cluster = cluster
+	}
 	return req, nil
+}
+
+// parseExtractors reads an `extractors:` list.
+//
+// The list is a list of mappings and nothing else is accepted: an
+// extractor that is a bare string is a template this parser would have to
+// guess about, and a guess in an extractor is a value nobody asked for.
+func parseExtractors(v any) ([]Extractor, error) {
+	items, ok := v.([]any)
+	if !ok {
+		return nil, nil
+	}
+	out := make([]Extractor, 0, len(items))
+	for i, entry := range items {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("extractor %d is not a mapping", i+1)
+		}
+		spec := Extractor{
+			Type:            strings.ToLower(strings.TrimSpace(stringOf(m["type"]))),
+			Regex:           stringList(m["regex"]),
+			DSL:             stringList(m["dsl"]),
+			Kval:            stringList(m["kval"]),
+			JSON:            stringList(m["json"]),
+			Name:            strings.TrimSpace(stringOf(m["name"])),
+			Part:            strings.ToLower(strings.TrimSpace(stringOf(m["part"]))),
+			CaseInsensitive: boolOf(m["case-insensitive"]),
+			Internal:        boolOf(m["internal"]),
+		}
+		if group, ok := toInt(m["group"]); ok {
+			spec.Group = group
+		}
+		out = append(out, spec)
+	}
+	return out, nil
+}
+
+// parseCluster reads the cluster attack of a request.
+//
+// The attribute the responses are compared on comes from the matchers:
+// a word matcher compares the words, a status matcher the status code and
+// a size matcher the body size. A cluster attack with no such matcher has
+// nothing to compare and is refused here rather than at request time.
+func parseCluster(req HTTPRequest) (*Cluster, error) {
+	attribute, words, ok := clusterAttribute(req.Matchers)
+	if !ok {
+		return nil, fmt.Errorf("the cluster attack has no word, status or size matcher to compare the responses by")
+	}
+	return &Cluster{
+		Method:    req.Method,
+		Payloads:  clusterPayloads(req),
+		Attribute: attribute,
+		Words:     words,
+		Condition: req.MatchersCondition,
+	}, nil
+}
+
+// clusterAttribute reads the attribute a cluster compares on.
+func clusterAttribute(matchers []Matcher) (string, []string, bool) {
+	for _, m := range matchers {
+		switch m.Type {
+		case "word":
+			if len(m.Words) == 0 {
+				continue
+			}
+			return "word", m.Words, true
+		case "status":
+			return "status", nil, true
+		case "size":
+			return "size", nil, true
+		}
+	}
+	return "", nil, false
+}
+
+// clusterPayloads reads the payloads a cluster attack sweeps.
+//
+// The `payloads:` list contributes one entry per value, named by the value
+// because that is what a reader wants to see in the finding. The `payload:`
+// block contributes one entry per key, and a key whose value is a list
+// contributes one entry per item, named key-1, key-2 and so on.
+func clusterPayloads(req HTTPRequest) map[string]string {
+	out := map[string]string{}
+	for _, value := range req.Payloads {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		name := uniquePayloadName(out, value)
+		out[name] = value
+	}
+	names := make([]string, 0, len(req.Payload))
+	for name := range req.Payload {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for index, value := range stringList(req.Payload[name]) {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			key := name
+			if index > 0 {
+				key = fmt.Sprintf("%s-%d", name, index+1)
+			}
+			key = uniquePayloadName(out, key)
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// uniquePayloadName returns a name that is not taken yet.
+func uniquePayloadName(taken map[string]string, preferred string) string {
+	if _, exists := taken[preferred]; !exists {
+		return preferred
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", preferred, i)
+		if _, exists := taken[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 // parseMatchers reads the `matchers:` list.

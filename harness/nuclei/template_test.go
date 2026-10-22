@@ -300,6 +300,142 @@ http:
 	}
 }
 
+// TestParseReadsTheExtractors: the extractors of a template and of a
+// request are read, field for field.
+func TestParseReadsTheExtractors(t *testing.T) {
+	tpl, err := Parse([]byte(`id: with-extractors
+info:
+  name: With extractors
+  severity: info
+extractors:
+  - type: regex
+    regex:
+      - "token=([a-z0-9]+)"
+    group: 1
+    name: token
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/login"
+    matchers:
+      - type: word
+        words:
+          - "token="
+    extractors:
+      - type: json
+        json:
+          - "$.items[0].id"
+        name: item
+        part: body
+        case-insensitive: true
+      - type: kval
+        kval:
+          - APP_KEY
+        name: app_key
+        internal: true
+`), "templates/extractors.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(tpl.Extractors) != 1 {
+		t.Fatalf("the template has %d extractors, want 1", len(tpl.Extractors))
+	}
+	template := tpl.Extractors[0]
+	if template.Type != "regex" || template.Name != "token" || template.Group != 1 {
+		t.Errorf("the template extractor is %+v", template)
+	}
+	if len(template.Regex) != 1 || template.Regex[0] != "token=([a-z0-9]+)" {
+		t.Errorf("the template extractor is %+v", template)
+	}
+	request := tpl.HTTP[0]
+	if len(request.Extractors) != 2 {
+		t.Fatalf("the request has %d extractors, want 2", len(request.Extractors))
+	}
+	json := request.Extractors[0]
+	if json.Type != "json" || json.Name != "item" || json.Part != "body" || !json.CaseInsensitive {
+		t.Errorf("the json extractor is %+v", json)
+	}
+	if len(json.JSON) != 1 || json.JSON[0] != "$.items[0].id" {
+		t.Errorf("the json extractor is %+v", json)
+	}
+	kval := request.Extractors[1]
+	if kval.Type != "kval" || kval.Name != "app_key" || !kval.Internal {
+		t.Errorf("the kval extractor is %+v", kval)
+	}
+	if len(kval.Kval) != 1 || kval.Kval[0] != "APP_KEY" {
+		t.Errorf("the kval extractor is %+v", kval)
+	}
+}
+
+// TestParseReadsTheClusterAttack: the attribute comes from the matchers
+// and the payloads come from the payload blocks.
+func TestParseReadsTheClusterAttack(t *testing.T) {
+	tpl, err := Parse([]byte(`id: cluster-one
+info:
+  name: Cluster
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/admin"
+    attack: cluster
+    payloads:
+      - admin
+      - root
+    matchers:
+      - type: word
+        words:
+          - blocked
+`), "templates/cluster.yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cluster := tpl.HTTP[0].Cluster
+	if cluster == nil {
+		t.Fatal("the cluster attack was not read")
+	}
+	if cluster.Attribute != "word" {
+		t.Errorf("the attribute is %q, want word", cluster.Attribute)
+	}
+	if len(cluster.Words) != 1 || cluster.Words[0] != "blocked" {
+		t.Errorf("the words are %v", cluster.Words)
+	}
+	if cluster.Method != "GET" {
+		t.Errorf("the method is %q", cluster.Method)
+	}
+	if len(cluster.Payloads) != 2 || cluster.Payloads["admin"] != "admin" || cluster.Payloads["root"] != "root" {
+		t.Errorf("the payloads are %v", cluster.Payloads)
+	}
+}
+
+// TestParseRefusesAClusterWithNothingToCompare: a cluster attack with no
+// word, status or size matcher has nothing to compare, and a template
+// that cannot run is named rather than half run.
+func TestParseRefusesAClusterWithNothingToCompare(t *testing.T) {
+	_, err := Parse([]byte(`id: cluster-two
+info:
+  name: Cluster
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/admin"
+    attack: cluster
+    payloads:
+      - admin
+    matchers:
+      - type: regex
+        regex:
+          - "blocked"
+`), "templates/cluster-bad.yaml")
+	if err == nil {
+		t.Fatal("a cluster attack with nothing to compare was loaded")
+	}
+	if !strings.Contains(err.Error(), "compare") {
+		t.Errorf("the error does not name the cause: %v", err)
+	}
+}
+
 // mustURL parses a url or fails the test.
 func mustURL(t *testing.T, raw string) *url.URL {
 	t.Helper()

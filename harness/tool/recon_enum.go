@@ -25,7 +25,7 @@ type EnumTool struct {
 func (e *EnumTool) Name() string { return "enum" }
 
 func (e *EnumTool) Description() string {
-	return "Passive reconnaissance from public sources: nothing is probed and nothing is submitted. mode subdomains reads the certificate transparency logs (crt.sh, falling back to Cert Spotter) for the names a domain is known by. mode dns resolves a name through the system resolver (A, AAAA, CNAME, MX, NS and TXT unless the types argument says otherwise). mode host looks up the network registration of an IP or a hostname (rdap.org, falling back to stat.ripe.net): the announced prefix, the AS number and its organisation, the country and the registrant. Every outbound request is scope-gated and charged to the engagement budget. Returns one bounded line per name, record or field, names the source that answered, and leaves an unknown field empty instead of a guess."
+	return "Passive collection from public sources. mode subdomains reads the certificate transparency logs (crt.sh, falling back to Cert Spotter), mode dns resolves a name, and mode host reads the network registration of an address (rdap.org, falling back to stat.ripe.net). A source that did not answer leaves its field empty."
 }
 
 func (e *EnumTool) Schema() map[string]any {
@@ -36,15 +36,15 @@ func (e *EnumTool) Schema() map[string]any {
 				"type":        "string",
 				"enum":        []string{"subdomains", "dns", "host"},
 				"default":     "subdomains",
-				"description": "What to collect: subdomains from certificate transparency, dns records for a name, or the network registration of a host",
+				"description": "subdomains, dns or host",
 			},
-			"domain": map[string]any{"type": "string", "description": "The domain to enumerate subdomains for (mode subdomains). A scheme, a path and a trailing dot are ignored"},
-			"name":   map[string]any{"type": "string", "description": "The name to resolve (mode dns)"},
-			"host":   map[string]any{"type": "string", "description": "The IP address or hostname to look up (mode host)"},
+			"domain": map[string]any{"type": "string", "description": "The domain to enumerate"},
+			"name":   map[string]any{"type": "string", "description": "The name to resolve"},
+			"host":   map[string]any{"type": "string", "description": "The address or hostname"},
 			"types": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "The DNS record types to ask for (mode dns): A, AAAA, CNAME, MX, NS, TXT. Defaults to all of them",
+				"description": "The record types to ask for",
 			},
 		},
 	}

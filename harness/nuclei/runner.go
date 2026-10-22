@@ -328,10 +328,7 @@ func excluded(tpl Template, severities, tags, ids map[string]bool) (string, bool
 // unsupportedTemplate names why a template cannot be executed here.
 func unsupportedTemplate(tpl Template) string {
 	for _, request := range tpl.HTTP {
-		if strings.EqualFold(request.AttackType, "cluster") {
-			return "cluster attacks are not executed"
-		}
-		if len(request.Matchers) == 0 {
+		if len(request.Matchers) == 0 && len(request.Extractors) == 0 && request.Cluster == nil {
 			return "the template has a request with no matchers"
 		}
 		if reason := UnsupportedReason(request.Matchers); reason != "" {
@@ -372,33 +369,26 @@ func appendReason(reasons []string, reason string) []string {
 // The work
 // ---------------------------------------------------------------------------
 
-// workItem is one request of one template against one target.
+// workItem is one template against one target.
+//
+// The requests of a template run in order, because a template that extracts
+// a value from the first response and sends it in the second needs the
+// first to have happened. The concurrency is across templates and targets
+// instead.
 type workItem struct {
 	target   *url.URL
 	template Template
 	// index is the position of the template in the kept list, so the
 	// per-template counters do not collide on a duplicate id.
-	index   int
-	request HTTPRequest
-	path    string
-	// raw marks a raw request block.
-	raw bool
+	index int
 }
 
-// buildWork flattens the templates and the targets into the requests to
-// fire.
+// buildWork flattens the templates and the targets into the runs to fire.
 func buildWork(templates []Template, targets []*url.URL) []workItem {
 	var items []workItem
 	for _, target := range targets {
 		for index, tpl := range templates {
-			for _, request := range tpl.HTTP {
-				for _, path := range request.Path {
-					items = append(items, workItem{target: target, template: tpl, index: index, request: request, path: path})
-				}
-				for _, block := range request.Raw {
-					items = append(items, workItem{target: target, template: tpl, index: index, request: request, path: block, raw: true})
-				}
-			}
+			items = append(items, workItem{target: target, template: tpl, index: index})
 		}
 	}
 	return items
@@ -434,80 +424,242 @@ type runState struct {
 	stopOnce   sync.Once
 }
 
-// process fires one request and records what it produced.
+// process runs one template against one target.
+//
+// The requests of the template run in order: an extractor in the first
+// request feeds the second, and a sweep that fired them side by side would
+// have sent the second request with a variable nobody had set yet.
 func (s *runState) process(ctx context.Context, item workItem, probe ProbeFunc, limiter *limiter, timeout int) {
-	request, missing, err := buildRequest(item, timeout)
+	vars := mergedVars(item.target, item.template)
+	for _, request := range item.template.HTTP {
+		if request.Cluster != nil {
+			s.runCluster(ctx, item, request, vars, probe, limiter, timeout)
+			continue
+		}
+		for _, path := range request.Path {
+			s.runRequest(ctx, item, request, path, false, vars, probe, limiter, timeout)
+		}
+		for _, block := range request.Raw {
+			s.runRequest(ctx, item, request, block, true, vars, probe, limiter, timeout)
+		}
+	}
+}
+
+// runRequest fires one request of a template and records what it produced.
+func (s *runState) runRequest(ctx context.Context, item workItem, request HTTPRequest, path string, raw bool, vars Vars, probe ProbeFunc, limiter *limiter, timeout int) {
+	built, missing, err := buildRequest(item, request, path, raw, vars, timeout)
 	if err != nil {
 		s.addError(fmt.Sprintf("%s: %v", item.template.ID, err))
 		return
 	}
-	if !s.reserveRequest() {
-		s.setStopped("the request ceiling was reached")
+	result, body, ok := s.fire(ctx, item, built, probe, limiter)
+	if !ok {
 		return
 	}
-	// The scope is the authorization: the request is refused before it is
-	// dialed, and a refusal is not a finding.
+	response := Response{
+		Status:         result.Status,
+		Headers:        result.Headers,
+		Body:           body,
+		URL:            result.URL,
+		Method:         built.Method,
+		RequestHeaders: built.Headers,
+		RequestBody:    built.Body,
+	}
+	if response.URL == "" {
+		response.URL = built.URL
+	}
+	if len(request.Matchers) > 0 {
+		match, err := EvaluateRequestWithVars(request, response, vars)
+		if err != nil {
+			s.addError(fmt.Sprintf("%s: the matchers could not be evaluated: %v", item.template.ID, err))
+			return
+		}
+		if !match.Matched {
+			return
+		}
+		catchAll := ""
+		if s.isCatchAll(result.SHA256, response.URL) {
+			catchAll = "the response body is identical to the target root, so a catch-all route answered this path"
+		}
+		s.addFinding(Finding{
+			TemplateID: item.template.ID,
+			Name:       item.template.Info.Name,
+			Severity:   item.template.Info.Severity,
+			Type:       item.template.Type,
+			MatchedAt:  response.URL,
+			Matcher:    match.Matcher,
+			Evidence:   match.Evidence,
+			Request:    describeRequest(built.Method, built.URL, built.Headers),
+			Status:     result.Status,
+			BodyBytes:  result.BodyBytes,
+			SHA256:     result.SHA256,
+			ReceiptID:  result.ReceiptID,
+			Source:     item.template.Path,
+			EmptyVars:  missing,
+			CatchAll:   catchAll,
+		})
+	}
+	// The extractors run on the responses that matched, and on every
+	// response of a request that carries no matchers at all: a request
+	// whose only job is to pull a value out has nothing to match.
+	s.runExtractors(item, request, response, vars, built, result, missing)
+}
+
+// runExtractors runs the extractors of a request and merges what they
+// found into the variables the later requests of the template render
+// against.
+//
+// A value that is not internal is also reported: a template that pulled a
+// secret out of a response has found something, and a reader who cannot
+// see it cannot report it.
+func (s *runState) runExtractors(item workItem, request HTTPRequest, response Response, vars Vars, built recon.Request, result recon.Result, missing []string) {
+	specs := make([]Extractor, 0, len(item.template.Extractors)+len(request.Extractors))
+	specs = append(specs, item.template.Extractors...)
+	specs = append(specs, request.Extractors...)
+	if len(specs) == 0 {
+		return
+	}
+	values, err := ExtractWithVars(specs, response, vars)
+	if err != nil {
+		s.addError(fmt.Sprintf("%s: %v", item.template.ID, err))
+	}
+	for _, spec := range specs {
+		name := spec.Name
+		if name == "" {
+			name = spec.Type
+		}
+		found := values[name]
+		if len(found) == 0 {
+			continue
+		}
+		// The first value is the one a later request sends: a later
+		// request asks for one value, and the first is the one the
+		// extractor found first.
+		vars[name] = found[0]
+		if spec.Internal {
+			continue
+		}
+		label := "extractor " + name
+		if spec.Type != "" {
+			label += " (" + spec.Type + ")"
+		}
+		s.addFinding(Finding{
+			TemplateID: item.template.ID,
+			Name:       item.template.Info.Name,
+			Severity:   item.template.Info.Severity,
+			Type:       item.template.Type,
+			MatchedAt:  response.URL,
+			Matcher:    label,
+			Evidence:   strings.Join(found, ", "),
+			Request:    describeRequest(built.Method, built.URL, built.Headers),
+			Status:     result.Status,
+			BodyBytes:  result.BodyBytes,
+			SHA256:     result.SHA256,
+			ReceiptID:  result.ReceiptID,
+			Source:     item.template.Path,
+			EmptyVars:  missing,
+		})
+	}
+}
+
+// runCluster fires a cluster attack and records the payload that differed.
+//
+// A cluster attack fires one request per payload, so only the first path of
+// the request is used: the paths of a cluster request are alternatives, not
+// a list to sweep.
+func (s *runState) runCluster(ctx context.Context, item workItem, request HTTPRequest, vars Vars, probe ProbeFunc, limiter *limiter, timeout int) {
+	if len(request.Path) == 0 {
+		s.addError(fmt.Sprintf("%s: the cluster attack has no path to send", item.template.ID))
+		return
+	}
+	headers := make(map[string]string, len(request.Headers))
+	for name, value := range request.Headers {
+		headers[name] = value
+	}
+	if len(request.Cookies) > 0 {
+		cookie, _ := renderCookies(request.Cookies, vars)
+		setCookieHeader(headers, cookie)
+	}
+	fire := func(ctx context.Context, req recon.Request) (recon.Result, []byte, error) {
+		result, body, ok := s.fire(ctx, item, req, probe, limiter)
+		if !ok {
+			return recon.Result{}, nil, fmt.Errorf("the request was not sent")
+		}
+		return result, body, nil
+	}
+	comparison, err := RunCluster(ctx, *request.Cluster, ClusterRequest{
+		Method:  request.Method,
+		Path:    request.Path[0],
+		Headers: headers,
+		Body:    request.Body,
+		Timeout: timeout,
+		Target:  item.target,
+	}, vars, fire)
+	if err != nil {
+		s.addError(fmt.Sprintf("%s: the cluster attack could not run: %v", item.template.ID, err))
+		return
+	}
+	if !comparison.Matched {
+		return
+	}
+	for _, outlier := range comparison.Outliers {
+		matchedAt := outlier.URL
+		if matchedAt == "" {
+			matchedAt = comparison.Baseline.URL
+		}
+		s.addFinding(Finding{
+			TemplateID: item.template.ID,
+			Name:       item.template.Info.Name,
+			Severity:   item.template.Info.Severity,
+			Type:       item.template.Type,
+			MatchedAt:  matchedAt,
+			Matcher:    "cluster " + comparison.Attribute,
+			Evidence:   outlier.Difference,
+			Request:    describeRequest(request.Method, matchedAt, headers),
+			Status:     outlier.Status,
+			SHA256:     outlier.SHA256,
+			ReceiptID:  outlier.ReceiptID,
+			Source:     item.template.Path,
+			EmptyVars:  comparison.Missing,
+		})
+	}
+}
+
+// fire sends one request through the gated, budgeted path.
+//
+// The scope is the authorization: the request is refused before it is
+// dialed, and a refusal is not a finding. The budget is metered per
+// request, and on a rate limit failure the request is never dialed.
+func (s *runState) fire(ctx context.Context, item workItem, request recon.Request, probe ProbeFunc, limiter *limiter) (recon.Result, []byte, bool) {
+	if !s.reserveRequest() {
+		s.setStopped("the request ceiling was reached")
+		return recon.Result{}, nil, false
+	}
 	if err := recon.Gate(request.URL); err != nil {
 		s.releaseRequest()
 		s.mu.Lock()
 		s.refused++
 		s.mu.Unlock()
 		s.addError(fmt.Sprintf("%s: %s refused by scope: %v", item.template.ID, request.URL, err))
-		return
+		return recon.Result{}, nil, false
 	}
-	// The budget is metered per request. On a rate limit failure the
-	// request is never dialed.
 	if err := recon.Take(1); err != nil {
 		s.releaseRequest()
 		s.setStopped(err.Error())
-		return
+		return recon.Result{}, nil, false
 	}
 	if err := limiter.wait(ctx); err != nil {
 		s.releaseRequest()
 		s.setStopped("the run was cancelled")
-		return
+		return recon.Result{}, nil, false
 	}
-
 	result, body, err := probe(ctx, request)
 	if err != nil {
 		s.recordFailure(item, err)
-		return
+		return recon.Result{}, nil, false
 	}
 	s.recordSuccess(item)
-
-	response := Response{Status: result.Status, Headers: result.Headers, Body: body, URL: result.URL}
-	if response.URL == "" {
-		response.URL = request.URL
-	}
-	match, err := EvaluateRequest(item.request, response)
-	if err != nil {
-		s.addError(fmt.Sprintf("%s: the matchers could not be evaluated: %v", item.template.ID, err))
-		return
-	}
-	if !match.Matched {
-		return
-	}
-	catchAll := ""
-	if s.isCatchAll(result.SHA256, response.URL) {
-		catchAll = "the response body is identical to the target root, so a catch-all route answered this path"
-	}
-	s.addFinding(Finding{
-		TemplateID: item.template.ID,
-		Name:       item.template.Info.Name,
-		Severity:   item.template.Info.Severity,
-		Type:       item.template.Type,
-		MatchedAt:  response.URL,
-		Matcher:    match.Matcher,
-		Evidence:   match.Evidence,
-		Request:    describeRequest(request.Method, request.URL, request.Headers),
-		Status:     result.Status,
-		BodyBytes:  result.BodyBytes,
-		SHA256:     result.SHA256,
-		ReceiptID:  result.ReceiptID,
-		Source:     item.template.Path,
-		EmptyVars:  missing,
-		CatchAll:   catchAll,
-	})
+	return result, body, true
 }
 
 // isCatchAll reports whether a response is the target root's own body
@@ -726,20 +878,17 @@ func (s *runState) errorSnapshot() []string {
 // The second result names the variables that rendered to nothing. A
 // template with a hole in it still runs, and the finding has to say where
 // the hole was.
-func buildRequest(item workItem, timeout int) (recon.Request, []string, error) {
-	vars := mergedVars(item.target, item.template)
-
-	method := item.request.Method
+func buildRequest(item workItem, request HTTPRequest, path string, raw bool, vars Vars, timeout int) (recon.Request, []string, error) {
+	method := request.Method
 	if method == "" {
 		method = http.MethodGet
 	}
-	path := item.path
-	body := item.request.Body
+	body := request.Body
 	headers := map[string]string{}
 	var missing []string
 
-	if item.raw {
-		parsed, err := parseRawRequest(item.path)
+	if raw {
+		parsed, err := parseRawRequest(path)
 		if err != nil {
 			return recon.Request{}, nil, err
 		}
@@ -752,13 +901,13 @@ func buildRequest(item workItem, timeout int) (recon.Request, []string, error) {
 			missing = append(missing, gaps...)
 		}
 	}
-	for name, value := range item.request.Headers {
+	for name, value := range request.Headers {
 		rendered, gaps := Render(value, vars)
 		headers[name] = rendered
 		missing = append(missing, gaps...)
 	}
-	if len(item.request.Cookies) > 0 {
-		cookie, gaps := renderCookies(item.request.Cookies, vars)
+	if len(request.Cookies) > 0 {
+		cookie, gaps := renderCookies(request.Cookies, vars)
 		missing = append(missing, gaps...)
 		setCookieHeader(headers, cookie)
 	}
@@ -890,7 +1039,7 @@ type parsedRaw struct {
 // Nuclei's raw mode puts a whole request in one string, and it is the only
 // place a template sets a method, a header and a body in one breath.
 func parseRawRequest(block string) (parsedRaw, error) {
-	normalised := strings.ReplaceAll(block, "\r\n", "\n")
+	normalised := strings.ReplaceAll(unescapeRaw(block), "\r\n", "\n")
 	head := normalised
 	body := ""
 	if cut := strings.Index(normalised, "\n\n"); cut >= 0 {
@@ -922,6 +1071,42 @@ func parseRawRequest(block string) (parsedRaw, error) {
 		headers: headers,
 		body:    body,
 	}, nil
+}
+
+// unescapeRaw turns the escaped newlines of a one line raw block into real
+// ones.
+//
+// A raw block written as a YAML block scalar already has real newlines,
+// and its escapes are content: a JSON body carries "line1\nline2" and the
+// backslash belongs in what the server receives. A block written as a
+// single line spells its newlines out, so they are put back here.
+func unescapeRaw(block string) string {
+	if strings.ContainsAny(block, "\r\n") {
+		return block
+	}
+	var out strings.Builder
+	out.Grow(len(block))
+	for i := 0; i < len(block); i++ {
+		if block[i] != '\\' || i+1 >= len(block) {
+			out.WriteByte(block[i])
+			continue
+		}
+		i++
+		switch block[i] {
+		case 'n':
+			out.WriteByte('\n')
+		case 'r':
+			out.WriteByte('\r')
+		case 't':
+			out.WriteByte('\t')
+		case '\\':
+			out.WriteByte('\\')
+		default:
+			out.WriteByte('\\')
+			out.WriteByte(block[i])
+		}
+	}
+	return out.String()
 }
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ type ProbeTool struct{}
 func (p *ProbeTool) Name() string { return "probe" }
 
 func (p *ProbeTool) Description() string {
-	return "Send an HTTP probe and get per-request observations: status, elapsed, header subset, redirect, body hash and a receipt file. Modes: single (one request), path_list (relative paths appended to url, max 30), origin_variants (Origin header per value plus Origin null, with CORS reflection verdict). Methods: GET (default), POST, HEAD, OPTIONS, PUT, PATCH, DELETE. The state-changing verbs are available by default and are refused only when an engagement on record does not authorize them. Do not ask the operator to confirm a destructive request: the engagement record is the only place that narrows it. A JSON object body is serialized and sent as application/json. Every request is scope-gated and metered against the engagement rate budget."
+	return "Send one HTTP request and get the observation: status, elapsed, header subset, redirect, body hash and a receipt. Modes: single, path_list (30 paths), origin_variants (with a CORS verdict). Methods: GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE."
 }
 
 func (p *ProbeTool) Schema() map[string]any {

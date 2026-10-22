@@ -446,10 +446,32 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	r.Register(&AuthSessionsTool{})
 	r.Register(&DiscoverTool{})
 	r.Register(&FuzzTool{})
-	r.Register(&PortsTool{})
-	r.Register(&EnumTool{})
 	r.Register(&NucleiTool{})
 	r.Register(&FindingTool{})
+	r.Register(&VerifyTool{})
+	r.Register(&CoverageTool{})
+	r.Register(&HistoryTool{})
+	r.Register(&CredTool{})
+	// The specialists. They are the tools for the work that needs the
+	// operator's engagement to be open first: an internal network, a
+	// directory, a port map. They are offered when the toolset says so and
+	// are always executable, because a tool that is registered but not
+	// offered still runs when something asks for it by name.
+	//
+	// The catalogue is the cached prefix of every request, and every tool
+	// in it is tokens the model reads on every turn. The everyday set is
+	// the web review; the specialists are the internal engagement, and the
+	// operator turns them on for that.
+	specialists := []Tool{&PortsTool{}, &EnumTool{}, &LDAPTool{}, &KerbTool{}}
+	if Toolset() == ToolsetFull {
+		for _, tool := range specialists {
+			r.Register(tool)
+		}
+	} else {
+		for _, tool := range specialists {
+			r.RegisterHidden(tool)
+		}
+	}
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	//

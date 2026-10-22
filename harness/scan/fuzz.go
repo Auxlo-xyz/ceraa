@@ -56,8 +56,12 @@ type FuzzOptions struct {
 	Param string
 	// Wordlist is a path to a wordlist file. Empty uses the embedded list.
 	Wordlist string
-	// Location is "query" or "body". Empty derives it from the method.
+	// Location is "query", "body" or "header". Empty derives it from the
+	// method.
 	Location string
+	// Header is the header whose value is fuzzed, when the location is
+	// header.
+	Header string
 	// Marker is a substring that marks a hit. Empty means the run reports
 	// status and size deltas against a baseline instead.
 	Marker string
@@ -136,10 +140,13 @@ func FuzzDetailed(ctx context.Context, opts FuzzOptions) (FuzzResult, error) {
 	if method == "" {
 		method = http.MethodGet
 	}
-	if method != http.MethodGet && method != http.MethodPost {
-		// Only the two verbs a fuzzer needs: GET for a query, POST for a
-		// body. The state-changing verbs are not a fuzzer's business.
-		return FuzzResult{}, fmt.Errorf("method %q is not one of GET, POST", method)
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions:
+		// The verbs a fuzzer needs: a query, a body, and the update verbs
+		// that a parameter test is often actually about. HEAD and OPTIONS
+		// carry no body, so they fuzz the query only.
+	default:
+		return FuzzResult{}, fmt.Errorf("method %q is not one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS", method)
 	}
 	param := strings.TrimSpace(opts.Param)
 	if param == "" {
@@ -151,19 +158,28 @@ func FuzzDetailed(ctx context.Context, opts FuzzOptions) (FuzzResult, error) {
 	location := strings.ToLower(strings.TrimSpace(opts.Location))
 	switch location {
 	case "":
-		// The method decides by default: GET fuzzes the query, POST fuzzes
-		// the body. An explicit location overrides that.
-		if method == http.MethodPost {
+		// The method decides by default: GET fuzzes the query, the verbs
+		// that carry a body fuzz the body. An explicit location overrides
+		// that.
+		switch method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch:
 			location = "body"
-		} else {
+		default:
 			location = "query"
 		}
-	case "query", "body":
+	case "query", "body", "header":
 	default:
-		return FuzzResult{}, fmt.Errorf("location %q is not one of query, body", opts.Location)
+		return FuzzResult{}, fmt.Errorf("location %q is not one of query, body, header", opts.Location)
 	}
-	if location == "body" && method != http.MethodPost {
-		return FuzzResult{}, fmt.Errorf("body fuzzing needs POST, not %s", method)
+	if location == "body" && method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
+		return FuzzResult{}, fmt.Errorf("body fuzzing needs POST, PUT or PATCH, not %s", method)
+	}
+	if location == "header" {
+		// A header fuzz replaces the value of one header, which is how a
+		// host header, a referer or an authorization scheme gets tested.
+		if strings.TrimSpace(opts.Header) == "" {
+			return FuzzResult{}, fmt.Errorf("location header needs a header name")
+		}
 	}
 	if location == "query" && strings.TrimSpace(opts.Body) != "" {
 		// The template would be silently ignored, and a fuzzer that quietly
@@ -253,6 +269,14 @@ func defaultCapture(ctx context.Context, req recon.Request, bodyCap int) (recon.
 // replaced, and a template without the placeholder gets the parameter added
 // as a form field.
 func buildQueryOrBody(target *url.URL, method, location, param string, opts FuzzOptions, value string, headers map[string]string) (recon.Request, error) {
+	if location == "header" {
+		reqHeaders := make(map[string]string, len(headers)+1)
+		for name, header := range headers {
+			reqHeaders[name] = header
+		}
+		reqHeaders[opts.Header] = value
+		return recon.Request{URL: target.String(), Method: method, Headers: reqHeaders, Timeout: opts.Timeout}, nil
+	}
 	if location == "query" {
 		clone := *target
 		query := clone.Query()

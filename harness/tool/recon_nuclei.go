@@ -36,18 +36,18 @@ type NucleiTool struct{}
 func (n *NucleiTool) Name() string { return "nuclei" }
 
 func (n *NucleiTool) Description() string {
-	return "Run Nuclei-format HTTP templates against a target and report what matched. The templates are Nuclei YAML, so the upstream corpus and a directory of your own both work, and the HTTP template types are the ones that are supported. DSL matchers and the non-HTTP template types (network, dns, headless, ssl, whois, javascript, code) are skipped, and the summary says which templates were skipped and why. Every request is scope gated, charged to the engagement budget and written a receipt, so a finding cites the request that produced it. Returns one bounded line per finding with the template, the matcher that fired, the status and the receipt id, then a summary of the templates loaded, the templates skipped, the requests fired and the findings."
+	return "Run Nuclei-format HTTP templates and report what matched. Every request is scope gated and receipted. DSL matchers, extractors, cluster attacks and raw requests are supported; the non-HTTP template types are skipped and the summary says why."
 }
 
 func (n *NucleiTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"target":       map[string]any{"type": "string", "description": "The base url to scan, or a file of targets with one url per line"},
-			"templates":    map[string]any{"type": "string", "description": "A directory or file of Nuclei templates. Empty uses the default search plus the embedded set"},
-			"severity":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Keep only these severities: info, low, medium, high, critical"},
-			"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Keep only the templates carrying one of these tags"},
-			"template_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Keep only these template ids"},
+			"target":       map[string]any{"type": "string", "description": "The url to scan, or a file of targets"},
+			"templates":    map[string]any{"type": "string", "description": "A directory or file of templates"},
+			"severity":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Severities to keep"},
+			"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags to keep"},
+			"template_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Template ids to keep"},
 			"rate":         map[string]any{"type": "integer", "minimum": 1, "maximum": hardNucleiRate, "description": fmt.Sprintf("Requests per second, default %d", defaultNucleiRate)},
 			"concurrency":  map[string]any{"type": "integer", "minimum": 1, "maximum": hardNucleiConcurrency, "description": fmt.Sprintf("Parallel requests, default %d", defaultNucleiConcurrency)},
 			"timeout":      map[string]any{"type": "integer", "minimum": 1, "maximum": hardNucleiTimeout, "description": fmt.Sprintf("Per-request timeout in seconds, default %d", defaultNucleiTimeout)},

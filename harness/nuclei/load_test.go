@@ -137,6 +137,70 @@ func TestLoadEmbeddedCarriesAUsableCorpus(t *testing.T) {
 	}
 }
 
+// TestLoadKeepsTheTemplatesWithExtractorsAndClusterAttacks: the shapes the
+// corpus leans on have to survive the loader, or the corpus cannot run at
+// all.
+func TestLoadKeepsTheTemplatesWithExtractorsAndClusterAttacks(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplateFile(t, filepath.Join(dir, "dsl.yaml"), `id: dsl-one
+info:
+  name: DSL One
+  severity: info
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code == 200"
+    extractors:
+      - type: regex
+        regex:
+          - "token=([a-z0-9]+)"
+        group: 1
+        name: token
+`)
+	writeTemplateFile(t, filepath.Join(dir, "cluster.yaml"), `id: cluster-one
+info:
+  name: Cluster One
+  severity: high
+http:
+  - method: GET
+    path: ["{{BaseURL}}/admin"]
+    attack: cluster
+    payloads:
+      - admin
+    matchers:
+      - type: word
+        words:
+          - blocked
+`)
+	templates, errs := Load(dir)
+	if len(errs) != 0 {
+		t.Fatalf("the templates produced errors: %v", errs)
+	}
+	if len(templates) != 2 {
+		t.Fatalf("loaded %d templates, want 2", len(templates))
+	}
+	for _, tpl := range templates {
+		switch tpl.ID {
+		case "dsl-one":
+			if len(tpl.HTTP[0].Extractors) != 1 {
+				t.Errorf("the extractor was not read: %+v", tpl.HTTP[0])
+			}
+			if reason := UnsupportedReason(tpl.HTTP[0].Matchers); reason != "" {
+				t.Errorf("a dsl matcher was named as unrunnable: %s", reason)
+			}
+		case "cluster-one":
+			if tpl.HTTP[0].Cluster == nil {
+				t.Error("the cluster attack was not read")
+			}
+		default:
+			t.Errorf("an unexpected template was loaded: %q", tpl.ID)
+		}
+	}
+}
+
 // TestDefaultTemplateDirsPrefersTheEnvironmentVariable: the explicit path
 // comes first.
 func TestDefaultTemplateDirsPrefersTheEnvironmentVariable(t *testing.T) {

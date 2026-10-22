@@ -78,7 +78,7 @@ type AuthLoginTool struct{}
 func (a *AuthLoginTool) Name() string { return "auth_login" }
 
 func (a *AuthLoginTool) Description() string {
-	return "Log in to a target and keep the session, so later requests can be authenticated without logging in again. Sends one request (POST by default) with the body and headers you give, captures every cookie the response sets, and stores them under a name you choose. Returns the session name, the HTTP status, the names of the cookies captured and the path of the session file. The response body is read but never printed, and cookie values never leave this machine: only their names are reported. The request is scope-gated and metered against the engagement rate budget, exactly like a probe."
+	return "Log in and keep the session, so later requests are authenticated without logging in again. The cookies are stored on disk and the values never leave the machine."
 }
 
 func (a *AuthLoginTool) Schema() map[string]any {
@@ -279,7 +279,7 @@ type AuthReplayTool struct{}
 func (a *AuthReplayTool) Name() string { return "auth_replay" }
 
 func (a *AuthReplayTool) Description() string {
-	return "Replay a request with a stored session. The session's cookies are attached to the URL you give, subject to the real cookie rules (domain, path, Secure, expiry), and the session's stored headers - an Authorization header, for example - are merged in, with your own headers winning. The request is sent as an ordinary probe, so it is scope-gated, metered against the engagement rate budget and leaves a receipt in the recon trail. Returns the status, the elapsed time, the response size, the sha256 prefix, the receipt id and the bounded response body head. Cookie values are never printed."
+	return "Replay a request with a stored session. The cookies are attached under the real cookie rules, the session's stored headers are merged in, and the request lands in the receipt trail like any other probe."
 }
 
 func (a *AuthReplayTool) Schema() map[string]any {
@@ -443,7 +443,7 @@ type AuthSessionsTool struct{}
 func (a *AuthSessionsTool) Name() string { return "auth_sessions" }
 
 func (a *AuthSessionsTool) Description() string {
-	return "List or delete the stored sessions. Listing reports each session's name, its age and the names of the cookies it holds, never the cookie values. Deleting removes the session file from disk."
+	return "List or delete the stored sessions. Listing reports the cookie names, never the values."
 }
 
 func (a *AuthSessionsTool) Schema() map[string]any {

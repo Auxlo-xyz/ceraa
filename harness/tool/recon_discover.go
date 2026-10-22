@@ -18,24 +18,24 @@ type DiscoverTool struct{}
 func (d *DiscoverTool) Name() string { return "discover" }
 
 func (d *DiscoverTool) Description() string {
-	return "Sweep a site for content: explicit paths plus a wordlist of admin panels, API paths, config files, backup files and version control leftovers, each one a bounded GET. Every request is scope-gated, charged to the engagement budget and written a receipt, so the sweep leaves the same evidence trail a single probe does. Returns one line per hit (path, status, size, content type, sha256, receipt id) and a summary of what was fired, what was found and what was filtered out as a soft 404. "
+	return "Sweep a site for content paths with a wordlist of admin panels, API paths, config, backup and version control leftovers. Every request is scope-gated and receipted. One line per hit with its status, size and receipt, and a catch-all response folded into one line."
 }
 
 func (d *DiscoverTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"url":          map[string]any{"type": "string", "description": "Absolute http:// or https:// base URL to sweep"},
-			"paths":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 100, "description": "Explicit relative paths to try as given, on top of the wordlist"},
-			"wordlist":     map[string]any{"type": "string", "description": "Path to a wordlist file, one entry per line, # for comments. Empty uses the embedded list of admin panels, API paths, config, backup and version control artefacts"},
-			"extensions":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 16, "description": "Suffixes appended to each wordlist word, for example .php, .bak, .zip"},
-			"depth":        map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "description": "Directory recursion depth for directories the sweep finds, 0 disables it"},
+			"url":          map[string]any{"type": "string", "description": "The base URL to sweep"},
+			"paths":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 100, "description": "Relative paths to try"},
+			"wordlist":     map[string]any{"type": "string", "description": "Path to a wordlist"},
+			"extensions":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 16, "description": "Suffixes appended to each word"},
+			"depth":        map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "description": "Recursion depth, default 0"},
 			"concurrency":  map[string]any{"type": "integer", "minimum": 1, "maximum": 32, "description": "Parallel requests, default 8"},
-			"max_requests": map[string]any{"type": "integer", "minimum": 1, "maximum": 5000, "description": "Hard ceiling on requests fired, default 200"},
-			"max_results":  map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "description": "Hard ceiling on hits returned, default 100"},
-			"match_status": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": 32, "description": "Status codes to keep, empty keeps every status"},
-			"exclude_size": map[string]any{"type": "integer", "minimum": 0, "description": "Drop responses of exactly this size, the explicit form of the soft-404 rule"},
-			"timeout":      map[string]any{"type": "integer", "minimum": 1, "maximum": 120, "description": "Per-request timeout in seconds, default 15"},
+			"max_requests": map[string]any{"type": "integer", "minimum": 1, "maximum": 5000, "description": "Request ceiling, default 200"},
+			"max_results":  map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "description": "Hit ceiling, default 100"},
+			"match_status": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": 32, "description": "Status codes to keep"},
+			"exclude_size": map[string]any{"type": "integer", "minimum": 0, "description": "Drop responses of exactly this size"},
+			"timeout":      map[string]any{"type": "integer", "minimum": 1, "maximum": 120, "description": "Timeout in seconds, default 15"},
 		},
 		"required": []string{"url"},
 	}
