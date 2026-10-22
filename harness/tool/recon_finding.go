@@ -1,32 +1,62 @@
 package tool
 
-// recon_finding.go is the finding record wearing a tool face.
+// recon_finding.go is the finding record wearing a tool face, with the
+// verification policy folded into it.
 //
 // The store it writes is the harness/findings package; this file is only the
-// shape the model talks to. Two things are decided here rather than there:
+// shape the model talks to. Three things are decided here rather than there:
 //
 //   - what a mode does. add records, update changes the fields the model
 //     named and leaves the rest alone, list and coverage read, delete
-//     removes. An update that defaulted the severity would overwrite the
-//     severity the record already carried, which is how a record quietly
-//     stops describing what it describes.
+//     removes, and verify runs the verification policy over an exchange and
+//     attaches the verdict to the record. An update that defaulted the
+//     severity would overwrite the severity the record already carried, which
+//     is how a record quietly stops describing what it describes.
 //   - what the chat sees. One finding per block, and the reproduction
 //     printed verbatim, because the PoC is the thing a reader copies and a
 //     copy that needs un-escaping is a copy that gets pasted wrong.
+//   - that verifying a finding is a finding operation. It was a second
+//     catalogue entry, and the catalogue is the cached prefix of every
+//     request, so two schemas for one job are two schemas the model reads on
+//     every turn. The policy stays where it was, in harness/verify, pure and
+//     fetching nothing; this file is the part that goes and gets the
+//     exchanges.
 
 import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"ceraa/harness/findings"
 	"ceraa/harness/operation"
+	"ceraa/harness/recon"
+	"ceraa/harness/verify"
 	"ceraa/internal/paths"
 )
 
-// FindingTool records what a recon run found, ruled out and left open.
+// The six behaviours the one tool carries.
+//
+// The modes are separate rather than one mode with flags because each has its
+// own argument set: a verify names an exchange, an add names a title, and a
+// schema cannot make a field conditionally required. The mode decides what
+// the call must carry and the body refuses a call that is short of it.
+const (
+	findingModeAdd      = "add"
+	findingModeUpdate   = "update"
+	findingModeList     = "list"
+	findingModeDelete   = "delete"
+	findingModeCoverage = "coverage"
+	findingModeVerify   = "verify"
+)
+
+// FindingTool records what a recon run found, ruled out and left open, and
+// runs the verification policy over an exchange.
 type FindingTool struct{}
+
+// VerifyTool is the name the registry still registers.
 
 // The executor resolves a tool by its operation type and calls it through the
 // context runner, so the two have to agree with the name.
@@ -35,7 +65,7 @@ var _ operation.ContextRunner = (*FindingTool)(nil)
 func (f *FindingTool) Name() string { return "finding" }
 
 func (f *FindingTool) Description() string {
-	return "Keep the finding record: confirmed, ruled_out and open_proof_gap, each with its PoC, evidence, counterargument and CVSS. The report renders all three."
+	return "Keep the finding record: confirmed, ruled_out and open_proof_gap, each with its PoC, evidence, counterargument and CVSS, all three rendered by the report, and verify an exchange for a PROVEN, REFUTED, UNPROVEN or INCONCLUSIVE verdict."
 }
 
 func (f *FindingTool) Schema() map[string]any {
@@ -44,12 +74,12 @@ func (f *FindingTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"mode": map[string]any{
 				"type":        "string",
-				"enum":        []string{"add", "update", "list", "delete", "coverage"},
-				"description": "add, update, list, delete or coverage",
+				"enum":        []string{findingModeAdd, findingModeUpdate, findingModeList, findingModeDelete, findingModeCoverage, findingModeVerify},
+				"description": "add, update, list, delete, coverage or verify",
 			},
 			"id": map[string]any{
 				"type":        "string",
-				"description": "The finding id, generated from the title when absent",
+				"description": "add or update: the finding id, generated from the title when absent; verify: the finding to attach the verdict to",
 			},
 			"title": map[string]any{
 				"type":        "string",
@@ -61,11 +91,17 @@ func (f *FindingTool) Schema() map[string]any {
 				"description": "info, low, medium, high or critical",
 			},
 			"status": map[string]any{
-				"type":        "string",
-				"enum":        []string{"confirmed", "ruled_out", "open_proof_gap"},
-				"description": "confirmed, ruled_out or open_proof_gap",
+				// The type is left open on purpose: the argument carries the
+				// closure state for add and update and the response status for
+				// verify, and one property cannot be two types. The body
+				// refuses each mode's reading of the other's value.
+				"additionalProperties": true,
+				"description":          "add or update: the closure state, confirmed, ruled_out or open_proof_gap; verify: the response status as a number",
 			},
-			"url":         map[string]any{"type": "string", "description": "The URL"},
+			"url": map[string]any{
+				"type":        "string",
+				"description": "add or update: the finding's URL; verify: the exchange to verify",
+			},
 			"endpoint":    map[string]any{"type": "string", "description": "The endpoint"},
 			"description": map[string]any{"type": "string", "description": "What it is and why it matters"},
 			"poc":         map[string]any{"type": "string", "description": "The reproduction, verbatim"},
@@ -85,10 +121,43 @@ func (f *FindingTool) Schema() map[string]any {
 				"maxItems":    12,
 				"description": "Labels for the report",
 			},
+			"method": map[string]any{
+				"type":        "string",
+				"description": "verify: the method, default GET",
+			},
+			"request_body": map[string]any{
+				"type":        "string",
+				"description": "verify: the request body",
+			},
+			"response_body": map[string]any{
+				"type":        "string",
+				"description": "verify: the response body, if known",
+			},
+			"baseline_url": map[string]any{
+				"type":        "string",
+				"description": "verify: the baseline url, fetched when given",
+			},
+			"baseline_status": map[string]any{
+				"type":        "integer",
+				"description": "verify: the baseline status, if known",
+			},
+			"baseline_body": map[string]any{
+				"type":        "string",
+				"description": "verify: the baseline body, if known",
+			},
+			"marker": map[string]any{
+				"type":        "string",
+				"description": "verify: the canary that was injected",
+			},
+			"controls": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "verify: controls to run: marker, status, body, reflection, secret",
+			},
 		},
 		// Nothing is required by the schema: the mode decides. A title is
-		// required to add or update a finding and an id to delete one, and
-		// listing the record needs neither.
+		// required to add or update a finding, an id to delete one, a url to
+		// verify an exchange, and listing the record needs neither.
 		"required": []string{},
 	}
 }
@@ -102,7 +171,7 @@ func (f *FindingTool) Translate(args map[string]any) (operation.Spec, error) {
 	out := map[string]any{"mode": mode}
 
 	switch mode {
-	case "add", "update":
+	case findingModeAdd, findingModeUpdate:
 		title := strings.TrimSpace(findingString(args["title"]))
 		if title == "" {
 			return operation.Spec{}, fmt.Errorf("title is required")
@@ -125,17 +194,15 @@ func (f *FindingTool) Translate(args map[string]any) (operation.Spec, error) {
 				return operation.Spec{}, err
 			}
 			out["severity"] = parsed
-		} else if mode == "add" {
+		} else if mode == findingModeAdd {
 			out["severity"] = findings.SeverityMedium
 		}
-		if status := strings.TrimSpace(findingString(args["status"])); status != "" {
-			parsed, err := findings.ParseStatus(status)
-			if err != nil {
-				return operation.Spec{}, err
-			}
-			out["status"] = parsed
-		} else if mode == "add" {
-			out["status"] = findings.StatusConfirmed
+		status, err := findingClosureStatus(args["status"], mode)
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		if status != "" {
+			out["status"] = status
 		}
 		for _, field := range []string{"url", "endpoint", "description", "poc", "evidence", "counterevidence", "remediation"} {
 			if value := findingString(args[field]); strings.TrimSpace(value) != "" {
@@ -158,12 +225,48 @@ func (f *FindingTool) Translate(args map[string]any) (operation.Spec, error) {
 			out["cvss_score"] = score
 		}
 
-	case "delete":
+	case findingModeDelete:
 		id := strings.TrimSpace(findingString(args["id"]))
 		if id == "" {
 			return operation.Spec{}, fmt.Errorf("id is required")
 		}
 		out["id"] = id
+
+	case findingModeVerify:
+		url := strings.TrimSpace(findingString(args["url"]))
+		if url == "" {
+			return operation.Spec{}, fmt.Errorf("url is required")
+		}
+		out["url"] = url
+		// The id names the finding the verdict is attached to. It is
+		// optional: a verdict that proves a finding nobody recorded yet is
+		// still a verdict worth reading.
+		if id := strings.TrimSpace(findingString(args["id"])); id != "" {
+			out["id"] = id
+		}
+		for _, key := range []string{"method", "request_body", "response_body", "baseline_url", "baseline_body", "marker"} {
+			if value := findingString(args[key]); strings.TrimSpace(value) != "" {
+				out[key] = value
+			}
+		}
+		status, hasStatus, err := findingResponseStatus(args["status"])
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		if hasStatus {
+			out["status"] = status
+		}
+		baseline, hasBaseline, err := findingResponseStatus(args["baseline_status"])
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		if hasBaseline {
+			out["baseline_status"] = baseline
+		}
+		controls := findingControlNames(args["controls"])
+		if len(controls) > 0 {
+			out["controls"] = controls
+		}
 	}
 
 	return operation.Spec{Type: "finding", Args: out}, nil
@@ -183,21 +286,28 @@ func (f *FindingTool) Run(spec operation.Spec) (string, error) {
 // in is under the data directory, and a long-lived handle would keep writing
 // into a directory the operator moved.
 func (f *FindingTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
+	mode, _ := spec.Args["mode"].(string)
+
+	// The verification opens the store only when it has a record to attach
+	// the verdict to, so it returns before the store is created.
+	if mode == findingModeVerify {
+		return f.runVerify(ctx, spec)
+	}
+
 	store, err := findings.Open(findingsDir())
 	if err != nil {
 		return "", err
 	}
-	mode, _ := spec.Args["mode"].(string)
 
 	switch mode {
-	case "add":
+	case findingModeAdd:
 		stored, err := store.Put(findingFromArgs(spec.Args, findings.Finding{}))
 		if err != nil {
 			return "", err
 		}
 		return renderFindingBlock("recorded", stored), nil
 
-	case "update":
+	case findingModeUpdate:
 		id, _ := spec.Args["id"].(string)
 		if err := findings.ValidateID(id); err != nil {
 			return "", err
@@ -212,10 +322,10 @@ func (f *FindingTool) RunContext(ctx context.Context, spec operation.Spec) (stri
 		}
 		return renderFindingBlock("updated", stored), nil
 
-	case "list":
+	case findingModeList:
 		return renderFindingList(store)
 
-	case "delete":
+	case findingModeDelete:
 		id, _ := spec.Args["id"].(string)
 		if err := findings.ValidateID(id); err != nil {
 			return "", err
@@ -225,10 +335,10 @@ func (f *FindingTool) RunContext(ctx context.Context, spec operation.Spec) (stri
 		}
 		return fmt.Sprintf("deleted finding %s\n", id), nil
 
-	case "coverage":
+	case findingModeCoverage:
 		return renderFindingCoverage(store)
 	}
-	return "", fmt.Errorf("mode %q is not one of add, update, list, delete, coverage", mode)
+	return "", fmt.Errorf("mode %q is not one of add, update, list, delete, coverage, verify", mode)
 }
 
 // Sequential keeps the record's writes in order. Two calls in one batch are
@@ -272,13 +382,13 @@ func findingsDir() string {
 func findingMode(value any) (string, error) {
 	mode := strings.TrimSpace(findingString(value))
 	if mode == "" {
-		return "add", nil
+		return findingModeAdd, nil
 	}
 	switch mode {
-	case "add", "update", "list", "delete", "coverage":
+	case findingModeAdd, findingModeUpdate, findingModeList, findingModeDelete, findingModeCoverage, findingModeVerify:
 		return mode, nil
 	}
-	return "", fmt.Errorf("mode %q is not one of add, update, list, delete, coverage", mode)
+	return "", fmt.Errorf("mode %q is not one of add, update, list, delete, coverage, verify", mode)
 }
 
 // findingString reads a string argument, treating any other type as absent.
@@ -300,6 +410,71 @@ func findingStatus(value any) findings.Status {
 		return findings.Status(typed)
 	}
 	return ""
+}
+
+// findingClosureStatus reads the closure state for add and update.
+//
+// The status argument is shared with the verify mode, where it carries a
+// response status, so a number arriving here is a mistake: it is refused by
+// name rather than read as an absent state and defaulted, because a finding
+// that silently took the default closure state is a finding nobody chose.
+func findingClosureStatus(value any, mode string) (findings.Status, error) {
+	if value == nil {
+		return findingDefaultStatus(mode), nil
+	}
+	switch typed := value.(type) {
+	case findings.Status:
+		if strings.TrimSpace(string(typed)) == "" {
+			return findingDefaultStatus(mode), nil
+		}
+		return findings.ParseStatus(string(typed))
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return findingDefaultStatus(mode), nil
+		}
+		return findings.ParseStatus(typed)
+	}
+	return "", fmt.Errorf("status is the closure state for %s, not a number", mode)
+}
+
+// findingDefaultStatus is the state a new finding starts in. An update keeps
+// the state the record carries.
+func findingDefaultStatus(mode string) findings.Status {
+	if mode == findingModeAdd {
+		return findings.StatusConfirmed
+	}
+	return ""
+}
+
+// findingResponseStatus reads a response status for the verify mode.
+//
+// The number arrives from a JSON body as a float, and a model that writes
+// it as text sends a string, so both are read. The boolean says whether a
+// status was given at all: a status of zero is not a status, and the caller
+// fetches the exchange when the answer was left out.
+func findingResponseStatus(value any) (int, bool, error) {
+	switch typed := value.(type) {
+	case nil:
+		return 0, false, nil
+	case int:
+		return typed, true, nil
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, false, fmt.Errorf("status %v is not a whole number", typed)
+		}
+		return int(typed), true, nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, false, nil
+		}
+		parsed, err := strconv.Atoi(trimmed)
+		if err != nil {
+			return 0, false, fmt.Errorf("status %q is not a number", typed)
+		}
+		return parsed, true, nil
+	}
+	return 0, false, fmt.Errorf("status is not a number")
 }
 
 // maxFindingTags bounds the labels one finding may carry. A finding with
@@ -549,4 +724,181 @@ func renderFindingBlock(verb string, f findings.Finding) string {
 // cannot break the block layout it is printed in.
 func findingOneLine(value string) string {
 	return strings.Join(strings.Fields(value), " ")
+}
+
+// ---------------------------------------------------------------------------
+// verify
+// ---------------------------------------------------------------------------
+
+// runVerify runs the verification policy over an exchange and attaches the
+// verdict to the record.
+//
+// The policy itself lives in harness/verify and fetches nothing. This is the
+// part that goes and gets the exchanges, so the policy stays pure and the
+// network stays here, under the scope gate and the receipt trail.
+func (f *FindingTool) runVerify(ctx context.Context, spec operation.Spec) (string, error) {
+	url, _ := spec.Args["url"].(string)
+	method, _ := spec.Args["method"].(string)
+	if method == "" {
+		method = "GET"
+	}
+	requestBody, _ := spec.Args["request_body"].(string)
+
+	observation := verify.Observation{
+		URL:         url,
+		Method:      method,
+		RequestBody: requestBody,
+	}
+	status, hasStatus := spec.Args["status"].(int)
+	responseBody, hasBody := spec.Args["response_body"].(string)
+	if !hasStatus || !hasBody {
+		result, body, err := f.fetch(ctx, url, method, requestBody)
+		if err != nil {
+			return "", err
+		}
+		if !hasStatus {
+			observation.Status = result.Status
+		} else {
+			observation.Status = status
+		}
+		if !hasBody {
+			observation.ResponseBody = string(body)
+		} else {
+			observation.ResponseBody = responseBody
+		}
+		observation.ResponseHeaders = result.Headers
+	}
+
+	baselineURL, _ := spec.Args["baseline_url"].(string)
+	baselineBody, hasBaselineBody := spec.Args["baseline_body"].(string)
+	baselineStatus, hasBaselineStatus := spec.Args["baseline_status"].(int)
+	if baselineURL != "" || hasBaselineBody {
+		baseline := &verify.Observation{URL: baselineURL, Method: method}
+		if baselineURL != "" {
+			result, body, err := f.fetch(ctx, baselineURL, method, "")
+			if err != nil {
+				return "", err
+			}
+			baseline.Status = result.Status
+			baseline.ResponseBody = string(body)
+			baseline.ResponseHeaders = result.Headers
+		}
+		if hasBaselineStatus {
+			baseline.Status = baselineStatus
+		}
+		if hasBaselineBody {
+			baseline.ResponseBody = baselineBody
+		}
+		observation.Baseline = baseline
+	}
+
+	controls, err := findingControls(spec.Args["controls"])
+	if err != nil {
+		return "", err
+	}
+	decision := verify.Decide(observation, controls)
+
+	// The verdict is worth attaching to the record, because a finding whose
+	// verdict lives only in a chat message is a finding that gets reported
+	// without it.
+	if id, _ := spec.Args["id"].(string); id != "" {
+		store, err := findings.Open(findingsDir())
+		if err != nil {
+			return "", err
+		}
+		finding, ok := store.Get(id)
+		if !ok {
+			return "", fmt.Errorf("no finding with id %q", id)
+		}
+		finding.Verdict = string(decision.Verdict)
+		finding.Reasons = decision.Reasons
+		if _, err := store.Put(finding); err != nil {
+			return "", err
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "verdict: %s\n", decision.Verdict)
+	for _, obligation := range decision.Obligations {
+		fmt.Fprintf(&b, "obligation %s: %s", obligation.Name, obligation.State)
+		if obligation.Detail != "" {
+			fmt.Fprintf(&b, " - %s", obligation.Detail)
+		}
+		if obligation.Evidence != "" {
+			fmt.Fprintf(&b, " | %s", obligation.Evidence)
+		}
+		b.WriteString("\n")
+	}
+	for _, reason := range decision.Reasons {
+		fmt.Fprintf(&b, "reason: %s\n", reason)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// fetch performs one exchange for the verification, through the same gate,
+// budget and receipt trail every other request goes through.
+func (f *FindingTool) fetch(ctx context.Context, url string, method string, body string) (recon.Result, []byte, error) {
+	if err := recon.Gate(url); err != nil {
+		return recon.Result{}, nil, err
+	}
+	if err := recon.Take(1); err != nil {
+		return recon.Result{}, nil, err
+	}
+	return recon.ProbeCapture(ctx, recon.Request{URL: url, Method: method, Body: body}, 256*1024)
+}
+
+// findingControls picks the controls to run. The default set includes the
+// secret control, which contradicts on a response with no credential in it,
+// so a caller verifying something that is not a credential picks the ones it
+// wants.
+func findingControls(raw any) ([]verify.Control, error) {
+	names := findingControlNames(raw)
+	if len(names) == 0 {
+		return verify.DefaultControls(), nil
+	}
+	all := map[string]verify.Control{}
+	for _, control := range verify.DefaultControls() {
+		all[control.Name] = control
+	}
+	picked := make([]verify.Control, 0, len(names))
+	for _, name := range names {
+		control, ok := all[strings.ToLower(strings.TrimSpace(name))]
+		if !ok {
+			return nil, fmt.Errorf("unknown control %q; the controls are %s", name, strings.Join(findingControlCatalogue(all), ", "))
+		}
+		picked = append(picked, control)
+	}
+	if len(picked) == 0 {
+		return nil, fmt.Errorf("no control was selected")
+	}
+	return picked, nil
+}
+
+// findingControlNames reads the control names in both native and JSON-decoded
+// shapes, in the order they were given.
+func findingControlNames(value any) []string {
+	var out []string
+	switch typed := value.(type) {
+	case []string:
+		out = append(out, typed...)
+	case []any:
+		for _, entry := range typed {
+			text, _ := entry.(string)
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// findingControlCatalogue lists the control names for an error message.
+//
+// They are sorted, because an error that lists the controls in a different
+// order on every call is an error nobody can compare against the last one.
+func findingControlCatalogue(all map[string]verify.Control) []string {
+	names := make([]string, 0, len(all))
+	for name := range all {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

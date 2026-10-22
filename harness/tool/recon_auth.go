@@ -8,8 +8,15 @@ package tool
 // guarded transport with a cookie jar attached, and what the response set
 // becomes a named session on disk that later requests replay.
 //
-// Three tools, and the split is the workflow: log in once, replay as often
-// as the test needs, and see what is stored.
+// One tool carries the whole workflow. The catalogue is the cached prefix of
+// every request, so three entries for one capability are three schemas the
+// model reads on every turn, and a mode argument says which of the four
+// behaviours is meant: log in once, replay as often as the test needs, see
+// what is stored, throw it away.
+//
+// The modes are not one mode with flags. Each has its own argument set, and
+// a schema cannot make a field conditionally required, so the mode decides
+// what the call must carry and the body refuses a call that is short of it.
 
 import (
 	"context"
@@ -44,6 +51,18 @@ const (
 	maxAuthHeadRunes = 1200
 )
 
+// The four behaviours the one tool carries.
+//
+// They are separate modes rather than one mode with flags because each has
+// its own argument set: a login names a session to store, a replay names a
+// session to use, a delete names a session to remove.
+const (
+	authModeLogin  = "login"
+	authModeReplay = "replay"
+	authModeList   = "list"
+	authModeDelete = "delete"
+)
+
 // authSessionDir holds the named logins. It sits under the recon tree
 // because a session is recon state, next to the receipts that recorded how
 // it was obtained.
@@ -69,87 +88,169 @@ var replayHeaders = []string{
 }
 
 // ---------------------------------------------------------------------------
-// auth_login
+// auth
 // ---------------------------------------------------------------------------
 
-// AuthLoginTool performs a login and stores the session it produced.
-type AuthLoginTool struct{}
+// AuthTool keeps a logged-in session.
+type AuthTool struct{}
 
-func (a *AuthLoginTool) Name() string { return "auth_login" }
+// The executor resolves a tool by its operation type and calls it through the
+// context runner, so the two have to agree with the name.
+var _ operation.ContextRunner = (*AuthTool)(nil)
 
-func (a *AuthLoginTool) Description() string {
-	return "Log in and keep the session, so later requests are authenticated without logging in again. The cookies are stored on disk and the values never leave the machine."
+// The three names the registry still registers are aliases of the merged
+// tool, not tools of their own.
+func (a *AuthTool) Name() string { return "auth" }
+
+func (a *AuthTool) Description() string {
+	return "Keep a logged-in session: log in and store it, replay a request with it, list or delete the stored sessions; the login and the replay are scope-gated and receipted, and cookie values never leave the machine."
 }
 
-func (a *AuthLoginTool) Schema() map[string]any {
+func (a *AuthTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name":    map[string]any{"type": "string", "description": "Name to store the session under, e.g. \"admin\". Letters, digits, dash, underscore and dot only."},
-			"url":     map[string]any{"type": "string", "description": "Absolute http:// or https:// URL of the login endpoint"},
-			"method":  map[string]any{"type": "string", "description": "HTTP method for the login request, default POST. One of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE."},
-			"body":    map[string]any{"additionalProperties": true, "description": "Login body: either a string, or a JSON object/array which is serialized and sent as application/json. Capped at 64k"},
-			"headers": map[string]any{"type": "object", "additionalProperties": true, "description": "Request headers as name/value pairs; values may be strings, numbers or booleans"},
-			"timeout": map[string]any{"type": "integer", "description": "Request timeout in seconds, default 15, maximum 120"},
+			"mode": map[string]any{
+				"type":        "string",
+				"enum":        []string{authModeLogin, authModeReplay, authModeList, authModeDelete},
+				"description": "login (default) stores a session, replay sends a request with one, list shows the stored sessions, delete removes one",
+			},
+			"name": map[string]any{
+				"type":        "string",
+				"description": "login: the name to store the session under; delete: the name of the session to remove",
+			},
+			"url": map[string]any{
+				"type":        "string",
+				"description": "login: the login endpoint; replay: the URL to request with the session",
+			},
+			"session": map[string]any{
+				"type":        "string",
+				"description": "replay: the name of the stored session to replay",
+			},
+			"method": map[string]any{
+				"type":        "string",
+				"description": "login: the method of the login request, default POST; replay: the method of the request, default GET",
+			},
+			"body": map[string]any{
+				"additionalProperties": true,
+				"description":          "login or replay: a string, or a JSON object/array which is serialized and sent as application/json. Capped at 64k",
+			},
+			"headers": map[string]any{
+				"type":                 "object",
+				"additionalProperties": true,
+				"description":          "login or replay: request headers as name/value pairs; on replay they win over the session's stored headers",
+			},
+			"timeout": map[string]any{
+				"type":        "integer",
+				"description": "login or replay: request timeout in seconds, default 15, maximum 120",
+			},
 		},
-		"required": []string{"name", "url"},
+		// Nothing is required by the schema: the mode decides. A name and a
+		// url are required to log in, a session and a url to replay, and a
+		// name to delete, and the tool body refuses the call that is short
+		// of one, because a schema cannot make a field conditionally
+		// required.
+		"required": []string{},
 	}
 }
 
-func (a *AuthLoginTool) Translate(args map[string]any) (operation.Spec, error) {
-	name, err := authNameArg(args["name"])
+// Translate validates the shape against the mode and re-emits the canonical
+// argument map.
+func (a *AuthTool) Translate(args map[string]any) (operation.Spec, error) {
+	mode, err := authMode(args["mode"])
 	if err != nil {
 		return operation.Spec{}, err
 	}
-	rawURL, err := authURLArg(args["url"])
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	method, err := authMethodArg(args["method"], http.MethodPost)
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	body, bodyIsJSON, err := recon.NormalizeBody(args["body"])
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	headers, err := authHeaders(args["headers"])
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	if bodyIsJSON && body != "" && !authHasHeader(headers, "Content-Type") {
-		if headers == nil {
-			headers = make(map[string]string, 1)
+	out := map[string]any{"mode": mode}
+
+	switch mode {
+	case authModeLogin:
+		name, err := authNameArg(args["name"], "name", "to store a session")
+		if err != nil {
+			return operation.Spec{}, err
 		}
-		headers["Content-Type"] = "application/json"
+		rawURL, err := authURLArg(args["url"], "to log in")
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		request, err := authRequestArgs(args, http.MethodPost)
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		out["name"] = name
+		out["url"] = rawURL
+		for key, value := range request {
+			out[key] = value
+		}
+
+	case authModeReplay:
+		session, err := authNameArg(args["session"], "session", "to replay")
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		rawURL, err := authURLArg(args["url"], "to replay")
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		request, err := authRequestArgs(args, http.MethodGet)
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		out["session"] = session
+		out["url"] = rawURL
+		for key, value := range request {
+			out[key] = value
+		}
+
+	case authModeDelete:
+		name, err := authNameArg(args["name"], "name", "to delete a session")
+		if err != nil {
+			return operation.Spec{}, err
+		}
+		out["name"] = name
+
+	case authModeList:
 	}
-	out := map[string]any{
-		"name":    name,
-		"url":     rawURL,
-		"method":  method,
-		"timeout": authTimeoutArg(args["timeout"]),
-	}
-	if len(headers) > 0 {
-		out["headers"] = headers
-	}
-	if body != "" {
-		out["body"] = body
-	}
-	return operation.Spec{Type: "auth_login", Args: out}, nil
+
+	return operation.Spec{Type: "auth", Args: out}, nil
 }
 
-func (a *AuthLoginTool) TranslateResult(op operation.Operation) string { return op.Output }
+func (a *AuthTool) TranslateResult(op operation.Operation) string { return op.Output }
 
-func (a *AuthLoginTool) Run(spec operation.Spec) (string, error) {
+func (a *AuthTool) Run(spec operation.Spec) (string, error) {
 	return a.RunContext(context.Background(), spec)
 }
 
-func (a *AuthLoginTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
-	name, err := authNameArg(spec.Args["name"])
+// RunContext carries the mode to the behaviour it names.
+func (a *AuthTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
+	mode, err := authMode(spec.Args["mode"])
 	if err != nil {
 		return "", err
 	}
-	rawURL, err := authURLArg(spec.Args["url"])
+	switch mode {
+	case authModeLogin:
+		return authRunLogin(ctx, spec)
+	case authModeReplay:
+		return authRunReplay(ctx, spec)
+	case authModeList:
+		return authListSessions()
+	case authModeDelete:
+		return authDeleteSession(spec)
+	}
+	return "", fmt.Errorf("mode %q is not one of login, replay, list, delete", mode)
+}
+
+// ---------------------------------------------------------------------------
+// login
+// ---------------------------------------------------------------------------
+
+// authRunLogin performs the login and stores the session it produced.
+func authRunLogin(ctx context.Context, spec operation.Spec) (string, error) {
+	name, err := authNameArg(spec.Args["name"], "name", "to store a session")
+	if err != nil {
+		return "", err
+	}
+	rawURL, err := authURLArg(spec.Args["url"], "to log in")
 	if err != nil {
 		return "", err
 	}
@@ -270,87 +371,16 @@ func (a *AuthLoginTool) RunContext(ctx context.Context, spec operation.Spec) (st
 }
 
 // ---------------------------------------------------------------------------
-// auth_replay
+// replay
 // ---------------------------------------------------------------------------
 
-// AuthReplayTool replays a request with a stored session.
-type AuthReplayTool struct{}
-
-func (a *AuthReplayTool) Name() string { return "auth_replay" }
-
-func (a *AuthReplayTool) Description() string {
-	return "Replay a request with a stored session. The cookies are attached under the real cookie rules, the session's stored headers are merged in, and the request lands in the receipt trail like any other probe."
-}
-
-func (a *AuthReplayTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"session": map[string]any{"type": "string", "description": "Name of the stored session to replay, as stored by auth_login"},
-			"url":     map[string]any{"type": "string", "description": "Absolute http:// or https:// URL to request with the session"},
-			"method":  map[string]any{"type": "string", "description": "HTTP method, default GET. One of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE."},
-			"body":    map[string]any{"additionalProperties": true, "description": "Request body for POST, PUT or PATCH: either a string, or a JSON object/array which is serialized and sent as application/json. Capped at 64k"},
-			"headers": map[string]any{"type": "object", "additionalProperties": true, "description": "Request headers as name/value pairs; they win over the session's stored headers"},
-			"timeout": map[string]any{"type": "integer", "description": "Request timeout in seconds, default 15, maximum 120"},
-		},
-		"required": []string{"session", "url"},
-	}
-}
-
-func (a *AuthReplayTool) Translate(args map[string]any) (operation.Spec, error) {
-	name, err := authNameArg(args["session"])
+// authRunReplay replays a request with a stored session.
+func authRunReplay(ctx context.Context, spec operation.Spec) (string, error) {
+	name, err := authNameArg(spec.Args["session"], "session", "to replay")
 	if err != nil {
-		return operation.Spec{}, fmt.Errorf("session is required: %w", err)
+		return "", err
 	}
-	rawURL, err := authURLArg(args["url"])
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	method, err := authMethodArg(args["method"], http.MethodGet)
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	body, bodyIsJSON, err := recon.NormalizeBody(args["body"])
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	headers, err := authHeaders(args["headers"])
-	if err != nil {
-		return operation.Spec{}, err
-	}
-	if bodyIsJSON && body != "" && !authHasHeader(headers, "Content-Type") {
-		if headers == nil {
-			headers = make(map[string]string, 1)
-		}
-		headers["Content-Type"] = "application/json"
-	}
-	out := map[string]any{
-		"session": name,
-		"url":     rawURL,
-		"method":  method,
-		"timeout": authTimeoutArg(args["timeout"]),
-	}
-	if len(headers) > 0 {
-		out["headers"] = headers
-	}
-	if body != "" {
-		out["body"] = body
-	}
-	return operation.Spec{Type: "auth_replay", Args: out}, nil
-}
-
-func (a *AuthReplayTool) TranslateResult(op operation.Operation) string { return op.Output }
-
-func (a *AuthReplayTool) Run(spec operation.Spec) (string, error) {
-	return a.RunContext(context.Background(), spec)
-}
-
-func (a *AuthReplayTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
-	name, err := authNameArg(spec.Args["session"])
-	if err != nil {
-		return "", fmt.Errorf("session is required: %w", err)
-	}
-	rawURL, err := authURLArg(spec.Args["url"])
+	rawURL, err := authURLArg(spec.Args["url"], "to replay")
 	if err != nil {
 		return "", err
 	}
@@ -434,110 +464,88 @@ func (a *AuthReplayTool) RunContext(ctx context.Context, spec operation.Spec) (s
 }
 
 // ---------------------------------------------------------------------------
-// auth_sessions
+// list and delete
 // ---------------------------------------------------------------------------
 
-// AuthSessionsTool lists or deletes the stored sessions.
-type AuthSessionsTool struct{}
-
-func (a *AuthSessionsTool) Name() string { return "auth_sessions" }
-
-func (a *AuthSessionsTool) Description() string {
-	return "List or delete the stored sessions. Listing reports the cookie names, never the values."
-}
-
-func (a *AuthSessionsTool) Schema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"mode": map[string]any{"type": "string", "enum": []string{"list", "delete"}, "description": "list (default) shows the stored sessions; delete removes the session named"},
-			"name": map[string]any{"type": "string", "description": "Name of the session to delete. Required for mode delete."},
-		},
+// authListSessions reports the stored sessions as a catalogue: names, ages
+// and cookie names, never a cookie value.
+func authListSessions() (string, error) {
+	store, err := jar.Open(authSessionDir)
+	if err != nil {
+		return "", err
 	}
-}
-
-func (a *AuthSessionsTool) Translate(args map[string]any) (operation.Spec, error) {
-	mode := "list"
-	if raw, ok := args["mode"].(string); ok && strings.TrimSpace(raw) != "" {
-		mode = strings.ToLower(strings.TrimSpace(raw))
+	sessions, err := store.List()
+	if err != nil {
+		return "", err
 	}
-	switch mode {
-	case "list", "delete":
-	default:
-		return operation.Spec{}, fmt.Errorf("mode %q is not one of list, delete", mode)
+	if len(sessions) == 0 {
+		return "no sessions stored", nil
 	}
-	out := map[string]any{"mode": mode}
-	if mode == "delete" {
-		name, err := authNameArg(args["name"])
-		if err != nil {
-			return operation.Spec{}, fmt.Errorf("name is required to delete a session: %w", err)
+	lines := make([]string, 0, len(sessions))
+	for _, sess := range sessions {
+		age := time.Since(sess.CreatedAt)
+		if sess.CreatedAt.IsZero() {
+			age = 0
 		}
-		out["name"] = name
+		names := cookieNames(sess.Cookies)
+		if len(names) == 0 {
+			names = []string{"none"}
+		}
+		lines = append(lines, fmt.Sprintf("%s  age %s  cookies: %s", sess.Name, humanAge(age), strings.Join(names, ", ")))
 	}
-	return operation.Spec{Type: "auth_sessions", Args: out}, nil
+	return strings.Join(lines, "\n"), nil
 }
 
-func (a *AuthSessionsTool) TranslateResult(op operation.Operation) string { return op.Output }
-
-func (a *AuthSessionsTool) Run(spec operation.Spec) (string, error) {
-	return a.RunContext(context.Background(), spec)
-}
-
-func (a *AuthSessionsTool) RunContext(ctx context.Context, spec operation.Spec) (string, error) {
-	mode, _ := spec.Args["mode"].(string)
-	if mode == "" {
-		mode = "list"
+// authDeleteSession removes a stored session file.
+func authDeleteSession(spec operation.Spec) (string, error) {
+	name, err := authNameArg(spec.Args["name"], "name", "to delete a session")
+	if err != nil {
+		return "", err
 	}
 	store, err := jar.Open(authSessionDir)
 	if err != nil {
 		return "", err
 	}
-	switch mode {
-	case "list":
-		sessions, err := store.List()
-		if err != nil {
-			return "", err
-		}
-		if len(sessions) == 0 {
-			return "no sessions stored", nil
-		}
-		lines := make([]string, 0, len(sessions))
-		for _, sess := range sessions {
-			age := time.Since(sess.CreatedAt)
-			if sess.CreatedAt.IsZero() {
-				age = 0
-			}
-			names := cookieNames(sess.Cookies)
-			if len(names) == 0 {
-				names = []string{"none"}
-			}
-			lines = append(lines, fmt.Sprintf("%s  age %s  cookies: %s", sess.Name, humanAge(age), strings.Join(names, ", ")))
-		}
-		return strings.Join(lines, "\n"), nil
-	case "delete":
-		name, err := authNameArg(spec.Args["name"])
-		if err != nil {
-			return "", fmt.Errorf("name is required to delete a session: %w", err)
-		}
-		if err := store.Delete(name); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("deleted session %q", name), nil
-	default:
-		return "", fmt.Errorf("mode %q is not one of list, delete", mode)
+	if err := store.Delete(name); err != nil {
+		return "", err
 	}
+	return fmt.Sprintf("deleted session %q", name), nil
 }
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
+// authMode reads the mode argument.
+//
+// The default is login: the tool exists to keep a session, and a login is
+// what starts one.
+func authMode(value any) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(authString(value)))
+	if mode == "" {
+		return authModeLogin, nil
+	}
+	switch mode {
+	case authModeLogin, authModeReplay, authModeList, authModeDelete:
+		return mode, nil
+	}
+	return "", fmt.Errorf("mode %q is not one of login, replay, list, delete", mode)
+}
+
+// authString reads a string argument, treating any other type as absent.
+func authString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
 // authNameArg reads and validates a session name.
-func authNameArg(v any) (string, error) {
-	name, _ := v.(string)
-	name = strings.TrimSpace(name)
+//
+// The label names the argument the model used, so an error says which one was
+// missing rather than repeating that a name is missing.
+func authNameArg(v any, label, purpose string) (string, error) {
+	name := strings.TrimSpace(authString(v))
 	if name == "" {
-		return "", fmt.Errorf("a name is required")
+		return "", fmt.Errorf("%s is required %s", label, purpose)
 	}
 	if err := jar.ValidateName(name); err != nil {
 		return "", err
@@ -547,11 +555,10 @@ func authNameArg(v any) (string, error) {
 
 // authURLArg reads an absolute http(s) URL. The scheme floor is here as well
 // as in the gate, because the tool is independently callable.
-func authURLArg(v any) (string, error) {
-	raw, _ := v.(string)
-	raw = strings.TrimSpace(raw)
+func authURLArg(v any, purpose string) (string, error) {
+	raw := strings.TrimSpace(authString(v))
 	if raw == "" {
-		return "", fmt.Errorf("url is required")
+		return "", fmt.Errorf("url is required %s", purpose)
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -568,8 +575,7 @@ func authURLArg(v any) (string, error) {
 // probe's whitelist, so a replay cannot become a request the probe would
 // not have made.
 func authMethodArg(v any, fallback string) (string, error) {
-	raw, _ := v.(string)
-	method := strings.ToUpper(strings.TrimSpace(raw))
+	method := strings.ToUpper(strings.TrimSpace(authString(v)))
 	if method == "" {
 		return fallback, nil
 	}
@@ -596,6 +602,43 @@ func authTimeoutArg(v any) int {
 		}
 	}
 	return authDefaultTimeout
+}
+
+// authRequestArgs builds the request arguments a login and a replay share:
+// the method, the body, the headers and the timeout.
+//
+// The method default is the caller's, because the two modes differ: a login
+// posts and a replay reads.
+func authRequestArgs(args map[string]any, defaultMethod string) (map[string]any, error) {
+	method, err := authMethodArg(args["method"], defaultMethod)
+	if err != nil {
+		return nil, err
+	}
+	body, bodyIsJSON, err := recon.NormalizeBody(args["body"])
+	if err != nil {
+		return nil, err
+	}
+	headers, err := authHeaders(args["headers"])
+	if err != nil {
+		return nil, err
+	}
+	if bodyIsJSON && body != "" && !authHasHeader(headers, "Content-Type") {
+		if headers == nil {
+			headers = make(map[string]string, 1)
+		}
+		headers["Content-Type"] = "application/json"
+	}
+	out := map[string]any{
+		"method":  method,
+		"timeout": authTimeoutArg(args["timeout"]),
+	}
+	if len(headers) > 0 {
+		out["headers"] = headers
+	}
+	if body != "" {
+		out["body"] = body
+	}
+	return out, nil
 }
 
 // authHeaders reads the headers in the shapes they arrive in: the map of

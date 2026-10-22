@@ -16,23 +16,41 @@ import (
 	"ceraa/harness/recon"
 )
 
-// The auth tools are a login, a replay and a listing. These tests cover the
-// argument shapes and the error the model can act on. The one test that
-// sends a request uses httptest, with the scope and the guard opened for the
-// loopback address the test server listens on.
+// The auth tool is one tool with four modes: a login, a replay, a listing and
+// a delete. These tests cover the argument shapes per mode and the errors the
+// model can act on. The two tests that send a request use httptest, with the
+// scope and the guard opened for the loopback address the test server listens
+// on.
 
-func TestAuthLoginTranslateRejectsAMissingNameOrURL(t *testing.T) {
-	tool := &AuthLoginTool{}
+// The mode decides what the call must carry, so a call that is short of an
+// argument is refused per mode rather than by a schema that cannot express it.
+func TestAuthTranslateRefusesWhatTheModeNeeds(t *testing.T) {
+	tool := &AuthTool{}
 	for _, args := range []map[string]any{
+		// No mode is a login, and a login needs a name and a url.
 		{},
-		{"url": "https://example.com/login"},
-		{"name": "admin"},
-		{"name": "", "url": "https://example.com/login"},
-		{"name": "admin", "url": ""},
-		{"name": "admin", "url": "not a url"},
-		{"name": "admin", "url": "ftp://example.com/login"},
-		{"name": "admin", "url": "/login"},
-		{"name": "../escape", "url": "https://example.com/login"},
+		{"mode": "login"},
+		{"mode": "login", "url": "https://example.com/login"},
+		{"mode": "login", "name": "admin"},
+		{"mode": "login", "name": "", "url": "https://example.com/login"},
+		{"mode": "login", "name": "admin", "url": ""},
+		{"mode": "login", "name": "admin", "url": "not a url"},
+		{"mode": "login", "name": "admin", "url": "ftp://example.com/login"},
+		{"mode": "login", "name": "admin", "url": "/login"},
+		{"mode": "login", "name": "../escape", "url": "https://example.com/login"},
+		// A replay needs a session and a url.
+		{"mode": "replay"},
+		{"mode": "replay", "url": "https://example.com/admin"},
+		{"mode": "replay", "session": "admin"},
+		{"mode": "replay", "session": "", "url": "https://example.com/admin"},
+		{"mode": "replay", "session": "admin", "url": ""},
+		{"mode": "replay", "session": "../escape", "url": "https://example.com/admin"},
+		// A delete needs a name.
+		{"mode": "delete"},
+		{"mode": "delete", "name": ""},
+		{"mode": "delete", "name": "../escape"},
+		// An unknown mode is not a mode.
+		{"mode": "burn"},
 	} {
 		if spec, err := tool.Translate(args); err == nil {
 			t.Errorf("Translate(%v) accepted, spec = %v", args, spec)
@@ -40,18 +58,27 @@ func TestAuthLoginTranslateRejectsAMissingNameOrURL(t *testing.T) {
 	}
 }
 
-func TestAuthReplayTranslateRejectsAMissingSessionOrURL(t *testing.T) {
-	tool := &AuthReplayTool{}
-	for _, args := range []map[string]any{
-		{},
-		{"url": "https://example.com/admin"},
-		{"session": "admin"},
-		{"session": "", "url": "https://example.com/admin"},
-		{"session": "admin", "url": ""},
-		{"session": "../escape", "url": "https://example.com/admin"},
+// The error names the argument that was missing, because the mode decides
+// which one that was.
+func TestAuthRefusesTheMissingArgumentByName(t *testing.T) {
+	tool := &AuthTool{}
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"mode": "login", "url": "https://example.com/login"}, "name is required"},
+		{map[string]any{"mode": "login", "name": "admin"}, "url is required"},
+		{map[string]any{"mode": "replay", "url": "https://example.com/admin"}, "session is required"},
+		{map[string]any{"mode": "replay", "session": "admin"}, "url is required"},
+		{map[string]any{"mode": "delete"}, "name is required"},
 	} {
-		if spec, err := tool.Translate(args); err == nil {
-			t.Errorf("Translate(%v) accepted, spec = %v", args, spec)
+		_, err := tool.Translate(tc.args)
+		if err == nil {
+			t.Errorf("Translate(%v) accepted", tc.args)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("Translate(%v) error = %q, want it to say %q", tc.args, err, tc.want)
 		}
 	}
 }
@@ -60,8 +87,9 @@ func TestAuthReplayTranslateRejectsAMissingSessionOrURL(t *testing.T) {
 // either a string or an object. Both have to arrive at the request as the
 // shape the probe expects.
 func TestAuthTranslateNormalisesAFloatTimeoutAndAnObjectBody(t *testing.T) {
-	tool := &AuthLoginTool{}
+	tool := &AuthTool{}
 	spec, err := tool.Translate(map[string]any{
+		"mode":    "login",
 		"name":    "admin",
 		"url":     "https://example.com/login",
 		"method":  "post",
@@ -72,8 +100,11 @@ func TestAuthTranslateNormalisesAFloatTimeoutAndAnObjectBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
-	if spec.Type != "auth_login" {
-		t.Errorf("spec.Type = %q, want auth_login", spec.Type)
+	if spec.Type != "auth" {
+		t.Errorf("spec.Type = %q, want auth", spec.Type)
+	}
+	if mode, _ := spec.Args["mode"].(string); mode != "login" {
+		t.Errorf("mode = %v, want login", spec.Args["mode"])
 	}
 	if method, _ := spec.Args["method"].(string); method != "POST" {
 		t.Errorf("method = %v, want POST", spec.Args["method"])
@@ -100,22 +131,50 @@ func TestAuthTranslateNormalisesAFloatTimeoutAndAnObjectBody(t *testing.T) {
 		t.Errorf("Authorization = %q", headers["Authorization"])
 	}
 
-	replay := &AuthReplayTool{}
-	spec, err = replay.Translate(map[string]any{
+	spec, err = tool.Translate(map[string]any{
+		"mode":    "replay",
 		"session": "admin",
 		"url":     "https://example.com/admin",
 	})
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
-	if spec.Type != "auth_replay" {
-		t.Errorf("spec.Type = %q, want auth_replay", spec.Type)
+	if session, _ := spec.Args["session"].(string); session != "admin" {
+		t.Errorf("session = %v, want admin", spec.Args["session"])
 	}
 	if method, _ := spec.Args["method"].(string); method != "GET" {
 		t.Errorf("default method = %v, want GET", spec.Args["method"])
 	}
 	if timeout, _ := spec.Args["timeout"].(int); timeout != 15 {
 		t.Errorf("default timeout = %v, want 15", spec.Args["timeout"])
+	}
+}
+
+// The mode defaults to login: the tool exists to keep a session, and a login
+// is what starts one.
+func TestTheAuthModeDefaultsToLogin(t *testing.T) {
+	mode, err := authMode(nil)
+	if err != nil {
+		t.Fatalf("authMode: %v", err)
+	}
+	if mode != "login" {
+		t.Errorf("default mode = %q, want login", mode)
+	}
+}
+
+// The four modes are the whole tool, and the schema says which one it is.
+func TestTheAuthSchemaNamesTheFourModes(t *testing.T) {
+	properties, _ := (&AuthTool{}).Schema()["properties"].(map[string]any)
+	mode, _ := properties["mode"].(map[string]any)
+	enum, _ := mode["enum"].([]string)
+	want := []string{"login", "replay", "list", "delete"}
+	if len(enum) != len(want) {
+		t.Fatalf("enum = %v, want %v", enum, want)
+	}
+	for i, name := range want {
+		if enum[i] != name {
+			t.Errorf("enum[%d] = %q, want %q", i, enum[i], name)
+		}
 	}
 }
 
@@ -135,8 +194,9 @@ func TestAMissingSessionNamesTheStoredSessions(t *testing.T) {
 		}
 	}
 
-	tool := &AuthReplayTool{}
+	tool := &AuthTool{}
 	spec, err := tool.Translate(map[string]any{
+		"mode":    "replay",
 		"session": "missing",
 		"url":     "https://example.com/admin",
 	})
@@ -174,8 +234,8 @@ func TestTheSessionListingCarriesNoCookieValue(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	tool := &AuthSessionsTool{}
-	spec, err := tool.Translate(map[string]any{})
+	tool := &AuthTool{}
+	spec, err := tool.Translate(map[string]any{"mode": "list"})
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
@@ -191,7 +251,7 @@ func TestTheSessionListingCarriesNoCookieValue(t *testing.T) {
 	}
 }
 
-func TestTheSessionListingDeletesOnRequest(t *testing.T) {
+func TestTheDeleteModeRemovesTheSession(t *testing.T) {
 	dir := t.TempDir()
 	withAuthSessionDir(t, dir)
 
@@ -203,7 +263,7 @@ func TestTheSessionListingDeletesOnRequest(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	tool := &AuthSessionsTool{}
+	tool := &AuthTool{}
 	spec, err := tool.Translate(map[string]any{"mode": "delete", "name": "admin"})
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
@@ -235,8 +295,9 @@ func TestALoginStoresTheSessionAndPrintsNoValue(t *testing.T) {
 	withAuthSessionDir(t, dir)
 	allowLoopback(t, srv)
 
-	tool := &AuthLoginTool{}
+	tool := &AuthTool{}
 	spec, err := tool.Translate(map[string]any{
+		"mode": "login",
 		"name": "admin",
 		"url":  srv.URL + "/login",
 		"body": map[string]any{"user": "admin", "password": "hunter2"},
@@ -287,39 +348,153 @@ func TestALoginStoresTheSessionAndPrintsNoValue(t *testing.T) {
 	}
 }
 
+// The replay is a normal probe: it carries the session's cookies, the
+// caller's headers win over the stored ones, and the observation lands in the
+// receipt trail.
+func TestAReplaySendsTheSessionAndTheCallersHeaders(t *testing.T) {
+	var cookie, authorization, caller string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie = r.Header.Get("Cookie")
+		authorization = r.Header.Get("Authorization")
+		caller = r.Header.Get("X-Caller")
+		io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	withAuthSessionDir(t, dir)
+	// The receipt lands under the data directory the recon package resolved
+	// at start-up, which this test cannot redirect, so the path is read
+	// before the environment is pointed elsewhere.
+	receipts := reconReceiptsDir()
+	allowLoopback(t, srv)
+
+	store, err := jar.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := store.Save(jar.Session{
+		Name: "admin",
+		Cookies: []jar.Cookie{
+			{Name: "sessionid", Value: "s3cr3t-cookie-value", Domain: "127.0.0.1", Path: "/"},
+		},
+		Headers: map[string]string{"Authorization": "Bearer stored"},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	tool := &AuthTool{}
+	spec, err := tool.Translate(map[string]any{
+		"mode":    "replay",
+		"session": "admin",
+		"url":     srv.URL + "/admin",
+		"headers": map[string]any{"Authorization": "Bearer caller", "X-Caller": "yes"},
+	})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	out, err := tool.RunContext(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("RunContext: %v", err)
+	}
+	if cookie != "sessionid=s3cr3t-cookie-value" {
+		t.Errorf("cookie sent = %q, want the session's cookie", cookie)
+	}
+	if authorization != "Bearer caller" {
+		t.Errorf("authorization sent = %q, want the caller's to win", authorization)
+	}
+	if caller != "yes" {
+		t.Errorf("caller header = %q, want it sent", caller)
+	}
+	if !strings.Contains(out, "status 200") {
+		t.Errorf("output = %q, want the status", out)
+	}
+	if !strings.Contains(out, "receipt ") {
+		t.Errorf("output = %q, want the receipt it landed in", out)
+	}
+	if id := receiptID(out); id != "" {
+		os.Remove(filepath.Join(receipts, id))
+	}
+}
+
 // The coordinator validates the arguments against the schema before the tool
 // ever sees them, so a schema that refuses a legal call costs a retry.
-func TestTheAuthSchemasAcceptTheArguments(t *testing.T) {
-	login := &AuthLoginTool{}
-	if err := ValidateArguments(login.Schema(), map[string]any{
-		"name":    "admin",
-		"url":     "https://example.com/login",
-		"method":  "POST",
-		"body":    map[string]any{"user": "admin", "password": "hunter2"},
-		"headers": map[string]any{"Content-Type": "application/json", "X-Count": 1},
-		"timeout": 15,
-	}); err != nil {
-		t.Fatalf("the login schema refused a legal call: %v", err)
+func TestTheAuthSchemaAcceptsTheArguments(t *testing.T) {
+	schema := (&AuthTool{}).Schema()
+	for _, args := range []map[string]any{
+		{
+			"mode":    "login",
+			"name":    "admin",
+			"url":     "https://example.com/login",
+			"method":  "POST",
+			"body":    map[string]any{"user": "admin", "password": "hunter2"},
+			"headers": map[string]any{"Content-Type": "application/json", "X-Count": 1},
+			"timeout": 15,
+		},
+		{
+			"mode":    "replay",
+			"session": "admin",
+			"url":     "https://example.com/admin",
+			"body":    map[string]any{"id": 42},
+		},
+		{"mode": "list"},
+		{"mode": "delete", "name": "admin"},
+	} {
+		if err := ValidateArguments(schema, args); err != nil {
+			t.Errorf("the schema refused %v: %v", args, err)
+		}
 	}
+	if err := ValidateArguments(schema, map[string]any{"mode": "burn"}); err == nil {
+		t.Error("the schema accepted an unknown mode")
+	}
+}
 
-	replay := &AuthReplayTool{}
-	if err := ValidateArguments(replay.Schema(), map[string]any{
-		"session": "admin",
-		"url":     "https://example.com/admin",
-		"body":    map[string]any{"id": 42},
-	}); err != nil {
-		t.Fatalf("the replay schema refused a legal call: %v", err)
+// The schema requires nothing, because a schema cannot make a field
+// conditionally required: the mode decides, and the tool body refuses the
+// call that is short of an argument.
+func TestTheAuthSchemaRequiresNothing(t *testing.T) {
+	schema := (&AuthTool{}).Schema()
+	required, _ := schema["required"].([]string)
+	if len(required) != 0 {
+		t.Errorf("required = %v, want none: the mode decides", required)
 	}
+	if err := ValidateArguments(schema, map[string]any{}); err != nil {
+		t.Errorf("the schema refused a call with no arguments: %v", err)
+	}
+}
 
-	sessions := &AuthSessionsTool{}
-	if err := ValidateArguments(sessions.Schema(), map[string]any{"mode": "list"}); err != nil {
-		t.Fatalf("the sessions schema refused a list call: %v", err)
+// The behavioural facts a schema cannot express have to survive the merge:
+// the login and the replay are gated and receipted, and a cookie value does
+// not leave the machine.
+func TestTheAuthDescriptionKeepsTheBehaviourFacts(t *testing.T) {
+	description := (&AuthTool{}).Description()
+	for _, want := range []string{"scope-gated", "receipted", "never leave the machine"} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description = %q, want it to keep %q", description, want)
+		}
 	}
-	if err := ValidateArguments(sessions.Schema(), map[string]any{"mode": "delete", "name": "admin"}); err != nil {
-		t.Fatalf("the sessions schema refused a delete call: %v", err)
+}
+
+// The three catalogue entries became one, so the model reads one schema
+// instead of three.
+func TestTheRegistryOffersOneAuthTool(t *testing.T) {
+	reg := DefaultRegistryForUser("x", nil)
+	if _, ok := reg.Get("auth"); !ok {
+		t.Error("the registry has no auth tool")
 	}
-	if err := ValidateArguments(sessions.Schema(), map[string]any{"mode": "burn"}); err == nil {
-		t.Error("the sessions schema accepted an unknown mode")
+	for _, name := range []string{"auth_login", "auth_replay", "auth_sessions"} {
+		if _, ok := reg.Get(name); ok {
+			t.Errorf("the registry still offers %q", name)
+		}
+	}
+	count := 0
+	for _, item := range reg.Offered() {
+		if item.Name() == "auth" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("the catalogue carries %d auth entries, want 1", count)
 	}
 }
 
@@ -330,6 +505,33 @@ func withAuthSessionDir(t *testing.T, dir string) {
 	previous := authSessionDir
 	authSessionDir = dir
 	t.Cleanup(func() { authSessionDir = previous })
+}
+
+// reconReceiptsDir is where the recon package writes its receipts.
+//
+// The base is resolved when that package starts, so a test that points
+// CERAA_HOME somewhere else afterwards does not move it, and the path is
+// read from the environment as the process saw it.
+func reconReceiptsDir() string {
+	base := os.Getenv("CERAA_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".config", "ceraa")
+	}
+	return filepath.Join(base, "recon", "receipts")
+}
+
+// receiptID pulls the receipt id out of a tool answer.
+func receiptID(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "receipt ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "receipt "))
+		}
+	}
+	return ""
 }
 
 // allowLoopback opens the two checks a test server needs: the scope record

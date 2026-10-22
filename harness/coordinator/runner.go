@@ -1669,6 +1669,17 @@ var canonicalToolAliases = map[string]string{
 	"edit":           "edit_line",
 	"apply_patch":    "batch_edit_file",
 	"web_fetch":      "webfetch",
+	// The recon tools that were merged into one. A session recorded before
+	// the merge called the old names, and that history has to stay
+	// executable: the merge changed the name, not the capability.
+	"auth_login":    "auth",
+	"auth_replay":   "auth",
+	"auth_sessions": "auth",
+	"discover":      "sweep",
+	"fuzz":          "sweep",
+	"verify":        "finding",
+	"coverage":      "ledger",
+	"history":       "ledger",
 }
 
 var canonicalToolArgumentAliases = map[string]map[string]string{

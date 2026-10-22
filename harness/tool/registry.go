@@ -441,16 +441,15 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	// under the same scope gate, the same rate budget and the same receipt
 	// trail as the probe, so registering them here is all it takes for the
 	// model to reach them.
-	r.Register(&AuthLoginTool{})
-	r.Register(&AuthReplayTool{})
-	r.Register(&AuthSessionsTool{})
-	r.Register(&DiscoverTool{})
-	r.Register(&FuzzTool{})
+	// The merged tools. The auth tools, the two sweep tools, the verify tool
+	// and the two memory tools were each two or three catalogue entries for
+	// one capability, and the catalogue is the cached prefix of every
+	// request: every entry is tokens the model reads on every turn.
+	r.Register(&AuthTool{})
+	r.Register(&SweepTool{})
 	r.Register(&NucleiTool{})
 	r.Register(&FindingTool{})
-	r.Register(&VerifyTool{})
-	r.Register(&CoverageTool{})
-	r.Register(&HistoryTool{})
+	r.Register(&LedgerTool{})
 	r.Register(&CredTool{})
 	// The specialists. They are the tools for the work that needs the
 	// operator's engagement to be open first: an internal network, a
