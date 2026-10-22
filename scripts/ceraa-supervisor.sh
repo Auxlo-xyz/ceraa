@@ -109,7 +109,19 @@ launch() {
 	# which 409-conflicted the other bot's bridge for hours. The launcher's
 	# env.sh is the owner-managed source of truth, so nothing inherited wins.
 	unset TELEGRAM_BOT_TOKEN
-	setsid nohup bash "$LAUNCHER" >>"$LOG" 2>&1 </dev/null &
+	# The lock fd is closed in the child. A child that inherits it keeps the
+	# flock alive after the watcher dies, and the lock is then held by
+	# something nobody can see: the watcher refuses to start ("another
+	# watcher is already running") while no watcher is running, and the
+	# holder is usually a long-lived process the bot itself started, which
+	# inherited the fd through the daemon.
+	#
+	# This is not hypothetical. The lock was held for a day by a vite
+	# preview server the bot had started, because the daemon inherited the
+	# watcher's fd 9 and passed it down. The watcher could not start, the
+	# bot could not be restarted, and the only way back was to find the
+	# holder by walking /proc for the deleted path.
+	setsid nohup bash "$LAUNCHER" 9>&- >>"$LOG" 2>&1 </dev/null &
 	disown 2>/dev/null || true
 }
 
