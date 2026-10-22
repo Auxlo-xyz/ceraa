@@ -233,7 +233,10 @@ func credPasswords(spec operation.Spec) (string, error) {
 	}
 	domain := credDomain(spec)
 	if domain == "" {
-		return "", fmt.Errorf("mode passwords needs a domain, or a url to take the host from")
+		// Without a domain there is nothing to derive a company specific
+		// password from, and the default list is still worth counting.
+		passwords := creds.DefaultPasswords()
+		return fmt.Sprintf("cred: %d default passwords (no domain was given, so there are no company specific variants; the list is not printed: a password list in a transcript is a liability)", len(passwords)), nil
 	}
 	passwords := creds.Passwords([]string{domain})
 	return fmt.Sprintf("cred: %d candidate passwords for %s (the list is not printed: a password list in a transcript is a liability)", len(passwords), domain), nil
