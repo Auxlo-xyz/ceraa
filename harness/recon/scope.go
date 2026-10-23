@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"ceraa/harness/netguard"
 	"ceraa/internal/logger"
 	"ceraa/internal/paths"
 )
@@ -74,6 +75,13 @@ type Engagement struct {
 	// is inherently observe-only, so nothing enforces this yet, but the
 	// record travels with the receipts.
 	AllowDestructive bool
+	// AllowPrivate names the private ranges the operator authorized for this
+	// engagement: hosts, addresses or CIDRs that the egress wall would
+	// otherwise refuse, because an internal engagement lives there.
+	//
+	// It is the operator's decision and it travels with the record, so the
+	// wall opens and closes with the engagement instead of with a restart.
+	AllowPrivate []string
 	// Active is always true in a stored record: Stop clears the record
 	// rather than writing this field false.
 	Active bool
@@ -124,6 +132,7 @@ func SetActive(e Engagement) error {
 	window = time.Time{}
 	takenInWindow = 0
 	takenTotal = 0
+	applyPrivateRanges(*active)
 	if err := persistLocked(); err != nil {
 		logger.Warn("recon: scope record not written: " + err.Error())
 	}
@@ -137,10 +146,27 @@ func Active() (Engagement, bool) {
 	scopeMu.RLock()
 	defer scopeMu.RUnlock()
 	if active != nil {
-		return *active, true
+		copied := *active
+		applyPrivateRanges(copied)
+		return copied, true
 	}
 	e, ok := readScopeFile()
+	if ok {
+		applyPrivateRanges(e)
+	}
 	return e, ok
+}
+
+// applyPrivateRanges hands the operator's authorized ranges to the egress
+// wall.
+//
+// It is called on every read of the record rather than once at write time,
+// because the record can be written or cleared by another process while the
+// daemon runs, and the wall has to reflect the record as it stands now. An
+// engagement with no authorized ranges clears the list, so ending an
+// engagement ends the reach it granted.
+func applyPrivateRanges(e Engagement) {
+	netguard.SetAuthorizedRanges(e.AllowPrivate)
 }
 
 // Stop clears the active engagement and deletes the on-disk record, so a
@@ -154,6 +180,8 @@ func Stop() {
 	window = time.Time{}
 	takenInWindow = 0
 	takenTotal = 0
+	// Ending the engagement ends the reach it granted.
+	netguard.SetAuthorizedRanges(nil)
 	if err := os.Remove(scopeFile()); err != nil && !os.IsNotExist(err) {
 		logger.Warn("recon: scope record not cleared: " + err.Error())
 	}
@@ -213,6 +241,11 @@ func Gate(rawurl string) error {
 		e = &o
 	}
 	scopeMu.RUnlock()
+	if e != nil {
+		// The record can have been written or cleared by another process
+		// since the last read, and the wall has to reflect it now.
+		applyPrivateRanges(*e)
+	}
 
 	parsed, err := url.Parse(strings.TrimSpace(rawurl))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {

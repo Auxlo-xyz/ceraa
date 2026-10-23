@@ -1703,11 +1703,17 @@ func TestStreamKeepsSignatureOnlyThinkingBlock(t *testing.T) {
 	if len(details) != 1 {
 		t.Fatalf("got %d thinking detail deltas, want 1 (the signature-only block)", len(details))
 	}
+	// The merge yields the flat array the transports send, so a single block
+	// is still wrapped; Anthropic's encoder accepts either shape.
 	merged := MergeReasoningDetails(details)
-	var block map[string]any
-	if err := json.Unmarshal(merged, &block); err != nil {
-		t.Fatalf("merged details are not a thinking object: %v", err)
+	var blocks []map[string]any
+	if err := json.Unmarshal(merged, &blocks); err != nil {
+		t.Fatalf("merged details are not a list of thinking objects: %v", err)
 	}
+	if len(blocks) != 1 {
+		t.Fatalf("merged %d blocks, want 1: %s", len(blocks), merged)
+	}
+	block := blocks[0]
 	if block["type"] != "thinking" || block["signature"] != "SIG-ONLY" {
 		t.Errorf("signature-only thinking block was not kept: %v", block)
 	}

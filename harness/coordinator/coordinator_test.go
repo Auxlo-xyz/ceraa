@@ -727,11 +727,13 @@ func TestInProcessToolIsOfferedAndDispatched(t *testing.T) {
 	for _, def := range runner.toolDefs() {
 		offered[def.Name] = true
 	}
-	if !offered["browser_open"] {
-		t.Fatal("browser_open must be offered to the model")
-	}
-	if offered["browser"] {
-		t.Error("the combined browser is still offered, so the model is taught both shapes")
+	// The browser is a shell command now, so no browser schema may be offered.
+	// The hidden tool still has to dispatch, which the rest of this test checks:
+	// offering it again would put its 3,051 bytes back in the cached prefix.
+	for name := range offered {
+		if name == "browser" || strings.HasPrefix(name, "browser_") {
+			t.Errorf("%s is offered; the browser belongs to the shell", name)
+		}
 	}
 
 	sess := &sessionstore.Session{ID: "inproc", Version: 2}

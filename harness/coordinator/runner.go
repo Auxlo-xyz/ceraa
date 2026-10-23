@@ -668,8 +668,11 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	// so a cap placed at the call site would miss them.
 	soft, yieldAt, hardAt := r.budgetPoints()
 	budgetWarned, budgetYielded := false, false
-	goalUsageBase := 0
 	goalContinuations := 0
+	// toolCalls counts the calls that actually ran, not the turns that carried
+	// them. A turn can dispatch several calls at once, so the number that says
+	// "this is a multi-step task" is the work done, not the requests spent.
+	toolCalls := 0
 	correctiveToolRetryUsed := false
 	finalContentRetryUsed := false
 	forceFinalResponse := false
@@ -788,6 +791,17 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			SystemCacheSeam: r.systemCacheSeam(),
 			SessionID:       r.cfg.SessionID,
 		}
+		if len(sess.Messages) > 1 && !hasConversationTurn(request.Messages) {
+			// A run that had history to send lost all of it in assembly, leaving
+			// only the system prompt. Sending that
+			// would be forwarded as an empty messages array and refused by the
+			// provider with "messages must not be empty (2013)", which is a
+			// transport-shaped report for a budget problem we can see here. Fail
+			// locally, before the request exists on the wire, with the one thing
+			// the owner can act on.
+			runErr := fmt.Errorf("context window exhausted: the system prompt and tool catalogue leave no room for a conversation turn; start a new chat or fold this one")
+			return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, runErr)
+		}
 		breakdown := llm.EstimateTokenBreakdownFor(request.Messages, request.Tools, r.replaysReasoning())
 		countRequestBeforeUse(&runBreakdown, breakdown)
 		if traceCache {
@@ -805,7 +819,16 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		var reasoningDetails []json.RawMessage
 		var calls []llm.StreamedToolCall
 		var usage llm.UsageInfo
-		err = client.Stream(ctx, request, func(delta llm.ProviderResponse) {
+		// The stream gets its own context so a stall can abandon the request
+		// without making the run look like a cancellation: ctx stays clean, so
+		// the failure below is reported as one and carries the reason.
+		stall := newStallWatch(stallLimit)
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		stall.Start(cancelStream)
+		err = client.Stream(streamCtx, request, func(delta llm.ProviderResponse) {
+			if countsAsProgress(delta) {
+				stall.Kick()
+			}
 			if delta.Content != "" {
 				content.WriteString(delta.Content)
 				if r.cb.OnContent != nil {
@@ -839,6 +862,15 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				}
 			}
 		})
+		stall.Stop()
+		cancelStream()
+		// Replaces whatever the canceled request returned, because "context
+		// canceled" is true and useless: the owner needs to know the provider
+		// held the connection open and said nothing.
+		if stallErr := stall.Err(); stallErr != nil {
+			logger.Warn(stallErr.Error())
+			err = stallErr
+		}
 		if r.cb.OnCost != nil {
 			r.cb.OnCost(runCost, pricingStatus)
 		}
@@ -963,42 +995,32 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 			// The goal continuation decision is made before the answer is saved,
 			// because the pause case has to travel with the answer the owner reads.
 			//
-			// Three refusals sit ahead of the continuation, each a case where
+			// Two refusals sit ahead of the continuation, each a case where
 			// continuing would spend without progress:
 			//
 			//   - plan mode, which touches no files by definition, so every
 			//     continuation can only produce more plan text;
 			//   - a question still holding its channel open, where the run is
 			//     waiting on a human and continuing would answer with the model's
-			//     own guess, the fabrication the question exists to prevent;
-			//   - the token budget, which was written on every continuation and
-			//     read by nothing, so the only real ceiling was the continuation
-			//     count: a hundred turns of an unbounded run on a scheduled job
-			//     with nobody watching. Exhausting it pauses the goal rather than
-			//     failing the run, because the work already done is worth keeping.
+			//     own guess, the fabrication the question exists to prevent.
+			//
+			// The only ceiling is the continuation count. A token budget used to
+			// sit here and paused goals at a fixed spend, which cut long coding
+			// objectives mid-flight; a goal is a long-haul task and the owner
+			// decides when it is done, not a counter.
 			continueGoal := false
 			continueObjective := ""
-			pauseReason := ""
 			if !r.cfg.StopWhenIdle && goalContinuations < 100 {
 				if goalStore, goalErr := goal.New(r.cfg.GoalDir); goalErr == nil {
 					// The goal is the owner's one goal; this run continues it
 					// wherever it was created, so no session id enters the key.
 					if current, exists, loadErr := goalStore.Load(goal.GlobalKey); loadErr == nil && exists && current.Status == goal.StatusActive && strings.TrimSpace(current.Objective) != "" {
-						current.TokensUsed += runUsage.TotalTokens - goalUsageBase
-						goalUsageBase = runUsage.TotalTokens
 						current.Iterations++
 						switch {
 						case r.cfg.PlanMode:
 							// Producing a plan is not progress the loop can continue.
 						case len(question.Default.Pending(r.cfg.SessionID)) > 0:
 							// An open question means the run is waiting on the human.
-						case current.TokenBudget > 0 && current.TokensUsed >= current.TokenBudget:
-							pauseReason = fmt.Sprintf("paused at token budget (%d of %d used)", current.TokensUsed, current.TokenBudget)
-							current.Status = goal.StatusPaused
-							current.Reason = pauseReason
-							if _, saveErr := goalStore.Save(goal.GlobalKey, current); saveErr == nil {
-								logger.Warn("goal " + pauseReason)
-							}
 						default:
 							if _, saveErr := goalStore.Save(goal.GlobalKey, current); saveErr == nil {
 								continueGoal = true
@@ -1007,9 +1029,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 						}
 					}
 				}
-			}
-			if pauseReason != "" {
-				answer = strings.TrimRight(answer, "\n") + "\n\n[goal " + pauseReason + ". Send a message to resume.]"
 			}
 			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleAssistant, Content: answer, Reasoning: messageReasoning, ReasoningDetails: messageReasoningDetails, Usage: usage})
 			if err := r.store.Save(sess); err != nil {
@@ -1080,6 +1099,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// a harness bug.
 				if name := toolByCall[result.OpID]; name != "" {
 					recordToolCall(name)
+					toolCalls++
 					if result.Error != "" {
 						recordToolError(name, result.Error)
 					}
@@ -1097,7 +1117,12 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				// row whose Status and Error had already been rewritten from this
 				// same event - two answers to "did this fail" taken a few lines
 				// apart. The goal close rides the same sum for the same reason.
-				results[result.OpID] = r.resultText(runID, result) + r.instructionNote(sess, result) + r.goalCloseNote(sess, result)
+				//
+				// The goal reminder is keyed to the run's tool-call count rather
+				// than to the result itself: it is the count crossing the line
+				// that makes the task multi-step, and this is the result the
+				// model reads next.
+				results[result.OpID] = r.resultText(runID, result) + r.instructionNote(sess, result) + r.goalCloseNote(sess, result) + r.goalSetupNote(sess, result, toolCalls)
 				if err := r.persistResult(sess, runID, result); err != nil {
 					return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, err)
 				}
@@ -1298,6 +1323,25 @@ func (r *Runner) attachLiveRequest() {
 	r.cfg.Compactor.LiveRequest = func(_ context.Context, sess *sessionstore.Session) llm.StreamRequest {
 		return r.LiveRequest(sess)
 	}
+}
+
+// hasConversationTurn reports whether a request carries something the provider
+// can answer. A request of only system messages is not a conversation: gateways
+// forward it as an empty messages array and the provider refuses it with
+// "messages must not be empty (2013)". Trimming produced exactly that once, so
+// the runner checks rather than trusting the assembly.
+func hasConversationTurn(items []llm.Item) bool {
+	for _, item := range items {
+		switch item.Kind {
+		case "tool_call", "tool_calls":
+			return true
+		case "text":
+			if item.Role != llm.RoleSystem && strings.TrimSpace(item.Text) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalizeDispatcherMessages(items []llm.Item) []llm.Item {
@@ -2290,6 +2334,75 @@ func (r *Runner) goalCloseNote(sess *sessionstore.Session, result operation.Resu
 		return goalCloseNudge
 	}
 	return ""
+}
+
+// goalSetupAfter is the number of completed tool calls a run may make before
+// the harness asks for a goal. Six is late enough that the shape of the task is
+// visible and early enough that the remaining work still fits in one goal, and
+// it is small enough to catch the read-build-verify loop before it becomes the
+// whole run.
+const goalSetupAfter = 6
+
+// goalSetupNudge is the harness's own cue to record a goal. It is a reminder,
+// not an auto-created goal: only the model knows the objective, and a goal with
+// a guessed objective is worse than none because the continuation loop would
+// then pursue the guess.
+const goalSetupNudge = "<goal_reminder>\n" +
+	"This run has made %d tool calls and has no active goal, so it is a multi-step task. " +
+	"Before the next step, call create_goal with a one-sentence objective, then update_goal with the remaining work as todos. " +
+	"The goal is what survives this run: it is read back on later turns, continued automatically while active, and closed with a reason when done. " +
+	"If the task is already finished, report that instead of creating a goal.\n" +
+	"</goal_reminder>"
+
+// goalSetupNote asks for a goal on the call that makes the run multi-step.
+//
+// The system prompt already tells the model to use the goal tools, but that
+// instruction arrives before the model can know the size of the task: at the
+// first turn every request looks like it needs one answer. The sixth completed
+// call is the first evidence it does not, so the reminder rides that result and
+// lands in the same turn the model is still working in.
+//
+// Quiet when a goal already exists in a live state. Active is already being
+// continued, paused is waiting on the human, and blocked carries a reason the
+// model wrote; asking for a new goal in any of those would overwrite the record
+// instead of extending it. A completed goal is a finished task, so a later
+// multi-step task may replace it.
+//
+// Quiet on the goal tools themselves. A create that just succeeded shows up in
+// the store, and a close that just fired already carries goalCloseNudge; adding
+// this to either would tell the model to do what it just did.
+//
+// Like the other notes it rides the model-facing result and never the operation
+// record.
+func (r *Runner) goalSetupNote(sess *sessionstore.Session, result operation.ResultEvent, calls int) string {
+	if calls != goalSetupAfter {
+		return ""
+	}
+	for _, op := range sess.Operations {
+		if op.ID != result.OpID {
+			continue
+		}
+		switch op.SpecType {
+		case "create_goal", "update_goal", "get_goal":
+			return ""
+		}
+		break
+	}
+	store, err := goal.New(r.cfg.GoalDir)
+	if err != nil {
+		return ""
+	}
+	current, exists, err := store.Load(goal.GlobalKey)
+	if err != nil {
+		return ""
+	}
+	if exists {
+		switch current.Status {
+		case goal.StatusActive, goal.StatusPaused, goal.StatusBlocked:
+			return ""
+		}
+	}
+	return fmt.Sprintf(goalSetupNudge, calls)
 }
 
 // instructionTrigger reads what the completed operation was about.

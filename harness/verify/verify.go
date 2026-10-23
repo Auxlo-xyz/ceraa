@@ -56,7 +56,32 @@ type Observation struct {
 	// is what a naive check would have accepted, and the marker guard
 	// compares against it.
 	Baseline *Observation
+	// CallbackHost is the out-of-band address the request injected, or empty
+	// when it injected none. It is separate from Callbacks because "no
+	// address was instrumented" and "the address was quiet" are different
+	// things, and only the first is the tester's mistake.
+	CallbackHost string
+	// Callbacks are the interactions that arrived at CallbackHost after the
+	// exchange. The package does not fetch them; the caller polls and hands
+	// them over, which keeps Decide free of I/O and of a clock.
+	Callbacks []Callback
 	// At is when the observation was made.
+	At time.Time
+}
+
+// Callback is one request that arrived at an address the tester controls.
+//
+// It is the only evidence a blind bug leaves. There is no response to read and
+// no baseline to compare against, because the request was made by the target,
+// not by the tester.
+type Callback struct {
+	// Protocol is the transport the target used: dns, http, smtp, etc.
+	Protocol string
+	// RemoteAddr is where the interaction came from, as the server saw it.
+	RemoteAddr string
+	// RawRequest is what arrived, bounded by the poller.
+	RawRequest string
+	// At is when the interaction was recorded.
 	At time.Time
 }
 

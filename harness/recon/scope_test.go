@@ -3,11 +3,13 @@ package recon
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"ceraa/harness/netguard"
 	"ceraa/internal/paths"
 )
 
@@ -395,5 +397,34 @@ func TestFileEngagementIsHonouredAcrossProcesses(t *testing.T) {
 	write(engagement)
 	if err := authorizeMethod("DELETE", "example.com", nil); err != nil {
 		t.Errorf("DELETE refused although the record authorizes it: %v", err)
+	}
+}
+
+// TestAnEngagementCanOpenThePrivateRanges is the internal engagement path:
+// the operator names a private range and the wall opens for it, and clearing
+// the engagement closes it again.
+func TestAnEngagementCanOpenThePrivateRanges(t *testing.T) {
+	Stop()
+	if err := netguard.CheckAddr(net.ParseIP("10.1.2.3"), "box.internal"); err == nil {
+		t.Fatal("a private address was allowed before any engagement")
+	}
+
+	SetActive(Engagement{
+		Target:       "https://target.internal",
+		InScope:      []string{"target.internal"},
+		AllowPrivate: []string{"10.0.0.0/8"},
+	})
+	defer Stop()
+
+	if err := netguard.CheckAddr(net.ParseIP("10.1.2.3"), "box.internal"); err != nil {
+		t.Fatalf("the authorized range is still blocked: %v", err)
+	}
+	if err := netguard.CheckAddr(net.ParseIP("192.168.1.1"), "box.internal"); err == nil {
+		t.Error("a range the operator did not name was allowed")
+	}
+
+	Stop()
+	if err := netguard.CheckAddr(net.ParseIP("10.1.2.3"), "box.internal"); err == nil {
+		t.Error("clearing the engagement did not close the range it opened")
 	}
 }

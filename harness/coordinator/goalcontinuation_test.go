@@ -41,8 +41,8 @@ func runGoalContinuation(t *testing.T, sessionID string, seed goal.Goal, cfg fun
 		w.Header().Set("Content-Type", "text/event-stream")
 		encoded, _ := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{"delta": map[string]any{"content": "done"}}},
-			// Reported so the token budget can be exercised with real spend: an
-			// unreported run leaves runUsage at zero and the fence never trips.
+			// Reported so the run carries a real spend figure, as a live provider
+			// does. Nothing acts on it any more; it is what the owner is shown.
 			"usage": map[string]any{"prompt_tokens": 60, "completion_tokens": 40, "total_tokens": 100},
 		})
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
@@ -89,37 +89,11 @@ func hasContinuationMessage(sess *sessionstore.Session) bool {
 	return false
 }
 
-// The token budget used to be written on every continuation and read by nobody,
-// so the only ceiling on the loop was its continuation count. It is a fence now:
-// a goal that has spent its budget is paused rather than continued, and the
-// pause must be visible to the owner rather than only in the goal file.
-func TestATokenBudgetPausesAnActiveGoalInsteadOfContinuing(t *testing.T) {
-	g, sess, result := runGoalContinuation(t, "budget", goal.Goal{
-		Objective:   "ship it",
-		Status:      goal.StatusActive,
-		TokenBudget: 5,
-		TokensUsed:  5,
-	}, nil)
-
-	if g.Status != goal.StatusPaused {
-		t.Fatalf("goal status = %q, want paused once the budget is spent", g.Status)
-	}
-	if !strings.Contains(g.Reason, "budget") {
-		t.Errorf("goal reason = %q, want it to name the budget", g.Reason)
-	}
-	if !strings.Contains(result.Final, "paused at token budget") {
-		t.Errorf("final answer does not carry the pause notice: %q", result.Final)
-	}
-	if hasContinuationMessage(sess) {
-		t.Error("the loop continued a goal it had just paused")
-	}
-}
-
 // A plan run touches no files by definition, so a continuation in plan mode can
 // only produce more plan text: the one shape guaranteed to spend turns without
 // converging.
 func TestPlanModeDoesNotContinueAnActiveGoal(t *testing.T) {
-	g, sess, result := runGoalContinuation(t, "plan", goal.Goal{
+	g, sess, _ := runGoalContinuation(t, "plan", goal.Goal{
 		Objective: "plan the migration",
 		Status:    goal.StatusActive,
 	}, func(c *RunnerConfig) { c.PlanMode = true })
@@ -132,9 +106,6 @@ func TestPlanModeDoesNotContinueAnActiveGoal(t *testing.T) {
 	}
 	if hasContinuationMessage(sess) {
 		t.Error("plan mode continued an active goal")
-	}
-	if strings.Contains(result.Final, "paused at token budget") {
-		t.Errorf("a plan-mode refusal paused the goal: %q", result.Final)
 	}
 }
 
@@ -173,15 +144,14 @@ func TestAPendingQuestionDoesNotContinueAnActiveGoal(t *testing.T) {
 }
 
 // The positive case, so a guard that accidentally disables the loop outright
-// cannot pass: an active goal with no blocker still continues. The budget is set
-// to 1.5 requests' worth of reported spend, so the loop must continue once and
-// then be caught by the fence - which is what keeps this bounded rather than
-// running to the continuation cap.
+// cannot pass: an active goal with no blocker keeps continuing. There is no
+// token budget to stop it: a long coding objective is the normal case, and the
+// owner ends it by completing or pausing the goal. The continuation count is the
+// only ceiling, and this test runs to it.
 func TestAnActiveGoalWithNoBlockerStillContinues(t *testing.T) {
 	g, sess, _ := runGoalContinuation(t, "continue", goal.Goal{
-		Objective:   "keep going",
-		Status:      goal.StatusActive,
-		TokenBudget: 150,
+		Objective: "keep going",
+		Status:    goal.StatusActive,
 	}, nil)
 
 	if g.Iterations < 1 {
@@ -190,7 +160,7 @@ func TestAnActiveGoalWithNoBlockerStillContinues(t *testing.T) {
 	if !hasContinuationMessage(sess) {
 		t.Error("no continuation was delivered to the session")
 	}
-	if g.Status != goal.StatusPaused {
-		t.Errorf("goal status = %q, want paused: the budget fence should have stopped the loop", g.Status)
+	if g.Status != goal.StatusActive {
+		t.Errorf("goal status = %q, want active: nothing paused a goal that was making progress", g.Status)
 	}
 }

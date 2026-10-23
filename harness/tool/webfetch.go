@@ -138,7 +138,7 @@ func (w *WebFetchTool) RunContext(ctx context.Context, spec operation.Spec) (str
 	}
 
 	content := string(body)
-	return convert(content, contentType, format)
+	return convert(content, url, contentType, format)
 }
 
 func getMime(ct string) string {
@@ -161,42 +161,21 @@ func isTextualMime(mime string) bool {
 		mime == "application/x-javascript"
 }
 
-func convert(content, contentType, format string) (string, error) {
+// convert turns an HTML body into the requested shape. The old version mapped
+// both text and markdown to the same tag stripper, so the schema's promise of
+// markdown was never kept; markdown now means headings, lists, links and fenced
+// code, and text means the same flow with the syntax removed.
+func convert(content, pageURL, contentType, format string) (string, error) {
 	mime := getMime(contentType)
-	if !strings.Contains(mime, "text/html") {
+	if !strings.Contains(mime, "text/html") && !strings.Contains(mime, "xhtml") {
 		return content, nil
 	}
 	switch format {
-	case "text":
-		return extractTextFromHTML(content), nil
-	case "markdown":
-		return extractTextFromHTML(content), nil
-	default:
+	case "html":
 		return content, nil
+	case "text":
+		return renderHTML(content, pageURL, true), nil
+	default:
+		return renderHTML(content, pageURL, false), nil
 	}
-}
-
-func extractTextFromHTML(html string) string {
-	var sb strings.Builder
-	inTag := false
-
-	for _, r := range html {
-		if inTag {
-			if r == '>' {
-				inTag = false
-			}
-			continue
-		}
-		if r == '<' {
-			inTag = true
-			continue
-		}
-		if r == '\n' || r == '\r' || r == '\t' {
-			continue
-		}
-		sb.WriteRune(r)
-	}
-	result := sb.String()
-	result = strings.Join(strings.Fields(result), " ")
-	return result
 }

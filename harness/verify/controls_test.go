@@ -424,3 +424,80 @@ func TestTheControlsArePure(t *testing.T) {
 		t.Fatalf("two decisions over the same exchange differ:\n%v\n%v", first, second)
 	}
 }
+
+// TestTheCallbackControlProvesABlindInteraction pins the only evidence a blind
+// bug leaves: a request that arrived at the tester's address.
+func TestTheCallbackControlProvesABlindInteraction(t *testing.T) {
+	exchange := Observation{
+		URL:          "https://target.example/fetch?u=http://abc.oast.pro/x",
+		CallbackHost: "abc.oast.pro",
+		Callbacks: []Callback{{
+			Protocol:   "http",
+			RemoteAddr: "198.51.100.7:44321",
+			RawRequest: "GET /x HTTP/1.1\r\nHost: abc.oast.pro\r\nAuthorization: Bearer secret",
+		}},
+	}
+
+	decision := Decide(exchange, []Control{CallbackControl()})
+	if decision.Verdict != Proven {
+		t.Fatalf("verdict is %s, want %s (obligations %v)", decision.Verdict, Proven, decision.Obligations)
+	}
+	evidence := decision.Obligations[0].Evidence
+	if !strings.Contains(evidence, "http") || !strings.Contains(evidence, "198.51.100.7:44321") {
+		t.Errorf("the evidence does not name the interaction: %q", evidence)
+	}
+	if !strings.Contains(evidence, "GET /x HTTP/1.1") {
+		t.Errorf("the evidence carries no request line: %q", evidence)
+	}
+	if strings.Contains(evidence, "secret") {
+		t.Errorf("the evidence quotes a credential: %q", evidence)
+	}
+}
+
+// TestTheCallbackControlWithoutAnInteractionIsInconclusive pins the rule the
+// whole path exists for: a quiet window is a check that did not answer, never
+// a proof that the bug is absent.
+func TestTheCallbackControlWithoutAnInteractionIsInconclusive(t *testing.T) {
+	decision := Decide(Observation{CallbackHost: "abc.oast.pro"}, []Control{CallbackControl()})
+	if decision.Verdict != Inconclusive {
+		t.Fatalf("verdict is %s, want %s", decision.Verdict, Inconclusive)
+	}
+	if decision.Obligations[0].State != Missing {
+		t.Errorf("the obligation is %s, want %s", decision.Obligations[0].State, Missing)
+	}
+	if !strings.Contains(decision.Obligations[0].Evidence, "abc.oast.pro") {
+		t.Errorf("the obligation does not name the address it watched: %q", decision.Obligations[0].Evidence)
+	}
+}
+
+// TestTheCallbackControlWithoutAnAddressIsMissing pins the difference between
+// an address that stayed quiet and no address at all.
+func TestTheCallbackControlWithoutAnAddressIsMissing(t *testing.T) {
+	decision := Decide(Observation{Status: 200}, []Control{CallbackControl()})
+	if decision.Verdict != Inconclusive {
+		t.Fatalf("verdict is %s, want %s", decision.Verdict, Inconclusive)
+	}
+	if !strings.Contains(decision.Obligations[0].Evidence, "no callback address") {
+		t.Errorf("the obligation does not say nothing was instrumented: %q", decision.Obligations[0].Evidence)
+	}
+}
+
+// TestTheCallbackControlIsOptIn pins that the default set is unchanged: the
+// question does not apply to a reflected finding, and a control that answers
+// Missing by default would weaken every ordinary verdict.
+func TestTheCallbackControlIsOptIn(t *testing.T) {
+	for _, control := range DefaultControls() {
+		if control.Name == "callback" {
+			t.Fatal("the callback control is in the default set")
+		}
+	}
+	found := false
+	for _, control := range AllControls() {
+		if control.Name == "callback" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the callback control is not nameable")
+	}
+}

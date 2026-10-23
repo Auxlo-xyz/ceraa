@@ -256,6 +256,61 @@ func SecretControl() Control {
 	}
 }
 
+// CallbackControl builds the control that proves a blind injection by the
+// request it caused, not by a response.
+//
+// It is the one control whose evidence arrives out of band: an SSRF, a blind
+// command injection or a stored XSS in an admin panel leaves nothing in the
+// response the tester can read, and a validator that looks only at the
+// response will call those findings unproven forever.
+//
+// The control is deliberately not part of the default set. Its question does
+// not apply to a reflected finding, and a control whose question does not
+// apply resolves Missing, which would weaken every ordinary verdict.
+func CallbackControl() Control {
+	return Control{
+		Name:     "callback",
+		Question: "the request reached an address only the tester controls",
+		Enforce: func(o Observation) Obligation {
+			if strings.TrimSpace(o.CallbackHost) == "" {
+				return missing("the exchange injected no callback address, so there was nothing to watch")
+			}
+			if len(o.Callbacks) == 0 {
+				return missing(fmt.Sprintf("no interaction arrived at %s inside the poll window", o.CallbackHost))
+			}
+			first := o.Callbacks[0]
+			evidence := fmt.Sprintf("%s from %s", clip(first.Protocol, 24), clip(first.RemoteAddr, 96))
+			if line := firstLine(first.RawRequest); line != "" {
+				evidence += ": " + line
+			}
+			if len(o.Callbacks) > 1 {
+				evidence = fmt.Sprintf("%d interactions, first %s", len(o.Callbacks), evidence)
+			}
+			return established(evidence)
+		},
+	}
+}
+
+// firstLine is the part of a raw request that identifies it: the request line
+// of HTTP, the query of a DNS lookup. A full body is a receipt, not evidence,
+// and it is the part most likely to carry something that needs redacting.
+func firstLine(raw string) string {
+	line := strings.TrimSpace(raw)
+	if index := strings.IndexAny(line, "\r\n"); index >= 0 {
+		line = line[:index]
+	}
+	return clip(line, 160)
+}
+
+// clip bounds a string for display without splitting a rune.
+func clip(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
 // DefaultControls returns the controls that cover the common web findings.
 //
 // The set is deliberately small and every member answers the same question:
@@ -276,6 +331,14 @@ func DefaultControls() []Control {
 		ReflectionControl(),
 		SecretControl(),
 	}
+}
+
+// AllControls is the set a caller may name, which is wider than the set it
+// gets by default. The callback control lives here and not in DefaultControls:
+// it is the right question for a blind finding and the wrong one for every
+// finding that answers in the response.
+func AllControls() []Control {
+	return append(DefaultControls(), CallbackControl())
 }
 
 // canaryValues returns the values the request carried that are long enough

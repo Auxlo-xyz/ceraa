@@ -251,6 +251,35 @@ func TestTheSharedStatusIsReadPerMode(t *testing.T) {
 	}
 }
 
+// A model that cannot express the union sent {"open_proof_gap": true}. The
+// reading is unambiguous, and refusing it burned two turns on identical
+// retries while the audit was trying to record its only result.
+func TestATaggedStatusMapIsReadAsTheClosureState(t *testing.T) {
+	tl := &FindingTool{}
+	spec, err := tl.Translate(map[string]any{
+		"title":  "No confirmed impact",
+		"status": map[string]any{"open_proof_gap": true},
+	})
+	if err != nil {
+		t.Fatalf("translate a tagged status: %v", err)
+	}
+	if spec.Args["status"] != findings.StatusOpenProofGap {
+		t.Errorf("status = %v, want %v", spec.Args["status"], findings.StatusOpenProofGap)
+	}
+	// Two keys are not a tag, and the error has to say what was wanted rather
+	// than calling an object a number.
+	_, err = tl.Translate(map[string]any{
+		"title":  "No confirmed impact",
+		"status": map[string]any{"open_proof_gap": true, "confirmed": true},
+	})
+	if err == nil {
+		t.Fatal("a two-key status map was accepted")
+	}
+	if !strings.Contains(err.Error(), "open_proof_gap") || !strings.Contains(err.Error(), "object") {
+		t.Errorf("error does not name the states and the shape it got: %v", err)
+	}
+}
+
 func TestTheFindingToolComputesTheCVSSScore(t *testing.T) {
 	tl := &FindingTool{}
 	spec, err := tl.Translate(map[string]any{
@@ -594,5 +623,32 @@ func TestTheCatalogueCarriesOneFindingTool(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("the catalogue carries %d finding entries, want 1", count)
+	}
+}
+
+// The callback control is nameable and, without an instrumented address, it
+// leaves the finding inconclusive rather than refuted.
+func TestTheFindingToolAcceptsTheCallbackControl(t *testing.T) {
+	t.Setenv("CERAA_HOME", t.TempDir())
+	tl := &FindingTool{}
+	spec, err := tl.Translate(map[string]any{
+		"mode":          "verify",
+		"url":           "https://example.com/fetch?u=1",
+		"status":        float64(200),
+		"response_body": "ok",
+		"controls":      []any{"callback"},
+	})
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	out, err := tl.Run(spec)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "verdict: INCONCLUSIVE") {
+		t.Errorf("a quiet callback check is not inconclusive:\n%s", out)
+	}
+	if !strings.Contains(out, "obligation callback: Missing") {
+		t.Errorf("the callback obligation is not missing:\n%s", out)
 	}
 }

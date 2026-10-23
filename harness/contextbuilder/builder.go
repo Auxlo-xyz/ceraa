@@ -241,13 +241,19 @@ func (b *Builder) BuildWithLimit(limit int) Request {
 		}
 		if item.Role == llm.RoleAssistant && (m.Reasoning != "" || len(m.ReasoningDetails) > 0) {
 			item.Reason = m.Reasoning
-			item.ReasoningDetails = m.ReasoningDetails
+			// Coalesced here as well as on write: a session recorded before the
+			// merge kept one entry per streamed chunk, and every estimate of the
+			// request charges these bytes. Measuring the raw history inflated a
+			// 204k request to 1.1M and is what made the trim cut too deep.
+			item.ReasoningDetails = llm.NormalizeReasoningDetails(m.ReasoningDetails)
 		}
 		req.Messages = append(req.Messages, item)
 	}
 
-	if limit > 0 && requestSize(b.sess, req.Messages, b.replayReasoning) > limit {
-		req.Messages = trimCompleteTurns(req.Messages, limit, b.replayReasoning)
+	if limit > 0 {
+		if size := requestSize(b.sess, req.Messages, b.replayReasoning); size > limit {
+			req.Messages = trimCompleteTurns(req.Messages, limit, b.replayReasoning, trimScale(size, b.estimate(req.Messages)))
+		}
 	}
 	req.Usage = PruneResult{TokensRemaining: max(0, limit-b.estimate(req.Messages))}
 	return req
@@ -329,8 +335,22 @@ func (b *Builder) estimate(items []llm.Item) int {
 
 // trimCompleteTurns drops whole exchanges from the front until the request fits,
 // never splitting a tool call from its result.
-func trimCompleteTurns(items []llm.Item, limit int, replayReasoning bool) []llm.Item {
-	if limit <= 0 || EstimateMessagesFor(items, replayReasoning) <= limit {
+//
+// scale reconciles the local estimate with the provider's own count. Candidate
+// sizes are measured locally and then scaled, so the cut is proportional to what
+// the provider bills instead of what our estimator sees.
+func trimCompleteTurns(items []llm.Item, limit int, replayReasoning bool, scale float64) []llm.Item {
+	measure := func(list []llm.Item) int {
+		n := EstimateMessagesFor(list, replayReasoning)
+		if scale > 0 && scale < 1 {
+			n = int(float64(n) * scale)
+			if n < 1 {
+				n = 1
+			}
+		}
+		return n
+	}
+	if limit <= 0 || measure(items) <= limit {
 		return items
 	}
 	firstUser := len(items)
@@ -356,13 +376,19 @@ func trimCompleteTurns(items []llm.Item, limit int, replayReasoning bool) []llm.
 	if len(current) > 0 {
 		groups = append(groups, current)
 	}
-	total := EstimateMessagesFor(prefix, replayReasoning)
+	total := measure(prefix)
 	keepFrom := len(groups)
 	for i := len(groups) - 1; i >= 0; i-- {
-		groupTokens := EstimateMessagesFor(groups[i], replayReasoning)
+		groupTokens := measure(groups[i])
 		if total+groupTokens > limit {
 			if keepFrom == len(groups) {
-				return prefix
+				// Nothing fits whole. Returning the prefix alone used to be the
+				// answer, and it produced a request with no user turn: the
+				// provider rejects that with "messages must not be empty", the
+				// run fails, and the next message trims identically, so the
+				// session can never recover. Keeping the newest question with a
+				// truncated body answers less of it, but answers.
+				return newestQuestionOnly(prefix, groups, limit, replayReasoning, measure)
 			}
 			break
 		}
@@ -374,6 +400,49 @@ func trimCompleteTurns(items []llm.Item, limit int, replayReasoning bool) []llm.
 		result = append(result, groups[i]...)
 	}
 	return result
+}
+
+// trimScale reconciles the local estimate with the provider's count of the last
+// accepted request.
+//
+// The provider has already reported what that request cost, and when its number
+// is smaller than ours, the difference is bytes it never charged. On the Cline
+// gateway the local estimate read 1.1M tokens for a request the provider counted
+// at 204k, because most of the stored reasoning was not billed. Measuring
+// candidates unscaled made a 7 percent overage look like a 5x one, and the first
+// overage cut the conversation to the system prompt. Scaling keeps the cut
+// proportional to the real request.
+//
+// Never above one: a provider that counts more than we estimate is a reason to
+// trim harder, not to trust a larger number than our own ceiling.
+func trimScale(providerSize, localEstimate int) float64 {
+	if providerSize <= 0 || localEstimate <= 0 || providerSize >= localEstimate {
+		return 1
+	}
+	return float64(providerSize) / float64(localEstimate)
+}
+
+// newestQuestionOnly keeps the latest user text and nothing else from a turn
+// too large to send whole. Tool calls and results go with the rest of the turn:
+// a result whose call was dropped is a request every transport rejects, and the
+// bound is what keeps the request sendable at all.
+func newestQuestionOnly(prefix []llm.Item, groups [][]llm.Item, limit int, replayReasoning bool, measure func([]llm.Item) int) []llm.Item {
+	budget := (limit - measure(prefix) - 20) * 4
+	budget = budget * 9 / 10
+	if budget < 160 {
+		return prefix
+	}
+	for i := len(groups) - 1; i >= 0; i-- {
+		for _, item := range groups[i] {
+			if item.Kind != "text" || item.Role != llm.RoleUser || strings.TrimSpace(item.Text) == "" {
+				continue
+			}
+			item.Text = Truncate(item.Text, budget)
+			item.Images = nil
+			return append(prefix, item)
+		}
+	}
+	return prefix
 }
 
 // Truncate cuts a string to maxChars, preserving complete lines if possible.

@@ -427,6 +427,17 @@ func (s *Store) saveUnlocked(sess *Session) error {
 	if sess.Version == 0 {
 		sess.Version = schemaVersion
 	}
+	// Reasoning is stored one block per turn, not one per streamed chunk. A turn
+	// that streamed a thousand chunks used to persist a thousand entries, each
+	// repeating type/format/index, and the trim that measures stored bytes cut a
+	// real conversation because of them. Normalizing on write repairs sessions
+	// recorded before the merge learned to coalesce, at no cost to the text.
+	for i := range sess.Messages {
+		if len(sess.Messages[i].ReasoningDetails) == 0 {
+			continue
+		}
+		sess.Messages[i].ReasoningDetails = llm.NormalizeReasoningDetails(sess.Messages[i].ReasoningDetails)
+	}
 	b, err := json.MarshalIndent(sess, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode session %s: %w", sess.ID, err)

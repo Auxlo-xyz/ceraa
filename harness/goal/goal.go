@@ -21,8 +21,7 @@ const (
 
 // GlobalKey is the one key every goal read and write goes through. The goal is
 // the owner's single active goal, not a per-session one: a run on any surface
-// continues it, a pause observed in one chat is recoverable from another, and
-// the token budget is only meaningful if it is the same budget everywhere.
+// continues it, and a pause observed in one chat is recoverable from another.
 //
 // Per-session keying grew when the store lived beside each session's records,
 // but nothing ever held two goals on purpose, and the split had a real cost:
@@ -66,15 +65,13 @@ func ParseTodos(value any) ([]Todo, error) {
 }
 
 type Goal struct {
-	Objective   string    `json:"objective"`
-	Todos       []Todo    `json:"todos,omitempty"`
-	Status      Status    `json:"status"`
-	TokenBudget int       `json:"token_budget,omitempty"`
-	TokensUsed  int       `json:"tokens_used,omitempty"`
-	Iterations  int       `json:"iterations,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Objective  string    `json:"objective"`
+	Todos      []Todo    `json:"todos,omitempty"`
+	Status     Status    `json:"status"`
+	Iterations int       `json:"iterations,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Store struct {

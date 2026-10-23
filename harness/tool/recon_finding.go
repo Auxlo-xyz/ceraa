@@ -29,8 +29,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ceraa/harness/findings"
+	"ceraa/harness/oast"
 	"ceraa/harness/operation"
 	"ceraa/harness/recon"
 	"ceraa/harness/verify"
@@ -152,7 +154,7 @@ func (f *FindingTool) Schema() map[string]any {
 			"controls": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "verify: controls to run: marker, status, body, reflection, secret",
+				"description": "verify: controls to run: marker, status, body, reflection, secret, callback (a blind finding proven by an interaction at its oast address)",
 			},
 		},
 		// Nothing is required by the schema: the mode decides. A title is
@@ -433,8 +435,55 @@ func findingClosureStatus(value any, mode string) (findings.Status, error) {
 			return findingDefaultStatus(mode), nil
 		}
 		return findings.ParseStatus(typed)
+	case map[string]any:
+		// Models that cannot express a union sometimes send the state as a
+		// tagged map, {"open_proof_gap": true}. The reading is unambiguous, so
+		// take it rather than failing the call and spending a turn on a retry.
+		if state, ok := singleTaggedStatus(typed); ok {
+			return findings.ParseStatus(state)
+		}
 	}
-	return "", fmt.Errorf("status is the closure state for %s, not a number", mode)
+	return "", fmt.Errorf("status for %s is the closure state %s, as a plain string; got %s. A response status is only valid in verify mode",
+		mode, statusChoices(), statusValueKind(value))
+}
+
+// singleTaggedStatus reads {"<state>": true} as the state. Anything else is
+// left to the error, which names the shape it wanted.
+func singleTaggedStatus(value map[string]any) (string, bool) {
+	if len(value) != 1 {
+		return "", false
+	}
+	for state, marked := range value {
+		on, _ := marked.(bool)
+		if !on {
+			return "", false
+		}
+		state = strings.TrimSpace(state)
+		if _, err := findings.ParseStatus(state); err != nil {
+			return "", false
+		}
+		return state, true
+	}
+	return "", false
+}
+
+func statusChoices() string {
+	return "confirmed, ruled_out or open_proof_gap"
+}
+
+func statusValueKind(value any) string {
+	switch value.(type) {
+	case map[string]any:
+		return "an object"
+	case float64, int, int64:
+		return "a number"
+	case bool:
+		return "a boolean"
+	case []any:
+		return "an array"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
 }
 
 // findingDefaultStatus is the state a new finding starts in. An update keeps
@@ -751,11 +800,13 @@ func (f *FindingTool) runVerify(ctx context.Context, spec operation.Spec) (strin
 	}
 	status, hasStatus := spec.Args["status"].(int)
 	responseBody, hasBody := spec.Args["response_body"].(string)
+	oobHost := ""
 	if !hasStatus || !hasBody {
 		result, body, err := f.fetch(ctx, url, method, requestBody)
 		if err != nil {
 			return "", err
 		}
+		oobHost = result.OOB
 		if !hasStatus {
 			observation.Status = result.Status
 		} else {
@@ -796,6 +847,37 @@ func (f *FindingTool) runVerify(ctx context.Context, spec operation.Spec) (strin
 	if err != nil {
 		return "", err
 	}
+	if wantsCallback(controls) {
+		// The exchange that just went out may have minted its own address,
+		// and the one the recorded probe used is in its receipt. Watching
+		// both is what makes a copied URL as good as a re-injected marker.
+		hosts := make([]string, 0, 2)
+		if oobHost != "" {
+			hosts = append(hosts, oobHost)
+		}
+		if host, ok := recon.ReceiptOOB(url, method); ok {
+			hosts = append(hosts, host)
+		}
+		hosts = dedupe(hosts)
+		if len(hosts) > 0 {
+			observation.CallbackHost = strings.Join(hosts, ", ")
+			interactions, err := oast.Await(ctx, hosts, callbackBudget)
+			if err != nil {
+				// A poll that did not run is an inconclusive check, not a
+				// refutation, and the control's own obligation says so.
+				observation.CallbackHost += " (poll failed: " + err.Error() + ")"
+			} else {
+				for _, interaction := range interactions {
+					observation.Callbacks = append(observation.Callbacks, verify.Callback{
+						Protocol:   interaction.Protocol,
+						RemoteAddr: interaction.RemoteAddress,
+						RawRequest: interaction.RawRequest,
+						At:         interaction.Timestamp,
+					})
+				}
+			}
+		}
+	}
 	decision := verify.Decide(observation, controls)
 
 	// The verdict is worth attaching to the record, because a finding whose
@@ -835,6 +917,41 @@ func (f *FindingTool) runVerify(ctx context.Context, spec operation.Spec) (strin
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 
+// callbackBudget is how long a blind verification waits for its interaction.
+//
+// Long enough for a target that shells out or resolves a name through a
+// resolver cache, short enough that a finding with no callback does not hold
+// the turn. A quiet window is inconclusive, never a refutation, so the number
+// bounds patience rather than evidence.
+const callbackBudget = 12 * time.Second
+
+// wantsCallback reports whether the caller asked the callback control to run.
+// The wait only happens when it was asked for: every other verification would
+// otherwise pay twelve seconds for a question it did not ask.
+func wantsCallback(controls []verify.Control) bool {
+	for _, control := range controls {
+		if control.Name == "callback" {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupe keeps the watch list short. The same host can arrive twice: a marker
+// URL that was re-fired and a receipt that recorded the same exchange.
+func dedupe(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
 // fetch performs one exchange for the verification, through the same gate,
 // budget and receipt trail every other request goes through.
 func (f *FindingTool) fetch(ctx context.Context, url string, method string, body string) (recon.Result, []byte, error) {
@@ -857,7 +974,7 @@ func findingControls(raw any) ([]verify.Control, error) {
 		return verify.DefaultControls(), nil
 	}
 	all := map[string]verify.Control{}
-	for _, control := range verify.DefaultControls() {
+	for _, control := range verify.AllControls() {
 		all[control.Name] = control
 	}
 	picked := make([]verify.Control, 0, len(names))

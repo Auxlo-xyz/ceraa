@@ -174,6 +174,72 @@ func TestBuildWithLimitKeepsCompleteToolTurn(t *testing.T) {
 	}
 }
 
+// A turn too large to send whole used to leave the prefix and nothing else, so
+// the request went out with no user turn. The provider answers that with
+// "messages must not be empty (2013)", the run fails, and the next message trims
+// the same way, which is how one refusal became a session that could not recover.
+// The provider counted the last request at 120k while the local estimate, which
+// charges every stored reasoning block, read 400k. The unscaled cut saw the
+// newest exchange at 150k and could not fit it, so it kept only the question.
+// Scaled, the newest exchange is 45k and the history behind it is what goes.
+func TestTrimCutsAtTheProvidersScale(t *testing.T) {
+	sess := &sessionstore.Session{Messages: []sessionstore.Message{
+		{Role: llm.RoleUser, Content: "old question"},
+		{Role: llm.RoleAssistant, Content: "old answer", Reasoning: strings.Repeat("o", 1_000_000)},
+		{Role: llm.RoleUser, Content: "new question"},
+		{Role: llm.RoleAssistant, Content: "new answer", Reasoning: strings.Repeat("n", 600_000), Usage: llm.UsageInfo{InputTokens: 120000}},
+	}}
+	req := New(sess, "system").BuildWithLimit(100000)
+	if len(req.Messages) != 3 {
+		t.Fatalf("trimmed to %d messages, want the system prompt and the newest exchange", len(req.Messages))
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != llm.RoleAssistant || last.Text != "new answer" {
+		t.Fatalf("the newest exchange did not survive: %+v", last)
+	}
+}
+
+func TestTrimScaleNeverExceedsOne(t *testing.T) {
+	if got := trimScale(204000, 1100000); got < 0.18 || got > 0.19 {
+		t.Fatalf("scale = %v, want about 0.185", got)
+	}
+	for _, tc := range [][2]int{{0, 100}, {100, 0}, {900, 400}} {
+		if got := trimScale(tc[0], tc[1]); got != 1 {
+			t.Fatalf("trimScale(%d, %d) = %v, want 1", tc[0], tc[1], got)
+		}
+	}
+}
+
+func TestOversizedTurnKeepsTheNewestQuestion(t *testing.T) {
+	turn := func(question string) []sessionstore.Message {
+		return []sessionstore.Message{
+			{Role: llm.RoleUser, Content: "first question"},
+			{Role: llm.RoleAssistant, Content: "first answer", Usage: llm.UsageInfo{InputTokens: 60000}},
+			{Role: llm.RoleUser, Content: question},
+			{Role: llm.RoleAssistant, ToolCalls: []sessionstore.ToolCallRef{{ID: "new_call", Name: "read", Args: `{"path":"new"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "new_call", ToolResult: strings.Repeat("x", 20000)},
+		}
+	}
+	for _, question := range []string{"second question", strings.Repeat("q ", 5000)} {
+		req := New(&sessionstore.Session{Messages: turn(question)}, "system").BuildWithLimit(500)
+		if len(req.Messages) < 2 {
+			t.Fatalf("question of %d chars: %d messages, want the system prompt and a turn", len(question), len(req.Messages))
+		}
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != llm.RoleUser || strings.TrimSpace(last.Text) == "" {
+			t.Fatalf("question of %d chars: last item = %+v, want a user turn", len(question), last)
+		}
+		for _, item := range req.Messages {
+			if item.Kind == "tool_call" || item.Role == llm.RoleTool {
+				t.Fatalf("question of %d chars: a tool item survived without its pair: %+v", len(question), item)
+			}
+		}
+		if size := EstimateMessages(req.Messages); size > 500 {
+			t.Fatalf("question of %d chars: request is %d tokens, over the 500 limit", len(question), size)
+		}
+	}
+}
+
 func TestTruncatePreservesHeadAndTail(t *testing.T) {
 	long := strings.Repeat("A", 200)
 	result := Truncate(long, 30)

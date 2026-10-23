@@ -458,6 +458,21 @@ func TestToolActivityIsReadableAndRedacted(t *testing.T) {
 	}
 }
 
+// A web search shows what was searched for: the bold name alone says a search
+// happened but not what it was about, which is the one thing a reader scanning
+// the trail wants to know.
+func TestWebSearchActivityCarriesTheQuery(t *testing.T) {
+	summary := toolArgsSummary("websearch", map[string]any{"args": `{"query":"go 1.27 release notes"}`})
+	if summary != " · go 1.27 release notes" {
+		t.Fatalf("tool argument summary = %q", summary)
+	}
+	// A missing or unparseable args payload stays quiet rather than rendering
+	// an empty tail.
+	if got := toolArgsSummary("websearch", map[string]any{}); got != "" {
+		t.Fatalf("missing args summary = %q", got)
+	}
+}
+
 // Every call keeps its own line and none are dropped. The old six-line window
 // is gone: it existed because the lines were bullets sharing one paragraph, and
 // a window over a list that grows for twenty minutes reads as the run forgetting

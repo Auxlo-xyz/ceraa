@@ -352,10 +352,10 @@ func nonWebRefusal(raw string) string {
 	}
 	if scheme == "" {
 		return fmt.Sprintf("%q does not look like a URL: a scheme such as https:// is required. "+
-			"For a local file, use browser_open_file with the path argument.", raw)
+			"For a local file, use ceraa browser open --file <path>.", raw)
 	}
 	return fmt.Sprintf("the %s: scheme is refused by design; only http:// and https:// URLs may be opened. "+
-		"For a local file, use browser_open_file with the path argument.", scheme)
+		"For a local file, use ceraa browser open --file <path>.", scheme)
 }
 
 func (b *BrowserTool) TranslateResult(op operation.Operation) string {

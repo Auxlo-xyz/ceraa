@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -687,5 +688,191 @@ func TestBreakdownAttributesReasoningOnlyWhereItIsSent(t *testing.T) {
 	// The turn still counts, under the source that does reach the provider.
 	if dropped.Conversation == 0 {
 		t.Fatal("the assistant turn stopped being attributed to anything")
+	}
+}
+
+// A provider error can arrive as an SSE data event inside a 200 response, and
+// the Cline gateway does exactly that: {"error":{...}} then [DONE]. The reader
+// used to see no choices, treat [DONE] as a clean end, and report an empty
+// success, which surfaced to the user as "The model completed without
+// producing a final response." while the real cause was a provider-side 400.
+func TestReadStreamSurfacesProviderErrorInsideSuccessStream(t *testing.T) {
+	client := &StreamingClient{}
+	body := "data: {\"error\":{\"code\":\"stream_initialization_failed\",\"message\":\"Failed to create stream: request failed with status 400: invalid_request_error at messages.57.reasoning_details.0\",\"type\":\"stream_error\"}}\n\n" +
+		"data: [DONE]\n\n"
+	err := client.readStream(strings.NewReader(body), func(ProviderResponse) {})
+	if err == nil {
+		t.Fatal("expected the provider error, got a clean end of stream")
+	}
+	if !strings.Contains(err.Error(), "invalid_request_error") || !strings.Contains(err.Error(), "reasoning_details.0") {
+		t.Fatalf("error = %q, want the provider's own message", err)
+	}
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) {
+		t.Fatalf("error type = %T, want *StreamError", err)
+	}
+	if streamErr.Retryable {
+		t.Fatal("a malformed request must not be retried")
+	}
+
+	// A null error is what every ordinary chunk carries and must not fail.
+	ok := "data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	if err := client.readStream(strings.NewReader(ok), func(ProviderResponse) {}); err != nil {
+		t.Fatalf("null error field failed the stream: %v", err)
+	}
+}
+
+// The gateway's message is a chain of hops and then the provider's own error as
+// embedded JSON. Everything before the last layer is transport, and the version
+// that kept it pushed the actual reason past a fold in every place it was shown.
+func TestProviderStreamErrorKeepsTheInnermostReason(t *testing.T) {
+	body := `data: {"error":{"code":"stream_initialization_failed","message":"Failed to create stream: inference request failed: failed to generate stream from Vercel: failed to invoke model minimax-m3.1-flash: request failed with status 400: {\"error\":{\"message\":\"invalid params, messages must not be empty (2013)\",\"type\":\"bad_request_error\",\"param\":{\"error\":\"invalid params\"}}}","type":"stream_error"}}
+data: [DONE]
+
+`
+	client := &StreamingClient{}
+	err := client.readStream(strings.NewReader(body), func(ProviderResponse) {})
+	if err == nil {
+		t.Fatal("expected the provider error, got a clean end of stream")
+	}
+	want := "invalid params, messages must not be empty (2013)"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	if strings.Contains(err.Error(), "Failed to create stream") || strings.Contains(err.Error(), "Vercel") {
+		t.Fatalf("error = %q, still carries the gateway's wrapper chain", err)
+	}
+	if len([]rune(err.Error())) > 260 {
+		t.Fatalf("error is %d runes, want a single short line", len([]rune(err.Error())))
+	}
+}
+
+func TestProviderStreamErrorClassifiesTransientFailures(t *testing.T) {
+	for _, tc := range []struct {
+		detail string
+		want   bool
+	}{
+		{"stream_error: Rate limit exceeded", true},
+		{"upstream returned 503 Service Unavailable", true},
+		// Cline's opaque sentence is a gateway failure, not a request the
+		// provider refused to parse. The live audit died on it unretried.
+		{"Provider returned error", true},
+		{"invalid_request_error: expected object, received array", false},
+	} {
+		if got := retryableProviderError(tc.detail); got != tc.want {
+			t.Fatalf("retryableProviderError(%q) = %v, want %v", tc.detail, got, tc.want)
+		}
+	}
+	if _, failed := providerStreamError(nil, "", "error"); !failed {
+		t.Fatal("type=error with no detail should still fail the stream")
+	}
+}
+
+// The generic sentence hides the upstream reason in metadata.raw when the
+// gateway has one, and the reason is what decides whether a retry can help.
+func TestAGenericGatewayErrorKeepsTheUpstreamDetail(t *testing.T) {
+	raw := json.RawMessage(`{"message":"Provider returned error","code":500,"metadata":{"raw":"upstream: 503 service unavailable"}}`)
+	detail, failed := providerStreamError(raw, "", "")
+	if !failed {
+		t.Fatal("the generic body was read as a clean stream")
+	}
+	if !strings.Contains(detail, "503 service unavailable") {
+		t.Errorf("detail = %q, want the metadata reason", detail)
+	}
+	if !retryableProviderError(detail) {
+		t.Error("the upstream detail was not classified for a retry")
+	}
+	// A numeric code must not cost the message, which a string-typed field would.
+	raw = json.RawMessage(`{"message":"invalid params","code":400}`)
+	if detail, failed := providerStreamError(raw, "", ""); !failed || detail != "invalid params" {
+		t.Errorf("detail = %q failed=%v, want the message with a numeric code", detail, failed)
+	}
+}
+
+// A model that requires the echo rejects the whole history when one assistant
+// step has no reasoning, so every assistant message carries a non-empty value.
+func TestReasoningEchoFillsEveryAssistantMessage(t *testing.T) {
+	items := []Item{
+		{Kind: "tool_calls", ToolCalls: []ToolCall{{ID: "c1", Name: "read", Args: "{}"}}},
+		{Kind: "text", Role: RoleTool, CallID: "c1", Name: "read", Output: "ok"},
+		{Kind: "text", Role: RoleAssistant, Text: "done"},
+		{Kind: "text", Role: RoleAssistant, Text: "reasoned", Reason: "because"},
+		{Kind: "text", Role: RoleUser, Text: "next"},
+	}
+	msgs := encodeMessagesWithCompatibility(items, false, Compatibility{
+		ReasoningField:         "reasoning_content",
+		RequiresToolResultName: true,
+		RequiresReasoningEcho:  true,
+	})
+	var assistants int
+	for _, msg := range msgs {
+		if msg["role"] != "assistant" {
+			continue
+		}
+		assistants++
+		text, _ := msg["reasoning_content"].(string)
+		if text == "" {
+			t.Errorf("assistant message has no reasoning_content: %#v", msg)
+		}
+	}
+	if assistants != 3 {
+		t.Fatalf("encoded %d assistant messages, want 3", assistants)
+	}
+	// Without the requirement the placeholder must not appear: it is a repair
+	// for a demanded field, not a field every provider should receive.
+	plain := encodeMessagesWithCompatibility(items, false, Compatibility{ReasoningField: "reasoning_content"})
+	for _, msg := range plain {
+		if msg["role"] == "assistant" && msg["reasoning_content"] == reasoningEchoPlaceholder {
+			t.Errorf("the placeholder was sent without the requirement: %#v", msg)
+		}
+	}
+}
+
+// The recovery path has to work for a model Ceraa does not know in advance.
+// The first request is refused over the missing echo, the retry carries it, and
+// the second request must not repeat the mistake.
+func TestMissingReasoningEchoIsRepairedOnceAndRetried(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requests++
+		messages, _ := body["messages"].([]any)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests == 1 {
+			_, _ = w.Write([]byte(`data: {"error":{"message":"Missing required parameter: 'messages[2].reasoning_content'. This model needs the reasoning of every earlier assistant message"}}`))
+			_, _ = w.Write([]byte("\n\ndata: [DONE]\n\n"))
+			return
+		}
+		for _, raw := range messages {
+			message, _ := raw.(map[string]any)
+			if message["role"] != "assistant" {
+				continue
+			}
+			text, _ := message["reasoning_content"].(string)
+			if text == "" {
+				t.Errorf("the retry still lacks reasoning_content: %#v", message)
+			}
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := New(ProviderConfig{BaseURL: server.URL, Model: "unknown-model", APIKey: "test", MaxRetries: 2})
+	err := client.Stream(t.Context(), StreamRequest{
+		Messages: []Item{
+			{Kind: "text", Role: RoleUser, Text: "go"},
+			{Kind: "text", Role: RoleAssistant, Text: "done"},
+			{Kind: "text", Role: RoleUser, Text: "continue"},
+		},
+	}, func(ProviderResponse) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2: one refused and one repaired", requests)
 	}
 }

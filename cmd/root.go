@@ -369,6 +369,7 @@ func registerSubcommands() {
 	attach(sessionsCmd)
 	attach(reconCmd)
 	attach(ReportCommand())
+	attach(BrowserCommand())
 }
 
 func Execute() {

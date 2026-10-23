@@ -172,7 +172,10 @@ func unwrapJSON(text string, property map[string]any) (any, bool) {
 		if _, ok := decoded.([]any); !ok {
 			return nil, false
 		}
-	case "":
+	default:
+		// Only an object or array property has an unambiguous double
+		// encode to undo. Unwrapping a string property would eat commands
+		// like "true" or "123" that are valid JSON on their own.
 		return nil, false
 	}
 	return decoded, true

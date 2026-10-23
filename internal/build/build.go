@@ -39,4 +39,4 @@ const (
 // Telegram status line both reported "Update available: v0.6.0" to somebody
 // already running the code that came after it. A -dev build sorts below its own
 // release, which is what makes the real v0.6.1 still announce itself.
-var Version = "0.6.7-dev"
+var Version = "1.0.1-dev"

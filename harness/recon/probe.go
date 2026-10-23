@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"ceraa/harness/netguard"
+	"ceraa/harness/oast"
 	"ceraa/harness/operator"
 	"ceraa/internal/build"
 	"ceraa/internal/logger"
@@ -75,6 +76,10 @@ var probeClient *http.Client
 // it at a temp directory so the suite never writes into the data dir.
 var receiptsBase = paths.DataDir()
 
+// mintOOB is the callback-address minter. A variable so tests can hand back a
+// fixed host without standing up an interactsh service; production is oast.
+var mintOOB = oast.Mint
+
 // Request describes one outbound HTTP probe.
 type Request struct {
 	URL     string
@@ -102,6 +107,10 @@ type Result struct {
 	// when the receipt could not be written. Always empty means "asked and
 	// not recorded", so callers can distinguish it from a read of the file.
 	ReceiptID string
+	// OOB is the callback host this request carried, empty when it carried
+	// none. It is recorded so a blind finding can be checked against the
+	// interactions that arrived at the address it injected.
+	OOB string
 }
 
 // receiptDoc is the on-disk shape of a probe receipt.
@@ -114,6 +123,7 @@ type receiptDoc struct {
 	Headers      map[string]string `json:"headers"`
 	BodyHead     string            `json:"body_head"`
 	RedirectedTo string            `json:"redirected_to,omitempty"`
+	OOB          string            `json:"oob,omitempty"`
 }
 
 var allowedMethods = map[string]bool{
@@ -246,7 +256,25 @@ func execute(ctx context.Context, r Request, bodyCap int, keepBody bool) (Result
 		return Result{}, nil, fmt.Errorf("method %q is not allowed; one of GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE", method)
 	}
 
-	parsed, err := url.Parse(strings.TrimSpace(r.URL))
+	// The callback marker is substituted after validation and before parsing:
+	// the URL that goes out is the one the receipt cites, and the marker is
+	// never sent literally to a target that would only log it.
+	rawURL := strings.TrimSpace(r.URL)
+	requestHeaders := r.Headers
+	requestBody := r.Body
+	oobHost := ""
+	if oobRequested(rawURL, requestHeaders, requestBody) {
+		payload, err := mintOOB(ctx)
+		if err != nil {
+			return Result{}, nil, fmt.Errorf("oast: %w", err)
+		}
+		oobHost = payload.Host
+		rawURL = strings.ReplaceAll(rawURL, oast.Marker, payload.Host)
+		requestBody = strings.ReplaceAll(requestBody, oast.Marker, payload.Host)
+		requestHeaders = replaceMarkers(requestHeaders, payload.Host)
+	}
+
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("%w: %v", ErrBadURL, err)
 	}
@@ -298,14 +326,14 @@ func execute(ctx context.Context, r Request, bodyCap int, keepBody bool) (Result
 	}
 
 	var bodyReader io.Reader
-	if r.Body != "" {
-		bodyReader = strings.NewReader(r.Body)
+	if requestBody != "" {
+		bodyReader = strings.NewReader(requestBody)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, parsed.String(), bodyReader)
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("build request: %w", err)
 	}
-	for name, value := range r.Headers {
+	for name, value := range requestHeaders {
 		req.Header.Set(name, value)
 	}
 	// The engagement's declared identifier outranks anything the caller
@@ -358,6 +386,7 @@ func execute(ctx context.Context, r Request, bodyCap int, keepBody bool) (Result
 		BodyBytes: len(body),
 		SHA256:    digest,
 		ElapsedMS: elapsed.Milliseconds(),
+		OOB:       oobHost,
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		res.Headers["location"] = resp.Header.Get("Location")
@@ -403,12 +432,92 @@ func writeReceipt(at time.Time, res Result) string {
 		Headers:      res.Headers,
 		BodyHead:     res.BodyHead,
 		RedirectedTo: res.RedirectedTo,
+		OOB:          res.OOB,
 	}); err != nil {
 		logger.Warn(fmt.Sprintf("recon: receipt not written: %s", err))
 		return ""
 	}
 	return name
 }
+
+// oobRequested reports whether a request carries the callback marker. It is a
+// cheap string test because it runs on every probe, including the thousands a
+// scan makes with no marker at all.
+func oobRequested(rawURL string, headers map[string]string, body string) bool {
+	if strings.Contains(rawURL, oast.Marker) || strings.Contains(body, oast.Marker) {
+		return true
+	}
+	for _, value := range headers {
+		if strings.Contains(value, oast.Marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceMarkers substitutes the callback host into a header map without
+// mutating the caller's map: the probe is one request in a batch, and the next
+// request needs the marker, not this request's host.
+func replaceMarkers(headers map[string]string, host string) map[string]string {
+	if len(headers) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[name] = strings.ReplaceAll(value, oast.Marker, host)
+	}
+	return out
+}
+
+// ReceiptOOB returns the callback host the most recent receipt for url+method
+// recorded.
+//
+// The lookup exists for the verification path. A model that reads a probe
+// result and re-fires the same URL has the substituted URL, not the marker, so
+// the re-fire mints no new address; without this the callback control would
+// have nothing to poll. Receipts are scanned newest first and the scan is
+// bounded, because an engagement can accumulate thousands of them and the
+// answer is always near the end of the trail.
+func ReceiptOOB(rawURL, method string) (string, bool) {
+	dir := filepath.Join(receiptsBase, "recon", "receipts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	if len(names) > maxReceiptScan {
+		names = names[:maxReceiptScan]
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	for _, name := range names {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var doc receiptDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			continue
+		}
+		if doc.OOB == "" || doc.URL != rawURL {
+			continue
+		}
+		if method != "" && doc.Method != "" && !strings.EqualFold(doc.Method, method) {
+			continue
+		}
+		return doc.OOB, true
+	}
+	return "", false
+}
+
+// maxReceiptScan bounds the receipt walk. Newest first, so the bound costs
+// recency, not correctness for anything recent.
+const maxReceiptScan = 500
 
 // ---------------------------------------------------------------------------
 // RunSpec: the tool-side executor.
@@ -486,6 +595,9 @@ func resultBlock(t probeTarget, res Result, verdict string) string {
 	}
 	if res.RedirectedTo != "" {
 		fmt.Fprintf(&b, "redirect %s (not followed)\n", clip(res.RedirectedTo, 160))
+	}
+	if res.OOB != "" {
+		fmt.Fprintf(&b, "oob http://%s\n", res.OOB)
 	}
 	if res.ReceiptID != "" {
 		fmt.Fprintf(&b, "receipt %s\n", res.ReceiptID)

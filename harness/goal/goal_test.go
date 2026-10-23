@@ -10,7 +10,7 @@ func TestGoalStoreLifecycle(t *testing.T) {
 	if _, exists, err := store.Load("session"); err != nil || exists {
 		t.Fatalf("load empty: exists=%t err=%v", exists, err)
 	}
-	value := Goal{Objective: "finish the migration", Status: StatusActive, TokenBudget: 100}
+	value := Goal{Objective: "finish the migration", Status: StatusActive}
 	if _, err := store.Save("session", value); err != nil {
 		t.Fatal(err)
 	}

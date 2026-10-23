@@ -255,3 +255,99 @@ func TestSanitizeToolCallNameCandidates(t *testing.T) {
 		}
 	}
 }
+
+// The streaming merge used to concatenate each chunk's reasoning_details
+// array as a value, so the session stored an array of arrays. The provider
+// rejects that with "expected object, received array" at
+// messages.N.reasoning_details.0 and the turn returns empty, which is why the
+// repair has to happen in the merge as well as on the way out.
+func TestMergeReasoningDetailsFlattensChunkArrays(t *testing.T) {
+	parts := []json.RawMessage{
+		json.RawMessage(`[{"type":"reasoning.text","text":"a"}]`),
+		json.RawMessage(`[{"type":"reasoning.text","text":"b"}]`),
+		json.RawMessage(`{"type":"reasoning.text","text":"c"}`),
+	}
+	merged := MergeReasoningDetails(parts)
+	var flat []map[string]any
+	if err := json.Unmarshal(merged, &flat); err != nil {
+		t.Fatalf("merged details are not an array of objects: %v (%s)", err, merged)
+	}
+	// One turn's chunks are one block, not one block per chunk. Storing the
+	// latter is what made a 204k request measure at 1.1M and get cut to nothing.
+	if len(flat) != 1 {
+		t.Fatalf("merged %d entries, want 1: %s", len(flat), merged)
+	}
+	if flat[0]["text"] != "abc" {
+		t.Fatalf("merged text = %#v, want abc", flat[0]["text"])
+	}
+}
+
+// Coalescing is limited to prose. A signature or a change of format marks a
+// block whose value the provider checks, and joining two of those would invent
+// a value it rejects.
+func TestCoalesceKeepsSignedAndDifferentlyFormattedBlocks(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"reasoning.text","text":"a","format":"f1"},
+		{"type":"reasoning.text","text":"b","format":"f1"},
+		{"type":"reasoning.text","text":"c","format":"f2"},
+		{"type":"reasoning.text","text":"d","signature":"sig"},
+		{"type":"reasoning.text","text":"e","signature":"sig"},
+		{"type":"reasoning.encrypted","data":"x"}]`)
+	var flat []map[string]any
+	if err := json.Unmarshal(NormalizeReasoningDetails(raw), &flat); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ab", "c", "d", "e", ""}
+	if len(flat) != len(want) {
+		t.Fatalf("got %d entries, want %d: %s", len(flat), len(want), raw)
+	}
+	for i, text := range want {
+		if got := flat[i]["text"]; (text != "" && got != text) || (text == "" && got != nil) {
+			t.Fatalf("entry %d text = %#v, want %q", i, got, text)
+		}
+	}
+}
+
+func TestNormalizeReasoningDetailsRepairsNestedHistory(t *testing.T) {
+	nested := json.RawMessage(`[[{"type":"reasoning.text","text":"a"}],[{"type":"reasoning.text","text":"b"}],"junk",null]`)
+	normalized := NormalizeReasoningDetails(nested)
+	var flat []map[string]any
+	if err := json.Unmarshal(normalized, &flat); err != nil {
+		t.Fatalf("normalized details are not an array of objects: %v (%s)", err, normalized)
+	}
+	if len(flat) != 1 {
+		t.Fatalf("normalized %d entries, want 1: %s", len(flat), normalized)
+	}
+	if flat[0]["text"] != "ab" {
+		t.Fatalf("normalized text = %#v, want ab", flat[0]["text"])
+	}
+	if NormalizeReasoningDetails(json.RawMessage(`null`)) != nil {
+		t.Fatal("null details should normalize to nothing")
+	}
+	if got := NormalizeReasoningDetails(json.RawMessage(`{"type":"thinking","thinking":"x"}`)); string(got) != `[{"type":"thinking","thinking":"x"}]` {
+		t.Fatalf("single object = %s, want a one-entry array", got)
+	}
+}
+
+func TestEncodeMessagesFlattensStoredNestedReasoningDetails(t *testing.T) {
+	details := json.RawMessage(`[[{"type":"reasoning.text","text":"a","signature":"s"}],[{"type":"reasoning.text","text":"b"}]]`)
+	items := []Item{
+		{Kind: "text", Role: RoleAssistant, Text: "answer", Reason: "a", ReasoningDetails: details},
+		{Kind: "text", Role: RoleUser, Text: "next"},
+	}
+	messages := encodeMessagesWithCompatibility(items, false, Compatibility{ReasoningField: "reasoning_content"})
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	encoded, err := json.Marshal(messages[0]["reasoning_details"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flat []map[string]any
+	if err := json.Unmarshal(encoded, &flat); err != nil {
+		t.Fatalf("reasoning_details = %s, want a flat array of objects", encoded)
+	}
+	if len(flat) != 2 {
+		t.Fatalf("sent %d reasoning_details entries, want 2: %s", len(flat), encoded)
+	}
+}

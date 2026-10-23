@@ -172,6 +172,12 @@ type Compatibility struct {
 	RequiresToolResultName bool
 	StrictTools            bool
 	ReasoningField         string
+	// RequiresReasoningEcho is for models that reject the whole history when any
+	// earlier assistant message lacks reasoning_content. A placeholder is sent
+	// for the steps that genuinely had none (a synthesized fallback answer, a
+	// step the model answered without reasoning), because the provider demands
+	// a non-empty value and an absent field fails the request.
+	RequiresReasoningEcho bool
 }
 
 func DefaultConfig() ProviderConfig {
@@ -233,6 +239,12 @@ func compatibilityFor(cfg ProviderConfig) Compatibility {
 	if strings.Contains(base, "openrouter.ai") {
 		compatibility.MaxTokensField = "max_tokens"
 		compatibility.SupportsDeveloperRole = false
+	}
+	// Reflection's Beam API requires reasoning_content on every earlier
+	// assistant message and rejects the history when one is missing, including
+	// the tool-call steps that came back without reasoning.
+	if strings.Contains(model, "beam") {
+		compatibility.RequiresReasoningEcho = true
 	}
 	if cfg.Compatibility != nil {
 		provided := *cfg.Compatibility
@@ -763,11 +775,51 @@ func encodeMessagesWithCompatibility(items []Item, geminiThoughtSignatures bool,
 }
 
 func addReasoningFields(message map[string]any, item Item, compatibility Compatibility) {
+	reasoned := item.Reason != ""
 	if item.Reason != "" {
 		message[compatibility.ReasoningField] = item.Reason
 	}
 	if len(item.ReasoningDetails) > 0 {
-		message["reasoning_details"] = item.ReasoningDetails
+		// Normalized, not raw: history written before the merge was fixed
+		// carries an array of arrays, and forwarding that costs the whole
+		// turn to a provider-side 400.
+		if details := NormalizeReasoningDetails(item.ReasoningDetails); len(details) > 0 {
+			message["reasoning_details"] = details
+			reasoned = true
+		}
+	}
+	if compatibility.RequiresReasoningEcho && !reasoned {
+		message[compatibility.ReasoningField] = reasoningEchoPlaceholder
+	}
+}
+
+// reasoningEchoPlaceholder is the value sent where the provider demands a
+// reasoning_content on a step that has none. A single space is non-empty, so it
+// satisfies the requirement without pretending there was reasoning.
+const reasoningEchoPlaceholder = " "
+
+// reasoningEchoError reports whether a provider error says a cached assistant
+// message went out without its reasoning.
+func reasoningEchoError(detail string) bool {
+	lower := strings.ToLower(detail)
+	if !strings.Contains(lower, "reasoning_content") {
+		return false
+	}
+	return strings.Contains(lower, "missing required parameter") ||
+		strings.Contains(lower, "needs the reasoning")
+}
+
+// injectReasoningEcho fills reasoning_content on every assistant message that
+// has none, for the recovery path that cannot know the model in advance.
+func injectReasoningEcho(msgs []map[string]any) {
+	for _, msg := range msgs {
+		if msg["role"] != "assistant" {
+			continue
+		}
+		if text, ok := msg["reasoning_content"].(string); ok && strings.TrimSpace(text) != "" {
+			continue
+		}
+		msg["reasoning_content"] = reasoningEchoPlaceholder
 	}
 }
 
@@ -787,6 +839,42 @@ func chatImageParts(paths []string) []any {
 		})
 	}
 	return parts
+}
+
+// imageOmittedNote is the model-facing text that replaces a stripped image, so
+// the model stops re-requesting what this run cannot see.
+func imageOmittedNote(model string) string {
+	return "[image omitted: this run's model (" + model + ") cannot read images. " +
+		"Answer from the text around it, or tell the user you cannot see images this run.]"
+}
+
+// stripImageItems removes every image path from the history and notes the loss
+// once, on the first item that carried one. Tool results, user attachments and
+// screenshots all travel as Images paths, so this is the one place a text-only
+// model is protected: the request goes out without the bytes the provider has
+// said it will refuse.
+func stripImageItems(items []Item, note string) []Item {
+	out := make([]Item, len(items))
+	copy(out, items)
+	changed := false
+	for i := range out {
+		if len(out[i].Images) == 0 {
+			continue
+		}
+		if !changed {
+			if out[i].Text == "" {
+				out[i].Text = note
+			} else {
+				out[i].Text += "\n" + note
+			}
+			changed = true
+		}
+		out[i].Images = nil
+	}
+	if !changed {
+		return items
+	}
+	return out
 }
 
 func normalizeItemsForChat(items []Item) []Item {
@@ -1036,6 +1124,12 @@ func retryWithoutReasoning(err error, reason ReasonLevel) bool {
 // streamOpenAI is the OpenAI-compatible path: chat completions on any host
 // that speaks it.
 func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, onDelta func(ProviderResponse)) error {
+	// The learned-refusal gate: a model the provider has already refused an
+	// image for is not offered one again. Stripping here is cheaper than
+	// another failed turn, and the note explains the gap to the model.
+	if ok, _ := ModelSupportsMedia(c.cfg.Model); !ok {
+		req.Messages = stripImageItems(req.Messages, imageOmittedNote(c.cfg.Model))
+	}
 	compatibility := compatibilityFor(c.cfg)
 	url := chatCompletionsURL(c.cfg.BaseURL)
 	msgs := encodeMessagesWithCompatibility(req.Messages, c.cfg.GeminiThoughtSignatures, compatibility)
@@ -1132,6 +1226,45 @@ func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, o
 
 	var lastErr error
 	recoveries := 0
+	// The reasoning echo repair is once per request: a model that wants it will
+	// accept the placeholder, and a model that does not is not asked twice.
+	echoRetried := false
+	retryWithReasoningEcho := func() bool {
+		if echoRetried {
+			return false
+		}
+		echoRetried = true
+		injectReasoningEcho(msgs)
+		reencoded, encodeErr := json.Marshal(body)
+		if encodeErr != nil {
+			return false
+		}
+		encoded = reencoded
+		return true
+	}
+	// A provider that refuses an image mid-stream ("Beam supports text input
+	// only") is repaired rather than retried blind: the refusal is recorded so
+	// later turns never send images to this model, and this request is rebuilt
+	// without them, with a note where each image was. Once per request, like
+	// the reasoning echo repair.
+	imageStripped := false
+	stripImagesRetry := func(detail string) bool {
+		if imageStripped || !IsMediaRefusal(detail) {
+			return false
+		}
+		imageStripped = true
+		RecordMediaRefusal(c.cfg.Model, "provider refused an image: "+detail)
+		req.Messages = stripImageItems(req.Messages, imageOmittedNote(c.cfg.Model))
+		msgs = encodeMessagesWithCompatibility(req.Messages, c.cfg.GeminiThoughtSignatures, compatibility)
+		body["messages"] = msgs
+		applyCacheBreakpoints(msgs, c.cfg, req.SystemCacheSeam)
+		reencoded, encodeErr := json.Marshal(body)
+		if encodeErr != nil {
+			return false
+		}
+		encoded = reencoded
+		return true
+	}
 	// attempts tracks completed provider round trips, including the one in flight
 	// when the loop exits, so the reported count is the number actually made.
 	attempts := 0
@@ -1193,6 +1326,12 @@ func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, o
 			}
 			providerErr := &ProviderError{Status: resp.StatusCode, Body: string(raw), Retryable: shouldRetry(resp), RetryAfter: retryAfter(resp.Header)}
 			lastErr = providerErr
+			// A 400 that names a missing reasoning_content is repaired rather
+			// than retried: the history is what is wrong, and resending the same
+			// body would be refused identically.
+			if providerErr.Status == 400 && reasoningEchoError(string(raw)) && retryWithReasoningEcho() {
+				continue
+			}
 			// A gate rejection (for example a hosted provider refusing a request
 			// with no live session) cannot be fixed by repeating the same call,
 			// but it can be fixed by repairing provider state and asking once
@@ -1231,6 +1370,15 @@ func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, o
 		}
 		err = c.readStreamWithCompatibility(resp.Body, onDelta, compatibility)
 		_ = resp.Body.Close()
+		if streamErr, ok := err.(*StreamError); ok && !streamErr.Partial && stripImagesRetry(streamErr.Error()) {
+			// A repair is not a failed attempt: the rebuilt request goes out on
+			// the same attempt slot, whatever the retry budget is.
+			attempt--
+			continue
+		}
+		if streamErr, ok := err.(*StreamError); ok && !streamErr.Partial && reasoningEchoError(streamErr.Error()) && retryWithReasoningEcho() {
+			continue
+		}
 		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
 			delay := retryDelay(streamErr, attempt, c.cfg.RetryBackoff)
 			if c.cfg.OnRetry != nil {
@@ -1290,9 +1438,12 @@ func (c *StreamingClient) readStreamWithCompatibility(r io.Reader, onDelta func(
 			break
 		}
 		var event struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Choices []struct {
+			Error     json.RawMessage `json:"error"`
+			ErrorText string          `json:"errorText"`
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			Model     string          `json:"model"`
+			Choices   []struct {
 				Delta struct {
 					Content         *string         `json:"content"`
 					Reasoning       *string         `json:"reasoning_content"`
@@ -1320,6 +1471,15 @@ func (c *StreamingClient) readStreamWithCompatibility(r io.Reader, onDelta func(
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return &StreamError{Err: fmt.Errorf("decode provider stream event: %w", err), Retryable: false, Partial: emitted}
+		}
+		// An error can arrive inside a 200 stream, and treating that as the end
+		// of the turn is how a provider 400 became "The model completed without
+		// producing a final response": the gateway sends {"error":...} then
+		// [DONE], the reader saw no choices, and returned success with nothing.
+		// The status code is not enough to catch it, because the transport-level
+		// status is 200.
+		if detail, failed := providerStreamError(event.Error, event.ErrorText, event.Type); failed {
+			return &StreamError{Err: fmt.Errorf("provider stream error: %s", detail), Retryable: retryableProviderError(detail), Partial: emitted}
 		}
 		if event.ID != "" {
 			responseID = event.ID
@@ -1410,6 +1570,198 @@ func (c *StreamingClient) readStreamWithCompatibility(r io.Reader, onDelta func(
 	}
 	onDelta(ProviderResponse{Done: true, FinishReason: finishReason, ResponseID: responseID, ResponseModel: responseModel})
 	return nil
+}
+
+// providerStreamError reports whether a decoded stream event carries a
+// provider error, and returns its text.
+//
+// Three shapes reach this path and all three mean the same thing: an OpenAI
+// object under "error", a string under "error", and the data-stream protocol's
+// {"type":"error","errorText":...}. A JSON null is not an error and is what
+// most ordinary chunks carry.
+func providerStreamError(raw json.RawMessage, errorText, eventType string) (string, bool) {
+	if text := strings.TrimSpace(errorText); text != "" {
+		return clipProviderError(text), true
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		if eventType == "error" {
+			return "the provider reported an error with no detail", true
+		}
+		return "", false
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) == nil && strings.TrimSpace(text) != "" {
+		return clipProviderError(text), true
+	}
+	var object providerErrorObject
+	if json.Unmarshal(trimmed, &object) == nil {
+		if detail := compactProviderMessage(object); detail != "" {
+			return detail, true
+		}
+	}
+	return clipProviderError(string(trimmed)), true
+}
+
+// providerErrorObject is the shape every gateway uses for a failure inside a 200
+// stream, whether or not it also carries a top-level "error".
+type providerErrorObject struct {
+	// Code is raw because gateways send it as a string, a number or an enum
+	// object, and a typed string would fail the whole decode on the numeric form
+	// and lose the message with it.
+	Code     json.RawMessage `json:"code"`
+	Message  string          `json:"message"`
+	Type     string          `json:"type"`
+	Metadata map[string]any  `json:"metadata"`
+}
+
+// compactProviderMessage reduces a gateway error to the one sentence that says
+// what the provider refused.
+//
+// Gateways wrap the provider's own failure several layers deep and paste the
+// whole chain back as one string: "Failed to create stream: inference request
+// failed: failed to generate stream from Vercel: failed to invoke model X:
+// request failed with status 400: {\"error\":{\"message\":\"invalid params,
+// messages must not be empty (2013)\",...}}". Every layer before the last names
+// a hop rather than a cause, and the JSON tail is the cause.
+//
+// This matters beyond readability. The text is stored on the run, sent to the
+// owner, and re-read by whoever diagnoses the failure; the version that kept the
+// chain pushed the actual reason past the fold, and the run looked like a
+// transport outage instead of a request the provider refused to parse. The
+// innermost message plus the provider's own parameter name is what a reader can
+// act on.
+func compactProviderMessage(object providerErrorObject) string {
+	message := strings.TrimSpace(object.Message)
+	detail := message
+	if inner := lastJSONStringField(message, "message"); inner != "" {
+		detail = inner
+	}
+	if detail == "" {
+		detail = strings.Trim(strings.TrimSpace(string(object.Code)), `"`)
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(object.Type)
+	}
+	if detail == "" {
+		return ""
+	}
+	// Cline's gateway answers a failed upstream call with that sentence and
+	// nothing else. The cause, when it exists at all, is in metadata.raw; the
+	// failure is retryable either way, so the sentence must not hide a detail
+	// that would have saved the guess.
+	if strings.EqualFold(detail, "provider returned error") {
+		if upstream := providerMetadataDetail(object.Metadata); upstream != "" {
+			detail = upstream
+		}
+	}
+	// The parameter names where the provider rejected the request, which is the
+	// difference between "invalid input" and knowing which message to fix.
+	if param := lastJSONStringField(message, "param"); param != "" && param != detail {
+		detail += " (" + param + ")"
+	}
+	return clipProviderError(detail)
+}
+
+// lastJSONStringField returns the value of the last occurrence of a JSON string
+// field in text, unescaping the common sequences.
+//
+// It exists for a message that already had one JSON layer decoded and embeds
+// another, so decoding the whole string again is not possible. A non-string value
+// (an object, an array, null) yields nothing: the provider's param is sometimes a
+// nested object, and half of one is noise.
+// providerMetadataDetail is the upstream reason a gateway tucks into
+// metadata, when it sends one.
+func providerMetadataDetail(metadata map[string]any) string {
+	for _, key := range []string{"raw", "detail", "reason", "message"} {
+		text, _ := metadata[key].(string)
+		text = strings.TrimSpace(text)
+		if text != "" && !strings.EqualFold(text, "provider returned error") {
+			return clipProviderError(text)
+		}
+	}
+	return ""
+}
+
+func lastJSONStringField(text, field string) string {
+	needle := `"` + field + `":"`
+	index := strings.LastIndex(text, needle)
+	if index < 0 {
+		return ""
+	}
+	start := index + len(needle)
+	if start >= len(text) {
+		return ""
+	}
+	switch text[start] {
+	case '{', '[', 'n':
+		return ""
+	}
+	var out strings.Builder
+	escaped := false
+	for i := start; i < len(text); i++ {
+		char := text[i]
+		if escaped {
+			switch char {
+			case 'n':
+				out.WriteByte('\n')
+			case 't':
+				out.WriteByte('\t')
+			case 'r':
+				out.WriteByte('\r')
+			default:
+				out.WriteByte(char)
+			}
+			escaped = false
+			continue
+		}
+		if char == '\\' {
+			escaped = true
+			continue
+		}
+		if char == '"' {
+			return strings.TrimSpace(out.String())
+		}
+		out.WriteByte(char)
+	}
+	return ""
+}
+
+// clipProviderError bounds the text that reaches a log or a chat message. A
+// provider that fails does not get to paste its whole request back, and the owner
+// does not get a paragraph where a reason belongs. Short enough to read in a chat
+// bubble, long enough to name the failure and its parameter.
+func clipProviderError(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	const limit = 200
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "..."
+}
+
+// retryableProviderError decides whether the same request may work again.
+//
+// The default is no: a malformed request is the common cause of an error
+// inside a 200 stream, and retrying it three times only delays the report. The
+// transient shapes are named so a rate limit or a cold gateway still retries.
+func retryableProviderError(detail string) bool {
+	lower := strings.ToLower(detail)
+	for _, marker := range []string{
+		"rate limit", "rate_limit", "too many requests", "429",
+		"timeout", "timed out", "overloaded", "unavailable",
+		"temporarily", "try again", "502", "503", "504",
+		// The gateway's catch-all for an upstream failure it cannot describe.
+		// Retrying is the only way to tell a quota from a blip, and a refusal
+		// comes back as a specific message instead.
+		"provider returned error", "internal error",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func streamedToolKey(index *int, id string, fallback int) string {

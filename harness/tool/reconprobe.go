@@ -18,7 +18,7 @@ type ProbeTool struct{}
 func (p *ProbeTool) Name() string { return "probe" }
 
 func (p *ProbeTool) Description() string {
-	return "Send one HTTP request and get the observation: status, elapsed, header subset, redirect, body hash and a receipt. Modes: single, path_list (30 paths), origin_variants (with a CORS verdict). Methods: GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE."
+	return "Send one HTTP request and get the observation: status, elapsed, header subset, redirect, body hash and a receipt. Modes: single, path_list (30 paths), origin_variants (with a CORS verdict). Methods: GET, POST, HEAD, OPTIONS, PUT, PATCH, DELETE. Put {{oast}} in the url, a header or the body to carry a unique callback host; a blind bug is then checked by finding verify with the callback control."
 }
 
 func (p *ProbeTool) Schema() map[string]any {

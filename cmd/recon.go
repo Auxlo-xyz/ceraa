@@ -34,6 +34,10 @@ type reconOptions struct {
 	RPM              int
 	RequestCap       int
 	AllowDestructive bool
+	// AllowPrivate names the private ranges the engagement may reach. The
+	// egress wall refuses them by default because they are this host's own
+	// network, and an internal engagement lives there.
+	AllowPrivate []string
 }
 
 var reconFlags reconOptions
@@ -97,6 +101,7 @@ func runReconEngage(out io.Writer, options reconOptions) error {
 		RPM:              options.RPM,
 		RequestCap:       options.RequestCap,
 		AllowDestructive: options.AllowDestructive,
+		AllowPrivate:     cleanTokens(options.AllowPrivate),
 	}
 	if err := recon.SetActive(engagement); err != nil {
 		return err
@@ -182,6 +187,11 @@ func printEngagement(out io.Writer, e recon.Engagement) {
 	} else {
 		fmt.Fprintln(out, "destructive:   PUT, PATCH and DELETE are refused")
 	}
+	if len(e.AllowPrivate) == 0 {
+		fmt.Fprintln(out, "private nets:  refused (the wall blocks them)")
+	} else {
+		fmt.Fprintf(out, "private nets:  %s\n", strings.Join(e.AllowPrivate, ", "))
+	}
 }
 
 func init() {
@@ -193,5 +203,6 @@ func init() {
 	reconEngageCmd.Flags().IntVar(&reconFlags.RPM, "rpm", 0, "requests per rolling minute, 0 is uncapped")
 	reconEngageCmd.Flags().IntVar(&reconFlags.RequestCap, "request-cap", 0, "total requests for the engagement, 0 is uncapped")
 	reconEngageCmd.Flags().BoolVar(&reconFlags.AllowDestructive, "allow-destructive", false, "authorize PUT, PATCH and DELETE")
+	reconEngageCmd.Flags().StringArrayVar(&reconFlags.AllowPrivate, "allow-private", nil, "private range the engagement may reach: host, address or CIDR (repeatable)")
 	reconCmd.AddCommand(reconEngageCmd, reconStatusCmd, reconStopCmd)
 }

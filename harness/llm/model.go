@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -116,17 +117,150 @@ type Item struct {
 }
 
 func MergeReasoningDetails(parts []json.RawMessage) json.RawMessage {
-	if len(parts) == 0 {
+	flat := make([]json.RawMessage, 0, len(parts))
+	for _, part := range parts {
+		flat = append(flat, flattenReasoningDetails(part)...)
+	}
+	flat = coalesceReasoningDetails(flat)
+	if len(flat) == 0 {
 		return nil
 	}
-	if len(parts) == 1 {
-		return append(json.RawMessage(nil), parts[0]...)
-	}
-	data, err := json.Marshal(parts)
+	data, err := json.Marshal(flat)
 	if err != nil {
 		return nil
 	}
 	return data
+}
+
+// NormalizeReasoningDetails returns the detail list as the flat array of
+// objects the chat-completions transports send.
+//
+// The shape matters on the wire. Every streaming chunk carries its own
+// reasoning_details array, and merging them by concatenating the raw values
+// produced an array of arrays: [[{...}],[{...}]]. The Cline gateway forwards
+// that to the model provider as-is and the provider refuses the whole request
+// with "expected object, received array" at messages.N.reasoning_details.0, so
+// the turn came back empty instead of answering.
+//
+// Flattening happens at both ends on purpose: the merge no longer creates the
+// nested shape, and this repairs history written before it stopped. Sessions
+// live on disk across upgrades, and a stored array of arrays would keep
+// poisoning every turn that replayed it.
+func NormalizeReasoningDetails(raw json.RawMessage) json.RawMessage {
+	flat := coalesceReasoningDetails(flattenReasoningDetails(raw))
+	if len(flat) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(flat)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// coalesceReasoningDetails joins the consecutive text blocks one streamed turn
+// produces into a single block.
+//
+// Reasoning arrives as a delta per chunk, so a long turn stored one entry per
+// chunk: measured on a live audit session, 1,608 entries and 163k characters of
+// JSON for 26k characters of thinking. The wrapper repeats "type", "format" and
+// "index" on every entry, so 84 percent of the stored bytes were that repetition,
+// and the same text sits again in the message's reasoning field.
+//
+// That is not just disk. Every estimate of the request charges the stored JSON,
+// and the trim measures candidates with it, so the repetition inflated a 204k
+// request to 1.1M on paper and the first overage cut the whole conversation. One
+// block per turn keeps the text intact and the measurement honest.
+//
+// Only text blocks with the same type and format are joined, in order. Signed or
+// encrypted blocks are left as they are: concatenating those changes a value the
+// provider validates.
+func coalesceReasoningDetails(flat []json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(flat))
+	for _, entry := range flat {
+		var incoming reasoningTextBlock
+		if json.Unmarshal(entry, &incoming) != nil || !incoming.mergeable() {
+			out = append(out, entry)
+			continue
+		}
+		if len(out) > 0 {
+			var previous struct {
+				reasoningTextBlock
+				Index int `json:"index"`
+			}
+			if json.Unmarshal(out[len(out)-1], &previous) == nil && previous.mergeable() &&
+				previous.Type == incoming.Type && previous.Format == incoming.Format {
+				previous.Text += incoming.Text
+				if merged, err := json.Marshal(previous); err == nil {
+					out[len(out)-1] = merged
+					continue
+				}
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// reasoningTextBlock is the shape of one text delta in a reasoning stream.
+type reasoningTextBlock struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Format    string `json:"format"`
+	Signature string `json:"signature"`
+}
+
+// mergeable names the blocks that are prose and only prose. A signature or a
+// ciphertext is a value the provider validates, so it keeps its own entry and
+// one entry per delta even when the type name says "text".
+func (b reasoningTextBlock) mergeable() bool {
+	if b.Text == "" || b.Signature != "" {
+		return false
+	}
+	switch b.Type {
+	case "reasoning.text", "text":
+		return true
+	}
+	return false
+}
+
+// flattenReasoningDetails collects the object entries of a detail blob,
+// descending one array level at a time. Anything that is not an object is
+// dropped: a string or a number is not a reasoning block, and forwarding it is
+// what the provider rejects.
+func flattenReasoningDetails(raw json.RawMessage) []json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] != '[' {
+		var probe map[string]any
+		if json.Unmarshal(trimmed, &probe) != nil {
+			return nil
+		}
+		return []json.RawMessage{trimmed}
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		item = bytes.TrimSpace(item)
+		if len(item) == 0 || bytes.Equal(item, []byte("null")) {
+			continue
+		}
+		if item[0] == '[' {
+			out = append(out, flattenReasoningDetails(item)...)
+			continue
+		}
+		var probe map[string]any
+		if json.Unmarshal(item, &probe) != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // RepairToolArgumentsJSON makes a tool call's arguments usable.

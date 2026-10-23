@@ -474,16 +474,16 @@ func DefaultRegistryWithStores(skillStore *skills.Store) *Registry {
 	// One manager per registry, so a run keeps a single browser and a sequence of
 	// actions continues where the last one stopped.
 	//
-	// Registered hidden. The model is offered one tool per action instead, because
-	// it kept bundling arguments belonging to different actions into one call and
-	// this is the only tool of the twenty-one that was not a single verb with a
-	// single set of properties. It stays registered and executable because
-	// sessions recorded before the split still call it, and hiding it from the
-	// catalogue is what stops the model being taught both shapes.
+	// Hidden, all nine of them. The browser is reached through `ceraa browser`
+	// from the shell now: eight schemas cost 3,051 bytes of the cached catalogue
+	// and taught one action per call, while a command can carry a whole flow.
+	// They stay registered and executable because sessions recorded before the
+	// change still call them, and hiding them is what stops the model being
+	// taught two shapes at once.
 	browser := NewBrowserTool()
 	r.RegisterHidden(browser)
 	for _, actionTool := range BrowserActionTools(browser) {
-		r.Register(actionTool)
+		r.RegisterHidden(actionTool)
 	}
 	// Registered without a factory and attached later by whoever knows how to build a
 	// runner: the tool layer cannot import the coordinator, which imports this one.

@@ -96,6 +96,53 @@ var (
 	overrideList []string
 )
 
+// The dynamic list is the operator's per-engagement decision, as opposed to
+// the environment variable, which is a machine level decision taken before
+// the daemon starts. An engagement record can be written and cleared while
+// the daemon runs, and the wall has to honour it at dial time rather than at
+// transport construction time, or the change would need a restart to mean
+// anything.
+var (
+	dynamicMu     sync.RWMutex
+	dynamicRanges []string
+	dynamicOnce   sync.Once
+)
+
+// SetAuthorizedRanges replaces the operator-authorized ranges.
+//
+// The list is authoritative: it replaces whatever was there, so an operator
+// who clears an engagement clears the reach it granted with it. Empty means
+// the wall is exactly as it was.
+func SetAuthorizedRanges(entries []string) {
+	dynamicMu.Lock()
+	defer dynamicMu.Unlock()
+	cleaned := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	dynamicRanges = cleaned
+}
+
+// AuthorizedRanges returns the operator-authorized ranges.
+func AuthorizedRanges() []string {
+	dynamicMu.RLock()
+	defer dynamicMu.RUnlock()
+	return append([]string(nil), dynamicRanges...)
+}
+
+// authorizedOnce announces the operator's ranges the first time one of them
+// is used, on the same terms as the environment variable: an egress
+// exception nobody logged is the same thing as no guard.
+func authorizedOnce() {
+	dynamicOnce.Do(func() {
+		if entries := AuthorizedRanges(); len(entries) > 0 {
+			logger.Warn("netguard: the engagement record permits " + strings.Join(entries, ", ") + " - outbound requests to those ranges are not blocked")
+		}
+	})
+}
+
 // Overrides returns the entries in CERAA_ALLOW_PRIVATE_NET, and reports whether
 // the escape hatch is in use. An egress exception that nobody logged is the
 // same thing as no guard at all, so callers announce it.
@@ -128,10 +175,17 @@ func allowedOnce() {
 // matchesOverride reports whether an address or host is explicitly permitted.
 func matchesOverride(addr net.IP, host string) bool {
 	entries, on := Overrides()
-	if !on {
+	authorized := AuthorizedRanges()
+	if !on && len(authorized) == 0 {
 		return false
 	}
-	allowedOnce()
+	if on {
+		allowedOnce()
+	}
+	if len(authorized) > 0 {
+		authorizedOnce()
+	}
+	entries = append(entries, authorized...)
 	lowerHost := strings.ToLower(host)
 	for _, entry := range entries {
 		entry = strings.ToLower(strings.TrimSpace(entry))

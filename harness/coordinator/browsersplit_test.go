@@ -146,13 +146,15 @@ func TestOtherBrowserShapedToolNamesAreNotRewritten(t *testing.T) {
 	}
 }
 
-// After the rewrite, every browser call in a history names a tool that exists.
-// This is the property that matters: a name the catalogue does not offer would
-// be a call the model cannot repeat.
-func TestEveryRewrittenBrowserNameIsAToolTheModelIsOffered(t *testing.T) {
-	offered := map[string]bool{}
-	for _, tool := range tool.DefaultRegistry().Offered() {
-		offered[tool.Name()] = true
+// After the rewrite, every browser call in a history names a tool that still
+// resolves. Offered is not the property any more: the browser moved to the shell,
+// so its tools are hidden. What must hold is that the rewritten name is
+// registered, or replaying an old session would fail on a dead name.
+func TestEveryRewrittenBrowserNameResolves(t *testing.T) {
+	registry := tool.DefaultRegistry()
+	registered := map[string]bool{}
+	for _, candidate := range registry.All() {
+		registered[candidate.Name()] = true
 	}
 	items := []llm.Item{
 		{Kind: "tool_call", CallID: "c1", Name: "browser",
@@ -174,8 +176,8 @@ func TestEveryRewrittenBrowserNameIsAToolTheModelIsOffered(t *testing.T) {
 		if item.Name == "browser" {
 			continue
 		}
-		if !offered[item.Name] {
-			t.Errorf("rewrote to %q, which the model is not offered", item.Name)
+		if !registered[item.Name] {
+			t.Errorf("rewrote to %q, which is not registered", item.Name)
 		}
 	}
 	// The split is not total. text and html have no per-action tool any more, so

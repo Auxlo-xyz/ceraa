@@ -145,6 +145,7 @@ var mediaRefusalMarkers = []string{
 	"invalid mime type", "unsupported modality",
 	"does not support image", "not support vision", "vision is not supported",
 	"image input", "image_url", "multimodal", "inline_data", "content type",
+	"text input only",
 }
 
 // IsMediaRefusal reports whether an error is the provider declining media.

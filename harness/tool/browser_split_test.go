@@ -21,17 +21,33 @@ func (l toolList) mustFind(t *testing.T, name string) Tool {
 	return tool
 }
 
-// The split is only worth anything if the model cannot express the mistake it
-// kept making. Each of these pins a property that does not exist on a tool.
+// browserToolList returns the registry's browser tools whether or not they are
+// offered. They are hidden now that the browser is a shell command, but they
+// stay registered so a session recorded before the change still replays.
+func browserToolList(reg *Registry) toolList {
+	var list toolList
+	for _, candidate := range reg.All() {
+		if candidate.Name() == "browser" || strings.HasPrefix(candidate.Name(), "browser_") {
+			list = append(list, candidate)
+		}
+	}
+	return list
+}
 
-func TestEachBrowserActionIsItsOwnTool(t *testing.T) {
+// The browser is reached through `ceraa browser` now, so the action tools must
+// not be in the catalogue. They stay registered: a recorded call resolves by
+// name, so removing them would strand that history.
+func TestBrowserActionsAreHiddenButStillExecutable(t *testing.T) {
 	reg := DefaultRegistry()
-	for _, want := range []string{
-		"browser_open", "browser_screenshot",
-		"browser_click", "browser_type", "browser_eval", "browser_status", "browser_close",
+	for _, name := range []string{
+		"browser_open", "browser_open_file", "browser_click", "browser_type",
+		"browser_eval", "browser_screenshot", "browser_status", "browser_close",
 	} {
-		if _, ok := toolList(reg.Offered()).find(want); !ok {
-			t.Errorf("%s is not offered to the model", want)
+		if _, ok := toolList(reg.Offered()).find(name); ok {
+			t.Errorf("%s is still offered; the browser is a shell command now", name)
+		}
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("%s is not registered, so a recorded call cannot replay", name)
 		}
 	}
 }
@@ -58,7 +74,7 @@ func TestTheCombinedBrowserIsNotOfferedButStillRuns(t *testing.T) {
 
 // The properties that caused every failure are gone from the tool that failed.
 func TestOpenCannotCarryAnArgumentFromAnotherAction(t *testing.T) {
-	open := toolList(DefaultRegistry().Offered()).mustFind(t, "browser_open")
+	open := browserToolList(DefaultRegistry()).mustFind(t, "browser_open")
 	properties := open.Schema()["properties"].(map[string]any)
 	// path moved to browser_open_file, and the rest were never this tool's.
 	for _, absent := range []string{"selector", "submit", "text", "script", "full_page", "path"} {
@@ -87,7 +103,7 @@ func TestEachSplitToolCarriesOnlyItsOwnArguments(t *testing.T) {
 	}
 	for name, want := range cases {
 		t.Run(name, func(t *testing.T) {
-			properties := toolList(reg.Offered()).mustFind(t, name).Schema()["properties"].(map[string]any)
+			properties := browserToolList(reg).mustFind(t, name).Schema()["properties"].(map[string]any)
 			if len(properties) != len(want) {
 				var got []string
 				for key := range properties {
@@ -113,7 +129,7 @@ func TestRequiredArgumentsSurviveTheSplit(t *testing.T) {
 		"browser_type":  {"selector", "text"},
 		"browser_eval":  {"script"},
 	} {
-		schema := toolList(reg.Offered()).mustFind(t, name).Schema()
+		schema := browserToolList(reg).mustFind(t, name).Schema()
 		required, ok := schema["required"].([]string)
 		if !ok {
 			t.Errorf("%s declares no required arguments", name)
@@ -131,7 +147,7 @@ func TestRequiredArgumentsSurviveTheSplit(t *testing.T) {
 		"browser_open":      {"url"},
 		"browser_open_file": {"path"},
 	} {
-		required, ok := toolList(reg.Offered()).mustFind(t, name).Schema()["required"].([]string)
+		required, ok := browserToolList(reg).mustFind(t, name).Schema()["required"].([]string)
 		if !ok {
 			t.Errorf("%s declares no required argument", name)
 			continue
@@ -164,7 +180,7 @@ func TestSplitToolsShareOneBrowser(t *testing.T) {
 // validation path rather than a second copy of it.
 func TestSplitToolsTranslateIntoTheCombinedSpec(t *testing.T) {
 	reg := DefaultRegistry()
-	spec, err := toolList(reg.Offered()).mustFind(t, "browser_click").
+	spec, err := browserToolList(reg).mustFind(t, "browser_click").
 		Translate(map[string]any{"selector": "#go"})
 	if err != nil {
 		t.Fatalf("translate: %v", err)
@@ -173,7 +189,7 @@ func TestSplitToolsTranslateIntoTheCombinedSpec(t *testing.T) {
 		t.Errorf("spec = %+v, want a browser click spec", spec)
 	}
 	// open still refuses a target it does not have, from the shared validation.
-	if _, err := toolList(reg.Offered()).mustFind(t, "browser_open").
+	if _, err := browserToolList(reg).mustFind(t, "browser_open").
 		Translate(map[string]any{"wait_ms": 100}); err == nil {
 		t.Error("browser_open accepted a call with neither url nor path")
 	}
@@ -182,7 +198,7 @@ func TestSplitToolsTranslateIntoTheCombinedSpec(t *testing.T) {
 // A model that names an action on a single-action tool has guessed. Saying so is
 // better than quietly overriding it.
 func TestASingleActionToolRejectsAnActionArgument(t *testing.T) {
-	_, err := toolList(DefaultRegistry().Offered()).mustFind(t, "browser_open").
+	_, err := browserToolList(DefaultRegistry()).mustFind(t, "browser_open").
 		Translate(map[string]any{"action": "click", "url": "https://example.com"})
 	if err == nil {
 		t.Fatal("expected the call to be rejected")
@@ -209,35 +225,18 @@ func TestEveryBrowserToolExplainsItself(t *testing.T) {
 	}
 }
 
-// With nine browser tools in an alphabetical catalogue, the sequence has to be
-// taught somewhere. Descriptions say what a tool is and the prompt says when to
-// use it, so this pins that the prompt does its job: naming all nine, and giving
-// the order a page is used in.
-func TestThePromptTeachesTheBrowserSequence(t *testing.T) {
+// The prompt is where the sequence lives now: the command, its actions, the
+// shared page, and the fact that a ref belongs to the snapshot that produced it.
+func TestThePromptTeachesTheBrowserCommand(t *testing.T) {
 	prompt := readPrompt(t)
-	offered := toolList(DefaultRegistry().Offered())
-	var names []string
-	for _, tool := range offered {
-		if strings.HasPrefix(tool.Name(), "browser_") {
-			names = append(names, tool.Name())
+	for _, want := range []string{"ceraa browser", "snapshot", "click @N", "type @N", "persists"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt does not mention %q", want)
 		}
 	}
-	if len(names) != 8 {
-		t.Fatalf("browser tools = %v, want eight", names)
-	}
-	// TestPromptNamesEveryOfferedTool already covers naming, so this covers the
-	// part it cannot: that the split, and the shared page, are stated.
-	if !strings.Contains(prompt, "one tool per action, no combined browser tool") {
-		t.Error("the prompt does not say the browser is split and the combined tool is gone")
-	}
-	// Browser behavior is covered by the action schemas and browser tests. The
-	// compact prompt intentionally does not repeat this guidance.
-	for _, name := range names {
-		description := strings.ToLower(offered.mustFind(t, name).Description())
-		for _, phrase := range []string{"use this", "rather than", "instead of", "prefer "} {
-			if strings.Contains(description, phrase) {
-				t.Errorf("%s description carries usage guidance (%q)", name, phrase)
-			}
+	for _, offered := range DefaultRegistry().Offered() {
+		if strings.HasPrefix(offered.Name(), "browser_") {
+			t.Errorf("%s is offered, so the prompt and the catalogue disagree", offered.Name())
 		}
 	}
 }
@@ -278,7 +277,7 @@ func toolSliceFind(tools []Tool, name string) (Tool, bool) {
 // required argument at all. A call with no arguments was then well formed and
 // only failed at runtime, which the model hit by passing neither.
 func TestOpeningIsTwoToolsWithARequiredTarget(t *testing.T) {
-	offered := toolList(DefaultRegistry().Offered())
+	offered := browserToolList(DefaultRegistry())
 	for name, required := range map[string]string{
 		"browser_open":      "url",
 		"browser_open_file": "path",
@@ -308,7 +307,7 @@ func TestOpeningIsTwoToolsWithARequiredTarget(t *testing.T) {
 // The empty call the model actually made.
 func TestOpeningWithNothingIsRejectedWithWhatIsNeeded(t *testing.T) {
 	for _, name := range []string{"browser_open", "browser_open_file"} {
-		_, err := toolList(DefaultRegistry().Offered()).mustFind(t, name).Translate(map[string]any{})
+		_, err := browserToolList(DefaultRegistry()).mustFind(t, name).Translate(map[string]any{})
 		if err == nil {
 			t.Errorf("%s accepted a call with no arguments", name)
 			continue
@@ -321,7 +320,7 @@ func TestOpeningWithNothingIsRejectedWithWhatIsNeeded(t *testing.T) {
 
 // A crossed argument has exactly one other home, so the refusal names it.
 func TestACrossedTargetNamesTheToolThatTakesIt(t *testing.T) {
-	offered := toolList(DefaultRegistry().Offered())
+	offered := browserToolList(DefaultRegistry())
 	_, err := offered.mustFind(t, "browser_open").Translate(map[string]any{"path": "/tmp/x.html"})
 	if err == nil {
 		t.Fatal("browser_open accepted a path")
@@ -347,7 +346,7 @@ func TestBothOpenToolsReachTheSameAction(t *testing.T) {
 	if err := os.WriteFile(page, []byte("<html><body>ok</body></html>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	offered := toolList(DefaultRegistry().Offered())
+	offered := browserToolList(DefaultRegistry())
 	web, err := offered.mustFind(t, "browser_open").Translate(map[string]any{"url": "https://example.com"})
 	if err != nil {
 		t.Fatalf("open: %v", err)

@@ -780,27 +780,36 @@ const ClineGatewayBase = "https://api.cline.bot/api/v1"
 
 // ClineModels are the gateway's free-tier model ids, from the public catalog.
 //
-// Read from /ai/cline/recommended-models rather than assumed. The free tier is
-// what a signed-in account can use without a paid plan, so it is the set worth
-// defaulting to. The ids are namespaced by the tier that serves them.
+// Read from /ai/cline/recommended-models rather than assumed, and refreshed on
+// 2026-10-22: that fetch answered four buckets (recommended 6, free 6,
+// clinePass 13, clineCloud 1). Only `free` belongs here. The previous list had
+// gone stale in a way worth remembering: its four cline-free ids had moved to
+// cline-pass (paid) and its two stealth ids had left the catalog entirely, so
+// every entry a signed-in free account could pick was either billable or gone.
+// The ids are namespaced by the tier that serves them, and the free tier is not
+// all cline-free: three vendors serve their own free ids.
 var ClineModels = []struct {
 	ID   string
 	Name string
 }{
-	{"cline-free/deepseek-v4.1-flash", "Deepseek-v4.1-Flash"},
-	{"cline-free/gemini-3.8-flash", "Gemini 3.8 Flash"},
-	{"cline-free/mimo-v2.6-flash", "Mimo V2.6 Flash"},
-	{"cline-free/muse-spark-1.3-contributor", "Muse Spark 1.3"},
-	{"stealth/pixel-canary", "Pixel Canary"},
-	{"stealth/space-bunny-alpha", "space-bunny-alpha"},
+	{"cline-free/minimax-m3.1-flash", "Minimax M3.1 Flash"},
+	{"reflection/beam-free", "Beam"},
+	{"cline-free/nemotron-3.5-super-vl", "Nemotron 3.5 Super VL"},
+	{"nvidia/nemotron-3.5-lightning-free", "Nemotron 3.5 Lightning"},
+	{"poolside/laguna-s-2.1-free", "Laguna S 2.1"},
+	{"cline-free/solar-mini4", "Solar Mini 4"},
 }
 
 // DefaultClineModel is the model selected when Cline is chosen without one.
 //
-// The free Mimo flash model, because the free DeepSeek flash model returned
-// successful but contentless completions in live Telegram use while Mimo
-// answered normally.
-const DefaultClineModel = "cline-free/mimo-v2.6-flash"
+// A free flash model, because the free tier is what a signed-in account can use
+// without a paid plan and activation must land on something the account can
+// actually call. It replaces Mimo V2.6 Flash, which the 2026-10-22 catalog fetch
+// showed had moved to cline-pass; the free DeepSeek flash model is gone for the
+// same reason, and the earlier note that it answered with contentless
+// completions is kept here only as the reason to distrust a new default until a
+// live turn proves it.
+const DefaultClineModel = "cline-free/minimax-m3.1-flash"
 
 // IsClineModel reports whether a model id is one the gateway's free tier serves.
 func IsClineModel(model string) bool {

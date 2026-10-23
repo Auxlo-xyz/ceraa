@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"ceraa/harness/oast"
 )
 
 // usePlainProbe installs a plain client plus a temp receipt root and restores
@@ -472,5 +474,97 @@ func TestEngagementCanNarrowDestructiveRequests(t *testing.T) {
 	}
 	if n := hits(); n != 0 {
 		t.Errorf("server saw %d requests, want 0", n)
+	}
+}
+
+// TestProbeSubstitutesTheCallbackMarker pins the out-of-band path: the marker
+// never reaches the target literally, the host it becomes is recorded on the
+// result and the receipt, and a receipt can give the host back to a later
+// verification that only has the substituted URL.
+func TestProbeSubstitutesTheCallbackMarker(t *testing.T) {
+	usePlainProbe(t)
+
+	const host = "abcdefghijklmnopqrstuvwxyzonce.oast.pro"
+	oldMint := mintOOB
+	t.Cleanup(func() { mintOOB = oldMint })
+	mintOOB = func(context.Context) (oast.Payload, error) {
+		return oast.Payload{Host: host, URL: "http://" + host, Server: "https://oast.pro"}, nil
+	}
+
+	type seenRequest struct {
+		query  string
+		header string
+		body   string
+	}
+	seen := make(chan seenRequest, 1)
+	srv, _ := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen <- seenRequest{query: r.URL.Query().Get("u"), header: r.Header.Get("X-Callback"), body: string(body)}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	res, err := Probe(context.Background(), Request{
+		URL:     srv.URL + "/fetch?u={{oast}}",
+		Method:  http.MethodPost,
+		Headers: map[string]string{"X-Callback": "http://{{oast}}/hit"},
+		Body:    `{"callback":"{{oast}}"}`,
+	})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+
+	got := <-seen
+	if got.query != host {
+		t.Errorf("query carried %q, want the callback host %q", got.query, host)
+	}
+	if got.header != "http://"+host+"/hit" {
+		t.Errorf("header carried %q", got.header)
+	}
+	if got.body != `{"callback":"`+host+`"}` {
+		t.Errorf("body carried %q", got.body)
+	}
+	if strings.Contains(got.query+got.header+got.body, oast.Marker) {
+		t.Error("the marker reached the target literally")
+	}
+	if res.OOB != host {
+		t.Errorf("result oob = %q, want %q", res.OOB, host)
+	}
+	if !strings.Contains(res.URL, host) {
+		t.Errorf("result url %q does not name the host that was dialed", res.URL)
+	}
+
+	imported, ok := ReceiptOOB(res.URL, http.MethodPost)
+	if !ok {
+		t.Fatal("the receipt does not hand the callback host back")
+	}
+	if imported != host {
+		t.Errorf("receipt oob = %q, want %q", imported, host)
+	}
+	if _, ok := ReceiptOOB(res.URL, http.MethodGet); ok {
+		t.Error("a receipt matched the wrong method")
+	}
+}
+
+// TestProbeWithoutTheMarkerMintsNothing pins that the ordinary probe is
+// untouched: no registration, no oob line, no extra work.
+func TestProbeWithoutTheMarkerMintsNothing(t *testing.T) {
+	usePlainProbe(t)
+
+	oldMint := mintOOB
+	t.Cleanup(func() { mintOOB = oldMint })
+	mintOOB = func(context.Context) (oast.Payload, error) {
+		t.Fatal("a probe without the marker minted a callback host")
+		return oast.Payload{}, nil
+	}
+
+	srv, _ := probeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "plain")
+	})
+	res, err := Probe(context.Background(), Request{URL: srv.URL + "/?u=1"})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if res.OOB != "" {
+		t.Errorf("oob = %q on a probe that carried no marker", res.OOB)
 	}
 }

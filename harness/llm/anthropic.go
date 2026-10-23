@@ -633,6 +633,11 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 		return err
 	}
 
+	// The learned-refusal gate: a model the provider has already refused an
+	// image for is not offered one again (see streamOpenAI).
+	if ok, _ := ModelSupportsMedia(c.cfg.Model); !ok {
+		req.Messages = stripImageItems(req.Messages, imageOmittedNote(c.cfg.Model))
+	}
 	messages := encodeAnthropicMessages(req.Messages)
 	if len(messages) == 0 {
 		return fmt.Errorf("no messages to send to the messages API")

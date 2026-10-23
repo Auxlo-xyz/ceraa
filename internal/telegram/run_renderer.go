@@ -1468,6 +1468,8 @@ func toolArgsSummary(name string, args map[string]any) string {
 		key = "pattern"
 	case "grep":
 		key = "pattern"
+	case "websearch":
+		key = "query"
 	}
 	value, ok := values[key]
 	if !ok {

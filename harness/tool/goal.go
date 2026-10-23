@@ -20,8 +20,7 @@ func (t *CreateGoalTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"objective":    map[string]any{"type": "string", "minLength": 1},
-			"token_budget": map[string]any{"type": "integer", "minimum": 0, "description": "Advisory, non-blocking spend budget."},
+			"objective": map[string]any{"type": "string", "minLength": 1},
 		},
 		"required": []string{"objective"},
 	}
@@ -31,7 +30,7 @@ func (t *CreateGoalTool) Translate(args map[string]any) (operation.Spec, error) 
 	if strings.TrimSpace(objective) == "" {
 		return operation.Spec{}, fmt.Errorf("objective is required")
 	}
-	return operation.Spec{Type: "create_goal", Args: map[string]any{"objective": objective, "token_budget": args["token_budget"]}}, nil
+	return operation.Spec{Type: "create_goal", Args: map[string]any{"objective": objective}}, nil
 }
 func (t *CreateGoalTool) TranslateResult(op operation.Operation) string { return op.Output }
 
@@ -135,15 +134,6 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 	switch action {
 	case "create":
 		objective, _ := spec.Args["objective"].(string)
-		budget := 0
-		switch value := spec.Args["token_budget"].(type) {
-		case int:
-			budget = value
-		case int64:
-			budget = int(value)
-		case float64:
-			budget = int(value)
-		}
 		// The plan belongs to the objective it was written for. Re-declaring
 		// the same objective keeps it, and a plan no objective has claimed yet
 		// belongs to whatever comes next. A genuinely new objective must not
@@ -156,11 +146,10 @@ func runGoal(spec operation.Spec, action string) (string, error) {
 		}
 		if exists && current.Status == goal.StatusActive {
 			current.Objective = objective
-			current.TokenBudget = budget
 			current.Status = goal.StatusActive
 			current.Reason = ""
 		} else {
-			current = goal.Goal{Objective: objective, Status: goal.StatusActive, TokenBudget: budget}
+			current = goal.Goal{Objective: objective, Status: goal.StatusActive}
 		}
 		if previousObjective == "" || previousObjective == strings.TrimSpace(objective) {
 			current.Todos = previousPlan
