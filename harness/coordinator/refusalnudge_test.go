@@ -13,6 +13,12 @@ func TestLooksLikeRefusalCatchesTheOpeningForms(t *testing.T) {
 		"I'm unable to read that file.",
 		"I am not able to run that command.",
 		"I won't be able to complete this.",
+		"I genuinely can't do that.",
+		"I honestly can't do that.",
+		"I can\u2019t help with that request.",
+		"I can't help you do that.",
+		"I really cannot verify that.",
+		"I'm honestly not able to reach it.",
 	}
 	for _, text := range refusals {
 		if !looksLikeRefusal(text) {
@@ -25,6 +31,7 @@ func TestLooksLikeRefusalIgnoresEnthusiasmAndLateDoubts(t *testing.T) {
 	allowed := []string{
 		"I can't wait to try this.",
 		"I cannot believe the tests passed.",
+		"I genuinely can't wait to try this.",
 		strings.Repeat("step ", 26) + "I can't do the last one.",
 	}
 	for _, text := range allowed {

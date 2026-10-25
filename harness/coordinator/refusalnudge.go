@@ -1,6 +1,9 @@
 package coordinator
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // refusalNudgePrompt is injected as a turn when the assistant opens with a
 // refusal. The wording is deliberately about evidence and effort rather than
@@ -14,48 +17,111 @@ const refusalNudgePrompt = "Before reporting that something cannot be done, inve
 // reflex, so it is left alone.
 const refusalWindow = 25
 
-// refusalPhrases are the opening forms that count as a refusal. Declining and
-// being unable are the same failure mode here: both stop the turn before any
-// investigation, so both get the nudge.
-var refusalPhrases = []string{
-	"i can't",
-	"i cannot",
-	"i can not",
-	"i'm unable",
-	"i am unable",
-	"i'm not able",
-	"i am not able",
-	"i won't be able",
-	"i will not be able",
+// refusalVerbs are the forms that count as a refusal, as token sequences. A
+// sequence rather than a phrase because the same refusal arrives with words in
+// between: "I genuinely can't", "I honestly can't", "I really cannot". The
+// subject ("i", "i'm", "im") is matched separately, before these.
+//
+// Declining and being unable are the same failure mode here: both stop the turn
+// before any investigation, so both get the nudge.
+var refusalVerbs = [][]string{
+	{"can't"},
+	{"cannot"},
+	{"can", "not"},
+	{"unable"},
+	{"not", "able"},
+	{"won't", "be", "able"},
+	{"will", "not", "be", "able"},
+	{"am", "unable"},
+	{"am", "not", "able"},
 }
 
-// refusalIdioms contain the phrases above without being refusals. Removed
-// before matching so enthusiasm is not answered with a lecture about effort.
-var refusalIdioms = []string{
-	"can't wait",
-	"cannot wait",
-	"can't believe",
-	"cannot believe",
-	"can't recommend",
-	"cannot recommend",
+// refusalFillers are dropped before matching so an adverb does not hide the
+// verb. They carry no meaning for this decision.
+var refusalFillers = map[string]bool{
+	"genuinely": true, "honestly": true, "really": true, "truly": true,
+	"actually": true, "simply": true, "just": true, "definitely": true,
+	"certainly": true, "absolutely": true, "sincerely": true, "quite": true,
+	"literally": true, "currently": true,
+}
+
+// refusalIdioms begin like a refusal but are enthusiasm or advice, so the verb
+// match is discarded when the next word starts one of these.
+var refusalIdioms = map[string]bool{
+	"wait": true, "believe": true, "recommend": true,
 }
 
 // looksLikeRefusal reports whether the opening of an answer refuses the task.
 func looksLikeRefusal(text string) bool {
-	words := strings.Fields(strings.ToLower(normalizeApostrophes(text)))
+	words := refusalTokens(text)
 	if len(words) > refusalWindow {
 		words = words[:refusalWindow]
 	}
-	joined := " " + strings.Join(words, " ") + " "
-	for _, idiom := range refusalIdioms {
-		joined = strings.ReplaceAll(joined, " "+idiom, " ")
+	filtered := make([]string, 0, len(words))
+	for _, word := range words {
+		if !refusalFillers[word] {
+			filtered = append(filtered, word)
+		}
 	}
-	for _, phrase := range refusalPhrases {
-		if strings.Contains(joined, phrase) {
+	for i := 0; i < len(filtered); i++ {
+		if !isRefusalSubject(filtered[i]) {
+			continue
+		}
+		if matchesRefusalVerb(filtered[i+1:]) {
 			return true
 		}
 	}
 	return false
+}
+
+func isRefusalSubject(word string) bool {
+	return word == "i" || word == "i'm" || word == "im"
+}
+
+// matchesRefusalVerb reports whether the tokens after a subject open with one
+// of the refusal forms.
+func matchesRefusalVerb(rest []string) bool {
+	for _, verb := range refusalVerbs {
+		if len(rest) < len(verb) {
+			continue
+		}
+		matched := true
+		for i, want := range verb {
+			if rest[i] != want {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		next := ""
+		if len(rest) > len(verb) {
+			next = rest[len(verb)]
+		}
+		if refusalIdioms[next] {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// refusalTokens lowercases, folds apostrophes and strips sentence punctuation,
+// so "I can't," and "I can’t" compare as words. Apostrophes inside a word are
+// kept: "can't" and "i'm" depend on them.
+func refusalTokens(text string) []string {
+	fields := strings.Fields(strings.ToLower(normalizeApostrophes(text)))
+	words := make([]string, 0, len(fields))
+	for _, field := range fields {
+		word := strings.TrimFunc(field, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\''
+		})
+		if word != "" {
+			words = append(words, word)
+		}
+	}
+	return words
 }
 
 // normalizeApostrophes folds the typographic forms onto the ASCII one, because
