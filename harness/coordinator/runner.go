@@ -675,6 +675,7 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 	toolCalls := 0
 	correctiveToolRetryUsed := false
 	finalContentRetryUsed := false
+	refusalNudged := false
 	forceFinalResponse := false
 	for {
 		if soft > 0 {
@@ -825,14 +826,25 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		stall := newStallWatch(stallLimit)
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		stall.Start(cancelStream)
+		// The opening of the answer is withheld until it is known not to be a
+		// refusal. Once the nudge has been spent in this run, or the answer is a
+		// forced report, holding the text would only add latency.
+		gate := newRefusalGate(func(text string) {
+			content.WriteString(text)
+			if r.cb.OnContent != nil {
+				r.cb.OnContent(text)
+			}
+		})
+		if !refusalNudged && !forceFinalResponse {
+			gate.hold()
+		}
 		err = client.Stream(streamCtx, request, func(delta llm.ProviderResponse) {
 			if countsAsProgress(delta) {
 				stall.Kick()
 			}
 			if delta.Content != "" {
-				content.WriteString(delta.Content)
-				if r.cb.OnContent != nil {
-					r.cb.OnContent(delta.Content)
+				if gate.observe(delta.Content) {
+					cancelStream()
 				}
 			}
 			if delta.Reasoning != "" {
@@ -851,6 +863,9 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 				reasoningDetails = append(reasoningDetails, append(json.RawMessage(nil), delta.ReasoningDetails...))
 			}
 			if len(delta.ToolCalls) > 0 {
+				// A tool call is action, not refusal: the held opening is the
+				// preamble to work and has to reach the renderer.
+				gate.release()
 				calls = llm.MergeStreamedToolCalls(calls, delta.ToolCalls)
 			}
 			if delta.Usage != nil {
@@ -864,12 +879,26 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		})
 		stall.Stop()
 		cancelStream()
+		gate.release()
 		// Replaces whatever the canceled request returned, because "context
 		// canceled" is true and useless: the owner needs to know the provider
 		// held the connection open and said nothing.
 		if stallErr := stall.Err(); stallErr != nil {
 			logger.Warn(stallErr.Error())
 			err = stallErr
+		}
+		// The refusal was withheld and the request was abandoned on purpose, so
+		// the cancellation error is noise. Re-ask with the nudge and let the
+		// model investigate instead of concluding.
+		if gate.firedRefusal() && ctx.Err() == nil && !refusalNudged {
+			refusalNudged = true
+			logger.Warn(fmt.Sprintf("run %s opened with a refusal; asking it to investigate before concluding", r.cfg.SessionID))
+			sess.Messages = append(sess.Messages, sessionstore.Message{Role: llm.RoleUser, Content: refusalNudgePrompt})
+			if saveErr := r.store.Save(sess); saveErr != nil {
+				return Result{Usage: runUsage, Cost: runCost, PricingStatus: pricingStatus}, finish(sessionstore.RunFailed, saveErr)
+			}
+			step++
+			continue
 		}
 		if r.cb.OnCost != nil {
 			r.cb.OnCost(runCost, pricingStatus)

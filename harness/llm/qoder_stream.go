@@ -73,7 +73,9 @@ func (c *StreamingClient) streamQoder(ctx context.Context, req StreamRequest, on
 		host = QoderBaseURL
 	}
 
-	rebuilt, waited, refreshed := false, false, false
+	rebuilt, waited, refreshed, retried := false, false, false, false
+	holds := 0
+	const maxHolds = 3
 	for {
 		uid, token, machine, err := qoderIdentity(ctx, c.cfg.QoderCredentials)
 		if err != nil {
@@ -116,6 +118,39 @@ func (c *StreamingClient) streamQoder(ctx context.Context, req StreamRequest, on
 		}
 		if status >= 300 {
 			return &ProviderError{Status: status, Body: string(raw), Retryable: shouldRetryStatus(status)}
+		}
+		if streamErrTyped, ok := streamErr.(*StreamError); ok {
+			// A capacity hold arrives as a 200 stream carrying a 403 frame, so it
+			// never reaches the HTTP branches above. Waiting is the whole point of
+			// the frame: the host names the delay because the model is expected to
+			// come back, and failing the run there showed the user the raw JSON.
+			if refusal, ok := streamErrTyped.Err.(*qoderModelError); ok && refusal.queue > 0 && holds < maxHolds {
+				holds++
+				if c.cfg.OnRetry != nil {
+					c.cfg.OnRetry(fmt.Errorf("qoder: model at capacity"), holds, refusal.queue)
+				}
+				if !sleepContext(ctx, refusal.queue) {
+					return context.Cause(ctx)
+				}
+				continue
+			}
+		}
+		// A stream that stopped without a terminal event is replayable only
+		// while no answer text reached the caller; readQoderStream reports that
+		// in Partial. This transport owns its attempt loop, so the retry lives
+		// here rather than in the OpenAI-compatible path.
+		if streamErrTyped, ok := streamErr.(*StreamError); ok && streamErrTyped.Retryable && !streamErrTyped.Partial {
+			if !retried && c.cfg.MaxRetries > 0 {
+				retried = true
+				delay := retryDelay(streamErrTyped, 0, c.cfg.RetryBackoff)
+				if c.cfg.OnRetry != nil {
+					c.cfg.OnRetry(streamErrTyped, 1, delay)
+				}
+				if !sleepContext(ctx, delay) {
+					return context.Cause(ctx)
+				}
+				continue
+			}
 		}
 		return streamErr
 	}
@@ -232,12 +267,14 @@ func qoderQueued(raw []byte) bool {
 // documented room hold; an absent figure waits that long rather than guessing.
 func qoderQueueDelay(raw []byte) time.Duration {
 	var body struct {
-		Delay       int `json:"delay"`
-		RetryAfter  int `json:"retry_after"`
-		WaitSeconds int `json:"wait_seconds"`
+		Delay             int `json:"delay"`
+		RetryAfter        int `json:"retry_after"`
+		WaitSeconds       int `json:"wait_seconds"`
+		RetryAfterSeconds int `json:"retryAfterSeconds"`
+		WaitTime          int `json:"waitTime"`
 	}
 	if err := json.Unmarshal(raw, &body); err == nil {
-		for _, seconds := range []int{body.Delay, body.RetryAfter, body.WaitSeconds} {
+		for _, seconds := range []int{body.Delay, body.RetryAfter, body.WaitSeconds, body.RetryAfterSeconds, body.WaitTime} {
 			if seconds > 0 && seconds <= 60 {
 				return time.Duration(seconds) * time.Second
 			}
@@ -250,10 +287,18 @@ func shouldRetryStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
 }
 
-// qoderModelError is a model_error frame from inside an otherwise accepted
-// stream: the transport worked, the model call did not.
+// qoderModelError is a refusal frame from inside an otherwise accepted stream:
+// the transport worked, the model call did not.
+//
+// queue and pricing are classifications, not extra text. A capacity hold is
+// temporary and the frame says how long, so the turn waits it out; a plan
+// refusal is permanent for this account and retrying burns the budget. The
+// host reports both as an HTTP 200 stream carrying a 403 envelope, so the
+// status alone cannot tell them apart.
 type qoderModelError struct {
 	message string
+	queue   time.Duration
+	pricing bool
 }
 
 func (e *qoderModelError) Error() string { return "qoder: " + e.message }
@@ -296,9 +341,33 @@ func readQoderStream(r io.Reader, onDelta func(ProviderResponse), c *StreamingCl
 		}
 		_ = pw.CloseWithError(scanner.Err())
 	}()
-	err := c.readStreamWithCompatibility(pr, onDelta, Compatibility{SupportsFinishReason: false})
+	sawContent := false
+	wrapped := func(delta ProviderResponse) {
+		if delta.Content != "" {
+			sawContent = true
+		}
+		onDelta(delta)
+	}
+	err := c.readStreamWithCompatibility(pr, wrapped, Compatibility{SupportsFinishReason: false})
 	if modelErr, ok := unwrapPipeError(err); ok {
-		return &StreamError{Err: modelErr, Retryable: false, Partial: true}
+		hold := false
+		if refusal, ok := modelErr.(*qoderModelError); ok {
+			hold = refusal.queue > 0
+		}
+		return &StreamError{Err: modelErr, Retryable: hold, Partial: sawContent}
+	}
+	if streamErr, ok := err.(*StreamError); ok {
+		// Partial decides whether the retry loop may resend the request. It has
+		// to track visible text only: reasoning and tool-call deltas are
+		// regenerated safely, and nothing has acted on them, while text already
+		// handed to the caller would appear twice if the turn were replayed.
+		//
+		// The shared parser sets Partial from every emitted field, and Qoder's
+		// models think before they answer, so a stream cut during that thinking
+		// was marked partial and refused the retry. One dropped upstream
+		// connection then failed a run outright with "provider stream ended
+		// without a terminal event" while no answer had been shown at all.
+		streamErr.Partial = sawContent
 	}
 	return err
 }
@@ -325,6 +394,155 @@ func unwrapPipeError(err error) (error, bool) {
 	return nil, false
 }
 
+// qoderRefusalError classifies a refusal by its payload. The host nests these
+// as JSON inside JSON strings (a 403 envelope whose message is a 10605 frame
+// whose message is the hold), so the search walks the string layers rather
+// than trusting the outer shape.
+func qoderRefusalError(message string) *qoderModelError {
+	hold, pricing := qoderRefusalDetails(message)
+	err := &qoderModelError{queue: hold, pricing: pricing}
+	switch {
+	case hold > 0:
+		err.message = "the model is at capacity; the hold is " + hold.Round(time.Second).String()
+	case pricing:
+		err.message = "this model is not included in your Qoder plan; see " + qoderPricingURL
+	default:
+		err.message = strings.TrimSpace(message)
+		if err.message == "" {
+			err.message = "the host refused the request"
+		}
+	}
+	return err
+}
+
+const qoderPricingURL = "https://qoder.com/pricing"
+
+// qoderRefusalDetails reads a capacity hold and a plan refusal out of a
+// refusal payload, following quoted JSON up to a few levels deep.
+func qoderRefusalDetails(text string) (time.Duration, bool) {
+	var hold time.Duration
+	pricing := false
+	var walk func(string, int)
+	walk = func(value string, depth int) {
+		if depth > 4 {
+			return
+		}
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		if strings.HasPrefix(trimmed, `"`) {
+			var inner string
+			if json.Unmarshal([]byte(trimmed), &inner) == nil && strings.TrimSpace(inner) != trimmed {
+				walk(inner, depth+1)
+			}
+			return
+		}
+		if !strings.HasPrefix(trimmed, "{") {
+			return
+		}
+		var object map[string]json.RawMessage
+		if json.Unmarshal([]byte(trimmed), &object) != nil {
+			return
+		}
+		for key, raw := range object {
+			switch strings.ToLower(key) {
+			case "isqueued":
+				var queued bool
+				if json.Unmarshal(raw, &queued) == nil && queued && hold == 0 {
+					hold = 30 * time.Second
+				}
+			case "retryafterseconds", "waittime", "wait_seconds", "retry_after", "delay":
+				var seconds int
+				if json.Unmarshal(raw, &seconds) == nil && seconds > 0 && seconds <= 90 {
+					hold = time.Duration(seconds) * time.Second
+				}
+			case "subcode":
+				var code string
+				if json.Unmarshal(raw, &code) == nil && strings.EqualFold(code, "RESOURCE_LIMIT") && hold == 0 {
+					hold = 30 * time.Second
+				}
+			case "code":
+				var code string
+				if json.Unmarshal(raw, &code) == nil && code == "10605" && hold == 0 {
+					hold = 30 * time.Second
+				}
+			case "pricingurl":
+				var url string
+				if json.Unmarshal(raw, &url) == nil && strings.TrimSpace(url) != "" {
+					pricing = true
+				}
+			case "message", "error", "errormessage":
+				var inner string
+				if json.Unmarshal(raw, &inner) == nil {
+					walk(inner, depth+1)
+				}
+			}
+		}
+	}
+	walk(text, 0)
+	return hold, pricing
+}
+
+// qoderStatusOK reports the envelope's own success spelling. The live stream
+// says "OK" with 200 beside it; older frames carry "200" or "success".
+func qoderStatusOK(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "ok", "200", "success", "0":
+		return true
+	}
+	return false
+}
+
+// qoderEnvelopeRefusal picks the most useful text from a refused frame: the
+// envelope's message, then its body, then the status itself.
+func qoderEnvelopeRefusal(body json.RawMessage, message, code string) string {
+	for _, candidate := range []string{message, qoderFailureText(body)} {
+		if text := strings.TrimSpace(candidate); text != "" {
+			return text
+		}
+	}
+	return "status " + code
+}
+
+// qoderFailureText renders a refusal carried in any error-shaped field. The
+// raw type is deliberate: the host sends a plain string in some frames and an
+// OpenAI-style object in others, and a typed string field fails the whole
+// decode on the object form, which turned the refusal into a heartbeat and
+// left the caller guessing why the stream stopped.
+func qoderFailureText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) == nil {
+		text = strings.TrimSpace(text)
+		// A quoted body is an inner event, and it can be a refusal of its own.
+		if strings.HasPrefix(text, "{") {
+			return qoderFailureText(json.RawMessage(text))
+		}
+		return text
+	}
+	var object struct {
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Error   json.RawMessage `json:"error"`
+		Code    json.RawMessage `json:"code"`
+	}
+	if json.Unmarshal(trimmed, &object) == nil {
+		for _, candidate := range []string{object.Message, object.Type, qoderFailureText(object.Error)} {
+			if candidate = strings.TrimSpace(candidate); candidate != "" {
+				return candidate
+			}
+		}
+		if code := strings.Trim(strings.TrimSpace(string(object.Code)), `"`); code != "" && code != "null" {
+			return "error code " + code
+		}
+	}
+	return ""
+}
+
 // unwrapQoderEnvelope extracts the inner event from one outer data line. Skip
 // is true for heartbeats; fail carries a model_error frame.
 func unwrapQoderEnvelope(data []byte) (inner string, skip bool, fail error) {
@@ -333,15 +551,17 @@ func unwrapQoderEnvelope(data []byte) (inner string, skip bool, fail error) {
 		return "", true, nil
 	}
 	var envelope struct {
-		Body           json.RawMessage `json:"body"`
-		Type           string          `json:"type"`
-		Code           string          `json:"code"`
-		Message        string          `json:"message"`
-		Error          string          `json:"error"`
-		ModelError     string          `json:"model_error"`
-		ExecutionError string          `json:"execution_failed"`
-		Choices        any             `json:"choices"`
-		Usage          any             `json:"usage"`
+		Body            json.RawMessage `json:"body"`
+		Type            string          `json:"type"`
+		Code            string          `json:"code"`
+		Message         string          `json:"message"`
+		Error           json.RawMessage `json:"error"`
+		ModelError      json.RawMessage `json:"model_error"`
+		ExecutionError  json.RawMessage `json:"execution_failed"`
+		StatusCode      string          `json:"statusCode"`
+		StatusCodeValue int             `json:"statusCodeValue"`
+		Choices         any             `json:"choices"`
+		Usage           any             `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil {
 		// Not JSON at all: heartbeat noise on a stream that otherwise only
@@ -351,10 +571,21 @@ func unwrapQoderEnvelope(data []byte) (inner string, skip bool, fail error) {
 	// Refusals first: an error frame carries no body, so a body check first
 	// would pass it downstream as an event and it would vanish into an empty
 	// delta instead of failing the stream.
-	for _, refusal := range []string{envelope.ModelError, envelope.Error, envelope.ExecutionError} {
-		if strings.TrimSpace(refusal) != "" {
-			return "", false, &qoderModelError{message: refusal}
+	for _, refusal := range []json.RawMessage{envelope.ModelError, envelope.Error, envelope.ExecutionError} {
+		if message := qoderFailureText(refusal); message != "" {
+			return "", false, qoderRefusalError(message)
 		}
+	}
+	// The envelope carries its own status, and a refused frame can arrive with
+	// HTTP 200 around it. Ignoring it dropped the refusal as a heartbeat and
+	// left the caller with "the stream ended without a terminal event", which
+	// names a symptom and hides the cause.
+	if code := strings.TrimSpace(envelope.StatusCode); code != "" && !qoderStatusOK(code) {
+		return "", false, qoderRefusalError(qoderEnvelopeRefusal(envelope.Body, envelope.Message, code))
+	}
+	if envelope.StatusCodeValue >= 300 {
+		code := fmt.Sprintf("%d", envelope.StatusCodeValue)
+		return "", false, qoderRefusalError(qoderEnvelopeRefusal(envelope.Body, envelope.Message, code))
 	}
 	if envelope.Code != "" {
 		code := strings.TrimSpace(envelope.Code)
@@ -363,7 +594,7 @@ func unwrapQoderEnvelope(data []byte) (inner string, skip bool, fail error) {
 			if message == "" {
 				message = "error code " + code
 			}
-			return "", false, &qoderModelError{message: message}
+			return "", false, qoderRefusalError(message)
 		}
 	}
 	if len(bytes.TrimSpace(envelope.Body)) == 0 {
@@ -451,7 +682,18 @@ func qoderPayloadFromRequest(req StreamRequest, info QoderModel) map[string]any 
 			}
 			continue
 		}
-		if item.Kind == "reasoning" || strings.TrimSpace(item.Reason) != "" {
+		if item.Kind == "reasoning" {
+			// A standalone reasoning carrier has nothing else to send, so it is
+			// the only item this endpoint drops. The history's Message has no
+			// reasoning field, so a message that merely carries one keeps its
+			// text and calls and the reasoning is simply not encoded.
+			//
+			// Skipping every item with a non-empty Reason dropped real turns:
+			// once reasoning replay was wired into the builder, an assistant
+			// tool call arrived with its reasoning attached, vanished here, and
+			// left its tool result with no call to answer. The host refuses that
+			// history with a bare "Error in upstream response" and names nothing,
+			// so every tool-using Qoder session failed on its second turn.
 			continue
 		}
 		switch {

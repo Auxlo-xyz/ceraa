@@ -707,7 +707,7 @@ func ClaudeContextWindow(model string) int {
 // running qodercli --list-models against a signed-in session rather than by
 // guessing from another provider's catalogue.
 //
-// Seventeen entries, from the routing aliases (Auto, Ultimate) through to the
+// Eighteen entries, from the routing aliases (Auto, Ultimate) through to the
 // third-party models, so this list is refreshed from the CLI rather than curated
 // by hand. An alias such as Auto is a real choice: it lets Qoder route the turn,
 // which is a different request from naming a model.
@@ -726,6 +726,7 @@ var QoderModels = []string{
 	"Kimi-K2.8-Preview",
 	"GLM-5.3",
 	"GLM-5.3-Flash",
+	"GLM-5.2",
 	"DeepSeek-V4-Pro",
 	"DeepSeek-Flash",
 	"MiniMax-M3",

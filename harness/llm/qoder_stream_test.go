@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,7 @@ func TestQoderModelMapping(t *testing.T) {
 		"Auto":           "auto",
 		"DeepSeek-Flash": "dfmodel",
 		"MiniMax-M3":     "mmodel",
+		"GLM-5.2":        "gm51model",
 		"qfmodel":        "qfmodel",
 	} {
 		info, ok := QoderModelFor(display)
@@ -358,5 +360,275 @@ func TestQoderTransportWaitsOnQueue(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(creds.refreshed); got != 0 {
 		t.Errorf("refreshes = %d, want none: a queue is not an auth failure", got)
+	}
+}
+
+// A refusal can arrive as an object, and the envelope carries its own status.
+// Both shapes used to decode as a heartbeat, which reported the symptom
+// ("stream ended without a terminal event") and threw the cause away.
+func TestUnwrapQoderEnvelopeRefusalsOfEveryShape(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"object error", `{"body":null,"error":{"message":"context length exceeded","type":"invalid_request_error"}}`, "context length exceeded"},
+		{"status with body", "{\"statusCode\":\"500\",\"statusCodeValue\":500,\"body\":\"{\\\"error\\\":{\\\"message\\\":\\\"upstream exploded\\\"}}\"}", "upstream exploded"},
+		{"status alone", `{"statusCode":"502","statusCodeValue":502}`, "status 502"},
+		{"execution failed object", `{"execution_failed":{"message":"tool runtime died"}}`, "tool runtime died"},
+	} {
+		inner, skip, fail := unwrapQoderEnvelope([]byte(tc.raw))
+		if skip || fail == nil {
+			t.Errorf("%s: skip=%v fail=%v, want a refusal", tc.name, skip, fail)
+			continue
+		}
+		if !strings.Contains(fail.Error(), tc.want) {
+			t.Errorf("%s: fail=%q, want %q", tc.name, fail.Error(), tc.want)
+		}
+		if inner != "" {
+			t.Errorf("%s: inner=%q, want nothing forwarded", tc.name, inner)
+		}
+	}
+	// The live success envelope must keep streaming, not read as a refusal.
+	if inner, skip, fail := unwrapQoderEnvelope([]byte(`{"headers":{"Content-Type":["application/json"]},"body":"{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}","statusCodeValue":200,"statusCode":"OK"}`)); fail != nil || skip || !strings.Contains(inner, `"content":"hi"`) {
+		t.Errorf("success envelope: inner=%q skip=%v fail=%v", inner, skip, fail)
+	}
+}
+
+// A cut during thinking carries no text the caller has seen, so the turn can be
+// replayed. This is the failure the live DeepSeek stream produced: reasoning was
+// already on the wire, the shared parser called it partial, and the retry loop
+// refused to run, failing the whole run with a terminal-event error.
+func TestQoderTransportRetriesACutDuringThinking(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			fmt.Fprint(w, "data: {\"body\": \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"reasoning_content\\\":\\\"thinking\\\"}}]}\"}\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: {\"body\": \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"ok\\\"}}]}\"}\n\n")
+		fmt.Fprint(w, "data: {\"body\": \"{\\\"choices\\\":[{\\\"delta\\\":{},\\\"finish_reason\\\":\\\"stop\\\"}]}\"}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	client := New(ProviderConfig{
+		Model:            "DeepSeek-Flash",
+		BaseURL:          srv.URL,
+		QoderNative:      true,
+		QoderCredentials: testQoderCreds(),
+		MaxRetries:       1,
+		RetryBackoff:     time.Millisecond,
+		HTTPClient:       srv.Client(),
+	})
+	var content strings.Builder
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	}, func(r ProviderResponse) { content.WriteString(r.Content) })
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("requests = %d, want the initial plus one retry", got)
+	}
+	if content.String() != "ok" {
+		t.Errorf("content = %q, want ok", content.String())
+	}
+}
+
+// Text already handed to the caller is different: replaying it would duplicate
+// the answer, so a cut after visible content still fails rather than retries.
+func TestQoderTransportDoesNotRetryACutAfterVisibleText(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			fmt.Fprint(w, "data: {\"body\": \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"partial\\\"}}]}\"}\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	client := New(ProviderConfig{
+		Model:            "DeepSeek-Flash",
+		BaseURL:          srv.URL,
+		QoderNative:      true,
+		QoderCredentials: testQoderCreds(),
+		MaxRetries:       2,
+		RetryBackoff:     time.Millisecond,
+		HTTPClient:       srv.Client(),
+	})
+	var content strings.Builder
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	}, func(r ProviderResponse) { content.WriteString(r.Content) })
+	if err == nil {
+		t.Fatal("stream succeeded, want the terminal-event failure")
+	}
+	if !strings.Contains(err.Error(), "terminal event") {
+		t.Errorf("err = %v, want the terminal-event failure", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("requests = %d, want no retry after visible text", got)
+	}
+	if content.String() != "partial" {
+		t.Errorf("content = %q, want the partial text preserved", content.String())
+	}
+}
+
+// A message that carries reasoning is not a reasoning item. It used to be
+// dropped whole, which removed an assistant tool call and left its result
+// orphaned in the history; the host answers that with "Error in upstream
+// response" and fails every tool-using turn after the first.
+func TestQoderPayloadKeepsMessagesThatCarryReasoning(t *testing.T) {
+	info, ok := QoderModelFor("DeepSeek-Flash")
+	if !ok {
+		t.Fatal("no DeepSeek-Flash model entry")
+	}
+	payload := qoderPayloadFromRequest(StreamRequest{Messages: []Item{
+		{Kind: "text", Role: RoleSystem, Text: "you are a test"},
+		{Kind: "text", Role: RoleUser, Text: "run echo hi"},
+		{Kind: "tool_call", Role: RoleAssistant, CallID: "call-1", Name: "bash", Args: `{"command":"echo hi"}`, Reason: "Run the command."},
+		{Kind: "text", Role: RoleTool, CallID: "call-1", Name: "bash", Output: "hi"},
+		{Kind: "reasoning", Role: RoleAssistant, Reason: "standalone thought"},
+		{Kind: "text", Role: RoleAssistant, Text: "done", Reason: "Explain the result."},
+		{Kind: "text", Role: RoleUser, Text: "thanks"},
+	}}, info)
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var body struct {
+		Messages []struct {
+			Role       string          `json:"role"`
+			Content    json.RawMessage `json:"content"`
+			ToolCallID string          `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID string `json:"id"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode payload: %v\n%s", err, raw)
+	}
+	history := body.Messages
+	// The two users are the opening turn and the closing one; the standalone
+	// reasoning item is the only thing dropped.
+	if len(history) != 5 {
+		t.Fatalf("history has %d entries, want 5: user, assistant call, tool result, assistant text, user\n%s", len(history), raw)
+	}
+	if history[0].Role != "user" || history[4].Role != "user" {
+		t.Errorf("user turns missing: %+v", history)
+	}
+	if len(history[1].ToolCalls) != 1 || history[1].ToolCalls[0].ID != "call-1" {
+		t.Errorf("assistant tool call missing from history: %+v", history[1])
+	}
+	if history[2].Role != "tool" || history[2].ToolCallID != "call-1" {
+		t.Errorf("tool result lost its call: %+v", history[2])
+	}
+	if history[3].Role != "assistant" || !strings.Contains(string(history[3].Content), "done") {
+		t.Errorf("assistant text missing from history: %+v", history[3])
+	}
+}
+
+// The host reports a capacity hold as a 200 stream carrying a 403 envelope
+// whose message is itself a nested 10605 frame. It has to classify as a wait,
+// not a refusal: the frame names the delay because the model comes back.
+func TestUnwrapQoderEnvelopeReadsACapacityHold(t *testing.T) {
+	raw := `{"body":"{\"code\":\"403\",\"message\":\"{\\\"code\\\":\\\"10605\\\",\\\"message\\\":\\\"{\\\\\\\"isQueued\\\\\\\":true,\\\\\\\"modelKey\\\\\\\":\\\\\\\"dfmodel\\\\\\\",\\\\\\\"queueCount\\\\\\\":0,\\\\\\\"queueType\\\\\\\":\\\\\\\"p3\\\\\\\",\\\\\\\"retryAfterSeconds\\\\\\\":30,\\\\\\\"serviceAvailable\\\\\\\":false,\\\\\\\"subCode\\\\\\\":\\\\\\\"RESOURCE_LIMIT\\\\\\\",\\\\\\\"waitTime\\\\\\\":30}\\\",\\\"subCode\\\":\\\"RESOURCE_LIMIT\\\"}\"}","statusCodeValue":403,"statusCode":"FORBIDDEN"}`
+	_, _, fail := unwrapQoderEnvelope([]byte(raw))
+	if fail == nil {
+		t.Fatal("hold decoded as a heartbeat")
+	}
+	refusal, ok := fail.(*qoderModelError)
+	if !ok {
+		t.Fatalf("fail type = %T", fail)
+	}
+	if refusal.queue != 30*time.Second {
+		t.Errorf("queue = %v, want 30s", refusal.queue)
+	}
+	if refusal.pricing {
+		t.Error("a hold is not a plan refusal")
+	}
+	if !strings.Contains(refusal.Error(), "capacity") {
+		t.Errorf("error = %q, want it to name the hold", refusal.Error())
+	}
+}
+
+// A model outside the plan is permanent for this account: no wait, and the
+// message should point at the plan rather than echo a bare pricingUrl object.
+func TestUnwrapQoderEnvelopeReadsAPlanRefusal(t *testing.T) {
+	_, _, fail := unwrapQoderEnvelope([]byte(`{"body":"{\"code\":\"112\",\"message\":\"{\\\"pricingUrl\\\":\\\"https://qoder.com/pricing?client=qoder\\\"}\"}","statusCodeValue":403,"statusCode":"FORBIDDEN"}`))
+	refusal, ok := fail.(*qoderModelError)
+	if !ok {
+		t.Fatalf("fail = %v (%T), want a refusal", fail, fail)
+	}
+	if refusal.queue != 0 {
+		t.Errorf("queue = %v, a plan refusal must not wait", refusal.queue)
+	}
+	if !refusal.pricing {
+		t.Error("the pricing payload was not recognised")
+	}
+	if !strings.Contains(refusal.Error(), "not included") {
+		t.Errorf("error = %q, want the plan wording", refusal.Error())
+	}
+}
+
+// A hold on the stream waits its named delay and then succeeds, without
+// spending the network-retry budget on it.
+func TestQoderTransportWaitsOutACapacityHold(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			fmt.Fprint(w, "data: {\"body\": \"{\\\"code\\\":\\\"10605\\\",\\\"message\\\":\\\"{\\\\\\\"isQueued\\\\\\\":true,\\\\\\\"retryAfterSeconds\\\\\\\":1,\\\\\\\"subCode\\\\\\\":\\\\\\\"RESOURCE_LIMIT\\\\\\\"}\\\"}\",\"statusCodeValue\":403,\"statusCode\":\"FORBIDDEN\"}\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: {\"body\": \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"ok\\\"}}]}\"}\n\n")
+		fmt.Fprint(w, "data: {\"body\": \"{\\\"choices\\\":[{\\\"delta\\\":{},\\\"finish_reason\\\":\\\"stop\\\"}]}\"}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	client := New(ProviderConfig{
+		Model:            "DeepSeek-Flash",
+		BaseURL:          srv.URL,
+		QoderNative:      true,
+		QoderCredentials: testQoderCreds(),
+		MaxRetries:       0,
+		RetryBackoff:     time.Millisecond,
+		HTTPClient:       srv.Client(),
+	})
+	var content strings.Builder
+	start := time.Now()
+	err := client.Stream(context.Background(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "hi"}},
+	}, func(r ProviderResponse) { content.WriteString(r.Content) })
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("requests = %d, want the hold then the answer", got)
+	}
+	if content.String() != "ok" {
+		t.Errorf("content = %q, want ok", content.String())
+	}
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Errorf("waited %v, want the frame's delay honoured", elapsed)
+	}
+}
+
+// The picker (QoderModels) and the transport directory (QoderModelTable) are
+// separate lists, so a name added to one and not the other is selectable and
+// then refused before signing, which reads as "unknown model" for a model the
+// menu just offered.
+func TestEveryQoderPickerNameResolvesToAKey(t *testing.T) {
+	for _, name := range QoderModels {
+		if _, ok := QoderModelFor(name); !ok {
+			t.Errorf("picker offers %q but the transport directory has no entry for it", name)
+		}
 	}
 }

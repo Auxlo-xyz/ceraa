@@ -55,6 +55,7 @@ var QoderModelTable = []QoderModel{
 	{Key: "kmodel", Display: "Kimi-K2.8-Preview", ContextWindow: 1000000, Efforts: []string{"high", "low", "max"}, Image: true},
 	{Key: "gmodel", Display: "GLM-5.3", ContextWindow: 1000000, Thinking: true, Efforts: []string{"high", "low", "max"}, Image: true},
 	{Key: "gfmodel", Display: "GLM-5.3-Flash", ContextWindow: 1000000, Thinking: true, Efforts: []string{"high", "max"}, Image: true},
+	{Key: "gm51model", Display: "GLM-5.2", ContextWindow: 1000000, Thinking: true, Efforts: []string{"high", "max"}, Image: true},
 	{Key: "dmodel", Display: "DeepSeek-V4-Pro", ContextWindow: 1000000, Thinking: true, Efforts: []string{"high", "max"}, Image: true},
 	{Key: "dfmodel", Display: "DeepSeek-Flash", ContextWindow: 1000000, Thinking: true, Efforts: []string{"high", "max", "low"}, Image: true},
 	{Key: "mmodel", Display: "MiniMax-M3", ContextWindow: 1000000, Image: true},
