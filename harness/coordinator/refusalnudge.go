@@ -10,7 +10,7 @@ import (
 // about permission: the failure it targets is a conclusion reached before any
 // attempt, which a web search, an available tool or a cheaper approach would
 // have overturned.
-const refusalNudgePrompt = "Before reporting that something cannot be done, investigate whether a web search, the tools you already have, or a simpler and more efficient approach can solve the user's exact task. Explore the alternatives, verify what actually works, and make a genuine attempt before answering."
+const refusalNudgePrompt = "Before reporting that something cannot be done, investigate whether a web search, the tools you already have, or a simpler and more efficient approach can solve the user's exact task. Explore the alternatives, verify what actually works, and make a genuine attempt before answering.\n\nNow continue working autonomously on the user's task."
 
 // refusalWindow is how many opening words are inspected. A refusal after this
 // point is treated as a finding about work already attempted rather than a
