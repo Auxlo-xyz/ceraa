@@ -70,6 +70,23 @@ type update struct {
 		Voice *struct {
 			FileID string `json:"file_id"`
 		} `json:"voice"`
+		// Audio, video and animation each arrive on their own field, never as a
+		// document. None of them was parsed until now, so a music file sent to
+		// the bot came through with every field empty and was dropped by the
+		// empty-text case below without a word.
+		Audio *struct {
+			FileID   string `json:"file_id"`
+			FileName string `json:"file_name"`
+			Title    string `json:"title"`
+		} `json:"audio"`
+		Video *struct {
+			FileID   string `json:"file_id"`
+			FileName string `json:"file_name"`
+		} `json:"video"`
+		Animation *struct {
+			FileID   string `json:"file_id"`
+			FileName string `json:"file_name"`
+		} `json:"animation"`
 	} `json:"message"`
 	CallbackQuery *callbackQuery `json:"callback_query"`
 }
@@ -1110,6 +1127,28 @@ func Run() error {
 				}
 				continue
 			}
+			if u.Message.Audio != nil {
+				name := strings.TrimSpace(u.Message.Audio.FileName)
+				if name == "" {
+					name = strings.TrimSpace(u.Message.Audio.Title)
+				}
+				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Audio.FileID,
+					"audio", "\U0001f3b5 Audio", name,
+					"send a prompt to use it: this run cannot hear it, but shell tools like ffmpeg can")
+				continue
+			}
+			if u.Message.Video != nil {
+				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Video.FileID,
+					"video", "\U0001f3ac Video", strings.TrimSpace(u.Message.Video.FileName),
+					"send a prompt to use it: this run cannot watch it, but shell tools like ffmpeg can")
+				continue
+			}
+			if u.Message.Animation != nil {
+				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Animation.FileID,
+					"animation", "\U0001f39e Animation", strings.TrimSpace(u.Message.Animation.FileName),
+					"send a prompt to use it: this run cannot watch it, but shell tools like ffmpeg can")
+				continue
+			}
 			if u.Message.Text == "" {
 				// An armed capture must never be skipped by the silence here. If the
 				// value arrives in a message this path does not recognise as text, the
@@ -1634,6 +1673,85 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 		return "", err
 	}
 	return dst, nil
+}
+
+// saveIncomingMedia downloads a sent file, keeps the sender's own filename when
+// it is safe to use, records it for the next prompt and tells the chat it landed.
+//
+// kind is the word uploadContext shows the run, label is the word the chat sees,
+// hint is what can be done with it. Audio and video are not readable inline, so
+// the notice says that instead of promising a read that would come back as
+// mojibake, and the old behaviour of staying silent is what made a sent file
+// look lost: no download, no notice, nothing on disk.
+func saveIncomingMedia(token string, chatID int64, updateID int, fileID, kind, label, name, hint string) {
+	GetDefaultInbox().CheckAndRecord(updateID)
+	path, err := downloadTelegramFile(token, fileID)
+	if err != nil {
+		if name == "" {
+			name = kind
+		}
+		send(token, chatID, label+": "+name+" (download failed)")
+		return
+	}
+	path = saveWithSenderName(path, name)
+	defaultState.noteUpload(chatID, kind, path, name)
+	if name == "" {
+		send(token, chatID, label+" saved: "+path+" \u2014 "+hint)
+		return
+	}
+	send(token, chatID, label+" saved: "+path+" ("+name+") \u2014 "+hint)
+}
+
+// senderFileName reduces a sender's filename to something safe to write under
+// the files directory. The name arrives from the other end, so control
+// characters are stripped and the result is taken as a base name: a traversal
+// attempt comes back empty and the download keeps Telegram's own file_NNN
+// handle instead of writing where it was pointed.
+func senderFileName(name string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(name))
+	clean = filepath.Base(strings.ReplaceAll(clean, "\\", "/"))
+	switch clean {
+	case "", ".", "..":
+		return ""
+	}
+	return clean
+}
+
+// saveWithSenderName moves a download to the filename the sender gave it, so
+// the extension survives: auto-kind on send_media and ffmpeg's own detection
+// both read that extension, while Telegram's file_NNN handle has none worth
+// trusting. Two sends of the same track must not overwrite each other, so a
+// name already taken gains a counter.
+func saveWithSenderName(path, name string) string {
+	want := senderFileName(name)
+	if want == "" || filepath.Base(path) == want {
+		return path
+	}
+	dir := filepath.Dir(path)
+	dst := filepath.Join(dir, want)
+	if _, err := os.Stat(dst); err == nil {
+		ext := filepath.Ext(want)
+		stem := strings.TrimSuffix(want, ext)
+		for i := 1; i < 100; i++ {
+			cand := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
+			if _, err := os.Stat(cand); err != nil {
+				dst = cand
+				break
+			}
+		}
+	}
+	if dst == path {
+		return path
+	}
+	if err := os.Rename(path, dst); err != nil {
+		return path
+	}
+	return dst
 }
 
 func runWithThinkingContext(ctx context.Context, sessionID string, prompt string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {

@@ -545,8 +545,11 @@ func uploadContext(chatID int64) string {
 		if note.kind == "photo" {
 			line += " (read the file to see it)"
 		}
-		if note.kind == "voice" {
+		if note.kind == "voice" || note.kind == "audio" {
 			line += " (transcription is not available; ask the user for text if you need its content)"
+		}
+		if note.kind == "video" || note.kind == "animation" {
+			line += " (this run cannot watch it; process it with shell tools like ffmpeg if you need its content)"
 		}
 		lines = append(lines, "- "+line)
 	}
