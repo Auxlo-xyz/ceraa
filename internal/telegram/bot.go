@@ -1649,7 +1649,7 @@ func handleSetSecret(token string, chatID int64, text string) {
 	name := parts[1]
 	value := strings.TrimSpace(parts[2])
 
-	if err := secret.Set(name, value); err != nil {
+	if err := secret.SetUser(name, value); err != nil {
 		send(token, chatID, "Failed to store secret: "+err.Error())
 		return
 	}

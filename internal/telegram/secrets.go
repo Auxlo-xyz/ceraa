@@ -116,7 +116,7 @@ func storeSecretValue(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("the value was empty")
 	}
-	if err := secret.Set(name, value); err != nil {
+	if err := secret.SetUser(name, value); err != nil {
 		return err
 	}
 	redact.RegisterLiteral(value)

@@ -541,7 +541,7 @@ func TestEditLineAndTheLegacyEditTypeBothRun(t *testing.T) {
 func TestASecretValueNeverEntersASpecOrAResult(t *testing.T) {
 	openTestSecretStore(t)
 	const value = "sk-live-DONTLEAKTHISVALUE1234567890"
-	if err := secret.Set("probe_key", value); err != nil {
+	if err := secret.SetUser("probe_key", value); err != nil {
 		t.Fatal(err)
 	}
 	redact.ResetLiterals()
@@ -601,7 +601,7 @@ func TestReservedSecretsAreRefusedByName(t *testing.T) {
 func TestASecretHandedToACommandNeverComesBack(t *testing.T) {
 	openTestSecretStore(t)
 	const value = "plaintextsecret-not-pattern-shaped"
-	if err := secret.Set("probe_env", value); err != nil {
+	if err := secret.SetUser("probe_env", value); err != nil {
 		t.Fatal(err)
 	}
 	redact.ResetLiterals()

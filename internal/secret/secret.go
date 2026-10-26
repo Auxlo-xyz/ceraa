@@ -23,6 +23,11 @@ type Entry struct {
 	Encrypted []byte `json:"encrypted"`
 	Nonce     []byte `json:"nonce"`
 	CreatedAt int64  `json:"created_at"`
+	// Internal marks a credential Ceraa resolves for itself. It is absent on
+	// entries written before the field existed, which is why IsInternal still
+	// classifies those by name prefix: the flag settles the new writes, and the
+	// prefixes settle the old ones.
+	Internal bool `json:"internal,omitempty"`
 }
 
 // store is the on-disk secret store.
@@ -97,8 +102,29 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	return key, nil
 }
 
-// Set encrypts and stores a secret.
-func Set(name, value string) error {
+// Set encrypts and stores a credential Ceraa resolves for itself.
+//
+// Writes are internal unless a surface says otherwise, because the store cannot
+// tell one kind from the other by looking at the name alone. A provider that
+// lands a new credential outside the reserved prefixes used to be exposed the
+// moment it was stored; now the exposure takes an explicit SetUser, which only
+// the surfaces a person owns call.
+func Set(name, value string) error { return set(name, value, true) }
+
+// SetUser encrypts and stores a secret the person owns, for display and for
+// offering to the agent by name.
+//
+// A reserved name is refused rather than stored under the wrong owner: Ceraa's
+// own provider tokens and bot tokens live at those names, and a surface that
+// could write one could replace the credential the process authenticates with.
+func SetUser(name, value string) error {
+	if IsInternal(name) {
+		return fmt.Errorf("secret %q is reserved by Ceraa", name)
+	}
+	return set(name, value, false)
+}
+
+func set(name, value string, internal bool) error {
 	if name == "" {
 		return fmt.Errorf("secret name required")
 	}
@@ -126,6 +152,7 @@ func Set(name, value string) error {
 		Encrypted: encrypted,
 		Nonce:     nonce,
 		CreatedAt: time.Now().Unix(),
+		Internal:  internal,
 	}
 
 	// save reads the map it is handed, so it runs under the write lock rather
@@ -164,6 +191,14 @@ func Get(name string) (string, error) {
 // bot token would own the host. The code that already has them keeps having them.
 var internalPrefixes = []string{
 	"ceraa_",
+	// The OAuth providers whose credentials do not ride the ceraa_ namespace.
+	// Each of these was a live exposure until it was named here: gemini_,
+	// qoder_ and workbuddy_ were readable through list_secrets, which is the
+	// reason writes are internal by default now.
+	"gemini_",
+	"qoder_",
+	"workbuddy_",
+	"buddy_",
 	// Provider onboarding writes this name (internal/telegram/commands.go), and the
 	// agent bridge reads it back to authenticate every request. It was not reserved,
 	// so a provider key stored this way was a user secret: list_secrets named it and
@@ -189,26 +224,41 @@ func ReservedPrefixes() []string {
 
 // IsInternal reports whether a name is Ceraa's own rather than a user's.
 //
-// A deny-list and not an allow-list on purpose: a name the store learns about later
-// is denied by default, and there is no way for a new internal credential to be
-// exposed by forgetting to register it.
+// Two answers, because the store has two generations in it. An entry written
+// since Set defaulted to internal carries the flag, and that flag is the truth
+// for it. An entry written before then has no flag, so the name is matched
+// against the prefixes: the same list a surface validates against, kept for the
+// credentials that were already on disk when the flag arrived.
 func IsInternal(name string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return isInternalLocked(name)
+}
+
+func isInternalLocked(name string) bool {
 	for _, prefix := range internalPrefixes {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}
 	}
-	return false
+	if defaultStore == nil {
+		return false
+	}
+	return defaultStore.entries[name].Internal
 }
 
 // ListUser returns the stored names a person set, for display and for offering as
 // choices. Ceraa's own credentials are excluded rather than shown, since a menu
 // that lists them invites picking one.
 func ListUser() []string {
-	all := List()
-	out := make([]string, 0, len(all))
-	for _, name := range all {
-		if !IsInternal(name) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if defaultStore == nil {
+		return nil
+	}
+	out := make([]string, 0, len(defaultStore.entries))
+	for name := range defaultStore.entries {
+		if !isInternalLocked(name) {
 			out = append(out, name)
 		}
 	}

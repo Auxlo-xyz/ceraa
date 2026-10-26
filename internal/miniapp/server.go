@@ -1206,7 +1206,7 @@ func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("value is longer than %d bytes", maxSecretValue), http.StatusRequestEntityTooLarge)
 		return
 	}
-	if err := secret.Set(name, body.Value); err != nil {
+	if err := secret.SetUser(name, body.Value); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -27,13 +27,23 @@ func TestListSecretsShowsNamesButNeverValues(t *testing.T) {
 		t.Fatalf("init store: %v", err)
 	}
 
-	// A user secret, and one of Ceraa's own provider credentials.
+	// A user secret, and the credentials Ceraa's own providers hold. The
+	// provider names are the ones that were exposed: no reserved prefix covered
+	// gemini, qoder or workbuddy, so list_secrets used to name them.
 	const value = "ghp_supersecretvalue"
-	if err := secret.Set("GitHub_token", value); err != nil {
+	if err := secret.SetUser("GitHub_token", value); err != nil {
 		t.Fatalf("set user secret: %v", err)
 	}
-	if err := secret.Set("ceraa_minimax_api_key", "internal-value-not-for-the-model"); err != nil {
-		t.Fatalf("set internal secret: %v", err)
+	for _, name := range []string{
+		"ceraa_minimax_api_key",
+		"gemini_access_token",
+		"qoder_refresh_token",
+		"workbuddy_access_token",
+		"buddy_access_token",
+	} {
+		if err := secret.Set(name, "internal-value-not-for-the-model"); err != nil {
+			t.Fatalf("set internal secret %s: %v", name, err)
+		}
 	}
 
 	out, err := (&ListSecretsTool{}).Run(operationSpecForTest(t))
@@ -57,8 +67,16 @@ func TestListSecretsShowsNamesButNeverValues(t *testing.T) {
 	}
 	// A reserved name is Ceraa's own provider credential. Enumerating it would let
 	// the model aim run_command_with_secret at it.
-	if strings.Contains(out, "ceraa_minimax_api_key") {
-		t.Error("the listing exposes a reserved internal secret name")
+	for _, name := range []string{
+		"ceraa_minimax_api_key",
+		"gemini_access_token",
+		"qoder_refresh_token",
+		"workbuddy_access_token",
+		"buddy_access_token",
+	} {
+		if strings.Contains(out, name) {
+			t.Errorf("the listing exposes the internal secret name %q", name)
+		}
 	}
 }
 
