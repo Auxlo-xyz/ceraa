@@ -385,17 +385,20 @@ func up(v uint64) *uint64 { return &v }
 
 func TestInboundMediaFindsAttachmentsAndSkipsPlainChat(t *testing.T) {
 	cases := []struct {
-		name string
-		msg  *waE2E.Message
-		want bool
-		ext  string
+		name     string
+		msg      *waE2E.Message
+		want     bool
+		ext      string
+		kind     string
+		fileName string
 	}{
 		{name: "plain chat has no attachment", msg: &waE2E.Message{Conversation: sp("hi")}, want: false},
-		{name: "image", msg: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: sp("image/jpeg")}}, want: true, ext: ".jpg"},
-		{name: "video", msg: &waE2E.Message{VideoMessage: &waE2E.VideoMessage{Mimetype: sp("video/mp4")}}, want: true, ext: ".mp4"},
-		{name: "audio note", msg: &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: sp("audio/ogg")}}, want: true, ext: ".ogg"},
-		{name: "document", msg: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Mimetype: sp("application/pdf")}}, want: true, ext: ".pdf"},
-		{name: "sticker", msg: &waE2E.Message{StickerMessage: &waE2E.StickerMessage{Mimetype: sp("image/webp")}}, want: true, ext: ".webp"},
+		{name: "image", msg: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: sp("image/jpeg")}}, want: true, ext: ".jpg", kind: "photo"},
+		{name: "video", msg: &waE2E.Message{VideoMessage: &waE2E.VideoMessage{Mimetype: sp("video/mp4")}}, want: true, ext: ".mp4", kind: "video"},
+		{name: "audio note", msg: &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: sp("audio/ogg")}}, want: true, ext: ".ogg", kind: "audio"},
+		{name: "document", msg: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Mimetype: sp("application/pdf")}}, want: true, ext: ".pdf", kind: "document"},
+		{name: "named document", msg: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Mimetype: sp("application/pdf"), FileName: sp("Q3 plan.pdf")}}, want: true, ext: ".pdf", kind: "document", fileName: "Q3 plan.pdf"},
+		{name: "sticker", msg: &waE2E.Message{StickerMessage: &waE2E.StickerMessage{Mimetype: sp("image/webp")}}, want: true, ext: ".webp", kind: "sticker"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -405,6 +408,12 @@ func TestInboundMediaFindsAttachmentsAndSkipsPlainChat(t *testing.T) {
 			}
 			if got.ext != c.ext {
 				t.Errorf("ext = %q, want %q", got.ext, c.ext)
+			}
+			if got.kind != c.kind {
+				t.Errorf("kind = %q, want %q", got.kind, c.kind)
+			}
+			if got.name != c.fileName {
+				t.Errorf("name = %q, want %q", got.name, c.fileName)
 			}
 		})
 	}

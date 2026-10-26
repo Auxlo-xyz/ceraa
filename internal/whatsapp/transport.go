@@ -39,10 +39,19 @@ type InboundMessage struct {
 	// not be fetched. It is empty on every message that had none, so an
 	// empty MediaPath alone never tells the two apart.
 	MediaError string
-	QuotedID   string
-	GroupJID   string
-	FromMe     bool
-	Timestamp  time.Time
+	// MediaKind is what the attachment is: photo, video, audio, document
+	// or sticker. It is set with MediaPath and empty when there is none,
+	// so the bridge can state the capability gap in words the sender
+	// understands rather than guessing from the file extension.
+	MediaKind string
+	// MediaName is the sender's own filename, which WhatsApp supplies for
+	// documents only. It is empty for voice notes, photos, videos and
+	// stickers, all of which are named by the bridge instead.
+	MediaName string
+	QuotedID  string
+	GroupJID  string
+	FromMe    bool
+	Timestamp time.Time
 	// ReceiptChat and ReceiptSender are the JIDs the message actually
 	// arrived on. ChatJID is rewritten to the phone form for the
 	// allow-list, and a read receipt is a separate stanza: sending it to a
@@ -237,6 +246,8 @@ func (t *ChatTransport) handleEvent(evt any) {
 	// moves, this one moves with it.
 	if att, ok := inboundMedia(msg.Message); ok && !msg.Info.IsGroup {
 		item.media = att
+		item.inbound.MediaKind = att.kind
+		item.inbound.MediaName = att.name
 	}
 	select {
 	case t.dispatch <- item:
@@ -327,6 +338,13 @@ type mediaAttachment struct {
 	// message declaring a bomb never gets as far as allocating for one.
 	length uint64
 	ext    string
+	// kind is photo, video, audio, document or sticker: what the run is
+	// about to be handed, so the capability hint that follows it is about
+	// the file and not about the extension.
+	kind string
+	// name is the sender's filename for a document, empty for everything
+	// else because WhatsApp does not carry one there.
+	name string
 }
 
 // inboundMedia picks the downloadable part of a message, in the same
@@ -336,19 +354,19 @@ func inboundMedia(m *waE2E.Message) (mediaAttachment, bool) {
 	switch {
 	case m.GetImageMessage() != nil:
 		a := m.GetImageMessage()
-		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype())}, true
+		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype()), kind: "photo"}, true
 	case m.GetVideoMessage() != nil:
 		a := m.GetVideoMessage()
-		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype())}, true
+		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype()), kind: "video"}, true
 	case m.GetAudioMessage() != nil:
 		a := m.GetAudioMessage()
-		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype())}, true
+		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype()), kind: "audio"}, true
 	case m.GetDocumentMessage() != nil:
 		a := m.GetDocumentMessage()
-		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype())}, true
+		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype()), kind: "document", name: strings.TrimSpace(a.GetFileName())}, true
 	case m.GetStickerMessage() != nil:
 		a := m.GetStickerMessage()
-		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype())}, true
+		return mediaAttachment{file: a, length: a.GetFileLength(), ext: extForMIME(a.GetMimetype()), kind: "sticker"}, true
 	}
 	return mediaAttachment{}, false
 }

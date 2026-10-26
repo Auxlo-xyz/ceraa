@@ -51,6 +51,10 @@ const (
 	waToolLineCap = 25
 	// waToolTargetMax bounds the identifying argument shown on a tool line.
 	waToolTargetMax = 60
+	// maxPendingWAMedia bounds how many saved attachments one chat may keep
+	// waiting for a prompt. A chat that only drops files must not grow an
+	// unbounded list, so the oldest notes fall off.
+	maxPendingWAMedia = 5
 )
 
 // RunFunc runs one turn through the coordinator. The bridge builds the
@@ -63,6 +67,15 @@ type RunFunc func(ctx context.Context, rc coordinator.RunnerConfig, prompt strin
 // transport_test.go. Shape, proven by that test: Connect, Disconnect,
 // IsLoggedIn, SendText(ctx, toJID, text) (string, error), Incoming.
 
+// waNote is one saved attachment awaiting a prompt. The path is the copy
+// in the files dir, kind is photo, video, audio, document or sticker, and
+// name is the sender's own filename where WhatsApp supplied one.
+type waNote struct {
+	path string
+	kind string
+	name string
+}
+
 // Bridge maps one WhatsApp DM to one agent run.
 type Bridge struct {
 	transport Transport
@@ -70,8 +83,13 @@ type Bridge struct {
 	run       RunFunc
 	filesDir  string
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// active holds the session a run is currently occupying in a chat.
 	active map[string]struct{}
+	// pending holds saved attachments whose message carried no prompt, so
+	// the next prompt in that chat is told about them instead of a run
+	// answering a file it has never heard of. Guarded by mu.
+	pending map[string][]waNote
 }
 
 // Manager owns a Bridge and its lifecycle. A failed run ends the message,
@@ -90,7 +108,7 @@ func NewManager(t Transport, cfg Config, run RunFunc, filesDir string) *Manager 
 	if filesDir == "" {
 		filesDir = paths.FilesDir()
 	}
-	return &Manager{bridge: &Bridge{transport: t, cfg: cfg, run: run, filesDir: filesDir, active: map[string]struct{}{}}}
+	return &Manager{bridge: &Bridge{transport: t, cfg: cfg, run: run, filesDir: filesDir, active: map[string]struct{}{}, pending: map[string][]waNote{}}}
 }
 
 // Start connects and serves inbound messages until ctx ends or Stop runs.
@@ -209,6 +227,10 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 		_ = b.send(ctx, msg.ChatJID, "Ceraa could not download that attachment.")
 		return
 	}
+	// The save notice is a chat message no run ever sees, so the path is
+	// prefixed to the prompt the run does see instead. attached is built
+	// first so a message with no prompt can still be acknowledged.
+	var attached []waNote
 	if msg.MediaPath != "" {
 		saved, err := SaveInboundMedia(msg, b.filesDir)
 		// The staging file is the transport's and the copy in the files
@@ -220,23 +242,40 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 			_ = b.send(ctx, msg.ChatJID, "Ceraa could not save that attachment.")
 			return
 		}
-		// The save notice is a chat message no run ever sees, so the path
-		// is prefixed to the prompt the run does see.
-		prompt = strings.TrimSpace("The user attached a file saved at " + saved + ". " + prompt)
+		attached = append(attached, waNote{path: saved, kind: waNoteKind(msg.MediaKind), name: strings.TrimSpace(msg.MediaName)})
 	}
 	if prompt == "" {
-		logger.Info(fmt.Sprintf("whatsapp empty skipped tag=%s", tag))
+		if len(attached) == 0 {
+			logger.Info(fmt.Sprintf("whatsapp empty skipped tag=%s", tag))
+			return
+		}
+		// A file with no sentence attached: the sender is told what landed
+		// and what this run cannot do with it, and the note waits for the
+		// next prompt. Without both halves the save was silent and no run
+		// ever learned the file existed, which is the bug telegram's
+		// pending uploads already fixed.
+		_ = b.send(ctx, msg.ChatJID, waNotice(attached[0]))
+		b.rememberMedia(msg.ChatJID, attached)
+		logger.Info(fmt.Sprintf("whatsapp media-only saved tag=%s kind=%s", tag, attached[0].kind))
 		return
 	}
 	sessionID := sessionIDFor(msg.ChatJID)
 	b.mu.Lock()
 	if _, busy := b.active[sessionID]; busy {
 		b.mu.Unlock()
+		if len(attached) > 0 {
+			// The file is already on disk: holding the note keeps it in
+			// front of the next run instead of dropping it with this one.
+			b.rememberMedia(msg.ChatJID, attached)
+		}
 		_ = b.send(ctx, msg.ChatJID, waBusyReply)
 		return
 	}
 	b.active[sessionID] = struct{}{}
 	b.mu.Unlock()
+	// Held notes from earlier media-only messages join this one, oldest
+	// first, and are cleared: the run that follows is told about them.
+	prompt = waUploadContext(b.takeMedia(msg.ChatJID), attached) + prompt
 	defer func() {
 		b.mu.Lock()
 		delete(b.active, sessionID)
@@ -367,6 +406,132 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 	// value is still model markdown when it arrives.
 	_ = b.send(ctx, msg.ChatJID, formatEmphasis(final))
 	logger.Info(fmt.Sprintf("whatsapp run sent tag=%s answerlen=%d", tag, len(final)))
+}
+
+// waNoteKind normalises the kind the transport reported, defaulting to
+// document so a missing kind still produces a label that is true.
+func waNoteKind(kind string) string {
+	switch kind {
+	case "photo", "video", "audio", "sticker":
+		return kind
+	default:
+		return "document"
+	}
+}
+
+// waMediaLabel is the word the chat sees for a saved attachment, matching
+// the labels the telegram bridge sends for the same kinds.
+func waMediaLabel(kind string) string {
+	switch kind {
+	case "photo":
+		return "📷 Photo"
+	case "video":
+		return "🎬 Video"
+	case "audio":
+		return "🎵 Audio"
+	case "sticker":
+		return "🖼 Sticker"
+	default:
+		return "📄 Document"
+	}
+}
+
+// waRunHint is what a run is told it cannot do with a file, in the words
+// the telegram upload notes use: reading audio or video as bytes answers
+// with mojibake, so the gap is stated up front instead of discovered.
+func waRunHint(kind string) string {
+	switch kind {
+	case "photo", "sticker":
+		return "read the file to see it"
+	case "audio":
+		return "transcription is not available; ask the user for text if you need its content"
+	case "video":
+		return "this run cannot watch it; process it with shell tools like ffmpeg if you need its content"
+	default:
+		return ""
+	}
+}
+
+// waNoticeHint is the chat-facing half of the same statement: what the
+// sender gets by sending a prompt, and where the limit is.
+func waNoticeHint(kind string) string {
+	switch kind {
+	case "photo", "sticker":
+		return "send a prompt to use it: this run can see it"
+	case "audio":
+		return "send a prompt to use it: this run cannot hear it, so tell it what the audio says"
+	case "video":
+		return "send a prompt to use it: this run cannot watch it, so describe the video or let it pull frames with ffmpeg"
+	default:
+		return "send a prompt to read it: zips unpack with a member listing, PDF/DOCX/PPTX come back as text"
+	}
+}
+
+// waNotice is the chat-facing line for an attachment that arrived without a
+// prompt: what landed, and the one thing the sender most needs to know about
+// it. Without this line a saved file is invisible to the person who sent it.
+func waNotice(n waNote) string {
+	line := waMediaLabel(n.kind) + " saved: " + n.path
+	if n.name != "" {
+		line += " (" + n.name + ")"
+	}
+	return line + " - " + waNoticeHint(n.kind)
+}
+
+// waUploadContext renders saved attachments as a prompt prefix, in the
+// contract telegram's uploadContext uses so a run sees the same shape on
+// both transports: what the file is, where it is, and what this run cannot
+// do with it. Held notes come first, the newest attachment last.
+func waUploadContext(held, attached []waNote) string {
+	notes := make([]waNote, 0, len(held)+len(attached))
+	notes = append(notes, held...)
+	notes = append(notes, attached...)
+	if len(notes) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(notes))
+	for _, n := range notes {
+		line := n.kind + " " + n.path
+		if n.name != "" {
+			line = n.kind + " " + n.name + " saved at " + n.path
+		}
+		if hint := waRunHint(n.kind); hint != "" {
+			line += " (" + hint + ")"
+		}
+		lines = append(lines, "- "+line)
+	}
+	return "[Files the user sent since your last reply, oldest first. The last one is the most recent, and a bare \"that file\" or \"it\" in the message below most plausibly means it unless the user names something else.]\n" +
+		strings.Join(lines, "\n") + "\n\n"
+}
+
+// rememberMedia holds saved attachments until that chat sends a prompt, so a
+// file sent on its own is not answered by a run that has never heard of it.
+// Bounded like telegram's pending uploads: a chat that only drops files must
+// not grow an unbounded list, so the oldest notes fall off.
+func (b *Bridge) rememberMedia(chat string, notes []waNote) {
+	if len(notes) == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pending == nil {
+		b.pending = map[string][]waNote{}
+	}
+	kept := append(append([]waNote{}, b.pending[chat]...), notes...)
+	if len(kept) > maxPendingWAMedia {
+		kept = kept[len(kept)-maxPendingWAMedia:]
+	}
+	b.pending[chat] = kept
+}
+
+// takeMedia returns and clears the notes held for a chat. It runs only once
+// a run has been committed to, so a busy chat keeps its holds for later.
+func (b *Bridge) takeMedia(chat string) []waNote {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	notes := b.pending[chat]
+	delete(b.pending, chat)
+	return notes
 }
 
 // startTyping turns the typing indicator on for a chat and returns a function

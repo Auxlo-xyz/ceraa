@@ -939,3 +939,132 @@ func TestAModelAnswerReachesWhatsAppWithEmphasisConverted(t *testing.T) {
 		t.Errorf("outbound = %q\nwant      = %q", sent[0].text, want)
 	}
 }
+
+// A file with no prompt attached used to be saved and then forgotten: the
+// chat saw nothing, and no later run ever learned the file existed. Both
+// halves are the fix - the sender is told what landed, and the note waits
+// for the next prompt instead of dying with this message.
+func TestBridgeMediaOnlyNoticesAndHoldsForTheNextPrompt(t *testing.T) {
+	mediaDir := t.TempDir()
+	src := writeSizedFile(t, t.TempDir(), "clip.mp4", 64)
+	run := &stubRun{final: "ok"}
+	b, ft := testBridge(mediaDir, run)
+	chat := "2348012345678@s.whatsapp.net"
+	b.handle(context.Background(), InboundMessage{
+		ChatJID:   chat,
+		ID:        "media-only",
+		MediaPath: src,
+		MediaKind: "video",
+	})
+	if run.callCount() != 0 {
+		t.Fatalf("media-only message started %d runs, want 0", run.callCount())
+	}
+	sent := waitForOutbound(t, ft, 1)
+	if !strings.Contains(sent[0].text, "Video saved") {
+		t.Errorf("notice = %q, want it to name the video", sent[0].text)
+	}
+	if !strings.Contains(sent[0].text, "cannot watch it") {
+		t.Errorf("notice = %q, want it to state the capability gap", sent[0].text)
+	}
+	if sent[0].toJID != chat {
+		t.Errorf("notice went to %q, want %q", sent[0].toJID, chat)
+	}
+	saved, err := filepath.Glob(filepath.Join(mediaDir, "wa-*"))
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved copies = %v (err %v), want exactly one", saved, err)
+	}
+
+	// The next prompt in that chat is told about the file it is replying to.
+	b.handle(context.Background(), InboundMessage{
+		ChatJID: chat,
+		ID:      "media-only-2",
+		Text:    "what was in that?",
+	})
+	if run.callCount() != 1 {
+		t.Fatalf("second message started %d runs, want 1", run.callCount())
+	}
+	run.mu.Lock()
+	prompt := run.prompts[0]
+	run.mu.Unlock()
+	if !strings.Contains(prompt, saved[0]) {
+		t.Errorf("prompt = %q, want the held path inside", prompt)
+	}
+	if !strings.Contains(prompt, "this run cannot watch it") {
+		t.Errorf("prompt = %q, want the capability hint attached", prompt)
+	}
+	if !strings.Contains(prompt, "what was in that?") {
+		t.Errorf("prompt = %q, want the sentence kept", prompt)
+	}
+	if held := b.takeMedia(chat); len(held) != 0 {
+		t.Errorf("held notes survived the run: %+v", held)
+	}
+}
+
+// A chat that only drops files must not grow an unbounded list: the oldest
+// notes fall off at the cap, the newest are kept.
+func TestBridgeHeldMediaNotesAreBounded(t *testing.T) {
+	b, _ := testBridge(t.TempDir(), &stubRun{})
+	chat := "2348012345678@s.whatsapp.net"
+	for i := 0; i < maxPendingWAMedia+3; i++ {
+		b.rememberMedia(chat, []waNote{{path: fmt.Sprintf("/f/%d", i), kind: "photo"}})
+	}
+	notes := b.takeMedia(chat)
+	if len(notes) != maxPendingWAMedia {
+		t.Fatalf("held notes = %d, want the cap of %d", len(notes), maxPendingWAMedia)
+	}
+	if notes[0].path != "/f/3" {
+		t.Errorf("oldest held = %q, want /f/3 (the first three dropped)", notes[0].path)
+	}
+}
+
+// The prefix a run sees states what the file is, where it is, and what this
+// run cannot do with it - in the contract the telegram bridge uses, so a
+// file reads the same way on either transport.
+func TestWaUploadContextStatesTheCapabilityGap(t *testing.T) {
+	if got := waUploadContext(nil, nil); got != "" {
+		t.Errorf("empty notes = %q, want no prefix", got)
+	}
+	got := waUploadContext(
+		[]waNote{{path: "/f/wa-voice.ogg", kind: "audio"}},
+		[]waNote{{path: "/f/wa-plan.pdf", kind: "document", name: "Q3 plan.pdf"}},
+	)
+	if !strings.HasPrefix(got, "[Files the user sent since your last reply, oldest first.") {
+		t.Errorf("prefix = %q, want the held-files header", got)
+	}
+	if !strings.Contains(got, "- audio /f/wa-voice.ogg (transcription is not available;") {
+		t.Errorf("prefix = %q, want the audio note with its hint", got)
+	}
+	if !strings.Contains(got, "- document Q3 plan.pdf saved at /f/wa-plan.pdf") {
+		t.Errorf("prefix = %q, want the document named the way the sender named it", got)
+	}
+	if strings.Index(got, "/f/wa-voice.ogg") > strings.Index(got, "/f/wa-plan.pdf") {
+		t.Errorf("prefix = %q, want the older held file first", got)
+	}
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Errorf("prefix = %q, want it to end with a blank line so the caller's prompt follows the block", got)
+	}
+	if got := waUploadContext(nil, []waNote{{path: "/f/wa-1.pdf", kind: "document"}}); strings.Contains(got, "(") {
+		t.Errorf("document note = %q, want no capability hint the tool already covers", got)
+	}
+}
+
+// The chat-facing half names the file and then the limit, so the sender
+// learns what a prompt buys them instead of watching the file vanish.
+func TestWaNoticeNamesTheFileAndTheLimit(t *testing.T) {
+	doc := waNotice(waNote{path: "/f/wa-1.pdf", kind: "document", name: "Q3 plan.pdf"})
+	if !strings.Contains(doc, "📄 Document saved: /f/wa-1.pdf (Q3 plan.pdf)") {
+		t.Errorf("document notice = %q, want path and the sender's name", doc)
+	}
+	if !strings.Contains(doc, "send a prompt to read it") {
+		t.Errorf("document notice = %q, want the prompt call to action", doc)
+	}
+	if !strings.Contains(waNotice(waNote{path: "/f/wa-2.ogg", kind: "audio"}), "cannot hear it") {
+		t.Errorf("audio notice = %q, want the transcription limit stated", doc)
+	}
+	if !strings.Contains(waNotice(waNote{path: "/f/wa-3.jpg", kind: "photo"}), "this run can see it") {
+		t.Errorf("photo notice = %q, want the capability confirmed", doc)
+	}
+	if !strings.HasPrefix(waNotice(waNote{path: "/f/wa-4.bin", kind: ""}), "📄 Document") {
+		t.Errorf("unknown kind = %q, want the document fallback label", doc)
+	}
+}
