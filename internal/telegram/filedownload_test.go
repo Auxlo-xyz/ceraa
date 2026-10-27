@@ -35,7 +35,7 @@ func TestDownloadRefusesAFilePastTheBotApiCapWithoutCallingTelegram(t *testing.T
 	defer server.Close()
 	stubTelegramBases(t, server.URL)
 
-	_, err := downloadTelegramFile("token", "FILE_ID", telegramDownloadLimit+1)
+	_, err := downloadTelegramFile("token", "FILE_ID", telegramDownloadLimit+1, "")
 	if err == nil {
 		t.Fatal("an over-the-cap file was accepted")
 	}
@@ -60,7 +60,7 @@ func TestDownloadKeepsTheDescriptionTelegramGave(t *testing.T) {
 	defer server.Close()
 	stubTelegramBases(t, server.URL)
 
-	_, err := downloadTelegramFile("token", "FILE_ID", 0)
+	_, err := downloadTelegramFile("token", "FILE_ID", 0, "")
 	if err == nil {
 		t.Fatal("a refused getFile was reported as success")
 	}
@@ -86,7 +86,7 @@ func TestDownloadReportsARejectedFileHostInsteadOfSavingIt(t *testing.T) {
 	files := t.TempDir()
 	t.Setenv("CERAA_FILES_DIR", files)
 
-	_, err := downloadTelegramFile("token", "FILE_ID", 0)
+	_, err := downloadTelegramFile("token", "FILE_ID", 0, "")
 	if err == nil {
 		t.Fatal("a rejected download was reported as success")
 	}
@@ -118,7 +118,7 @@ func TestDownloadRefusesABodyThatStoppedEarly(t *testing.T) {
 	files := t.TempDir()
 	t.Setenv("CERAA_FILES_DIR", files)
 
-	_, err := downloadTelegramFile("token", "FILE_ID", 0)
+	_, err := downloadTelegramFile("token", "FILE_ID", 0, "")
 	if err == nil {
 		t.Fatal("a truncated body was reported as success")
 	}
@@ -149,7 +149,7 @@ func TestDownloadSavesAWholeFileUnderItsTelegramName(t *testing.T) {
 	files := t.TempDir()
 	t.Setenv("CERAA_FILES_DIR", files)
 
-	path, err := downloadTelegramFile("token", "FILE_ID", 0)
+	path, err := downloadTelegramFile("token", "FILE_ID", 0, "")
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}

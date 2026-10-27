@@ -43,12 +43,59 @@ cd "$(dirname "$0")/.."
 # makes a working binary from the tree, not a release; scripts/release.sh is the
 # release path and it injects the tag. Injecting "0.1.0" here is what made every
 # release claim to be 0.1.0 regardless of its tag.
-go build \
-  -trimpath \
-  -buildvcs=false \
-  -ldflags="-s -w" \
-  -o bin/ceraa \
-  .
+# The MTProto application credential is baked from the deploy box's env file
+# when it defines CERAA_TG_API_ID and CERAA_TG_API_HASH, so a shipped binary
+# brings up large-file downloads with zero configuration while the source tree
+# and the public mirror never carry the values. Without them the binary still
+# builds and the download path falls back to the Bot API cap.
+CERAA_ENV_FILE="${CERAA_ENV_FILE:-/workspace/ceraa/runtime/env.sh}"
+LDFLAGS="-s -w"
+if [ -n "${CERAA_TG_API_ID:-}" ] && [ -n "${CERAA_TG_API_HASH:-}" ]; then
+  LDFLAGS="$LDFLAGS -X ceraa/internal/telegram.bakedAPIID=$CERAA_TG_API_ID -X ceraa/internal/telegram.bakedAPIHash=$CERAA_TG_API_HASH"
+elif [ -f "$CERAA_ENV_FILE" ]; then
+  set -a; # shellcheck disable=SC1090
+  . "$CERAA_ENV_FILE" 2>/dev/null || true
+  set +a
+  if [ -n "${CERAA_TG_API_ID:-}" ] && [ -n "${CERAA_TG_API_HASH:-}" ]; then
+    LDFLAGS="$LDFLAGS -X ceraa/internal/telegram.bakedAPIID=$CERAA_TG_API_ID -X ceraa/internal/telegram.bakedAPIHash=$CERAA_TG_API_HASH"
+  fi
+fi
+
+# CERAA_GCFLAGS lets a memory-starved build box opt packages out of
+# optimization. The gotd/td packages are the RAM whale here: with full
+# optimization their compile alone peaks near 3 GiB, which kills every
+# build on a ~3 GiB budget. Compiling them with -N -l cuts that peak to
+# well under 2 GiB at the cost of a bigger, somewhat slower binary.
+# The build cache keys on the flags, so once a -N -l pass of those
+# packages is cached, later builds with the same CERAA_GCFLAGS reuse it
+# and stay cheap. Drop the variable on a roomier box to ship fully
+# optimized.
+# The gcflags value contains spaces and go build parses only pre-split
+# words, so the two cases are spelled out instead of passed through a
+# variable that bash would word-split.
+if [ -n "${CERAA_GCFLAGS:-}" ]; then
+  # Each ;-separated pair is one pattern=flags spec; -gcflags holds a
+  # single pattern per flag, so pairs become separate flags.
+  gcflags_args=()
+  IFS=';' read -ra gcflags_specs <<< "$CERAA_GCFLAGS"
+  for spec in "${gcflags_specs[@]}"; do
+    gcflags_args+=("-gcflags=$spec")
+  done
+  go build \
+    -trimpath \
+    -buildvcs=false \
+    "${gcflags_args[@]}" \
+    -ldflags="$LDFLAGS" \
+    -o bin/ceraa \
+    .
+else
+  go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="$LDFLAGS" \
+    -o bin/ceraa \
+    .
+fi
 
 # The terms ship with the binary, and the notice is also compiled in. Both, because
 # they fail differently: the license files are included in source and release

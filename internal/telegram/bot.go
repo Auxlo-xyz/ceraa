@@ -1121,7 +1121,7 @@ func Run() error {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				// Download largest photo via getFile -> attach to harness
 				fileID := u.Message.Photo[len(u.Message.Photo)-1].FileID
-				if path, err := downloadTelegramFile(token, fileID, 0); err == nil {
+				if path, err := downloadTelegramFile(token, fileID, 0, ""); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "photo", path, "")
 					// A photo is a prompt, not a file waiting for one. The caption
 					// is the instruction when there is one; without it the run is
@@ -1140,7 +1140,7 @@ func Run() error {
 			}
 			if u.Message.Document != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				if path, err := downloadTelegramFile(token, u.Message.Document.FileID, u.Message.Document.FileSize); err == nil {
+				if path, err := downloadTelegramFile(token, u.Message.Document.FileID, u.Message.Document.FileSize, u.Message.Document.FileName); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "document", path, u.Message.Document.FileName)
 					send(token, u.Message.Chat.ID, "📄 Document saved: "+path+" ("+u.Message.Document.FileName+") — send a prompt to read it: zips unpack with a member listing, PDF/DOCX/PPTX come back as text")
 				} else {
@@ -1151,7 +1151,7 @@ func Run() error {
 			if u.Message.Voice != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				// Voice -> STT stub maps to soraacode stt-service.js whisper-large-v3-turbo
-				if path, err := downloadTelegramFile(token, u.Message.Voice.FileID, u.Message.Voice.FileSize); err == nil {
+				if path, err := downloadTelegramFile(token, u.Message.Voice.FileID, u.Message.Voice.FileSize, ""); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "voice", path, "")
 					send(token, u.Message.Chat.ID, "🎤 Voice saved: "+path+" — STT via whisper not yet wired, send text prompt instead")
 				} else {
@@ -1671,11 +1671,20 @@ func telegramFilePreview(fileID string) string {
 // downloadTelegramFile downloads a Telegram file by file_id -> maps to soraacode app/services/file-download-service.js + document-extractor
 //
 // size is the file_size the update reported, or0 when it did not carry one. A
-// file past the hosted Bot API's cap never reaches the network: Telegram
-// refuses it at getFile, and naming the cap here turns a bare failure into a
-// sentence the sender can act on.
-func downloadTelegramFile(token, fileID string, size int64) (string, error) {
+// file past the hosted Bot API's cap never reaches the Bot API network path:
+// Telegram refuses it at getFile. That is the one size the built-in MTProto
+// path can still take, so it runs first and its failure falls back to naming
+// the cap, which turns a bare refusal into a sentence the sender can act on.
+//
+// name is the sender's filename when the update carried one; only the MTProto
+// path reads it, to keep the extension on the saved file.
+func downloadTelegramFile(token, fileID string, size int64, name string) (string, error) {
 	if size > telegramDownloadLimit {
+		if path, err := mtprotoDownload(token, fileID, name); err == nil {
+			return path, nil
+		} else if err != errMTProtoUnavailable {
+			return "", fmt.Errorf("it is %s, over the 20 MB Bot API cap, and the built-in large-file download failed: %v", humanBytes(size), err)
+		}
 		return "", fmt.Errorf("it is %s and Telegram only lets bots download files up to 20 MB", humanBytes(size))
 	}
 	resp, err := telegramClient.Get(api("getFile?file_id="+fileID, token))
@@ -1759,7 +1768,7 @@ func downloadTelegramFile(token, fileID string, size int64) (string, error) {
 // something smaller.
 func saveIncomingMedia(token string, chatID int64, updateID int, fileID string, size int64, kind, label, name, hint string) {
 	GetDefaultInbox().CheckAndRecord(updateID)
-	path, err := downloadTelegramFile(token, fileID, size)
+	path, err := downloadTelegramFile(token, fileID, size, name)
 	if err != nil {
 		if name == "" {
 			name = kind
