@@ -189,3 +189,11 @@ func (g *refusalGate) release() {
 
 // firedRefusal reports whether a refusal was found and discarded.
 func (g *refusalGate) firedRefusal() bool { return g.fired }
+
+// reset discards whatever is buffered without emitting it.
+//
+// A request resent after the connection dropped regenerates its opening, so the
+// text held from the failed attempt would otherwise be released ahead of the new
+// answer and appear twice. Holding itself is kept: whether the opening is still
+// being watched for a refusal has not changed.
+func (g *refusalGate) reset() { g.buf.Reset() }

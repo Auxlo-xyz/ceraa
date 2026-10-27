@@ -129,6 +129,7 @@ type agentRunDeps struct {
 	onTool              func(string, string)
 	onAnswer            func(string)
 	onStepReasoningOnly func()
+	onStreamRestart     func()
 	onRunStarted        func(string)
 	onRunFinished       func(string, sessionstore.RunStatus)
 }
@@ -198,6 +199,14 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 			OnStepReasoningOnly: func() {
 				if d.onStepReasoningOnly != nil {
 					d.onStepReasoningOnly()
+				}
+			},
+			OnStreamRestart: func() {
+				// The preview is emptied before OnRetry announces the wait, so
+				// the fragment the dropped connection left behind is gone rather
+				// than sitting on screen until the resend overwrites it.
+				if d.onStreamRestart != nil {
+					d.onStreamRestart()
 				}
 			},
 			OnToolStart: func(callID, name string, args map[string]any) {
@@ -289,19 +298,19 @@ func agentRunnerConfig(d agentRunDeps) coordinator.RunnerConfig {
 	}
 }
 
-func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
+func runAgentContext(parent context.Context, sessionID string, user string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func(), onStreamRestart func()) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly)
+	return runAgentWithConfigContext(parent, sessionID, user, cfg, onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly, onStreamRestart)
 }
 
-func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
-	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly)
+func runAgentWithConfigContext(parent context.Context, sessionID string, user string, cfg *config.Config, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func(), onStreamRestart func()) error {
+	return runAgentWithConfigContextAt(parent, sessionID, user, cfg, "", onContent, onReasoning, onTool, onAnswer, onStepReasoningOnly, onStreamRestart)
 }
 
-func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func()) error {
+func runAgentWithConfigContextAt(parent context.Context, sessionID string, user string, cfg *config.Config, workdirOverride string, onContent func(string), onReasoning func(string), onTool func(string, string), onAnswer func(string), onStepReasoningOnly func(), onStreamRestart func()) error {
 	if err := parent.Err(); err != nil {
 		return err
 	}
@@ -409,6 +418,7 @@ func runAgentWithConfigContextAt(parent context.Context, sessionID string, user 
 		onTool:              onTool,
 		onAnswer:            onAnswer,
 		onStepReasoningOnly: onStepReasoningOnly,
+		onStreamRestart:     onStreamRestart,
 		onRunStarted: func(runID string) {
 			if chatID, ok := telegramRunOwner(parent); ok {
 				actor := sessioncontrol.Actor{ID: fmt.Sprintf("telegram:%d", chatID), Source: "telegram", ChatID: chatID}

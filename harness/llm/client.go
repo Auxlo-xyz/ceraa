@@ -98,6 +98,13 @@ type ProviderConfig struct {
 	// the delay chosen. A gateway backoff can run to about a minute, and a silent
 	// wait that long looks exactly like a hang.
 	OnRetry func(error, int, time.Duration)
+	// OnStreamRestart fires immediately before a request is resent because the
+	// connection dropped after the answer had already started arriving. It is
+	// the caller's cue to throw away what the first attempt streamed: the
+	// resend produces the answer from the beginning, so anything held on to is
+	// shown twice and counted twice. Fires before OnRetry, so the discarded
+	// preview is gone before the wait is announced.
+	OnStreamRestart func()
 	// ExtraBody is merged into every chat-completions request body. Used by
 	// providers that require extra top-level fields. Set by the caller; never
 	// mutated here.
@@ -328,6 +335,40 @@ type StreamError struct {
 
 func (e *StreamError) Error() string { return e.Err.Error() }
 func (e *StreamError) Unwrap() error { return e.Err }
+
+// midStreamDrop reports whether a stream error is the connection going away
+// under an answer in progress, rather than the provider refusing the request.
+//
+// Partial output is normally never resent, because the caller has already been
+// handed it and a resend would repeat it. A drop is the exception: the partial
+// is a fragment of an answer that will never arrive, so the only way to get the
+// answer at all is to ask again and let the caller start over. The wording is
+// matched rather than the error type because the same failure arrives as a
+// syscall through bufio, as an io error from a body that ended early, and as
+// our own sentence for a body that closed without its terminal event.
+func midStreamDrop(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	text := err.Error()
+	for _, needle := range []string{
+		"connection reset by peer",
+		"broken pipe",
+		"unexpected EOF",
+		// A gateway that closes the connection cleanly mid-answer leaves no
+		// reset to match: the scanner just ends and the reader reports the
+		// missing terminal event instead.
+		"provider stream ended without a terminal event",
+	} {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
 
 func (e *ProviderError) Error() string {
 	detail := e.Body
@@ -1379,7 +1420,18 @@ func (c *StreamingClient) streamOpenAI(ctx context.Context, req StreamRequest, o
 		if streamErr, ok := err.(*StreamError); ok && !streamErr.Partial && reasoningEchoError(streamErr.Error()) && retryWithReasoningEcho() {
 			continue
 		}
-		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
+		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && attempt < c.cfg.MaxRetries {
+			// Partial output is only resent when the connection is what broke.
+			// Any other retryable failure with content already delivered would
+			// repeat an answer the caller is holding, so it is returned as it
+			// stands; a drop leaves a fragment nobody can use, and asking again
+			// is the only route to the answer.
+			if streamErr.Partial && !midStreamDrop(streamErr.Err) {
+				return err
+			}
+			if streamErr.Partial && c.cfg.OnStreamRestart != nil {
+				c.cfg.OnStreamRestart()
+			}
 			delay := retryDelay(streamErr, attempt, c.cfg.RetryBackoff)
 			if c.cfg.OnRetry != nil {
 				c.cfg.OnRetry(streamErr, attempt+1, delay)

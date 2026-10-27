@@ -63,7 +63,7 @@ func TestRunAgentMaintainsToolPairsAcrossLongTurns(t *testing.T) {
 		EvaluationFile: dir + "/evaluations.json",
 	}
 	var final string
-	err := runAgentWithConfigContextAt(context.Background(), "long-session", "work for several turns", cfg, dir, nil, nil, nil, func(answer string) { final = answer }, nil)
+	err := runAgentWithConfigContextAt(context.Background(), "long-session", "work for several turns", cfg, dir, nil, nil, nil, func(answer string) { final = answer }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func assertToolPairs(t *testing.T, messages []map[string]any) {
 func TestRunAgentHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := runAgentContext(ctx, "cancelled", "task", nil, nil, nil, nil, nil); err == nil {
+	if err := runAgentContext(ctx, "cancelled", "task", nil, nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("expected cancellation error")
 	}
 }

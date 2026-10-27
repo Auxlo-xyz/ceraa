@@ -1381,3 +1381,86 @@ func TestLineCountSurvivesWhenDetailWasNeverSet(t *testing.T) {
 		t.Errorf("label = %q, want the counts kept out of it", activity.label)
 	}
 }
+
+// A resent answer starts again at its first token, so whatever the dropped
+// connection left in the preview has to go: keeping it would put the same
+// opening on screen twice, and keeping it as the delivered text would make the
+// replacement read as a message already shown.
+func TestStreamRestartDropsWhatTheDroppedConnectionLeftBehind(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "editMessageText") {
+			t.Errorf("unexpected call %s", r.URL.Path)
+		}
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		text, _ := payload["text"].(string)
+		if rich, ok := payload["rich_message"].(map[string]any); ok {
+			if markdown, ok := rich["markdown"].(string); ok {
+				text = markdown
+			}
+		}
+		mu.Lock()
+		bodies = append(bodies, text)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	defer server.Close()
+	previous := telegramAPIBase
+	telegramAPIBase = server.URL + "/bot"
+	defer func() { telegramAPIBase = previous }()
+
+	renderer := &runRenderer{
+		token:         "token",
+		chatID:        1,
+		messageID:     7,
+		thoughtID:     9,
+		thought:       "thinking out loud",
+		streamContent: "half an ",
+		sentStream:    "half an ",
+		sentStreamID:  7,
+	}
+	renderer.streamRestart()
+
+	mu.Lock()
+	if len(bodies) != 1 {
+		t.Fatalf("edits = %d, want 1: the open thought block is published before the resend", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "thinking out loud") {
+		t.Errorf("first edit = %q, want the thought block", bodies[0])
+	}
+	mu.Unlock()
+
+	renderer.mu.Lock()
+	if renderer.streamContent != "" {
+		t.Errorf("preview = %q, want empty: the fragment is not an answer", renderer.streamContent)
+	}
+	if renderer.sentStream != "" {
+		t.Errorf("delivered text = %q, want empty so the replacement is not read as already shown", renderer.sentStream)
+	}
+	if renderer.sentStreamID != 7 || renderer.messageID != 7 {
+		t.Errorf("sentStreamID = %d messageID = %d, want both on the message the answer is rendering into", renderer.sentStreamID, renderer.messageID)
+	}
+	if renderer.thought != "" || renderer.thoughtID != 0 || renderer.sentThought != "" {
+		t.Errorf("thought = %q id = %d sent = %q, want the block closed", renderer.thought, renderer.thoughtID, renderer.sentThought)
+	}
+	renderer.mu.Unlock()
+
+	// The first token of the resend has to reach Telegram as an edit of the
+	// message already on screen, carrying only the new answer.
+	renderer.content("fresh answer")
+	renderer.renderStream()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("edits = %d, want 2: the thought block and the restarted preview", len(bodies))
+	}
+	if strings.Contains(bodies[1], "half an") {
+		t.Errorf("restarted preview = %q, want it to carry only the resent answer", bodies[1])
+	}
+	if !strings.Contains(bodies[1], "fresh answer") {
+		t.Errorf("restarted preview = %q, want the resent answer", bodies[1])
+	}
+}

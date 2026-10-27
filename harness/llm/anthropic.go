@@ -749,7 +749,17 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 			}
 			return perr
 		}
-		streamErr := c.readAnthropicStream(response.Body, onDelta)
+		// This transport has always replayed a stream error, partial output or
+		// not, so the caller has to be told to throw away what the failed
+		// attempt streamed before the replay lands on top of it.
+		emitted := false
+		tracked := func(delta ProviderResponse) {
+			emitted = true
+			if onDelta != nil {
+				onDelta(delta)
+			}
+		}
+		streamErr := c.readAnthropicStream(response.Body, tracked)
 		response.Body.Close()
 		if streamErr != nil {
 			lastErr = streamErr
@@ -757,6 +767,9 @@ func (c *StreamingClient) streamAnthropic(ctx context.Context, req StreamRequest
 				return streamErr
 			}
 			if attempt < attempts {
+				if emitted && c.cfg.OnStreamRestart != nil {
+					c.cfg.OnStreamRestart()
+				}
 				if !sleepContext(ctx, backoff(attempt)) {
 					return streamErr
 				}

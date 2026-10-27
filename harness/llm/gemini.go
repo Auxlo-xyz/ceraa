@@ -784,7 +784,21 @@ func (c *StreamingClient) streamGemini(ctx context.Context, req StreamRequest, o
 		if err == nil || !isStreamRetryable(err) {
 			finish()
 		}
-		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && !streamErr.Partial && attempt < c.cfg.MaxRetries {
+		if streamErr, ok := err.(*StreamError); ok && streamErr.Retryable && attempt < c.cfg.MaxRetries {
+			// Same rule as the OpenAI-compatible path: a fragment is resent
+			// only when the connection is what broke it, and the caller is told
+			// to start over first so the fragment is not shown twice.
+			if streamErr.Partial && !midStreamDrop(streamErr.Err) {
+				return err
+			}
+			if streamErr.Partial && c.cfg.OnStreamRestart != nil {
+				c.cfg.OnStreamRestart()
+			}
+			// Announced like every other wait: this transport used to go quiet
+			// here, and a silent backoff is indistinguishable from a hang.
+			if c.cfg.OnRetry != nil {
+				c.cfg.OnRetry(streamErr, attempt+1, backoffScaled(attempt, c.cfg.RetryBackoff))
+			}
 			if !sleepContext(ctx, backoffScaled(attempt, c.cfg.RetryBackoff)) {
 				break
 			}

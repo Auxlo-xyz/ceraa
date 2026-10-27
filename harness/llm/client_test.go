@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestStreamUsesOpenAICompatibilityAndReplaysReasoning(t *testing.T) {
@@ -874,5 +877,148 @@ func TestMissingReasoningEchoIsRepairedOnceAndRetried(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2: one refused and one repaired", requests)
+	}
+}
+
+// A connection torn out under an answer in progress is the one case where a
+// partial stream may be resent: what arrived is unusable on its own, so the
+// caller is told to drop it before the replacement starts.
+func TestAMidStreamDropIsResentAndSignalsAStartOver(t *testing.T) {
+	var requests atomic.Int32
+	var restarts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if int(requests.Add(1)) == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"frag\"}}]}\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			// Give the reader time to take the fragment before the socket is
+			// torn out, so this is a drop mid-answer rather than a refused dial.
+			time.Sleep(50 * time.Millisecond)
+			hijack, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("the test server cannot hijack, so no drop can be simulated")
+				return
+			}
+			conn, _, err := hijack.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fresh\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := New(ProviderConfig{
+		BaseURL:         server.URL,
+		Model:           "unknown-model",
+		APIKey:          "test",
+		MaxRetries:      2,
+		RetryBackoff:    time.Millisecond,
+		OnStreamRestart: func() { restarts.Add(1) },
+	})
+	var seen []string
+	err := client.Stream(t.Context(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "go"}},
+	}, func(delta ProviderResponse) {
+		if delta.Content != "" {
+			seen = append(seen, fmt.Sprintf("restart=%d %s", restarts.Load(), delta.Content))
+		}
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("requests = %d, want 2: one dropped and one resent", got)
+	}
+	// The signal is what makes the resend safe downstream; without it the
+	// caller would show the fragment and the answer together.
+	if got := restarts.Load(); got != 1 {
+		t.Errorf("restarts = %d, want 1", got)
+	}
+	if len(seen) == 0 || seen[len(seen)-1] != "restart=1 fresh" {
+		t.Errorf("delivered %v, want the resent answer after the restart", seen)
+	}
+	for _, item := range seen[:len(seen)-1] {
+		if !strings.HasPrefix(item, "restart=0 ") {
+			t.Errorf("delivered %q after the restart", item)
+		}
+	}
+}
+
+// A retryable failure the provider raised inside its own stream is not a broken
+// transport: the fragment may still be shown, so resending would repeat it.
+func TestAPartialProviderErrorIsNotResent(t *testing.T) {
+	var requests atomic.Int32
+	var restarts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"frag\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"Provider returned error\"}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := New(ProviderConfig{
+		BaseURL:         server.URL,
+		Model:           "unknown-model",
+		APIKey:          "test",
+		MaxRetries:      2,
+		RetryBackoff:    time.Millisecond,
+		OnStreamRestart: func() { restarts.Add(1) },
+	})
+	err := client.Stream(t.Context(), StreamRequest{
+		Messages: []Item{{Kind: "text", Role: RoleUser, Text: "go"}},
+	}, func(ProviderResponse) {})
+	if err == nil {
+		t.Fatal("a partial provider failure was reported as success")
+	}
+	if !strings.Contains(err.Error(), "Provider returned error") {
+		t.Errorf("error = %q, want the provider's own message", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Errorf("requests = %d, want 1: a partial stream is resent only when the transport died", got)
+	}
+	if got := restarts.Load(); got != 0 {
+		t.Errorf("restarts = %d, want 0: nothing was resent", got)
+	}
+}
+
+// The transport failures that leave a fragment unusable, and the ones that do
+// not. The last entry is the gateway that finishes without naming a reason,
+// which the Cline path serves routinely: resending it loops.
+func TestMidStreamDropRecognizesTornConnections(t *testing.T) {
+	torn := []error{
+		io.ErrUnexpectedEOF,
+		errors.New("read tcp 10.4.80.246:36014->35.186.247.105:443: read: connection reset by peer"),
+		errors.New("write tcp 10.4.80.246:36014->35.186.247.105:443: write: broken pipe"),
+		errors.New("unexpected EOF"),
+		errors.New("provider stream ended without a terminal event"),
+	}
+	for _, err := range torn {
+		if !midStreamDrop(err) {
+			t.Errorf("midStreamDrop(%v) = false, want true: a fragment from this failure is not an answer", err)
+		}
+	}
+	kept := []error{
+		errors.New("provider stream ended without finish_reason"),
+		errors.New("provider stream error: rate limit exceeded"),
+		nil,
+	}
+	for _, err := range kept {
+		if midStreamDrop(err) {
+			t.Errorf("midStreamDrop(%v) = true, want false: the fragment may still be shown", err)
+		}
 	}
 }

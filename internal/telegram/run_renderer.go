@@ -729,6 +729,35 @@ func (r *runRenderer) endAnswerBlock() {
 	r.mu.Unlock()
 }
 
+// streamRestart drops what a connection that died mid-answer left on screen, so
+// the resent answer arrives without repeating it.
+//
+// The answer preview keeps its message and forgets its text: the resend starts
+// the answer again, and editing the same bubble with it replaces the fragment
+// instead of leaving a second bubble beside a truncated first one. The thought
+// block is closed rather than emptied, because a thought is a record and not a
+// draft - publishing it without its cursor and letting the resend open a block
+// of its own says where the gap came from, where an emptied block would leave
+// the cursor of an answer that is no longer coming.
+func (r *runRenderer) streamRestart() {
+	r.endThoughtBlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	r.streamContent = ""
+	if r.messageID != 0 {
+		// Recorded as this message's text with nothing current on it, so the
+		// first delta of the resend is pushed as an edit. Leaving the previous
+		// fragment in sentStream would make an identical opening read as already
+		// delivered, and leaving sentStreamID at zero would take the just-created
+		// short-circuit, which records a text it never sent.
+		r.sentStream = ""
+		r.sentStreamID = r.messageID
+	}
+}
+
 func (r *runRenderer) reasoning(value string) {
 	now := time.Now()
 	r.mu.Lock()

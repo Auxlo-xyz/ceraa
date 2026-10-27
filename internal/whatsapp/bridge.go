@@ -360,6 +360,15 @@ func (b *Bridge) handle(ctx context.Context, msg InboundMessage) {
 				stream.WriteString(delta)
 				streamMu.Unlock()
 			},
+			OnStreamRestart: func() {
+				// The resend writes the answer again from its first token, so the
+				// fragment the dropped connection left behind would otherwise be
+				// sent in front of it whenever the run settles on the streamed
+				// text rather than on a final string.
+				streamMu.Lock()
+				stream.Reset()
+				streamMu.Unlock()
+			},
 			OnToolStart: func(_ string, name string, args map[string]any) {
 				emitTool(name, args)
 			},

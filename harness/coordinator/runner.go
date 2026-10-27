@@ -154,7 +154,14 @@ type Callbacks struct {
 	// OnRetry fires before each provider retry wait, with the error, the attempt
 	// number and the delay. A gateway backoff runs to about a minute and a silent
 	// wait that long is indistinguishable from a hang.
-	OnRetry          func(error, int, time.Duration)
+	OnRetry func(error, int, time.Duration)
+	// OnStreamRestart fires when a request is being resent because the connection
+	// dropped mid-answer. The resend regenerates the answer from the beginning,
+	// so a surface holding what the failed attempt streamed has to drop it or the
+	// reader is shown the answer twice. Nothing is retracted on a terminal
+	// surface: text already printed cannot be taken back, which is why a renderer
+	// that buffers may leave this unwired and rely on OnRetry to explain the gap.
+	OnStreamRestart  func()
 	OnCompactionDone func(bool, error)
 	// OnUsage carries the run's trust verdict beside the counts. The provider's
 	// input figure can be a running total rather than this request, and a renderer
@@ -776,7 +783,6 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if r.cb.OnRetry != nil {
 			modelConfig.OnRetry = r.cb.OnRetry
 		}
-		client := llm.New(modelConfig)
 		toolDefs := r.toolDefs()
 		requestToolChoice := ""
 		if forceFinalResponse {
@@ -838,6 +844,29 @@ func (r *Runner) Run(ctx context.Context, user string) (Result, error) {
 		if !refusalNudged && !forceFinalResponse {
 			gate.hold()
 		}
+		// A connection that drops mid-answer is resent, and the resend produces
+		// the same answer again from its first token. Everything the failed
+		// attempt streamed is dropped here before the new one arrives: the
+		// content and reasoning buffers, the tool calls it may already have
+		// started, and whatever the refusal gate was still holding. The surfaces
+		// are told for the same reason, or their previews carry both copies.
+		//
+		// What the run's accounting already folded in stays folded: usage is
+		// reported at the end of a stream, so a drop that lands after it is the
+		// rare case where one request is counted twice rather than not at all.
+		modelConfig.OnStreamRestart = func() {
+			content.Reset()
+			reasoning.Reset()
+			reasoningSent = 0
+			reasoningDetails = nil
+			calls = nil
+			usage = llm.UsageInfo{}
+			gate.reset()
+			if r.cb.OnStreamRestart != nil {
+				r.cb.OnStreamRestart()
+			}
+		}
+		client := llm.New(modelConfig)
 		err = client.Stream(streamCtx, request, func(delta llm.ProviderResponse) {
 			if countsAsProgress(delta) {
 				stall.Kick()
