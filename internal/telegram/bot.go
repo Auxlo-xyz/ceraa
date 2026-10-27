@@ -66,9 +66,11 @@ type update struct {
 		Document *struct {
 			FileID   string `json:"file_id"`
 			FileName string `json:"file_name"`
+			FileSize int64  `json:"file_size"`
 		} `json:"document"`
 		Voice *struct {
-			FileID string `json:"file_id"`
+			FileID   string `json:"file_id"`
+			FileSize int64  `json:"file_size"`
 		} `json:"voice"`
 		// Audio, video and animation each arrive on their own field, never as a
 		// document. None of them was parsed until now, so a music file sent to
@@ -78,22 +80,52 @@ type update struct {
 			FileID   string `json:"file_id"`
 			FileName string `json:"file_name"`
 			Title    string `json:"title"`
+			FileSize int64  `json:"file_size"`
 		} `json:"audio"`
 		Video *struct {
 			FileID   string `json:"file_id"`
 			FileName string `json:"file_name"`
+			FileSize int64  `json:"file_size"`
 		} `json:"video"`
 		Animation *struct {
 			FileID   string `json:"file_id"`
 			FileName string `json:"file_name"`
+			FileSize int64  `json:"file_size"`
 		} `json:"animation"`
 	} `json:"message"`
 	CallbackQuery *callbackQuery `json:"callback_query"`
 }
 
 var telegramAPIBase = "https://api.telegram.org/bot"
+var telegramFileBase = "https://api.telegram.org/file/bot"
 var telegramClient = &http.Client{Timeout: 10 * time.Second}
 var telegramPollClient = &http.Client{Timeout: 45 * time.Second}
+
+// telegramFileClient is separate from telegramClient on purpose. The shared
+// client gives the whole request ten seconds, and a19 MB attachment needs
+// longer than that on an ordinary link: the deadline fires inside io.ReadAll,
+// the partial body is returned with the error, and the old code wrote that
+// body to disk and called the file saved.
+var telegramFileClient = &http.Client{Timeout: 2 * time.Minute}
+
+// telegramDownloadLimit is the largest file the hosted Bot API will hand a
+// bot. Telegram's own wording is "bots can download files of up to 20MB in
+// size". The pre-check exists only to name the reason before a request that
+// cannot succeed, so it reads the number the way Telegram writes it and lets
+// getFile have the final say in the narrow band either side of it.
+const telegramDownloadLimit = 20 << 20
+
+// humanBytes renders a size the way a chat message should read it.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
 
 func api(method, token string) string { return telegramAPIBase + token + "/" + method }
 
@@ -1089,7 +1121,7 @@ func Run() error {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				// Download largest photo via getFile -> attach to harness
 				fileID := u.Message.Photo[len(u.Message.Photo)-1].FileID
-				if path, err := downloadTelegramFile(token, fileID); err == nil {
+				if path, err := downloadTelegramFile(token, fileID, 0); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "photo", path, "")
 					// A photo is a prompt, not a file waiting for one. The caption
 					// is the instruction when there is one; without it the run is
@@ -1108,22 +1140,22 @@ func Run() error {
 			}
 			if u.Message.Document != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
-				if path, err := downloadTelegramFile(token, u.Message.Document.FileID); err == nil {
+				if path, err := downloadTelegramFile(token, u.Message.Document.FileID, u.Message.Document.FileSize); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "document", path, u.Message.Document.FileName)
 					send(token, u.Message.Chat.ID, "📄 Document saved: "+path+" ("+u.Message.Document.FileName+") — send a prompt to read it: zips unpack with a member listing, PDF/DOCX/PPTX come back as text")
 				} else {
-					send(token, u.Message.Chat.ID, "📄 Document: "+u.Message.Document.FileName+" (download failed)")
+					send(token, u.Message.Chat.ID, "📄 Document: "+u.Message.Document.FileName+" (download failed: "+err.Error()+")")
 				}
 				continue
 			}
 			if u.Message.Voice != nil {
 				GetDefaultInbox().CheckAndRecord(u.UpdateID)
 				// Voice -> STT stub maps to soraacode stt-service.js whisper-large-v3-turbo
-				if path, err := downloadTelegramFile(token, u.Message.Voice.FileID); err == nil {
+				if path, err := downloadTelegramFile(token, u.Message.Voice.FileID, u.Message.Voice.FileSize); err == nil {
 					defaultState.noteUpload(u.Message.Chat.ID, "voice", path, "")
 					send(token, u.Message.Chat.ID, "🎤 Voice saved: "+path+" — STT via whisper not yet wired, send text prompt instead")
 				} else {
-					send(token, u.Message.Chat.ID, "🎤 Voice received (download failed)")
+					send(token, u.Message.Chat.ID, "🎤 Voice received (download failed: "+err.Error()+")")
 				}
 				continue
 			}
@@ -1132,19 +1164,19 @@ func Run() error {
 				if name == "" {
 					name = strings.TrimSpace(u.Message.Audio.Title)
 				}
-				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Audio.FileID,
+				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Audio.FileID, u.Message.Audio.FileSize,
 					"audio", "\U0001f3b5 Audio", name,
 					"send a prompt to use it: this run cannot hear it, but shell tools like ffmpeg can")
 				continue
 			}
 			if u.Message.Video != nil {
-				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Video.FileID,
+				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Video.FileID, u.Message.Video.FileSize,
 					"video", "\U0001f3ac Video", strings.TrimSpace(u.Message.Video.FileName),
 					"send a prompt to use it: this run cannot watch it, but shell tools like ffmpeg can")
 				continue
 			}
 			if u.Message.Animation != nil {
-				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Animation.FileID,
+				saveIncomingMedia(token, u.Message.Chat.ID, u.UpdateID, u.Message.Animation.FileID, u.Message.Animation.FileSize,
 					"animation", "\U0001f39e Animation", strings.TrimSpace(u.Message.Animation.FileName),
 					"send a prompt to use it: this run cannot watch it, but shell tools like ffmpeg can")
 				continue
@@ -1637,7 +1669,15 @@ func telegramFilePreview(fileID string) string {
 }
 
 // downloadTelegramFile downloads a Telegram file by file_id -> maps to soraacode app/services/file-download-service.js + document-extractor
-func downloadTelegramFile(token, fileID string) (string, error) {
+//
+// size is the file_size the update reported, or0 when it did not carry one. A
+// file past the hosted Bot API's cap never reaches the network: Telegram
+// refuses it at getFile, and naming the cap here turns a bare failure into a
+// sentence the sender can act on.
+func downloadTelegramFile(token, fileID string, size int64) (string, error) {
+	if size > telegramDownloadLimit {
+		return "", fmt.Errorf("it is %s and Telegram only lets bots download files up to 20 MB", humanBytes(size))
+	}
 	resp, err := telegramClient.Get(api("getFile?file_id="+fileID, token))
 	if err != nil {
 		return "", err
@@ -1645,24 +1685,52 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var out struct {
-		Ok     bool `json:"ok"`
-		Result struct {
+		Ok          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
 			FilePath string `json:"file_path"`
+			FileSize int64  `json:"file_size"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", err
 	}
 	if !out.Ok || out.Result.FilePath == "" {
+		// The description is Telegram's own words for the refusal. Without it
+		// every size rejection, expired id and bad request collapses into the
+		// same three characters and the sender is left guessing.
+		if out.Description != "" {
+			return "", fmt.Errorf("%s", out.Description)
+		}
 		return "", fmt.Errorf("getFile failed")
 	}
-	fileURL := "https://api.telegram.org/file/bot" + token + "/" + out.Result.FilePath
-	resp2, err := telegramClient.Get(fileURL)
+	fileURL := telegramFileBase + token + "/" + out.Result.FilePath
+	resp2, err := telegramFileClient.Get(fileURL)
 	if err != nil {
 		return "", err
 	}
 	defer resp2.Body.Close()
-	data, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp2.Body, 512))
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			detail = resp2.Status
+		}
+		return "", fmt.Errorf("download returned HTTP %d: %s", resp2.StatusCode, detail)
+	}
+	data, err := io.ReadAll(resp2.Body)
+	if err != nil {
+		return "", err
+	}
+	// A body cut short by a deadline or a dropped connection arrives complete
+	// enough to look like a file. Comparing against the size Telegram announced
+	// is the only thing that catches it before it is written and reported saved.
+	if len(data) == 0 {
+		return "", fmt.Errorf("download returned an empty body")
+	}
+	if out.Result.FileSize > 0 && int64(len(data)) != out.Result.FileSize {
+		return "", fmt.Errorf("download stopped at %s of %s", humanBytes(int64(len(data))), humanBytes(out.Result.FileSize))
+	}
 	// Save to the files directory, which survives reboots unlike /tmp. The name
 	// below is Telegram's, not the sender's: two uploads with the same remote
 	// name overwrite each other, and the save notice carries the original.
@@ -1683,14 +1751,20 @@ func downloadTelegramFile(token, fileID string) (string, error) {
 // the notice says that instead of promising a read that would come back as
 // mojibake, and the old behaviour of staying silent is what made a sent file
 // look lost: no download, no notice, nothing on disk.
-func saveIncomingMedia(token string, chatID int64, updateID int, fileID, kind, label, name, hint string) {
+//
+// size is the file_size the update carried, or0 when it carried none. The
+// failure notice repeats whatever went wrong rather than the bare words
+// "download failed": a file over Telegram's cap and a request that timed out
+// are different problems and the sender can only fix the first by sending
+// something smaller.
+func saveIncomingMedia(token string, chatID int64, updateID int, fileID string, size int64, kind, label, name, hint string) {
 	GetDefaultInbox().CheckAndRecord(updateID)
-	path, err := downloadTelegramFile(token, fileID)
+	path, err := downloadTelegramFile(token, fileID, size)
 	if err != nil {
 		if name == "" {
 			name = kind
 		}
-		send(token, chatID, label+": "+name+" (download failed)")
+		send(token, chatID, label+": "+name+" (download failed: "+err.Error()+")")
 		return
 	}
 	path = saveWithSenderName(path, name)
