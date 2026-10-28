@@ -609,6 +609,22 @@ prompt environment override: Ceraa performance depends on one controlled prompt
 being used consistently. The project is Go-only and uses the short module path
 `ceraa`.
 
+## Binary and repository sizes
+
+The repository carries a vendored dependency tree under `vendor/` (including the
+trimmed gotd fork). Vendoring is a source-complete build input, not a measure of
+what Ceraa ships: Go compiles whole packages and the linker drops everything the
+binary does not call, so testdata, per-platform code, and package assets inside
+those directories never reach the binary.
+
+What ships is the single `ceraa` binary:
+
+- Unpacked release build: about 56 MB, over the 50 MB release cap.
+- UPX-packed release build: about 16 MB, the default for size-capped deploys.
+- `scripts/release.sh` publishes both variants per target (unpacked plain name,
+  packed with a `.upx` suffix); darwin targets ship unpacked only, since UPX
+  does not support Mach-O.
+
 ## License
 
 PolyForm Noncommercial License 1.0.0. See [LICENSE](LICENSE) for the full terms.
