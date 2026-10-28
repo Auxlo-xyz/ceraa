@@ -65,6 +65,28 @@ done
 # staged: the runtime serves both from memory and ignores copies beside the
 # executable, so shipping them only invites editing a file that changes
 # nothing.
+# Release artifacts ship in two variants per target: the unpacked build under
+# the plain name, and a UPX-packed copy under a .upx suffix, so consumers pick
+# whichever they prefer. Deploys on size-capped boxes use the packed one: the
+# unpacked binaries measure ~56 MB and the packed ones ~16 MB, under the 50 MB
+# cap both on disk and as an upload. UPX does not support Mach-O, so the darwin
+# targets ship unpacked only. UPX-packed Go binaries can draw antivirus false
+# positives, which is why the unpacked variant stays on offer (see AGENTS.md).
+if ! command -v upx >/dev/null 2>&1; then
+  echo "release: upx not found on PATH; it is required for the .upx release variants" >&2
+  exit 1
+fi
+for f in dist/ceraa-*; do
+  [ -f "$f" ] || continue
+  case "$f" in *.upx) continue ;; esac
+  if cp "$f" "$f.upx" && upx --best "$f.upx" >/dev/null; then
+    echo "release: $(basename "$f").upx packed ($(( $(stat -c %s "$f") / 1024 / 1024 )) MB -> $(( $(stat -c %s "$f.upx") / 1024 / 1024 )) MB)"
+  else
+    rm -f "$f.upx"
+    echo "release: upx cannot pack $(basename "$f"); shipping it unpacked only" >&2
+  fi
+done
+
 cp -f LICENSE NOTICE dist/
 
 ( cd dist && sha256sum ceraa-* LICENSE NOTICE > SHA256SUMS )
